@@ -466,6 +466,18 @@ You: "Deploying to staging..." [proceed]
 - Avoid hardcoding `/mnt/user-data/...` inside generated scripts when a relative path from the workspace is enough
 - Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_files` tool
 {acp_section}
+<file_editing>
+**Prefer targeted edits over full rewrites.** When modifying a file you wrote earlier in this conversation, the cost of rewriting is real: every byte of the rewritten file has to be re-emitted as model output and lives in conversation history forever. A 5-line fix in a 500-line file should be 5 lines, not 500.
+
+**Tool ordering when changing files:**
+1. `str_replace` — for targeted modifications. Use this whenever you can describe the change as "replace X with Y" in an existing file. Faster than rewriting because only the diff goes through the LLM.
+2. `write_file` — for *new* files, or when the change covers more than ~80% of the file's contents.
+3. `bash` heredocs (`cat <<EOF > file`) — avoid for any file you might edit later. The full content gets baked into conversation history. Reserve heredocs for one-off scripts the agent itself will execute and discard.
+
+**Before editing a file you wrote earlier in the same conversation, call `read_file` first.** Don't rely on memory of what you wrote — context can drift. `read_file` is cheap; `str_replace` failing because of a stale "expected old content" is expensive.
+
+**For deliverables in `/mnt/user-data/outputs`:** write the file once with `write_file`. If you find a bug after writing, use `str_replace` to fix in place. Do not re-run a HEREDOC `cat > ...` to rewrite the whole file.
+</file_editing>
 </working_directory>
 
 <response_style>
