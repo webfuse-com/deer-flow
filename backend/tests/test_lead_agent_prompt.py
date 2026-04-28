@@ -68,6 +68,38 @@ def test_apply_prompt_template_includes_relative_path_guidance(monkeypatch):
     assert "`hello.txt`, `../uploads/data.csv`, and `../outputs/report.md`" in prompt
 
 
+def test_apply_prompt_template_includes_file_editing_block(monkeypatch):
+    """The <file_editing> block must be present in the rendered system prompt
+    so the model gets edit-vs-rewrite guidance. Without it, models default
+    to bash heredocs for every file write — including fixes to files they
+    just wrote — which roughly doubles wall-time on iterative coding tasks.
+    """
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(mounts=[]),
+        skills=SimpleNamespace(container_path="/mnt/skills"),
+    )
+    monkeypatch.setattr("deerflow.config.get_app_config", lambda: config)
+    monkeypatch.setattr(prompt_module, "_get_enabled_skills", lambda: [])
+    monkeypatch.setattr(prompt_module, "get_deferred_tools_prompt_section", lambda: "")
+    monkeypatch.setattr(prompt_module, "_build_acp_section", lambda: "")
+    monkeypatch.setattr(prompt_module, "_get_memory_context", lambda agent_name=None: "")
+    monkeypatch.setattr(prompt_module, "get_agent_soul", lambda agent_name=None: "")
+
+    prompt = prompt_module.apply_prompt_template()
+
+    # Block delimiters and the three pillar guidances must all be present
+    assert "<file_editing>" in prompt
+    assert "</file_editing>" in prompt
+    assert "Prefer targeted edits over full rewrites" in prompt
+    assert "`str_replace`" in prompt
+    assert "Before editing a file you wrote earlier in the same conversation" in prompt
+    # The block must live inside <working_directory>...</working_directory>
+    wd_open = prompt.index("<working_directory")
+    wd_close = prompt.index("</working_directory>")
+    fe_open = prompt.index("<file_editing>")
+    assert wd_open < fe_open < wd_close
+
+
 def test_refresh_skills_system_prompt_cache_async_reloads_immediately(monkeypatch, tmp_path):
     def make_skill(name: str) -> Skill:
         skill_dir = tmp_path / name
