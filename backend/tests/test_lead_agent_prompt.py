@@ -123,7 +123,8 @@ def test_apply_prompt_template_includes_debugging_when_stuck_block(monkeypatch):
 
     assert "<debugging_when_stuck>" in prompt
     assert "</debugging_when_stuck>" in prompt
-    # Three core principles must all be present
+    # Four core principles must all be present
+    assert "Observe before you diagnose" in prompt
     assert "Two failed fixes in a row" in prompt
     assert "Instrument first, fix second" in prompt
     assert "reduce the test surface" in prompt

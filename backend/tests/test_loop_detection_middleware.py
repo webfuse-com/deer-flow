@@ -200,7 +200,7 @@ class TestLoopDetection:
         msgs = result["messages"]
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
-        assert "LOOP DETECTED" in msgs[0].content
+        assert "REPEAT TOOL CALL DETECTED" in msgs[0].content
 
     def test_warn_only_injected_once(self):
         """Warning for the same hash should only be injected once per thread."""
@@ -215,7 +215,7 @@ class TestLoopDetection:
         # Third — warning injected
         result = mw._apply(_make_state(tool_calls=call), runtime)
         assert result is not None
-        assert "LOOP DETECTED" in result["messages"][0].content
+        assert "REPEAT TOOL CALL DETECTED" in result["messages"][0].content
 
         # Fourth — warning already injected, should return None
         result = mw._apply(_make_state(tool_calls=call), runtime)
@@ -306,12 +306,12 @@ class TestLoopDetection:
         # Second call on thread A — triggers warning (2 >= warn_threshold)
         result = mw._apply(_make_state(tool_calls=call), runtime_a)
         assert result is not None
-        assert "LOOP DETECTED" in result["messages"][0].content
+        assert "REPEAT TOOL CALL DETECTED" in result["messages"][0].content
 
         # Second call on thread B — also triggers (independent tracking)
         result = mw._apply(_make_state(tool_calls=call), runtime_b)
         assert result is not None
-        assert "LOOP DETECTED" in result["messages"][0].content
+        assert "REPEAT TOOL CALL DETECTED" in result["messages"][0].content
 
     def test_lru_eviction(self):
         """Old threads should be evicted when max_tracked_threads is exceeded."""
@@ -533,7 +533,7 @@ class TestToolFrequencyDetection:
         msg = result["messages"][0]
         assert isinstance(msg, HumanMessage)
         assert "read_file" in msg.content
-        assert "LOOP DETECTED" in msg.content
+        assert "REPEAT TOOL CALL DETECTED" in msg.content
 
     def test_freq_warn_only_injected_once(self):
         mw = LoopDetectionMiddleware(tool_freq_warn=3, tool_freq_hard_limit=10)
@@ -545,7 +545,7 @@ class TestToolFrequencyDetection:
         # 3rd triggers warning
         result = mw._apply(_make_state(tool_calls=[self._read_call("/file_2.py")]), runtime)
         assert result is not None
-        assert "LOOP DETECTED" in result["messages"][0].content
+        assert "REPEAT TOOL CALL DETECTED" in result["messages"][0].content
 
         # 4th should not re-warn (already warned for read_file)
         result = mw._apply(_make_state(tool_calls=[self._read_call("/file_3.py")]), runtime)
@@ -619,7 +619,7 @@ class TestToolFrequencyDetection:
         # thread-B state should still be intact — 3rd call triggers warn
         result = mw._apply(_make_state(tool_calls=[self._read_call("/b_2.py")]), runtime_b)
         assert result is not None
-        assert "LOOP DETECTED" in result["messages"][0].content
+        assert "REPEAT TOOL CALL DETECTED" in result["messages"][0].content
 
         # thread-A restarted from 0 — should not trigger
         result = mw._apply(_make_state(tool_calls=[self._read_call("/a_new.py")]), runtime_a)
@@ -642,7 +642,7 @@ class TestToolFrequencyDetection:
         # 3rd call on thread A — triggers (count=3 for thread A only)
         result = mw._apply(_make_state(tool_calls=[self._read_call("/file_2.py")]), runtime_a)
         assert result is not None
-        assert "LOOP DETECTED" in result["messages"][0].content
+        assert "REPEAT TOOL CALL DETECTED" in result["messages"][0].content
 
     def test_multi_tool_single_response_counted(self):
         """When a single response has multiple tool calls, each is counted."""

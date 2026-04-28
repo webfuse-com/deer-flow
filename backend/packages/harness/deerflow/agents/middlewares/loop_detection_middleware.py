@@ -126,10 +126,21 @@ def _hash_tool_calls(tool_calls: list[dict]) -> str:
     return hashlib.md5(blob.encode()).hexdigest()[:12]
 
 
-_WARNING_MSG = "[LOOP DETECTED] You are repeating the same tool calls. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
+_WARNING_MSG = (
+    "[REPEAT TOOL CALL DETECTED] You have just made the same tool call (or near-identical: same tool, similar arguments) several times in a row. "
+    "If the observable result is not changing between calls, your model of the bug is likely wrong — making another similar call is unlikely to help. "
+    "Before the next tool call: (a) describe what you actually observe in the latest result, (b) note explicitly what is different from what you expected, "
+    "(c) instrument (add logging, inspect intermediate values, reduce the test surface) or pick a clearly different angle. "
+    "Do not 'rewrite from scratch' as a debugging strategy — that hides the bug rather than finding it. "
+    "If the task genuinely cannot be completed, summarize what you accomplished and stop."
+)
 
 _TOOL_FREQ_WARNING_MSG = (
-    "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
+    "[REPEAT TOOL CALL DETECTED] You have called {tool_name} {count} times in this conversation. "
+    "Step back: are these calls converging on a result, or are you cycling through similar variations? "
+    "If you are cycling, switch strategy — instrument, reduce the test surface, or pick a clearly different angle. "
+    "Do not rewrite the artifact from scratch; that usually introduces new bugs without fixing the original. "
+    "If the task genuinely cannot be completed, summarize what you accomplished and stop."
 )
 
 _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."
