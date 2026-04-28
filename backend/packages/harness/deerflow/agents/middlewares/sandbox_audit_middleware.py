@@ -271,11 +271,13 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
     # Input sanitisation
     # ------------------------------------------------------------------
 
-    # Normal bash commands rarely exceed a few hundred characters.  10 000 is
-    # well above any legitimate use case yet a tiny fraction of Linux ARG_MAX.
-    # Anything longer is almost certainly a payload injection or base64-encoded
-    # attack string.
-    _MAX_COMMAND_LENGTH = 10_000
+    # Most bash commands are tiny, but DeerFlow agents legitimately route
+    # heredocs through bash to write small-to-medium files in one shot —
+    # e.g. a 20 KB self-contained HTML page. The previous 10 000-char cap
+    # rejected those. 131 072 (128 KB) is still four orders of magnitude
+    # below Linux ARG_MAX and remains an effective tripwire for base64
+    # payload injection.
+    _MAX_COMMAND_LENGTH = 131_072
 
     def _validate_input(self, command: str) -> str | None:
         """Return ``None`` if *command* is acceptable, else a rejection reason."""

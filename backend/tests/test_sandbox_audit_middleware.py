@@ -276,12 +276,25 @@ class TestValidateInput:
         assert self.mw._validate_input("ls -la") is None
 
     def test_command_at_max_length_accepted(self):
-        cmd = "a" * 10_000
+        cmd = "a" * self.mw._MAX_COMMAND_LENGTH
         assert self.mw._validate_input(cmd) is None
 
     def test_command_exceeding_max_length_rejected(self):
-        cmd = "a" * 10_001
+        cmd = "a" * (self.mw._MAX_COMMAND_LENGTH + 1)
         assert self.mw._validate_input(cmd) == "command too long"
+
+    def test_max_length_at_128k(self):
+        """The cap is 128 KB — large enough to allow heredocs that write
+        small-to-medium files (e.g. a 20 KB HTML page) without rejection,
+        small enough to remain a tripwire for base64 payload injection."""
+        assert self.mw._MAX_COMMAND_LENGTH == 131_072
+
+    def test_20kb_heredoc_accepted(self):
+        """Realistic case: an agent writes a 20 KB self-contained HTML file
+        via a bash heredoc. This was rejected by the old 10 000 cap."""
+        payload = "x" * 20_000
+        heredoc = f"cat <<'EOF' > /tmp/page.html\n{payload}\nEOF"
+        assert self.mw._validate_input(heredoc) is None
 
     def test_null_byte_rejected(self):
         assert self.mw._validate_input("ls\x00; rm -rf /") == "null byte detected"
@@ -318,7 +331,7 @@ class TestInputSanitisationBlocksInWrapToolCall:
         assert "null byte" in result.content.lower()
 
     def test_oversized_command_blocked_with_reason(self):
-        request = _make_request("a" * 10_001)
+        request = _make_request("a" * (self.mw._MAX_COMMAND_LENGTH + 1))
         handler = _make_handler()
         result = self.mw.wrap_tool_call(request, handler)
         assert not handler.called
@@ -339,7 +352,7 @@ class TestInputSanitisationBlocksInWrapToolCall:
 
     def test_oversized_command_audit_log_truncated(self):
         """Oversized commands should be truncated in audit logs to prevent log amplification."""
-        big_cmd = "x" * 10_001
+        big_cmd = "x" * (self.mw._MAX_COMMAND_LENGTH + 1)
         request = _make_request(big_cmd)
         handler = _make_handler()
         with unittest.mock.patch.object(self.mw, "_write_audit", wraps=self.mw._write_audit) as spy:
@@ -597,7 +610,7 @@ class TestInputSanitisationBlocksInAwrapToolCall:
 
     @pytest.mark.anyio
     async def test_oversized_command_blocked_with_reason(self):
-        request = _make_request("a" * 10_001)
+        request = _make_request("a" * (SandboxAuditMiddleware._MAX_COMMAND_LENGTH + 1))
         result, called = await self._call_async(request)
         assert not called
         assert isinstance(result, ToolMessage)
