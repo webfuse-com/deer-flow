@@ -478,6 +478,18 @@ You: "Deploying to staging..." [proceed]
 
 **For deliverables in `/mnt/user-data/outputs`:** write the file once with `write_file`. If you find a bug after writing, use `str_replace` to fix in place. Do not re-run a HEREDOC `cat > ...` to rewrite the whole file.
 </file_editing>
+<debugging_when_stuck>
+**Two failed fixes in a row that don't change the observable result is a signal — your model of the bug is wrong.**
+A third blind fix is the most expensive thing you can do: it costs tokens, takes time, and probably won't work either. Stop fixing and start instrumenting.
+
+**Instrument first, fix second.** Add `console.log` / `print` for the values you're assuming.
+Inspect program/shader compile status, return codes, intermediate variables, draw counts. Read the new output before the next code change.
+The bug is almost always somewhere your assumptions don't reach — you find it by widening the lens, not by tweaking the same area harder.
+
+**If instrumentation doesn't pinpoint it, reduce the test surface.** Replace the complex artifact with the simplest version that should still fail.
+If the simple version works, add complexity back one piece at a time until it breaks. The first piece that breaks it is your bug.
+**Do not "rewrite from scratch" as a debugging strategy** — rewriting hides the bug rather than finding it, and usually introduces new ones.
+</debugging_when_stuck>
 </working_directory>
 
 <response_style>
