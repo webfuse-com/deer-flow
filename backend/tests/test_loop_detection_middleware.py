@@ -79,6 +79,54 @@ class TestHashToolCalls:
 
         assert _hash_tool_calls([forward_call]) == _hash_tool_calls([reversed_call])
 
+    def test_read_file_distinct_sections_do_not_collide(self):
+        """Surgical reads of different sections of the same file must not hash-collide.
+
+        Regression for an observed false positive: an agent that read imports
+        (line 1-30), then a route definition (line 145), then a handler block
+        (line 170) on a 1100-line file was force-stopped because the original
+        200-line bucket grouped all three reads under bucket key "0-0". The 50-
+        line bucket separates them.
+        """
+        imports = {
+            "name": "read_file",
+            "args": {"path": "/tmp/main.py", "start_line": 1, "end_line": 30},
+        }
+        routes = {
+            "name": "read_file",
+            "args": {"path": "/tmp/main.py", "start_line": 145, "end_line": 145},
+        }
+        handlers = {
+            "name": "read_file",
+            "args": {"path": "/tmp/main.py", "start_line": 170, "end_line": 170},
+        }
+
+        h_imports = _hash_tool_calls([imports])
+        h_routes = _hash_tool_calls([routes])
+        h_handlers = _hash_tool_calls([handlers])
+
+        assert h_imports != h_routes
+        assert h_routes != h_handlers
+        assert h_imports != h_handlers
+
+    def test_read_file_close_lines_share_bucket(self):
+        """Reads within a 50-line window are still treated as the same call.
+
+        This protects the original bucketing intent: small drift in line
+        numbers (e.g. agent re-issues read_file with start_line=145 then 150
+        after a tool error) should not look like distinct calls.
+        """
+        a = {
+            "name": "read_file",
+            "args": {"path": "/tmp/main.py", "start_line": 145, "end_line": 145},
+        }
+        b = {
+            "name": "read_file",
+            "args": {"path": "/tmp/main.py", "start_line": 150, "end_line": 150},
+        }
+
+        assert _hash_tool_calls([a]) == _hash_tool_calls([b])
+
     def test_stringified_non_dict_args_do_not_crash(self):
         non_dict_json_call = {"name": "bash", "args": '"echo hello"'}
         plain_string_call = {"name": "bash", "args": "echo hello"}
