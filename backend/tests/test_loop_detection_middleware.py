@@ -684,3 +684,165 @@ class TestToolFrequencyDetection:
         msg = result["messages"][0]
         assert isinstance(msg, AIMessage)
         assert _HARD_STOP_MSG in msg.content
+
+
+class TestEditAwareReset:
+    """Edit-aware reset: an interleaved write_file/str_replace to a path that a
+    later call references should clear that call's hash from history. The
+    classic case is a render-and-verify loop where the model edits the artifact
+    between identical bash invocations of the verifier script.
+    """
+
+    @staticmethod
+    def _bash(cmd):
+        return {"name": "bash", "id": f"call_{hash(cmd) & 0xffff}", "args": {"command": cmd}}
+
+    @staticmethod
+    def _str_replace(path, old="A", new="B"):
+        return {
+            "name": "str_replace",
+            "id": f"call_sr_{hash((path, old, new)) & 0xffff}",
+            "args": {"path": path, "old_str": old, "new_str": new},
+        }
+
+    @staticmethod
+    def _write_file(path, content="x"):
+        return {
+            "name": "write_file",
+            "id": f"call_wf_{hash((path, content)) & 0xffff}",
+            "args": {"path": path, "content": content},
+        }
+
+    def test_str_replace_resets_bash_verifier_hash(self):
+        """The render-and-verify failure mode: model alternates render-bash and
+        str_replace edits to the artifact, but counter for the bash hash should
+        reset on each interleaved edit.
+        """
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=4)
+        runtime = _make_runtime()
+        artifact = "/mnt/user-data/outputs/minion.html"
+        verify_cmd = f"python3 /mnt/skills/render.py {artifact}"
+        bash_call = [self._bash(verify_cmd)]
+
+        # Pattern: render, edit, render, edit, render, edit, render, edit
+        # Without reset, 4th render would hard-stop. With reset, never stops.
+        # Each edit varies its content so str_replace hashes don't collide.
+        for i in range(8):
+            r = mw._apply(_make_state(tool_calls=bash_call), runtime)
+            assert r is None, f"verifier bash should not trigger after edit (iter {i})"
+            edit = self._str_replace(artifact, old=f"old_{i}", new=f"new_{i}")
+            mw._apply(_make_state(tool_calls=[edit]), runtime)
+
+    def test_no_edit_still_triggers_loop(self):
+        """Sanity: without an interleaved edit, repeated identical bash still
+        hits hard_limit. Edit-aware reset must not disable basic detection.
+        """
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        bash_call = [self._bash("echo hello")]
+
+        for _ in range(2):
+            mw._apply(_make_state(tool_calls=bash_call), runtime)
+        result = mw._apply(_make_state(tool_calls=bash_call), runtime)
+        assert result is not None
+        assert _HARD_STOP_MSG in result["messages"][0].content
+
+    def test_edit_to_unrelated_path_does_not_reset(self):
+        """Edit to /tmp/other.html must NOT reset bash that probes /tmp/foo.html."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        target = "/tmp/foo.html"
+        verify = [self._bash(f"cat {target}")]
+
+        mw._apply(_make_state(tool_calls=verify), runtime)
+        mw._apply(_make_state(tool_calls=[self._str_replace("/tmp/other.html")]), runtime)
+        mw._apply(_make_state(tool_calls=verify), runtime)
+        # 3rd identical verify still triggers hard stop — edit was to a
+        # different path
+        result = mw._apply(_make_state(tool_calls=verify), runtime)
+        assert result is not None
+        assert _HARD_STOP_MSG in result["messages"][0].content
+
+    def test_edit_to_path_arg_resets(self):
+        """A str_replace path that matches the next call's path arg (not a bash
+        substring) should also reset.
+        """
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        target = "/tmp/foo.py"
+        read_call = [{"name": "read_file", "id": "rf1", "args": {"path": target}}]
+
+        mw._apply(_make_state(tool_calls=read_call), runtime)
+        mw._apply(_make_state(tool_calls=read_call), runtime)
+        mw._apply(_make_state(tool_calls=[self._write_file(target)]), runtime)
+        # Next read_file of the same path: prior history cleared, no warn/stop
+        r = mw._apply(_make_state(tool_calls=read_call), runtime)
+        assert r is None
+
+    def test_edit_consumed_by_one_reset_only(self):
+        """A single mutation should only reset the *next* identical call. After
+        that, subsequent identical calls accumulate again.
+        """
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        target = "/tmp/x.html"
+        verify = [self._bash(f"cat {target}")]
+
+        # Build up 2 identical verifies (warn_threshold=2 → next would warn)
+        mw._apply(_make_state(tool_calls=verify), runtime)
+        mw._apply(_make_state(tool_calls=verify), runtime)
+        # Edit
+        mw._apply(_make_state(tool_calls=[self._str_replace(target)]), runtime)
+        # Reset consumes the mutation: next verify counts as fresh
+        r = mw._apply(_make_state(tool_calls=verify), runtime)
+        assert r is None
+        # No further edit — three more verifies must hit hard_limit=3
+        mw._apply(_make_state(tool_calls=verify), runtime)
+        r = mw._apply(_make_state(tool_calls=verify), runtime)
+        assert r is not None
+        assert _HARD_STOP_MSG in r["messages"][0].content
+
+    def test_within_message_edit_does_not_reset_itself(self):
+        """A message containing both [str_replace(path), bash that touches path]
+        must NOT use the same-message edit to reset the bash's history. The edit
+        only affects *future* messages.
+        """
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        target = "/tmp/y.html"
+        bash_only = [self._bash(f"cat {target}")]
+        coupled = [self._str_replace(target), self._bash(f"cat {target}")]
+
+        # First two bare bash calls
+        mw._apply(_make_state(tool_calls=bash_only), runtime)
+        mw._apply(_make_state(tool_calls=bash_only), runtime)
+        # Couple a same-message edit + bash. The bash here has a *different
+        # hash* than bash_only because the multiset includes str_replace, so
+        # this doesn't directly add to the bash_only count. But it does record
+        # /tmp/y.html as mutated → next bash_only call should be reset.
+        mw._apply(_make_state(tool_calls=coupled), runtime)
+        r = mw._apply(_make_state(tool_calls=bash_only), runtime)
+        assert r is None
+
+    def test_per_thread_mutated_paths_isolated(self):
+        """Mutated paths recorded for thread A must not affect thread B."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime_a = _make_runtime("thread-a")
+        runtime_b = _make_runtime("thread-b")
+        target = "/tmp/shared.html"
+        verify = [self._bash(f"cat {target}")]
+
+        # Thread A: edit + verify (would reset)
+        mw._apply(_make_state(tool_calls=[self._str_replace(target)]), runtime_a)
+        # Thread B: two verifies, then a third — A's edit must NOT reset B
+        mw._apply(_make_state(tool_calls=verify), runtime_b)
+        mw._apply(_make_state(tool_calls=verify), runtime_b)
+        r = mw._apply(_make_state(tool_calls=verify), runtime_b)
+        assert r is not None
+        assert _HARD_STOP_MSG in r["messages"][0].content
+
+    def test_default_thresholds_match_documented(self):
+        """Sanity: defaults are 5/8 (after option-4 bump)."""
+        mw = LoopDetectionMiddleware()
+        assert mw.warn_threshold == 5
+        assert mw.hard_limit == 8

@@ -28,8 +28,8 @@ from langgraph.runtime import Runtime
 logger = logging.getLogger(__name__)
 
 # Defaults — can be overridden via constructor
-_DEFAULT_WARN_THRESHOLD = 3  # inject warning after 3 identical calls
-_DEFAULT_HARD_LIMIT = 5  # force-stop after 5 identical calls
+_DEFAULT_WARN_THRESHOLD = 5  # inject warning after 5 identical calls
+_DEFAULT_HARD_LIMIT = 8  # force-stop after 8 identical calls
 _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
 _DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
@@ -105,6 +105,42 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     return json.dumps(args, sort_keys=True, default=str)
 
 
+_MUTATING_TOOLS = frozenset({"write_file", "str_replace"})
+
+
+def _mutated_path(name: str, args: dict) -> str | None:
+    """Return the file path mutated by *name* (write_file / str_replace), or None."""
+    if name not in _MUTATING_TOOLS:
+        return None
+    path = args.get("path")
+    if isinstance(path, str) and path:
+        return path
+    return None
+
+
+def _matches_mutated(args: dict, mutated_paths: set[str]) -> set[str]:
+    """Return the subset of *mutated_paths* that this tool call references.
+
+    A call references a mutated path when:
+      - its ``path`` arg equals the mutated path, or
+      - its ``command``/``cmd`` arg contains the mutated path as a substring
+        (verifier scripts, cat, grep, python -c "...", etc).
+    """
+    if not mutated_paths:
+        return set()
+    matched: set[str] = set()
+    arg_path = args.get("path")
+    cmd = args.get("command") or args.get("cmd")
+    cmd_str = cmd if isinstance(cmd, str) else None
+    for mp in mutated_paths:
+        if arg_path == mp:
+            matched.add(mp)
+            continue
+        if cmd_str is not None and mp in cmd_str:
+            matched.add(mp)
+    return matched
+
+
 def _hash_tool_calls(tool_calls: list[dict]) -> str:
     """Deterministic hash of a set of tool calls (name + stable key).
 
@@ -153,9 +189,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
     Args:
         warn_threshold: Number of identical tool call sets before injecting
-            a warning message. Default: 3.
+            a warning message. Default: 5.
         hard_limit: Number of identical tool call sets before stripping
-            tool_calls entirely. Default: 5.
+            tool_calls entirely. Default: 8.
         window_size: Size of the sliding window for tracking calls.
             Default: 20.
         max_tracked_threads: Maximum number of threads to track before
@@ -191,6 +227,11 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # Per-thread, per-tool-type cumulative call counts
         self._tool_freq: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self._tool_freq_warned: dict[str, set[str]] = defaultdict(set)
+        # Per-thread set of paths mutated since the last reset. A subsequent call
+        # that references one of these paths clears identical-hash history (the
+        # file changed, so re-probing it isn't a loop), and consumes the path so
+        # a fresh edit is needed to reset again.
+        self._mutated_paths: dict[str, set[str]] = defaultdict(set)
 
     def _get_thread_id(self, runtime: Runtime) -> str:
         """Extract thread_id from runtime context for per-thread tracking."""
@@ -209,6 +250,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             self._warned.pop(evicted_id, None)
             self._tool_freq.pop(evicted_id, None)
             self._tool_freq_warned.pop(evicted_id, None)
+            self._mutated_paths.pop(evicted_id, None)
             logger.debug("Evicted loop tracking for thread %s (LRU)", evicted_id)
 
     def _track_and_check(self, state: AgentState, runtime: Runtime) -> tuple[str | None, bool]:
@@ -219,6 +261,11 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
           2. **Frequency-based** (new): catches the same *tool type* being
              called many times with varying arguments (e.g. ``read_file``
              on 40 different files).
+
+        Edit-aware reset: if any tool call references a path that was mutated
+        (by a prior write_file/str_replace) since the last reset for that path,
+        clear identical-hash history before counting. The file changed, so the
+        verifier isn't probing the same state.
 
         Returns:
             (warning_message_or_none, should_hard_stop)
@@ -247,12 +294,42 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._evict_if_needed()
 
             history = self._history[thread_id]
+
+            # Edit-aware reset: collect mutated paths this message *probes*,
+            # then drop those paths from the mutated set and clear prior
+            # identical-hash occurrences. Mutating calls in this same message
+            # are recorded *after* this check, so they only affect the next
+            # message — within-message edits don't reset their own hash.
+            mutated = self._mutated_paths.get(thread_id)
+            if mutated:
+                consumed: set[str] = set()
+                for tc in tool_calls:
+                    args, _ = _normalize_tool_call_args(tc.get("args", {}))
+                    consumed |= _matches_mutated(args, mutated)
+                if consumed:
+                    history[:] = [h for h in history if h != call_hash]
+                    mutated -= consumed
+                    if not mutated:
+                        self._mutated_paths.pop(thread_id, None)
+                    self._warned.get(thread_id, set()).discard(call_hash)
+
             history.append(call_hash)
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size :]
 
             count = history.count(call_hash)
             tool_names = [tc.get("name", "?") for tc in tool_calls]
+
+            # Record mutating paths *after* the edit-aware check above, so
+            # mutating calls in this same message only reset hash counts on
+            # *future* messages, not their own. Done before the warn/hard-stop
+            # branches so injected warnings still produce a fresh mutated set
+            # for whatever the model does next.
+            for tc in tool_calls:
+                args, _ = _normalize_tool_call_args(tc.get("args", {}))
+                mp = _mutated_path(tc.get("name", ""), args)
+                if mp:
+                    self._mutated_paths[thread_id].add(mp)
 
             # --- Layer 1: hash-based (identical call sets) ---
             if count >= self.hard_limit:
@@ -393,8 +470,10 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._warned.pop(thread_id, None)
                 self._tool_freq.pop(thread_id, None)
                 self._tool_freq_warned.pop(thread_id, None)
+                self._mutated_paths.pop(thread_id, None)
             else:
                 self._history.clear()
                 self._warned.clear()
                 self._tool_freq.clear()
+                self._mutated_paths.clear()
                 self._tool_freq_warned.clear()
