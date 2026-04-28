@@ -103,7 +103,7 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
         start_line = args.get("start_line")
         end_line = args.get("end_line")
 
-        bucket_size = 200
+        bucket_size = 50
         try:
             start_line = int(start_line) if start_line is not None else 1
         except (TypeError, ValueError):
