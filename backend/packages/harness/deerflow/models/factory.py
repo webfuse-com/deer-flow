@@ -29,9 +29,7 @@ logger = logging.getLogger(__name__)
 #
 # WeakValueDictionary so the client is GC'd when its loop is GC'd; no leak
 # across long-lived processes that handle thousands of short-lived loops.
-_PER_LOOP_HTTPX_CLIENTS: "weakref.WeakValueDictionary[int, httpx.AsyncClient]" = (
-    weakref.WeakValueDictionary()
-)
+_PER_LOOP_HTTPX_CLIENTS: "weakref.WeakValueDictionary[int, httpx.AsyncClient]" = weakref.WeakValueDictionary()
 
 
 def _httpx_client_for_current_loop() -> httpx.AsyncClient | None:
