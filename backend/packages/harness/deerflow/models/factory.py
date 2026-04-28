@@ -29,9 +29,7 @@ logger = logging.getLogger(__name__)
 #
 # WeakValueDictionary so the client is GC'd when its loop is GC'd; no leak
 # across long-lived processes that handle thousands of short-lived loops.
-_PER_LOOP_HTTPX_CLIENTS: "weakref.WeakValueDictionary[int, httpx.AsyncClient]" = (
-    weakref.WeakValueDictionary()
-)
+_PER_LOOP_HTTPX_CLIENTS: "weakref.WeakValueDictionary[int, httpx.AsyncClient]" = weakref.WeakValueDictionary()
 
 
 def _httpx_client_for_current_loop() -> httpx.AsyncClient | None:
@@ -79,6 +77,22 @@ def _vllm_disable_chat_template_kwargs(chat_template_kwargs: dict) -> dict:
     if "enable_thinking" in chat_template_kwargs:
         disable_kwargs["enable_thinking"] = False
     return disable_kwargs
+
+
+def _enable_stream_usage_by_default(model_use_path: str, model_settings_from_config: dict) -> None:
+    """Enable stream usage for OpenAI-compatible models unless explicitly configured.
+
+    LangChain only auto-enables ``stream_usage`` for OpenAI models when no custom
+    base URL or client is configured. DeerFlow frequently uses OpenAI-compatible
+    gateways, so token usage tracking would otherwise stay empty and the
+    TokenUsageMiddleware would have nothing to log.
+    """
+    if model_use_path != "langchain_openai:ChatOpenAI":
+        return
+    if "stream_usage" in model_settings_from_config:
+        return
+    if "base_url" in model_settings_from_config or "openai_api_base" in model_settings_from_config:
+        model_settings_from_config["stream_usage"] = True
 
 
 def create_chat_model(name: str | None = None, thinking_enabled: bool = False, **kwargs) -> BaseChatModel:
@@ -148,6 +162,8 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         kwargs.pop("reasoning_effort", None)
         model_settings_from_config.pop("reasoning_effort", None)
 
+    _enable_stream_usage_by_default(model_config.use, model_settings_from_config)
+
     # For Codex Responses API models: map thinking mode to reasoning_effort
     from deerflow.models.openai_codex_provider import CodexChatModel
 
@@ -163,6 +179,12 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             model_settings_from_config["reasoning_effort"] = explicit_effort
         elif "reasoning_effort" not in model_settings_from_config:
             model_settings_from_config["reasoning_effort"] = "medium"
+
+    # For MindIE models: enforce conservative retry defaults.
+    # Timeout normalization is handled inside MindIEChatModel itself.
+    if getattr(model_class, "__name__", "") == "MindIEChatModel":
+        # Enforce max_retries constraint to prevent cascading timeouts.
+        model_settings_from_config["max_retries"] = model_settings_from_config.get("max_retries", 1)
 
     final_kwargs = {**model_settings_from_config, **kwargs}
 

@@ -23,7 +23,7 @@ import pytest
 # checkpointer at image build time, so the test runs in our CI.
 pytest.importorskip("langgraph.checkpoint.postgres.aio")
 
-from deerflow.agents.checkpointer import _postgres_aprune  # noqa: E402
+from deerflow.agents.checkpointer import _postgres_aprune  # noqa: E402, I001
 
 
 # ---------------------------------------------------------------------------
@@ -101,10 +101,7 @@ class TestApruneBehavior:
         await _postgres_aprune._aprune(saver, ["t1", "t2"], strategy="keep_latest")
 
         assert len(saver.cursor.calls) == 2
-        tables_touched = [
-            "checkpoints" if "FROM checkpoints" in sql else "checkpoint_writes"
-            for sql, _ in saver.cursor.calls
-        ]
+        tables_touched = ["checkpoints" if "FROM checkpoints" in sql else "checkpoint_writes" for sql, _ in saver.cursor.calls]
         assert set(tables_touched) == {"checkpoints", "checkpoint_writes"}
         # Blobs must not be touched
         for sql, _ in saver.cursor.calls:
@@ -119,12 +116,7 @@ class TestApruneBehavior:
         await _postgres_aprune._aprune(saver, ["t1"], strategy="delete_all")
 
         assert len(saver.cursor.calls) == 3
-        tables = {
-            "checkpoints" if "FROM checkpoints " in sql else
-            "checkpoint_blobs" if "FROM checkpoint_blobs " in sql else
-            "checkpoint_writes"
-            for sql, _ in saver.cursor.calls
-        }
+        tables = {"checkpoints" if "FROM checkpoints " in sql else "checkpoint_blobs" if "FROM checkpoint_blobs " in sql else "checkpoint_writes" for sql, _ in saver.cursor.calls}
         assert tables == {"checkpoints", "checkpoint_blobs", "checkpoint_writes"}
 
     async def test_unknown_strategy_raises(self):

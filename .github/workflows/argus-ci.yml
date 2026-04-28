@@ -54,9 +54,4 @@ jobs:
 
       - name: Run unit tests
         working-directory: backend
-        # test_artifacts_router.py expects lxml >= 6.1.0 behavior (xhtml is
-        # classified as active content). Our argus branch is pinned to
-        # upstream 898f4e8a, where uv.lock still has lxml 6.0.2; the bump
-        # to 6.1.0 lives in upstream commit 1ca2621 which we'll absorb on
-        # the first weekly sync. Drop --ignore once that merge lands.
-        run: PYTHONPATH=. uv run pytest tests/ -v --ignore=tests/test_artifacts_router.py
+        run: make test
