@@ -76,6 +76,10 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
     if config.type == "postgres":
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            # Install AsyncPostgresSaver.aprune until upstream ships one natively.
+            # See _postgres_aprune.py for rationale.
+            from deerflow.runtime.checkpointer import _postgres_aprune  # noqa: F401
         except ImportError as exc:
             raise ImportError(POSTGRES_INSTALL) from exc
 
@@ -119,6 +123,10 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
     if db_config.backend == "postgres":
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            # Install AsyncPostgresSaver.aprune until upstream ships one natively.
+            # See _postgres_aprune.py for rationale.
+            from deerflow.runtime.checkpointer import _postgres_aprune  # noqa: F401
         except ImportError as exc:
             raise ImportError(POSTGRES_INSTALL) from exc
 
