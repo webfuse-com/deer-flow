@@ -32,8 +32,6 @@ _DEFAULT_WARN_THRESHOLD = 5  # inject warning after 5 identical calls
 _DEFAULT_HARD_LIMIT = 8  # force-stop after 8 identical calls
 _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
-_DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
-_DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
 
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
@@ -171,17 +169,7 @@ _WARNING_MSG = (
     "If the task genuinely cannot be completed, summarize what you accomplished and stop."
 )
 
-_TOOL_FREQ_WARNING_MSG = (
-    "[REPEAT TOOL CALL DETECTED] You have called {tool_name} {count} times in this conversation. "
-    "Step back: are these calls converging on a result, or are you cycling through similar variations? "
-    "If you are cycling, switch strategy — instrument, reduce the test surface, or pick a clearly different angle. "
-    "Do not rewrite the artifact from scratch; that usually introduces new bugs without fixing the original. "
-    "If the task genuinely cannot be completed, summarize what you accomplished and stop."
-)
-
 _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."
-
-_TOOL_FREQ_HARD_STOP_MSG = "[FORCED STOP] Tool {tool_name} called {count} times — exceeded the per-tool safety limit. Producing final answer with results collected so far."
 
 
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
@@ -196,12 +184,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             Default: 20.
         max_tracked_threads: Maximum number of threads to track before
             evicting the least recently used. Default: 100.
-        tool_freq_warn: Number of calls to the same tool *type* (regardless
-            of arguments) before injecting a frequency warning. Catches
-            cross-file read loops that hash-based detection misses.
-            Default: 30.
-        tool_freq_hard_limit: Number of calls to the same tool type before
-            forcing a stop. Default: 50.
     """
 
     def __init__(
@@ -210,23 +192,16 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         hard_limit: int = _DEFAULT_HARD_LIMIT,
         window_size: int = _DEFAULT_WINDOW_SIZE,
         max_tracked_threads: int = _DEFAULT_MAX_TRACKED_THREADS,
-        tool_freq_warn: int = _DEFAULT_TOOL_FREQ_WARN,
-        tool_freq_hard_limit: int = _DEFAULT_TOOL_FREQ_HARD_LIMIT,
     ):
         super().__init__()
         self.warn_threshold = warn_threshold
         self.hard_limit = hard_limit
         self.window_size = window_size
         self.max_tracked_threads = max_tracked_threads
-        self.tool_freq_warn = tool_freq_warn
-        self.tool_freq_hard_limit = tool_freq_hard_limit
         self._lock = threading.Lock()
         # Per-thread tracking using OrderedDict for LRU eviction
         self._history: OrderedDict[str, list[str]] = OrderedDict()
         self._warned: dict[str, set[str]] = defaultdict(set)
-        # Per-thread, per-tool-type cumulative call counts
-        self._tool_freq: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        self._tool_freq_warned: dict[str, set[str]] = defaultdict(set)
         # Per-thread set of paths mutated since the last reset. A subsequent call
         # that references one of these paths clears identical-hash history (the
         # file changed, so re-probing it isn't a loop), and consumes the path so
@@ -248,19 +223,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         while len(self._history) > self.max_tracked_threads:
             evicted_id, _ = self._history.popitem(last=False)
             self._warned.pop(evicted_id, None)
-            self._tool_freq.pop(evicted_id, None)
-            self._tool_freq_warned.pop(evicted_id, None)
             self._mutated_paths.pop(evicted_id, None)
             logger.debug("Evicted loop tracking for thread %s (LRU)", evicted_id)
 
     def _track_and_check(self, state: AgentState, runtime: Runtime) -> tuple[str | None, bool]:
         """Track tool calls and check for loops.
 
-        Two detection layers:
-          1. **Hash-based** (existing): catches identical tool call sets.
-          2. **Frequency-based** (new): catches the same *tool type* being
-             called many times with varying arguments (e.g. ``read_file``
-             on 40 different files).
+        Hash-based detection: identical tool call sets in a sliding window
+        trigger a warning at warn_threshold and a hard stop at hard_limit.
 
         Edit-aware reset: if any tool call references a path that was mutated
         (by a prior write_file/str_replace) since the last reset for that path,
@@ -331,7 +301,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 if mp:
                     self._mutated_paths[thread_id].add(mp)
 
-            # --- Layer 1: hash-based (identical call sets) ---
             if count >= self.hard_limit:
                 logger.error(
                     "Loop hard limit reached — forcing stop",
@@ -358,40 +327,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                         },
                     )
                     return _WARNING_MSG, False
-
-            # --- Layer 2: per-tool-type frequency ---
-            freq = self._tool_freq[thread_id]
-            for tc in tool_calls:
-                name = tc.get("name", "")
-                if not name:
-                    continue
-                freq[name] += 1
-                tc_count = freq[name]
-
-                if tc_count >= self.tool_freq_hard_limit:
-                    logger.error(
-                        "Tool frequency hard limit reached — forcing stop",
-                        extra={
-                            "thread_id": thread_id,
-                            "tool_name": name,
-                            "count": tc_count,
-                        },
-                    )
-                    return _TOOL_FREQ_HARD_STOP_MSG.format(tool_name=name, count=tc_count), True
-
-                if tc_count >= self.tool_freq_warn:
-                    warned = self._tool_freq_warned[thread_id]
-                    if name not in warned:
-                        warned.add(name)
-                        logger.warning(
-                            "Tool frequency warning — too many calls to same tool type",
-                            extra={
-                                "thread_id": thread_id,
-                                "tool_name": name,
-                                "count": tc_count,
-                            },
-                        )
-                        return _TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=tc_count), False
 
         return None, False
 
@@ -468,12 +403,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             if thread_id:
                 self._history.pop(thread_id, None)
                 self._warned.pop(thread_id, None)
-                self._tool_freq.pop(thread_id, None)
-                self._tool_freq_warned.pop(thread_id, None)
                 self._mutated_paths.pop(thread_id, None)
             else:
                 self._history.clear()
                 self._warned.clear()
-                self._tool_freq.clear()
                 self._mutated_paths.clear()
-                self._tool_freq_warned.clear()
