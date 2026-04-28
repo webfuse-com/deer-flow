@@ -64,15 +64,21 @@ class AioSandbox(Sandbox):
         Returns:
             The output of the command.
         """
+        # Disable bash history-expansion (`!foo`) for the sub-shell. Without
+        # this, any command that pipes HTML/JS containing `!DOCTYPE`, `!gl`,
+        # or other `!`-prefixed tokens through `python3 -c` or `cat <<EOF`
+        # blows up with "event not found". `set +H` has no other side
+        # effects and only affects this command's shell.
+        wrapped_command = f"set +H; {command}"
         with self._lock:
             try:
-                result = self._client.shell.exec_command(command=command)
+                result = self._client.shell.exec_command(command=wrapped_command)
                 output = result.data.output if result.data else ""
 
                 if output and _ERROR_OBSERVATION_SIGNATURE in output:
                     logger.warning("ErrorObservation detected in sandbox output, retrying with a fresh session")
                     fresh_id = str(uuid.uuid4())
-                    result = self._client.shell.exec_command(command=command, id=fresh_id)
+                    result = self._client.shell.exec_command(command=wrapped_command, id=fresh_id)
                     output = result.data.output if result.data else ""
 
                 return output if output else "(no output)"
