@@ -562,3 +562,42 @@ class TestManagerArtifactResolution:
         result = _format_artifact_text(["/mnt/user-data/outputs/a.txt", "/mnt/user-data/outputs/b.txt"])
         assert "a.txt" in result
         assert "b.txt" in result
+
+
+class TestOrphanArtifacts:
+    """[argus patch #10] _orphan_artifacts must auto-present only viewable
+    end-products (HTML/SVG/PDF/images), never the means (a .py fetch script,
+    scratch .json/.csv/.txt). This is the weather-query guard: asking for the
+    weather, where the model writes a throwaway fetch.py into outputs/, must
+    not produce a /f/fetch.py link."""
+
+    def _orphans(self, tmp_path, files, since=0.0, already=None):
+        from unittest.mock import MagicMock, patch
+        from app.channels.manager import _orphan_artifacts
+
+        thread_id = "t-orphan"
+        outputs_dir = tmp_path / "threads" / thread_id / "user-data" / "outputs"
+        outputs_dir.mkdir(parents=True)
+        for name in files:
+            (outputs_dir / name).write_text("x")
+        mock_paths = MagicMock()
+        mock_paths.sandbox_outputs_dir.return_value = outputs_dir
+        with patch("deerflow.config.paths.get_paths", return_value=mock_paths):
+            return _orphan_artifacts(thread_id, since, already or [])
+
+    def test_ignores_code_and_data_files(self, tmp_path):
+        got = self._orphans(tmp_path, ["fetch.py", "data.json", "notes.txt", "out.csv", "run.log"])
+        assert got == []  # none are viewable end-products
+
+    def test_presents_viewable_products(self, tmp_path):
+        got = self._orphans(tmp_path, ["report.html", "diagram.svg", "chart.png", "scratch.py"])
+        names = {p.rsplit("/", 1)[-1] for p in got}
+        assert names == {"report.html", "diagram.svg", "chart.png"}  # .py excluded
+
+    def test_skips_already_presented_and_screenshots(self, tmp_path):
+        got = self._orphans(
+            tmp_path,
+            ["report.html", "report.screenshot.png"],
+            already=["/mnt/user-data/outputs/report.html"],
+        )
+        assert got == []  # report.html already presented; screenshot is a sidecar

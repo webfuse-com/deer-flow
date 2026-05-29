@@ -388,13 +388,27 @@ def _resolve_attachments(thread_id: str, artifacts: list[str]) -> list[ResolvedA
     return attachments
 
 
+# [argus patch #10] Only these extensions are auto-presented when the agent
+# writes a file to outputs/ but forgets to present_files it. The rule:
+# auto-present VIEWABLE END-PRODUCTS only (a report, a diagram, an image), and
+# NEVER the means used to produce them (a .py fetch script, a .json blob, a
+# scratch .csv/.txt/.log). E.g. asking for the weather, where Qwen writes a
+# throwaway fetch script into outputs/, must NOT yield a "/f/fetch.py" link.
+# The agent can still explicitly present ANYTHING via present_files — this
+# allowlist only gates the *automatic* rescue path.
+_ORPHAN_PRESENT_EXTS = {".html", ".htm", ".svg", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
 def _orphan_artifacts(thread_id: str, since: float, already: list[str]) -> list[str]:
-    """[argus patch #10] Files the agent wrote to the outputs dir during this
-    run but did NOT present via present_files. Models sometimes write a file
-    and then paste its contents into chat instead of calling present_files
-    (observed with SVG/HTML). We detect those by mtime so they still get a
-    /f/ link rather than a wall of source. Excludes already-presented paths
-    and the render-and-verify skill's *.screenshot.png sidecars (noise)."""
+    """[argus patch #10] Viewable deliverables the agent wrote to outputs/
+    during this run but did NOT present via present_files. Models sometimes
+    write a file and paste its contents into chat instead (observed with SVG);
+    we rescue those so they get a /f/ link rather than a wall of source.
+
+    Deliberately conservative — only the viewable-end-product extensions in
+    _ORPHAN_PRESENT_EXTS qualify. Code/data/scratch files (.py, .json, .csv,
+    .txt, .log, …) are ignored: they're the means, not the answer. Also skips
+    already-presented files and render-and-verify *.screenshot.png sidecars."""
     try:
         from deerflow.config.paths import get_paths
 
@@ -413,6 +427,8 @@ def _orphan_artifacts(thread_id: str, since: float, already: list[str]) -> list[
             continue
         if f.name in already_names or f.name.endswith(".screenshot.png"):
             continue
+        if f.suffix.lower() not in _ORPHAN_PRESENT_EXTS:
+            continue  # not a viewable end-product — skip (e.g. a fetch .py)
         found.append(_OUTPUTS_VIRTUAL_PREFIX + f.name)
     return found
 
