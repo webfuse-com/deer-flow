@@ -181,3 +181,33 @@ def test_telegram_reports_streaming_support():
     from app.channels.message_bus import MessageBus
     ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "t"})
     assert ch.supports_streaming is True
+
+
+def test_auto_promote_eyes_to_brain_when_no_stage():
+    async def go():
+        ch, bot = _channel_with_bot()
+        _counting_send(bot)
+        ch._stage_min_interval = 0.01  # promote almost immediately
+
+        await ch._send_running_reply("1", reply_to_message_id=10)
+        assert ch._working_stage["1"] == "received"
+        # Let the auto-promote timer fire.
+        await ch._promote_timer["1"]
+        assert ch._working_stage["1"] == "thinking"
+
+    _run(go())
+
+
+def test_real_stage_cancels_auto_promote():
+    async def go():
+        ch, bot = _channel_with_bot()
+        _counting_send(bot)
+        ch._stage_min_interval = 0  # no throttle so the working stage lands
+
+        await ch._send_running_reply("1", reply_to_message_id=10)
+        # A real 'working' stage arrives before the timer → cancels promote.
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="", is_final=False, progress_stage="working"))
+        assert ch._working_stage["1"] == "working"
+        assert ch._promote_timer.get("1") is None or ch._promote_timer["1"].cancelled() or ch._promote_timer["1"].done()
+
+    _run(go())

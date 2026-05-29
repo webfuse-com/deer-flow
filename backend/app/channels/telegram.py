@@ -72,6 +72,10 @@ class TelegramChannel(Channel):
         self._working_msg: dict[str, int] = {}
         self._working_stage: dict[str, str] = {}
         self._working_at: dict[str, float] = {}
+        # chat -> task that auto-promotes 👀 received → 🧠 thinking after
+        # stage_min_interval if no real stage signal has arrived. Guarantees the
+        # indicator always advances even when the agent reports no tool stage.
+        self._promote_timer: dict[str, asyncio.Task] = {}
         # Stage → emoji map (config override merges over the defaults).
         self._stage_emoji: dict[str, str] = dict(_DEFAULT_STAGE_EMOJI)
         cfg_map = config.get("stage_emoji")
@@ -277,7 +281,7 @@ class TelegramChannel(Channel):
         except Exception:
             logger.warning("[Telegram] reaction fallback also failed in chat=%s", chat_id)
 
-    async def _show_stage(self, chat_id: int, chat_key: str, stage: str) -> bool:
+    async def _show_stage(self, chat_id: int, chat_key: str, stage: str, *, force: bool = False) -> bool:
         """[argus patch #10] Render a stage as the animated lone emoji.
 
         The big-emoji animation only plays on first SEND (an edit never
@@ -286,7 +290,9 @@ class TelegramChannel(Channel):
         actually changes and (b) at least stage_min_interval has elapsed since
         the last send — so each animation completes and we stay well under
         Telegram's ~1 msg/sec per-chat limit. Rapid intermediate stages are
-        skipped (latest-wins). Returns True if an emoji is now showing.
+        skipped (latest-wins). ``force`` bypasses the interval guard (used by
+        the 👀→🧠 auto-promote timer, which already waited the interval).
+        Returns True if an emoji is now showing.
         """
         if not self._application:
             return False
@@ -302,7 +308,7 @@ class TelegramChannel(Channel):
         # eligible stage signal will carry the then-current stage (latest-wins).
         if have_msg and cur_stage == stage:
             return True
-        if have_msg and (now - self._working_at.get(chat_key, 0.0)) < self._stage_min_interval:
+        if have_msg and not force and (now - self._working_at.get(chat_key, 0.0)) < self._stage_min_interval:
             return True
 
         bot = self._application.bot
@@ -322,11 +328,38 @@ class TelegramChannel(Channel):
                 await bot.delete_message(chat_id=chat_id, message_id=old_id)
             except Exception as exc:
                 logger.debug("[Telegram] could not delete prior stage emoji in chat=%s: %s", chat_key, exc)
+        # Any real stage supersedes a pending auto-promote; 'received' (re)arms it.
+        self._cancel_promote(chat_key)
+        if stage == "received":
+            self._schedule_promote(chat_id, chat_key)
         return True
+
+    def _schedule_promote(self, chat_id: int, chat_key: str) -> None:
+        """Arm the 👀→🧠 auto-promotion so the indicator always advances even
+        if the agent never reports a tool stage."""
+        self._promote_timer[chat_key] = asyncio.ensure_future(self._auto_promote(chat_id, chat_key))
+
+    def _cancel_promote(self, chat_key: str) -> None:
+        task = self._promote_timer.pop(chat_key, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _auto_promote(self, chat_id: int, chat_key: str) -> None:
+        try:
+            await asyncio.sleep(self._stage_min_interval)
+        except asyncio.CancelledError:
+            return
+        # Drop our own handle first so _show_stage's _cancel_promote (which runs
+        # for every send) doesn't cancel this still-running task mid-flight.
+        self._promote_timer.pop(chat_key, None)
+        # Only promote if we're still on 'received' (no real stage arrived).
+        if self._working_stage.get(chat_key) == "received":
+            await self._show_stage(chat_id, chat_key, "thinking", force=True)
 
     async def _clear_working(self, chat_id: int, chat_key: str) -> None:
         """[argus patch #10] Delete the current stage emoji once the final
         answer has been sent. Best-effort — the message may already be gone."""
+        self._cancel_promote(chat_key)
         self._working_stage.pop(chat_key, None)
         self._working_at.pop(chat_key, None)
         msg_id = self._working_msg.pop(chat_key, None)
