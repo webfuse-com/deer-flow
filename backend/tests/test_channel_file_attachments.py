@@ -601,3 +601,40 @@ class TestOrphanArtifacts:
             already=["/mnt/user-data/outputs/report.html"],
         )
         assert got == []  # report.html already presented; screenshot is a sidecar
+
+
+class TestStageDerivation:
+    """[argus patch #10] _stage_from_chunk maps langgraph stream chunks to the
+    coarse progress stages that drive Telegram's animated stage emoji."""
+
+    def _stage(self, event, data):
+        from app.channels.manager import _stage_from_chunk
+        return _stage_from_chunk(event, data)
+
+    def test_ai_text_is_thinking(self):
+        chunk = ({"type": "ai", "content": "let me think"}, {})
+        assert self._stage("messages-tuple", chunk) == "thinking"
+
+    def test_write_todos_is_planning(self):
+        chunk = ({"type": "ai", "content": "", "tool_calls": [{"name": "write_todos", "args": {}}]}, {})
+        assert self._stage("messages-tuple", chunk) == "planning"
+
+    def test_search_tool_is_searching(self):
+        chunk = ({"type": "ai", "tool_calls": [{"name": "tavily_search", "args": {}}]}, {})
+        assert self._stage("messages-tuple", chunk) == "searching"
+
+    def test_other_tool_is_working(self):
+        for tool in ("bash", "write_file", "present_files"):
+            chunk = ({"type": "ai", "tool_calls": [{"name": tool, "args": {}}]}, {})
+            assert self._stage("messages-tuple", chunk) == "working", tool
+
+    def test_values_with_todos_is_planning(self):
+        assert self._stage("values", {"todos": [{"content": "step 1", "status": "pending"}]}) == "planning"
+
+    def test_values_without_todos_is_none(self):
+        assert self._stage("values", {"messages": []}) is None
+
+    def test_tool_result_message_is_none(self):
+        # A tool *result* coming back doesn't change the stage.
+        chunk = ({"type": "tool", "content": "result"}, {})
+        assert self._stage("messages-tuple", chunk) is None

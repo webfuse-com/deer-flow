@@ -85,63 +85,81 @@ def test_html_rejected_falls_back_to_plaintext():
     assert "parse_mode" not in calls[-1]
 
 
-def test_working_emoji_sent_then_deleted_on_final():
+def _counting_send(bot):
+    """Make bot.send_message return incrementing message_ids."""
+    state = {"n": 0}
+
+    async def send_message(**kwargs):
+        state["n"] += 1
+        m = MagicMock()
+        m.message_id = state["n"]
+        return m
+
+    bot.send_message = send_message
+    return state
+
+
+def test_received_stage_sent_then_deleted_on_final():
     async def go():
         ch, bot = _channel_with_bot()
-        sent = MagicMock()
-        sent.message_id = 77
-        bot.send_message.return_value = sent
-        ch._working_emoji_delay = 100  # don't let the swap fire during the test
+        _counting_send(bot)
 
-        # Inbound sets the working emoji + schedules the swap timer.
         await ch._send_running_reply("1", reply_to_message_id=10)
-        assert ch._working_msg.get("1") == 77
-        assert "1" in ch._working_timer
+        assert "1" in ch._working_msg
+        assert ch._working_stage["1"] == "received"
 
-        # Final answer cancels the timer and deletes the message.
+        # Final answer deletes the emoji.
         await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="done", is_final=True))
         bot.delete_message.assert_awaited()
         assert "1" not in ch._working_msg
-        assert ch._working_timer.get("1") is None or ch._working_timer["1"].cancelled()
 
     _run(go())
 
 
-def test_working_emoji_swaps_to_second_after_delay():
+def test_stage_change_resends_and_deletes_old():
     async def go():
         ch, bot = _channel_with_bot()
-        sent = MagicMock()
-        sent.message_id = 77
-        bot.send_message.return_value = sent
-        ch._working_emoji_delay = 0.01  # fire almost immediately
+        _counting_send(bot)
+        ch._stage_min_interval = 0  # no throttle for this test
 
-        await ch._send_running_reply("1", reply_to_message_id=10)
-        # Let the timer fire.
-        await ch._working_timer["1"]
-
-        bot.edit_message_text.assert_awaited_once()
-        kwargs = bot.edit_message_text.await_args.kwargs
-        assert kwargs["text"] == ch._working_emoji_2
-        assert kwargs["message_id"] == 77
+        # received → thinking → working: each a fresh send, old one deleted.
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="", is_final=False, progress_stage="received"))
+        first = ch._working_msg["1"]
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="", is_final=False, progress_stage="thinking"))
+        assert ch._working_stage["1"] == "thinking"
+        assert ch._working_msg["1"] != first
+        # The previous emoji message was deleted on the swap.
+        assert bot.delete_message.await_count == 1
 
     _run(go())
 
 
-def test_answer_before_swap_cancels_timer_no_edit():
+def test_stage_throttled_within_interval():
     async def go():
         ch, bot = _channel_with_bot()
-        sent = MagicMock()
-        sent.message_id = 77
-        bot.send_message.return_value = sent
-        ch._working_emoji_delay = 100  # long enough that the answer beats it
+        _counting_send(bot)
+        ch._stage_min_interval = 999  # never allow a re-send within the window
 
-        await ch._send_running_reply("1", reply_to_message_id=10)
-        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="quick", is_final=True))
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="", is_final=False, progress_stage="received"))
+        msg1 = ch._working_msg["1"]
+        # A different stage arrives too soon → ignored (latest-wins, no re-send).
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="", is_final=False, progress_stage="working"))
+        assert ch._working_msg["1"] == msg1          # unchanged
+        assert ch._working_stage["1"] == "received"   # still the first stage
 
-        # The swap must NOT have happened — only the first emoji was shown,
-        # then deleted.
-        bot.edit_message_text.assert_not_awaited()
-        bot.delete_message.assert_awaited()
+    _run(go())
+
+
+def test_progress_message_bypasses_html_formatter():
+    async def go():
+        ch, bot = _channel_with_bot()
+        _counting_send(bot)
+        # A progress message must NOT be HTML-formatted or chunked — it only
+        # drives the emoji. (We assert no parse_mode HTML send happened.)
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="**not shown**", is_final=False, progress_stage="thinking"))
+        # The emoji send carries no parse_mode (plain emoji), and the markdown
+        # text was ignored entirely.
+        assert ch._working_stage["1"] == "thinking"
 
     _run(go())
 

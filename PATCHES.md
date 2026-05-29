@@ -155,13 +155,24 @@ line count is tests.
      → Telegram-native HTML (`parse_mode=HTML`) and chunk on the 4096 ceiling,
      with a plain-text fallback if Telegram rejects the HTML. Formatter ported
      from the ateam bot (`TOOLS/ateam-bot/formatting.py`).
-  2. **Working indicator.** Upstream sends a literal "Working on it..." text
-     reply that's never removed. We instead send a standalone single-emoji
-     message (Telegram animates lone emoji). It's a TWO-STAGE indicator:
-     `working_emoji` (👀) for `working_emoji_delay` seconds, then edited in
-     place to `working_emoji_2` (🧠). Stored per-chat; whichever emoji is
-     showing is deleted when `is_final` arrives (and an answer before the
-     delay cancels the swap). Reaction fallback if the initial send fails.
+  2. **Working indicator → live stage emoji.** Upstream sends a literal
+     "Working on it..." text reply that's never removed. We instead show an
+     animated lone emoji reflecting the agent's current execution stage,
+     derived from the langgraph stream by the manager (`_stage_from_chunk`):
+     👀 received → 🧠 thinking → 📝 planning (write_todos/todos) → 🔍 searching
+     (search tool) → 🔧 working (other tool). Telegram flips to the streaming
+     path (`CHANNEL_CAPABILITIES["telegram"].supports_streaming=True`) to see
+     stages, but does NOT receive streamed partial answer text (suppressed in
+     `_handle_streaming_chat` for telegram only). Because Telegram animates a
+     lone emoji only on first SEND (never on edit — core.telegram.org/api/
+     animated-emojis), each stage change DELETES the old emoji message and
+     SENDS a new one; re-sends are throttled to `stage_min_interval` (~6s, the
+     animation length) and skip rapid intermediate stages (latest-wins).
+     Whichever emoji is showing is deleted when `is_final` arrives. Reaction
+     fallback if the initial send fails. Config:
+     `channels.telegram.{stage_emoji (map), stage_min_interval}`. (Supersedes
+     the earlier `working_emoji_2`/`working_emoji_delay` edit-based two-stage
+     model, which couldn't re-animate.)
   3. **Artifact presentation.** For Telegram, `present_files` HTML reports are
      turned into VIEWABLE links to the per-stack `/f/` fileserver (nginx) by a
      channel-aware presenter, instead of force-downloaded. Hooked in the

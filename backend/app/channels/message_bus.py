@@ -105,6 +105,13 @@ class OutboundMessage:
     thread_ts: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
+    # [argus patch #10] Live-progress signal. When set (with is_final=False and
+    # empty text), this is NOT chat content — it's a coarse execution stage
+    # ("received"/"thinking"/"planning"/"searching"/"working") derived from the
+    # langgraph stream. A channel may render it as a transient progress
+    # indicator (Telegram: an animated stage emoji) and must NOT treat it as a
+    # message to display. Channels that don't understand it ignore it.
+    progress_stage: str | None = None
 
 
 # ---------------------------------------------------------------------------

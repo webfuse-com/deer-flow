@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from typing import Any
 
 from app.channels._telegram_format import chunk_html, to_telegram_html
@@ -13,14 +14,22 @@ from app.channels.message_bus import InboundMessage, InboundMessageType, Message
 
 logger = logging.getLogger(__name__)
 
-# [argus patch #10] Two-stage standalone-emoji "working" indicator. Telegram
-# renders a lone emoji message large + animated. Show the first emoji
-# immediately; after _DEFAULT_WORKING_EMOJI_DELAY seconds, edit it to the
-# second. Overridable via channels.telegram.{working_emoji, working_emoji_2,
-# working_emoji_delay} in config.yaml.
-_DEFAULT_WORKING_EMOJI = "👀"
-_DEFAULT_WORKING_EMOJI_2 = "🧠"
-_DEFAULT_WORKING_EMOJI_DELAY = 10.0
+# [argus patch #10] Live stage-emoji progress indicator. Telegram renders a
+# lone-emoji message large + animated, but the animation plays ONCE on send
+# and never replays on edit (core.telegram.org/api/animated-emojis). So to
+# animate each stage we DELETE the old emoji message and SEND a new one when
+# the agent's stage changes. The manager derives stages from the langgraph
+# stream; this maps each to an emoji. Re-sends are throttled to >= the
+# animation length so each one completes. Overridable via
+# channels.telegram.{stage_emoji (map), stage_min_interval, working_emoji}.
+_DEFAULT_STAGE_EMOJI = {
+    "received": "👀",
+    "thinking": "🧠",
+    "planning": "📝",
+    "searching": "🔍",
+    "working": "🔧",
+}
+_DEFAULT_STAGE_MIN_INTERVAL = 6.0  # seconds; matches the ~6s big-emoji animation
 
 
 class TelegramChannel(Channel):
@@ -45,21 +54,25 @@ class TelegramChannel(Channel):
                 pass
         # chat_id -> last sent message_id for threaded replies
         self._last_bot_message: dict[str, int] = {}
-        # [argus patch #10] chat_id -> message_id of the standalone "working"
-        # emoji we sent, so we can delete it when the final answer lands.
+        # [argus patch #10] Live stage-emoji indicator state, per chat:
+        #   _working_msg[chat]   -> message_id of the current stage emoji
+        #   _working_stage[chat] -> the stage that emoji represents
+        #   _working_at[chat]    -> monotonic time we last (re)sent it
         self._working_msg: dict[str, int] = {}
-        # [argus patch #10] chat_id -> the asyncio task that swaps the first
-        # emoji to the second after a delay; cancelled when the answer lands.
-        self._working_timer: dict[str, asyncio.Task] = {}
-        # Two-stage working indicator: show the first emoji immediately, then
-        # after working_emoji_delay seconds edit it to the second. Whichever is
-        # showing is removed when the answer arrives.
-        self._working_emoji: str = str(config.get("working_emoji") or _DEFAULT_WORKING_EMOJI)
-        self._working_emoji_2: str = str(config.get("working_emoji_2") or _DEFAULT_WORKING_EMOJI_2)
+        self._working_stage: dict[str, str] = {}
+        self._working_at: dict[str, float] = {}
+        # Stage → emoji map (config override merges over the defaults).
+        self._stage_emoji: dict[str, str] = dict(_DEFAULT_STAGE_EMOJI)
+        cfg_map = config.get("stage_emoji")
+        if isinstance(cfg_map, dict):
+            self._stage_emoji.update({str(k): str(v) for k, v in cfg_map.items()})
+        # Back-compat: a bare working_emoji still overrides the initial beat.
+        if config.get("working_emoji"):
+            self._stage_emoji["received"] = str(config["working_emoji"])
         try:
-            self._working_emoji_delay: float = float(config.get("working_emoji_delay", _DEFAULT_WORKING_EMOJI_DELAY))
+            self._stage_min_interval: float = float(config.get("stage_min_interval", _DEFAULT_STAGE_MIN_INTERVAL))
         except (ValueError, TypeError):
-            self._working_emoji_delay = _DEFAULT_WORKING_EMOJI_DELAY
+            self._stage_min_interval = _DEFAULT_STAGE_MIN_INTERVAL
 
     async def start(self) -> None:
         if self._running:
@@ -120,6 +133,12 @@ class TelegramChannel(Channel):
             chat_id = int(msg.chat_id)
         except (ValueError, TypeError):
             logger.error("Invalid Telegram chat_id: %s", msg.chat_id)
+            return
+
+        # [argus patch #10] A progress signal is not chat content — render it as
+        # the animated stage emoji and return BEFORE the HTML/chunk send path.
+        if msg.progress_stage is not None:
+            await self._show_stage(chat_id, msg.chat_id, msg.progress_stage)
             return
 
         # [argus patch #10] Convert the agent's markdown to Telegram-native HTML
@@ -226,84 +245,86 @@ class TelegramChannel(Channel):
     # -- helpers -----------------------------------------------------------
 
     async def _send_running_reply(self, chat_id: str, reply_to_message_id: int) -> None:
-        """[argus patch #10] Two-stage 'working' indicator. Send a standalone
-        single-emoji message (Telegram renders these large + animated), store
-        its message_id so the final answer can delete it, and schedule a timer
-        that edits it to the second emoji after working_emoji_delay seconds.
-        If sending the message fails, fall back to a reaction on the user's
-        message so there's still a signal.
-        """
+        """[argus patch #10] Show the initial 'received' stage emoji as soon as
+        a message arrives. Subsequent stages come from the manager as
+        progress_stage OutboundMessages and are handled by _show_stage. If the
+        emoji send fails, fall back to a reaction on the user's message."""
         if not self._application:
             return
-        # A previous indicator for this chat should never linger (e.g. two
-        # messages in quick succession): cancel its timer first.
-        self._cancel_working_timer(chat_id)
-
-        bot = self._application.bot
-        emoji = self._working_emoji
-        try:
-            sent = await bot.send_message(chat_id=int(chat_id), text=emoji)
-            self._working_msg[chat_id] = sent.message_id
-            logger.info("[Telegram] working emoji %s sent in chat=%s", emoji, chat_id)
-            # Schedule the swap to the second emoji. Runs on the main loop;
-            # cancelled by _clear_working when the answer lands.
-            self._working_timer[chat_id] = asyncio.ensure_future(
-                self._swap_working_emoji(int(chat_id), chat_id, sent.message_id)
-            )
+        ok = await self._show_stage(int(chat_id), chat_id, "received")
+        if ok:
             return
-        except Exception:
-            logger.exception("[Telegram] failed to send working emoji in chat=%s; trying reaction", chat_id)
-        # Degraded mode: react on the user's message instead (no timer — the
-        # reaction stays until the platform clears it).
+        # Degraded mode: react on the user's message instead.
         try:
             from telegram import ReactionTypeEmoji
 
-            await bot.set_message_reaction(
+            await self._application.bot.set_message_reaction(
                 chat_id=int(chat_id),
                 message_id=reply_to_message_id,
-                reaction=[ReactionTypeEmoji(emoji)],
+                reaction=[ReactionTypeEmoji(self._stage_emoji.get("received", "👀"))],
             )
         except Exception:
             logger.warning("[Telegram] reaction fallback also failed in chat=%s", chat_id)
 
-    async def _swap_working_emoji(self, chat_id: int, chat_key: str, message_id: int) -> None:
-        """After a delay, edit the working-emoji message to the second emoji.
-        Editing keeps it one message (no delete/resend flicker) and Telegram
-        re-animates the new lone emoji. Cancelled if the answer arrives first.
-        """
-        try:
-            await asyncio.sleep(self._working_emoji_delay)
-        except asyncio.CancelledError:
-            return
-        # If the answer already cleared the indicator, do nothing.
-        if self._working_msg.get(chat_key) != message_id:
-            return
-        try:
-            await self._application.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, text=self._working_emoji_2
-            )
-            logger.info("[Telegram] working emoji → %s in chat=%s", self._working_emoji_2, chat_key)
-        except Exception as exc:
-            logger.debug("[Telegram] could not swap working emoji in chat=%s: %s", chat_key, exc)
+    async def _show_stage(self, chat_id: int, chat_key: str, stage: str) -> bool:
+        """[argus patch #10] Render a stage as the animated lone emoji.
 
-    def _cancel_working_timer(self, chat_key: str) -> None:
-        task = self._working_timer.pop(chat_key, None)
-        if task and not task.done():
-            task.cancel()
+        The big-emoji animation only plays on first SEND (an edit never
+        replays it), so to animate each new stage we delete the prior emoji
+        message and send a fresh one. Re-send only when (a) the stage's emoji
+        actually changes and (b) at least stage_min_interval has elapsed since
+        the last send — so each animation completes and we stay well under
+        Telegram's ~1 msg/sec per-chat limit. Rapid intermediate stages are
+        skipped (latest-wins). Returns True if an emoji is now showing.
+        """
+        if not self._application:
+            return False
+        emoji = self._stage_emoji.get(stage)
+        if not emoji:
+            return bool(self._working_msg.get(chat_key))
+
+        now = time.monotonic()
+        cur_stage = self._working_stage.get(chat_key)
+        have_msg = chat_key in self._working_msg
+
+        # No change, or too soon since the last (re)send → leave it be. The next
+        # eligible stage signal will carry the then-current stage (latest-wins).
+        if have_msg and cur_stage == stage:
+            return True
+        if have_msg and (now - self._working_at.get(chat_key, 0.0)) < self._stage_min_interval:
+            return True
+
+        bot = self._application.bot
+        old_id = self._working_msg.get(chat_key)
+        try:
+            sent = await bot.send_message(chat_id=chat_id, text=emoji)
+        except Exception:
+            logger.exception("[Telegram] failed to send stage emoji in chat=%s", chat_key)
+            return have_msg
+        self._working_msg[chat_key] = sent.message_id
+        self._working_stage[chat_key] = stage
+        self._working_at[chat_key] = now
+        logger.info("[Telegram] stage %s (%s) in chat=%s", stage, emoji, chat_key)
+        # Delete the previous emoji after the new one is up (no visible gap).
+        if old_id is not None:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=old_id)
+            except Exception as exc:
+                logger.debug("[Telegram] could not delete prior stage emoji in chat=%s: %s", chat_key, exc)
+        return True
 
     async def _clear_working(self, chat_id: int, chat_key: str) -> None:
-        """[argus patch #10] Cancel the pending emoji-swap timer and delete the
-        standalone working-emoji message (whichever emoji is showing) once the
-        final answer has been sent. Best-effort: the message may already be
-        gone (user deleted it, races), so a failure is non-fatal."""
-        self._cancel_working_timer(chat_key)
+        """[argus patch #10] Delete the current stage emoji once the final
+        answer has been sent. Best-effort — the message may already be gone."""
+        self._working_stage.pop(chat_key, None)
+        self._working_at.pop(chat_key, None)
         msg_id = self._working_msg.pop(chat_key, None)
         if msg_id is None:
             return
         try:
             await self._application.bot.delete_message(chat_id=chat_id, message_id=msg_id)
         except Exception as exc:
-            logger.debug("[Telegram] could not delete working emoji in chat=%s: %s", chat_key, exc)
+            logger.debug("[Telegram] could not delete stage emoji in chat=%s: %s", chat_key, exc)
 
     # -- internal ----------------------------------------------------------
     @staticmethod
