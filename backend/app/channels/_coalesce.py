@@ -26,7 +26,10 @@ from app.channels.message_bus import InboundMessage
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_COALESCE_WINDOW = 2.5  # seconds of quiet before a burst is dispatched
+DEFAULT_COALESCE_WINDOW = 0.8  # seconds of quiet before a burst is dispatched.
+# 0.8s comfortably covers a real Telegram split-paste: an 18-chunk paste on
+# 2026-05-29 had a max inter-chunk gap of ~0.44s. Keeps the per-turn latency
+# tax low on normal single messages. Override via channels.coalesce_window.
 
 # dispatch(combined_message) -> awaitable
 Dispatch = Callable[[InboundMessage], Awaitable[None]]
