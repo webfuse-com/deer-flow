@@ -13,10 +13,14 @@ from app.channels.message_bus import InboundMessage, InboundMessageType, Message
 
 logger = logging.getLogger(__name__)
 
-# [argus patch #10] Default standalone emoji used as the "working" indicator.
-# Telegram renders a lone emoji message large + animated. Overridable via
-# channels.telegram.working_emoji in config.yaml.
+# [argus patch #10] Two-stage standalone-emoji "working" indicator. Telegram
+# renders a lone emoji message large + animated. Show the first emoji
+# immediately; after _DEFAULT_WORKING_EMOJI_DELAY seconds, edit it to the
+# second. Overridable via channels.telegram.{working_emoji, working_emoji_2,
+# working_emoji_delay} in config.yaml.
 _DEFAULT_WORKING_EMOJI = "👀"
+_DEFAULT_WORKING_EMOJI_2 = "🧠"
+_DEFAULT_WORKING_EMOJI_DELAY = 10.0
 
 
 class TelegramChannel(Channel):
@@ -44,7 +48,18 @@ class TelegramChannel(Channel):
         # [argus patch #10] chat_id -> message_id of the standalone "working"
         # emoji we sent, so we can delete it when the final answer lands.
         self._working_msg: dict[str, int] = {}
+        # [argus patch #10] chat_id -> the asyncio task that swaps the first
+        # emoji to the second after a delay; cancelled when the answer lands.
+        self._working_timer: dict[str, asyncio.Task] = {}
+        # Two-stage working indicator: show the first emoji immediately, then
+        # after working_emoji_delay seconds edit it to the second. Whichever is
+        # showing is removed when the answer arrives.
         self._working_emoji: str = str(config.get("working_emoji") or _DEFAULT_WORKING_EMOJI)
+        self._working_emoji_2: str = str(config.get("working_emoji_2") or _DEFAULT_WORKING_EMOJI_2)
+        try:
+            self._working_emoji_delay: float = float(config.get("working_emoji_delay", _DEFAULT_WORKING_EMOJI_DELAY))
+        except (ValueError, TypeError):
+            self._working_emoji_delay = _DEFAULT_WORKING_EMOJI_DELAY
 
     async def start(self) -> None:
         if self._running:
@@ -211,23 +226,35 @@ class TelegramChannel(Channel):
     # -- helpers -----------------------------------------------------------
 
     async def _send_running_reply(self, chat_id: str, reply_to_message_id: int) -> None:
-        """[argus patch #10] Signal 'working' with a standalone single-emoji
-        message (Telegram renders these large + animated). The message_id is
-        stored so the final answer can delete it. If sending the message fails,
-        fall back to a reaction on the user's message so there's still a signal.
+        """[argus patch #10] Two-stage 'working' indicator. Send a standalone
+        single-emoji message (Telegram renders these large + animated), store
+        its message_id so the final answer can delete it, and schedule a timer
+        that edits it to the second emoji after working_emoji_delay seconds.
+        If sending the message fails, fall back to a reaction on the user's
+        message so there's still a signal.
         """
         if not self._application:
             return
+        # A previous indicator for this chat should never linger (e.g. two
+        # messages in quick succession): cancel its timer first.
+        self._cancel_working_timer(chat_id)
+
         bot = self._application.bot
         emoji = self._working_emoji
         try:
             sent = await bot.send_message(chat_id=int(chat_id), text=emoji)
             self._working_msg[chat_id] = sent.message_id
             logger.info("[Telegram] working emoji %s sent in chat=%s", emoji, chat_id)
+            # Schedule the swap to the second emoji. Runs on the main loop;
+            # cancelled by _clear_working when the answer lands.
+            self._working_timer[chat_id] = asyncio.ensure_future(
+                self._swap_working_emoji(int(chat_id), chat_id, sent.message_id)
+            )
             return
         except Exception:
             logger.exception("[Telegram] failed to send working emoji in chat=%s; trying reaction", chat_id)
-        # Degraded mode: react on the user's message instead.
+        # Degraded mode: react on the user's message instead (no timer — the
+        # reaction stays until the platform clears it).
         try:
             from telegram import ReactionTypeEmoji
 
@@ -239,10 +266,37 @@ class TelegramChannel(Channel):
         except Exception:
             logger.warning("[Telegram] reaction fallback also failed in chat=%s", chat_id)
 
+    async def _swap_working_emoji(self, chat_id: int, chat_key: str, message_id: int) -> None:
+        """After a delay, edit the working-emoji message to the second emoji.
+        Editing keeps it one message (no delete/resend flicker) and Telegram
+        re-animates the new lone emoji. Cancelled if the answer arrives first.
+        """
+        try:
+            await asyncio.sleep(self._working_emoji_delay)
+        except asyncio.CancelledError:
+            return
+        # If the answer already cleared the indicator, do nothing.
+        if self._working_msg.get(chat_key) != message_id:
+            return
+        try:
+            await self._application.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=self._working_emoji_2
+            )
+            logger.info("[Telegram] working emoji → %s in chat=%s", self._working_emoji_2, chat_key)
+        except Exception as exc:
+            logger.debug("[Telegram] could not swap working emoji in chat=%s: %s", chat_key, exc)
+
+    def _cancel_working_timer(self, chat_key: str) -> None:
+        task = self._working_timer.pop(chat_key, None)
+        if task and not task.done():
+            task.cancel()
+
     async def _clear_working(self, chat_id: int, chat_key: str) -> None:
-        """[argus patch #10] Delete the standalone working-emoji message once
-        the final answer has been sent. Best-effort: the message may already be
+        """[argus patch #10] Cancel the pending emoji-swap timer and delete the
+        standalone working-emoji message (whichever emoji is showing) once the
+        final answer has been sent. Best-effort: the message may already be
         gone (user deleted it, races), so a failure is non-fatal."""
+        self._cancel_working_timer(chat_key)
         msg_id = self._working_msg.pop(chat_key, None)
         if msg_id is None:
             return

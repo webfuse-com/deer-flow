@@ -86,19 +86,64 @@ def test_html_rejected_falls_back_to_plaintext():
 
 
 def test_working_emoji_sent_then_deleted_on_final():
-    ch, bot = _channel_with_bot()
-    sent = MagicMock()
-    sent.message_id = 77
-    bot.send_message.return_value = sent
+    async def go():
+        ch, bot = _channel_with_bot()
+        sent = MagicMock()
+        sent.message_id = 77
+        bot.send_message.return_value = sent
+        ch._working_emoji_delay = 100  # don't let the swap fire during the test
 
-    # Inbound sets the working emoji.
-    _run(ch._send_running_reply("1", reply_to_message_id=10))
-    assert ch._working_msg.get("1") == 77
+        # Inbound sets the working emoji + schedules the swap timer.
+        await ch._send_running_reply("1", reply_to_message_id=10)
+        assert ch._working_msg.get("1") == 77
+        assert "1" in ch._working_timer
 
-    # Final answer deletes it.
-    _run(ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="done", is_final=True)))
-    bot.delete_message.assert_awaited()
-    assert "1" not in ch._working_msg
+        # Final answer cancels the timer and deletes the message.
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="done", is_final=True))
+        bot.delete_message.assert_awaited()
+        assert "1" not in ch._working_msg
+        assert ch._working_timer.get("1") is None or ch._working_timer["1"].cancelled()
+
+    _run(go())
+
+
+def test_working_emoji_swaps_to_second_after_delay():
+    async def go():
+        ch, bot = _channel_with_bot()
+        sent = MagicMock()
+        sent.message_id = 77
+        bot.send_message.return_value = sent
+        ch._working_emoji_delay = 0.01  # fire almost immediately
+
+        await ch._send_running_reply("1", reply_to_message_id=10)
+        # Let the timer fire.
+        await ch._working_timer["1"]
+
+        bot.edit_message_text.assert_awaited_once()
+        kwargs = bot.edit_message_text.await_args.kwargs
+        assert kwargs["text"] == ch._working_emoji_2
+        assert kwargs["message_id"] == 77
+
+    _run(go())
+
+
+def test_answer_before_swap_cancels_timer_no_edit():
+    async def go():
+        ch, bot = _channel_with_bot()
+        sent = MagicMock()
+        sent.message_id = 77
+        bot.send_message.return_value = sent
+        ch._working_emoji_delay = 100  # long enough that the answer beats it
+
+        await ch._send_running_reply("1", reply_to_message_id=10)
+        await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="quick", is_final=True))
+
+        # The swap must NOT have happened — only the first emoji was shown,
+        # then deleted.
+        bot.edit_message_text.assert_not_awaited()
+        bot.delete_message.assert_awaited()
+
+    _run(go())
 
 
 def test_partial_does_not_delete_working_emoji():
