@@ -40,6 +40,17 @@ class TelegramChannel(Channel):
         - ``allowed_users``: (optional) List of allowed Telegram user IDs. Empty = allow all.
     """
 
+    # [argus patch #10] Take the manager's streaming path so we receive
+    # progress_stage signals to drive the animated stage emoji. The manager's
+    # _channel_supports_streaming reads THIS property (not CHANNEL_CAPABILITIES)
+    # whenever a live channel object exists, so the capability flip alone is not
+    # enough — this override is what actually engages streaming. (Telegram still
+    # gets only stage signals + the final answer, never streamed partial text;
+    # that suppression lives in the manager.)
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
     def __init__(self, bus: MessageBus, config: dict[str, Any]) -> None:
         super().__init__(name="telegram", bus=bus, config=config)
         self._application = None

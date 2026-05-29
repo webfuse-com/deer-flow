@@ -172,3 +172,12 @@ def test_partial_does_not_delete_working_emoji():
 
     bot.delete_message.assert_not_awaited()
     assert ch._working_msg.get("1") == 77
+
+
+def test_telegram_reports_streaming_support():
+    """[argus patch #10] The manager's _channel_supports_streaming reads the
+    live channel's supports_streaming property; it MUST be True or telegram
+    silently falls back to runs.wait and emits no stage signals."""
+    from app.channels.message_bus import MessageBus
+    ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "t"})
+    assert ch.supports_streaming is True
