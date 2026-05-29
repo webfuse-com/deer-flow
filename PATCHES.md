@@ -168,8 +168,13 @@ line count is tests.
      manager (the seam that knows the target channel); other channels
      unchanged. Also auto-presents *orphan* artifacts — files the agent wrote
      to the outputs dir during the run but didn't `present_files` (it pasted
-     the source into chat instead, observed with SVG) — detected by mtime; and
-     strips the redundant >600-char inline code dump once the file is linked.
+     the source into chat instead, observed with SVG) — detected by mtime, but
+     SCOPED to viewable end-products only (`_ORPHAN_PRESENT_EXTS`:
+     .html/.svg/.pdf/.png/.jpg/.gif/.webp). Scratch the agent leaves in
+     outputs/ (a `.py` weather-fetcher, `.json`/`.csv`/`.txt`/`.log`) is never
+     auto-linked — that would spam a "/f/fetch.py" link onto a plain answer.
+     Explicit `present_files` still presents anything. Once a file is linked,
+     the redundant >600-char inline code dump is stripped from the chat text.
      The chunker is tag-aware: it never splits inside a `<pre>`/`<code>`/
      `<blockquote>`, and splits an oversized block into several valid same-kind
      blocks, so a big report dump can't produce unclosed-tag HTML.
