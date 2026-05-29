@@ -157,8 +157,11 @@ line count is tests.
      from the ateam bot (`TOOLS/ateam-bot/formatting.py`).
   2. **Working indicator.** Upstream sends a literal "Working on it..." text
      reply that's never removed. We instead send a standalone single-emoji
-     message (Telegram animates lone emoji), stored per-chat and deleted when
-     `is_final` arrives. Reaction fallback if the send fails.
+     message (Telegram animates lone emoji). It's a TWO-STAGE indicator:
+     `working_emoji` (👀) for `working_emoji_delay` seconds, then edited in
+     place to `working_emoji_2` (🧠). Stored per-chat; whichever emoji is
+     showing is deleted when `is_final` arrives (and an answer before the
+     delay cancels the swap). Reaction fallback if the initial send fails.
   3. **Artifact presentation.** For Telegram, `present_files` HTML reports are
      turned into VIEWABLE links to the per-stack `/f/` fileserver (nginx) by a
      channel-aware presenter, instead of force-downloaded. Hooked in the
