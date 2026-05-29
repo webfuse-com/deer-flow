@@ -165,7 +165,14 @@ line count is tests.
   3. **Artifact presentation.** For Telegram, `present_files` HTML reports are
      turned into VIEWABLE links to the per-stack `/f/` fileserver (nginx) by a
      channel-aware presenter, instead of force-downloaded. Hooked in the
-     manager (the seam that knows the target channel); other channels unchanged.
+     manager (the seam that knows the target channel); other channels
+     unchanged. Also auto-presents *orphan* artifacts — files the agent wrote
+     to the outputs dir during the run but didn't `present_files` (it pasted
+     the source into chat instead, observed with SVG) — detected by mtime; and
+     strips the redundant >600-char inline code dump once the file is linked.
+     The chunker is tag-aware: it never splits inside a `<pre>`/`<code>`/
+     `<blockquote>`, and splits an oversized block into several valid same-kind
+     blocks, so a big report dump can't produce unclosed-tag HTML.
 - **Conflict risk:** **Medium.** `telegram.py` and `manager.py` are in the
   2.0-rc channels subsystem upstream still iterates on. The manager hook is
   deliberately tiny (one helper + channel check) to keep the merge surface
