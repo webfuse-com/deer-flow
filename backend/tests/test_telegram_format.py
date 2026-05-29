@@ -72,6 +72,36 @@ def test_chunk_respects_limit():
     assert sum(c.count("line ") for c in chunks) == 500
 
 
+def _tag_balanced(s: str) -> bool:
+    # Every block open tag has a matching close within the same chunk.
+    for open_t, close_t in (("<pre><code>", "</code></pre>"), ("<pre>", "</pre>"),
+                            ("<blockquote", "</blockquote>")):
+        if s.count(open_t) != s.count(close_t):
+            return False
+    return True
+
+
+def test_oversized_pre_block_is_split_into_valid_pre_blocks():
+    # The exact failure mode: an agent pastes a huge SVG inside <pre><code>.
+    svg = "&lt;svg&gt;\n" + "\n".join(f"  &lt;line x{i} /&gt;" for i in range(2000)) + "\n&lt;/svg&gt;"
+    html = "<b>Here it is</b>\n<pre><code>" + svg + "</code></pre>\nDone."
+    chunks = chunk_html(html, limit=4096)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert len(c) <= 4096
+        # Every chunk is self-contained valid HTML — no dangling <pre>/<code>.
+        assert _tag_balanced(c), f"unbalanced chunk: {c[:80]!r}"
+
+
+def test_blockquote_not_split():
+    inner = " ".join(f"word{i}" for i in range(2000))
+    html = f"<blockquote expandable>{inner}</blockquote>"
+    chunks = chunk_html(html, limit=4096)
+    for c in chunks:
+        assert len(c) <= 4096
+        assert _tag_balanced(c)
+
+
 def test_chunk_does_not_split_inside_tag():
     # Build text where the naive cut would land inside an <a href> tag.
     prefix = "x" * 4090

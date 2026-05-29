@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.channels._artifact_presenter import present_artifacts
+from app.channels._artifact_presenter import present_artifacts, strip_inlined_artifacts
 from app.channels.message_bus import ResolvedAttachment
 
 
@@ -83,6 +83,29 @@ def test_host_derived_from_project(monkeypatch):
 def test_empty_artifacts():
     text, keep = present_artifacts("telegram", "t7", [], [])
     assert text == "" and keep == []
+
+
+def test_strip_inlined_svg_dump():
+    att = _att("/mnt/user-data/outputs/atlas.svg", "image/svg+xml")
+    big = "```\n" + "<line/>" * 200 + "\n```"  # > 600 chars
+    text = "Here is your SVG.\n\n" + big + "\n\nEnjoy."
+    out = strip_inlined_artifacts(text, [att])
+    assert "<line/>" not in out
+    assert "Here is your SVG." in out and "Enjoy." in out
+
+
+def test_strip_keeps_small_code_snippet():
+    att = _att("/mnt/user-data/outputs/r.html", "text/html")
+    small = "```python\nprint('hi')\n```"
+    text = "Example:\n" + small
+    out = strip_inlined_artifacts(text, [att])
+    assert "print('hi')" in out  # small snippet preserved
+
+
+def test_strip_noop_without_textual_artifact():
+    att = _att("/mnt/user-data/outputs/data.bin", "application/octet-stream")
+    big = "```\n" + "x" * 800 + "\n```"
+    assert strip_inlined_artifacts("a\n" + big, [att]) == "a\n" + big
 
 
 def test_multiple_files_header():

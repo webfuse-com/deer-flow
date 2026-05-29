@@ -23,10 +23,45 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
+import re
 
 from app.channels.message_bus import ResolvedAttachment
 
 logger = logging.getLogger(__name__)
+
+# A code block longer than this is treated as a file dump (an agent pasting an
+# SVG/HTML it also wrote to outputs). When we're presenting a viewable link to
+# such a file, the inline dump is redundant noise in chat, so we strip it.
+_INLINE_DUMP_MIN = 600
+
+# Fenced markdown code blocks and pre-converted HTML <pre> blocks.
+_FENCED_RE = re.compile(r"```[\w-]*\n.*?```", re.DOTALL)
+_PRE_RE = re.compile(r"<pre>(?:<code>)?.*?(?:</code>)?</pre>", re.DOTALL)
+
+
+def strip_inlined_artifacts(text: str, attachments: list[ResolvedAttachment]) -> str:
+    """Remove oversized inline code/<pre> dumps from the chat text when we're
+    presenting the corresponding file as a link. Agents sometimes write a file
+    AND paste its full source; once we hand back a /f/ link the wall of source
+    is just noise. Conservative: only strips blocks above _INLINE_DUMP_MIN
+    chars, and only when at least one web/text artifact is being linked."""
+    if not text or not attachments:
+        return text
+    has_textual = any(
+        a.mime_type in _WEB_VIEWABLE or a.mime_type.startswith("text/") or a.mime_type == "application/json"
+        for a in attachments
+    )
+    if not has_textual:
+        return text
+
+    def _drop(m: re.Match) -> str:
+        return "" if len(m.group(0)) >= _INLINE_DUMP_MIN else m.group(0)
+
+    text = _FENCED_RE.sub(_drop, text)
+    text = _PRE_RE.sub(_drop, text)
+    # Collapse the blank lines a removed block leaves behind.
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
 
 _OUTPUTS_VIRTUAL_PREFIX = "/mnt/user-data/outputs/"
 

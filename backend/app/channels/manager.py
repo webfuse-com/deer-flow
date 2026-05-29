@@ -388,11 +388,41 @@ def _resolve_attachments(thread_id: str, artifacts: list[str]) -> list[ResolvedA
     return attachments
 
 
+def _orphan_artifacts(thread_id: str, since: float, already: list[str]) -> list[str]:
+    """[argus patch #10] Files the agent wrote to the outputs dir during this
+    run but did NOT present via present_files. Models sometimes write a file
+    and then paste its contents into chat instead of calling present_files
+    (observed with SVG/HTML). We detect those by mtime so they still get a
+    /f/ link rather than a wall of source. Excludes already-presented paths
+    and the render-and-verify skill's *.screenshot.png sidecars (noise)."""
+    try:
+        from deerflow.config.paths import get_paths
+
+        outputs_dir = get_paths().sandbox_outputs_dir(thread_id, user_id=get_effective_user_id()).resolve()
+    except Exception:
+        return []
+    if not outputs_dir.is_dir():
+        return []
+    already_names = {p.rsplit("/", 1)[-1] for p in already}
+    found: list[str] = []
+    for f in sorted(outputs_dir.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0):
+        try:
+            if not f.is_file() or f.stat().st_mtime < since - 1:
+                continue
+        except OSError:
+            continue
+        if f.name in already_names or f.name.endswith(".screenshot.png"):
+            continue
+        found.append(_OUTPUTS_VIRTUAL_PREFIX + f.name)
+    return found
+
+
 def _prepare_artifact_delivery(
     thread_id: str,
     response_text: str,
     artifacts: list[str],
     channel_name: str | None = None,
+    run_start: float | None = None,
 ) -> tuple[str, list[ResolvedAttachment]]:
     """Resolve attachments and append filename fallbacks to the text response.
 
@@ -400,22 +430,36 @@ def _prepare_artifact_delivery(
     channel-aware presenter (_artifact_presenter.present_artifacts): it turns
     web-viewable artifacts (HTML/SVG) into VIEWABLE links to the per-stack
     /f/ fileserver instead of attaching the raw file, and links+attaches other
-    binaries. For every other channel the original behavior is unchanged.
+    binaries. It also folds in orphan artifacts (files written this run but not
+    present_files'd) and strips the matching giant code block from the chat
+    text. For every other channel the original behavior is unchanged.
     """
     attachments: list[ResolvedAttachment] = []
-    if not artifacts:
-        return response_text, attachments
-
-    attachments = _resolve_attachments(thread_id, artifacts)
 
     # [argus] Channel-aware presentation for Telegram.
     if channel_name == "telegram":
-        from app.channels._artifact_presenter import present_artifacts
+        from app.channels._artifact_presenter import present_artifacts, strip_inlined_artifacts
 
+        # Fold in files the agent wrote this run but forgot to present.
+        if run_start is not None:
+            for orphan in _orphan_artifacts(thread_id, run_start, artifacts):
+                if orphan not in artifacts:
+                    artifacts.append(orphan)
+        if not artifacts:
+            return response_text, attachments
+        attachments = _resolve_attachments(thread_id, artifacts)
+        # Drop oversized fenced/<pre> blocks whose content is one of the files
+        # we're about to link — no point pasting an SVG AND linking it.
+        response_text = strip_inlined_artifacts(response_text, attachments)
         block, attachments = present_artifacts(channel_name, thread_id, artifacts, attachments)
         if block:
             response_text = (response_text + "\n\n" + block) if response_text else block
         return response_text, attachments
+
+    if not artifacts:
+        return response_text, attachments
+
+    attachments = _resolve_attachments(thread_id, artifacts)
 
     resolved_virtuals = {attachment.virtual_path for attachment in attachments}
     unresolved = [path for path in artifacts if path not in resolved_virtuals]
@@ -790,6 +834,7 @@ class ChannelManager:
             return
 
         logger.info("[Manager] invoking runs.wait(thread_id=%s, text=%r)", thread_id, msg.text[:100])
+        run_start = time.time()
         try:
             result = await client.runs.wait(
                 thread_id,
@@ -817,7 +862,9 @@ class ChannelManager:
             len(artifacts),
         )
 
-        response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name)
+        response_text, attachments = _prepare_artifact_delivery(
+            thread_id, response_text, artifacts, msg.channel_name, run_start=run_start
+        )
 
         if not response_text:
             if attachments:
@@ -849,6 +896,7 @@ class ChannelManager:
     ) -> None:
         logger.info("[Manager] invoking runs.stream(thread_id=%s, text=%r)", thread_id, msg.text[:100])
 
+        run_start = time.time()
         last_values: dict[str, Any] | list | None = None
         streamed_buffers: dict[str, str] = {}
         current_message_id: str | None = None
@@ -910,7 +958,9 @@ class ChannelManager:
             result = last_values if last_values is not None else {"messages": [{"type": "ai", "content": latest_text}]}
             response_text = _extract_response_text(result)
             artifacts = _extract_artifacts(result)
-            response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name)
+            response_text, attachments = _prepare_artifact_delivery(
+                thread_id, response_text, artifacts, msg.channel_name, run_start=run_start
+            )
 
             if not response_text:
                 if attachments:
