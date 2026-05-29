@@ -1242,7 +1242,8 @@ class TestChannelManager:
         async def go():
             bus = MessageBus()
             store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
-            manager = ChannelManager(bus=bus, store=store)
+            # coalesce_window=0: this test needs each message as its own turn.
+            manager = ChannelManager(bus=bus, store=store, coalesce_window=0)
 
             mock_client = _make_mock_langgraph_client(thread_id="topic-thread-1")
             manager._client = mock_client
@@ -1286,7 +1287,8 @@ class TestChannelManager:
         async def go():
             bus = MessageBus()
             store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
-            manager = ChannelManager(bus=bus, store=store)
+            # coalesce_window=0: this test needs each message as its own turn.
+            manager = ChannelManager(bus=bus, store=store, coalesce_window=0)
 
             mock_client = _make_mock_langgraph_client(thread_id="private-thread-1")
             manager._client = mock_client
@@ -1803,7 +1805,8 @@ class TestHandleChatWithArtifacts:
         async def go():
             bus = MessageBus()
             store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
-            manager = ChannelManager(bus=bus, store=store)
+            # coalesce_window=0: this test needs each message as its own turn.
+            manager = ChannelManager(bus=bus, store=store, coalesce_window=0)
 
             # Turn 1: produces report.md
             turn1_result = {

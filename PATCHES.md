@@ -189,6 +189,16 @@ line count is tests.
      The chunker is tag-aware: it never splits inside a `<pre>`/`<code>`/
      `<blockquote>`, and splits an oversized block into several valid same-kind
      blocks, so a big report dump can't produce unclosed-tag HTML.
+  4. **Split-paste coalescing.** Telegram chunks a long paste into several
+     messages sent within ~1s; the manager's dispatch loop spawns a task per
+     message, so same-thread messages raced and the 2nd+ hit a 409 "thread
+     busy" (runs use `multitask_strategy="reject"`; the runtime doesn't
+     implement `enqueue`) and were LOST. A `MessageCoalescer`
+     (`app/channels/_coalesce.py`) debounces CHAT messages per
+     (channel, chat, topic) for `coalesce_window` (default 2.5s) and dispatches
+     the burst as ONE combined turn. Commands bypass it; `coalesce_window<=0`
+     disables it. Fixes the lost-message bug and incidentally serializes
+     same-conversation turns.
 - **Conflict risk:** **Medium.** `telegram.py` and `manager.py` are in the
   2.0-rc channels subsystem upstream still iterates on. The manager hook is
   deliberately tiny (one helper + channel check) to keep the merge surface
