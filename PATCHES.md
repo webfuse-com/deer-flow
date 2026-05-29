@@ -20,8 +20,8 @@ git diff --stat origin/main..argus
 ```
 
 Current pin: see `Argus/VERSIONS.md` (the `DeerFlow @ <sha>` row). As of
-2026-05-29 the fork sits at 10 functional patches; ~60% of the diff line
-count is tests.
+2026-05-29 the fork sits at 10 functional patches (#1–#10); ~60% of the diff
+line count is tests.
 
 ---
 
@@ -140,6 +140,40 @@ count is tests.
   the `--allow-blocking` flag come off.
 - **PR-candidate:** **yes — strongest candidate.** This is a genuine upstream
   bug in standalone-langgraph-dev mode, not Argus-specific tuning.
+
+### 10. `telegram`: HTML formatting + animated emoji indicator + channel-aware artifact presenter
+- **Files:** `backend/app/channels/_telegram_format.py` (new),
+  `backend/app/channels/_artifact_presenter.py` (new),
+  `backend/app/channels/telegram.py` (patch `send()`/`_send_one()`,
+  `_send_running_reply()`, `_clear_working()`, `_working_msg` state),
+  `backend/app/channels/manager.py` (4-line `_prepare_artifact_delivery` hook +
+  2 call sites) (+ tests `test_telegram_format.py`, `test_telegram_send.py`,
+  `test_artifact_presenter.py`)
+- **Why:** Three real-use problems with the bundled Telegram channel:
+  1. **Formatting.** Upstream sends raw markdown with no `parse_mode`, so
+     Telegram renders `**bold**`/backticks literally. We convert agent markdown
+     → Telegram-native HTML (`parse_mode=HTML`) and chunk on the 4096 ceiling,
+     with a plain-text fallback if Telegram rejects the HTML. Formatter ported
+     from the ateam bot (`TOOLS/ateam-bot/formatting.py`).
+  2. **Working indicator.** Upstream sends a literal "Working on it..." text
+     reply that's never removed. We instead send a standalone single-emoji
+     message (Telegram animates lone emoji), stored per-chat and deleted when
+     `is_final` arrives. Reaction fallback if the send fails.
+  3. **Artifact presentation.** For Telegram, `present_files` HTML reports are
+     turned into VIEWABLE links to the per-stack `/f/` fileserver (nginx) by a
+     channel-aware presenter, instead of force-downloaded. Hooked in the
+     manager (the seam that knows the target channel); other channels unchanged.
+- **Conflict risk:** **Medium.** `telegram.py` and `manager.py` are in the
+  2.0-rc channels subsystem upstream still iterates on. The manager hook is
+  deliberately tiny (one helper + channel check) to keep the merge surface
+  small; the two new modules are conflict-free (new files). Watch `send()` and
+  `_prepare_artifact_delivery` on each sync.
+- **Delete-when:** upstream gives the Telegram channel HTML/markdown rendering,
+  a removable working-indicator hook, and a per-channel artifact-presentation
+  hook. Until then this is Argus product behavior, not a bug workaround.
+- **PR-candidate:** partial — the HTML formatter + an indicator hook could be
+  upstreamed; the `/f/`-link presenter is Argus-specific (depends on our
+  per-stack fileserver) and stays local.
 
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch

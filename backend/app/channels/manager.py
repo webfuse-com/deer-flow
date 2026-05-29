@@ -392,13 +392,31 @@ def _prepare_artifact_delivery(
     thread_id: str,
     response_text: str,
     artifacts: list[str],
+    channel_name: str | None = None,
 ) -> tuple[str, list[ResolvedAttachment]]:
-    """Resolve attachments and append filename fallbacks to the text response."""
+    """Resolve attachments and append filename fallbacks to the text response.
+
+    [argus patch #10] When the target channel is Telegram, hand off to the
+    channel-aware presenter (_artifact_presenter.present_artifacts): it turns
+    web-viewable artifacts (HTML/SVG) into VIEWABLE links to the per-stack
+    /f/ fileserver instead of attaching the raw file, and links+attaches other
+    binaries. For every other channel the original behavior is unchanged.
+    """
     attachments: list[ResolvedAttachment] = []
     if not artifacts:
         return response_text, attachments
 
     attachments = _resolve_attachments(thread_id, artifacts)
+
+    # [argus] Channel-aware presentation for Telegram.
+    if channel_name == "telegram":
+        from app.channels._artifact_presenter import present_artifacts
+
+        block, attachments = present_artifacts(channel_name, thread_id, artifacts, attachments)
+        if block:
+            response_text = (response_text + "\n\n" + block) if response_text else block
+        return response_text, attachments
+
     resolved_virtuals = {attachment.virtual_path for attachment in attachments}
     unresolved = [path for path in artifacts if path not in resolved_virtuals]
 
@@ -799,7 +817,7 @@ class ChannelManager:
             len(artifacts),
         )
 
-        response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts)
+        response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name)
 
         if not response_text:
             if attachments:
@@ -892,7 +910,7 @@ class ChannelManager:
             result = last_values if last_values is not None else {"messages": [{"type": "ai", "content": latest_text}]}
             response_text = _extract_response_text(result)
             artifacts = _extract_artifacts(result)
-            response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts)
+            response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name)
 
             if not response_text:
                 if attachments:

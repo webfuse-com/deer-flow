@@ -7,10 +7,16 @@ import logging
 import threading
 from typing import Any
 
+from app.channels._telegram_format import chunk_html, to_telegram_html
 from app.channels.base import Channel
 from app.channels.message_bus import InboundMessage, InboundMessageType, MessageBus, OutboundMessage, ResolvedAttachment
 
 logger = logging.getLogger(__name__)
+
+# [argus patch #10] Default standalone emoji used as the "working" indicator.
+# Telegram renders a lone emoji message large + animated. Overridable via
+# channels.telegram.working_emoji in config.yaml.
+_DEFAULT_WORKING_EMOJI = "👀"
 
 
 class TelegramChannel(Channel):
@@ -35,6 +41,10 @@ class TelegramChannel(Channel):
                 pass
         # chat_id -> last sent message_id for threaded replies
         self._last_bot_message: dict[str, int] = {}
+        # [argus patch #10] chat_id -> message_id of the standalone "working"
+        # emoji we sent, so we can delete it when the final answer lands.
+        self._working_msg: dict[str, int] = {}
+        self._working_emoji: str = str(config.get("working_emoji") or _DEFAULT_WORKING_EMOJI)
 
     async def start(self) -> None:
         if self._running:
@@ -97,22 +107,46 @@ class TelegramChannel(Channel):
             logger.error("Invalid Telegram chat_id: %s", msg.chat_id)
             return
 
-        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": msg.text}
+        # [argus patch #10] Convert the agent's markdown to Telegram-native HTML
+        # and split on the 4096-char ceiling without breaking tags. Empty text
+        # (e.g. an attachment-only message) sends nothing here; send_file
+        # handles the upload separately.
+        html = to_telegram_html(msg.text) if msg.text else ""
+        chunks = chunk_html(html) if html else []
 
-        # Reply to the last bot message in this chat for threading
-        reply_to = self._last_bot_message.get(msg.chat_id)
+        bot = self._application.bot
+        for chunk in chunks:
+            await self._send_one(bot, chat_id, msg.chat_id, chunk, _max_retries=_max_retries)
+
+        # [argus patch #10] Only the final message in a response clears the
+        # working-indicator emoji. Streaming partials (is_final=False) leave it.
+        if msg.is_final:
+            await self._clear_working(chat_id, msg.chat_id)
+
+    async def _send_one(self, bot, chat_id: int, chat_key: str, text: str, *, _max_retries: int = 3) -> None:
+        """Send a single (already chunked) HTML message with retry + a
+        plain-text fallback if Telegram rejects the HTML (a malformed entity
+        must never drop the message)."""
+        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        reply_to = self._last_bot_message.get(chat_key)
         if reply_to:
             kwargs["reply_to_message_id"] = reply_to
 
-        bot = self._application.bot
         last_exc: Exception | None = None
         for attempt in range(_max_retries):
             try:
                 sent = await bot.send_message(**kwargs)
-                self._last_bot_message[msg.chat_id] = sent.message_id
+                self._last_bot_message[chat_key] = sent.message_id
                 return
             except Exception as exc:
                 last_exc = exc
+                # A BadRequest is almost always malformed HTML — retrying the
+                # same HTML won't help, so drop parse_mode and resend as plain
+                # text on the next attempt (mirrors the ateam fallback).
+                if exc.__class__.__name__ == "BadRequest" and kwargs.get("parse_mode"):
+                    logger.warning("[Telegram] HTML rejected (%s); resending as plain text", exc)
+                    kwargs.pop("parse_mode", None)
+                    continue
                 if attempt < _max_retries - 1:
                     delay = 2**attempt  # 1s, 2s
                     logger.warning(
@@ -126,6 +160,9 @@ class TelegramChannel(Channel):
 
         logger.error("[Telegram] send failed after %d attempts: %s", _max_retries, last_exc)
         if last_exc is None:
+            # Degenerate config (_max_retries=0): the loop never ran, so there's
+            # no exception to propagate. Surface it explicitly rather than
+            # silently succeeding. (Preserves the pre-patch contract.)
             raise RuntimeError("Telegram send failed without an exception from any attempt")
         raise last_exc
 
@@ -174,19 +211,45 @@ class TelegramChannel(Channel):
     # -- helpers -----------------------------------------------------------
 
     async def _send_running_reply(self, chat_id: str, reply_to_message_id: int) -> None:
-        """Send a 'Working on it...' reply to the user's message."""
+        """[argus patch #10] Signal 'working' with a standalone single-emoji
+        message (Telegram renders these large + animated). The message_id is
+        stored so the final answer can delete it. If sending the message fails,
+        fall back to a reaction on the user's message so there's still a signal.
+        """
         if not self._application:
             return
+        bot = self._application.bot
+        emoji = self._working_emoji
         try:
-            bot = self._application.bot
-            await bot.send_message(
-                chat_id=int(chat_id),
-                text="Working on it...",
-                reply_to_message_id=reply_to_message_id,
-            )
-            logger.info("[Telegram] 'Working on it...' reply sent in chat=%s", chat_id)
+            sent = await bot.send_message(chat_id=int(chat_id), text=emoji)
+            self._working_msg[chat_id] = sent.message_id
+            logger.info("[Telegram] working emoji %s sent in chat=%s", emoji, chat_id)
+            return
         except Exception:
-            logger.exception("[Telegram] failed to send running reply in chat=%s", chat_id)
+            logger.exception("[Telegram] failed to send working emoji in chat=%s; trying reaction", chat_id)
+        # Degraded mode: react on the user's message instead.
+        try:
+            from telegram import ReactionTypeEmoji
+
+            await bot.set_message_reaction(
+                chat_id=int(chat_id),
+                message_id=reply_to_message_id,
+                reaction=[ReactionTypeEmoji(emoji)],
+            )
+        except Exception:
+            logger.warning("[Telegram] reaction fallback also failed in chat=%s", chat_id)
+
+    async def _clear_working(self, chat_id: int, chat_key: str) -> None:
+        """[argus patch #10] Delete the standalone working-emoji message once
+        the final answer has been sent. Best-effort: the message may already be
+        gone (user deleted it, races), so a failure is non-fatal."""
+        msg_id = self._working_msg.pop(chat_key, None)
+        if msg_id is None:
+            return
+        try:
+            await self._application.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception as exc:
+            logger.debug("[Telegram] could not delete working emoji in chat=%s: %s", chat_key, exc)
 
     # -- internal ----------------------------------------------------------
     @staticmethod
