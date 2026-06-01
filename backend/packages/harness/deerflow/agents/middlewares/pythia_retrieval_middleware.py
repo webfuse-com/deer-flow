@@ -41,15 +41,15 @@ logger = logging.getLogger(__name__)
 # Marker so we never re-inject within the same turn (mirrors ViewImage's guard).
 _INJECT_MARKER = "[pythia-kb-context]"
 
-# Company-knowledge intent: keyword/heuristic v1, deliberately biased to FIRE
-# (a false-positive retrieval costs ~0.2s; a missed one is the bug we're fixing).
-# A later upgrade can swap this for the embedding-centroid classifier in
-# kb-api/src/pythia/intent.py. These cover meetings, policies, customers,
-# contracts, decisions, ownership — the company-record surface.
+# Company-knowledge intent — KEYWORD fallback (used only if the embedding
+# classifier can't reach the embedder). Biased to fire. Kept narrow on purpose;
+# the semantic classifier below is the primary path and catches phrasings the
+# keywords miss (e.g. "Code of Conduct", "holiday allowance").
 _COMPANY_PATTERNS = re.compile(
     r"\b("
     r"campfire|pitwall|all[- ]?hands|minutes|meeting|stand[- ]?up|"
     r"polic(y|ies)|procedure|retention|isms|p3p|security policy|onboarding|offboarding|"
+    r"code of conduct|conduct|handbook|hr|benefits|pto|holiday|expense|"
     r"contract|renewal|mrr|vendor|customer|account|subscription|chargebee|"
     r"dri|who owns|who is responsible|what did we (decide|agree)|decision|roadmap|"
     r"confluence|wiki|spec|charter"
@@ -58,8 +58,99 @@ _COMPANY_PATTERNS = re.compile(
 )
 
 
-def _looks_like_company_question(text: str) -> bool:
+def _keyword_is_company(text: str) -> bool:
     return bool(text) and bool(_COMPANY_PATTERNS.search(text))
+
+
+# --- semantic (embedding-centroid) classifier -----------------------------
+# Primary classifier: embed the question, compare cosine to a COMPANY-knowledge
+# centroid vs a PERSONAL/OTHER centroid (each averaged from example phrasings).
+# Fire if company wins by a margin. Matches by MEANING, so "Code of Conduct",
+# "what's our holiday allowance", etc. land near the company centroid without a
+# literal keyword. Same approach as kb-api/src/pythia/intent.py; reimplemented
+# here (dependency-free) because that module isn't importable in this container.
+
+_COMPANY_EXAMPLES = [
+    "What was discussed at the last Campfire?",
+    "What did we decide at the Pitwall?",
+    "What is our data retention policy?",
+    "What does our Code of Conduct say?",
+    "What's our expense / travel policy?",
+    "What is our holiday / PTO allowance?",
+    "What are the company onboarding steps?",
+    "What's the status of our contract with this customer?",
+    "What's the MRR for this account?",
+    "Who is the DRI for the website?",
+    "Who owns this area / responsibility?",
+    "What did we agree about pricing?",
+    "What's in the security / ISMS policy?",
+    "Summarize the latest company all-hands.",
+    "What's our incident response procedure?",
+]
+_OTHER_EXAMPLES = [
+    "Summarize my inbox.",
+    "Draft a reply to this email.",
+    "What's on my calendar today?",
+    "Write a python function to sort a list.",
+    "Help me debug this stack trace.",
+    "What's the weather in Amsterdam?",
+    "Translate this paragraph to Dutch.",
+    "Refactor this code for readability.",
+    "Set a reminder for tomorrow.",
+    "What is the capital of France?",
+]
+
+
+class _SemanticCompanyClassifier:
+    """Lazily-built centroid classifier over the LiteLLM embedding endpoint."""
+
+    def __init__(self, base_url: str, model: str, api_key: str, margin: float = 0.02):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.margin = margin
+        self._company_centroid: list[float] | None = None
+        self._other_centroid: list[float] | None = None
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        r = httpx.post(
+            f"{self.base_url}/embeddings",
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            json={"model": self.model, "input": texts, "encoding_format": "float"},
+            timeout=20.0,
+        )
+        r.raise_for_status()
+        data = r.json()["data"]
+        by_idx = {d["index"]: d["embedding"] for d in data}
+        return [by_idx[i] for i in range(len(texts))]
+
+    @staticmethod
+    def _centroid(vecs: list[list[float]]) -> list[float]:
+        n, dim = len(vecs), len(vecs[0])
+        return [sum(v[i] for v in vecs) / n for i in range(dim)]
+
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = sum(x * x for x in a) ** 0.5
+        nb = sum(y * y for y in b) ** 0.5
+        return dot / (na * nb) if na and nb else 0.0
+
+    def _ensure_centroids(self) -> None:
+        if self._company_centroid is not None:
+            return
+        all_vecs = self._embed(_COMPANY_EXAMPLES + _OTHER_EXAMPLES)
+        nc = len(_COMPANY_EXAMPLES)
+        self._company_centroid = self._centroid(all_vecs[:nc])
+        self._other_centroid = self._centroid(all_vecs[nc:])
+
+    def is_company(self, text: str) -> tuple[bool, float]:
+        """Returns (is_company, company_minus_other_cosine). Raises on embed error."""
+        self._ensure_centroids()
+        (qv,) = self._embed([text])
+        cs = self._cosine(qv, self._company_centroid)
+        os_ = self._cosine(qv, self._other_centroid)
+        return (cs - os_) >= self.margin, cs - os_
 
 
 class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
@@ -75,6 +166,24 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
         self.api_key = os.environ.get("KB_API_KEY", "")
         self.timeout = float(os.environ.get("PYTHIA_RETRIEVAL_TIMEOUT", "5"))
         self.top_k = int(os.environ.get("PYTHIA_RETRIEVAL_TOP_K", "5"))
+        # Semantic classifier over the LiteLLM embedding endpoint (primary).
+        litellm_url = os.environ.get("LITELLM_BASE_URL", "http://argus-litellm:4000/v1")
+        embed_model = os.environ.get("EMBEDDING_MODEL", "embedding")
+        litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
+        self._classifier = _SemanticCompanyClassifier(litellm_url, embed_model, litellm_key)
+
+    def _is_company_question(self, text: str) -> bool:
+        """Semantic classify; fall back to keywords if the embedder is unreachable."""
+        try:
+            ok, score = self._classifier.is_company(text)
+            logger.info("[pythia-retrieval] classify(semantic): company=%s score=%.3f q=%r",
+                        ok, score, text[:120])
+            return ok
+        except Exception as exc:  # noqa: BLE001 — degrade to keywords, never block
+            ok = _keyword_is_company(text)
+            logger.info("[pythia-retrieval] classify(keyword-fallback, embed err=%r): company=%s q=%r",
+                        exc, ok, text[:120])
+            return ok
 
     # --- turn/state helpers ------------------------------------------------
 
@@ -165,11 +274,8 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
         if not query:
             logger.info("[pythia-retrieval] skip: no user text found")
             return None
-        if not _looks_like_company_question(query):
-            # INFO (not debug) so the classifier decision is observable in the
-            # gateway log — distinguishes "skipped this question" from "never ran".
-            logger.info("[pythia-retrieval] skip: classifier=non-company | q=%r", query[:120])
-            return None
+        if not self._is_company_question(query):
+            return None  # _is_company_question already logged the decision
 
         hits, elapsed, error = self._retrieve(query)
         logger.info(
