@@ -11,6 +11,7 @@ import logging
 import os
 import shlex
 import subprocess
+import time
 from datetime import datetime
 
 from deerflow.utils.network import get_free_port, release_port
@@ -558,11 +559,51 @@ class LocalContainerBackend(SandboxBackend):
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             container_id = result.stdout.strip()
-            logger.info(f"Started container {container_name} (ID: {container_id}) using {self._runtime}")
-            return container_id
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to start container using {self._runtime}: {e.stderr}")
             raise RuntimeError(f"Failed to start sandbox container: {e.stderr}")
+
+        # `run -d` returns once the container is CREATED, not RUNNING. Under
+        # rootless podman the port publish (rootlessport) binds asynchronously,
+        # so a "port already in use" collision does NOT fail the run above — it
+        # leaves the container stuck in `Created`. Verify it actually reached
+        # Running; if not, surface the underlying error so the caller's
+        # retry-with-next-port loop can recover (otherwise the turn hangs
+        # forever waiting on a sandbox that never starts).
+        for _ in range(40):  # ~4s; sandbox normally flips to Running in <1s
+            if self._is_container_running(container_name):
+                logger.info(f"Started container {container_name} (ID: {container_id}) using {self._runtime}")
+                return container_id
+            state, err = self._inspect_state_error(container_name)
+            if state in ("exited", "dead") or (state == "created" and err):
+                # Terminal failure (not just "still creating"). Clean up the
+                # dead container and raise so the port-retry loop kicks in.
+                self._force_remove(container_name)
+                raise RuntimeError(f"sandbox container did not start (state={state}): {err or 'unknown'}")
+            time.sleep(0.1)
+        self._force_remove(container_name)
+        raise RuntimeError(f"sandbox container {container_name} stuck in non-running state")
+
+    def _inspect_state_error(self, container_name: str) -> tuple[str, str]:
+        """Return (state, error) for a container; ('', '') if inspect fails."""
+        try:
+            r = subprocess.run(
+                [self._runtime, "inspect", "-f", "{{.State.Status}}|{{.State.Error}}", container_name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                status, _, err = r.stdout.strip().partition("|")
+                return status.lower(), err.strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        return "", ""
+
+    def _force_remove(self, container_name: str) -> None:
+        try:
+            subprocess.run([self._runtime, "rm", "-f", container_name],
+                           capture_output=True, text=True, timeout=10)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
 
     def _stop_container(self, container_id: str) -> None:
         """Stop a container (--rm ensures automatic removal)."""
