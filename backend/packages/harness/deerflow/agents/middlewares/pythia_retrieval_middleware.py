@@ -156,11 +156,19 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
         if not self.enabled:
             return None
         messages = state.get("messages", []) or []
-        if not messages or self._already_handled_this_turn(messages):
+        if not messages:
+            return None
+        if self._already_handled_this_turn(messages):
+            logger.info("[pythia-retrieval] skip: already handled this turn")
             return None
         query = self._latest_user_text(messages)
-        if not query or not _looks_like_company_question(query):
-            logger.debug("[pythia-retrieval] skip: not a company question")
+        if not query:
+            logger.info("[pythia-retrieval] skip: no user text found")
+            return None
+        if not _looks_like_company_question(query):
+            # INFO (not debug) so the classifier decision is observable in the
+            # gateway log — distinguishes "skipped this question" from "never ran".
+            logger.info("[pythia-retrieval] skip: classifier=non-company | q=%r", query[:120])
             return None
 
         hits, elapsed, error = self._retrieve(query)
