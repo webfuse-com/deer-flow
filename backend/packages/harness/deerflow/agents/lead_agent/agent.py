@@ -19,6 +19,7 @@ middleware, and the async path inside ``TitleMiddleware``. Any new in-graph
 """
 
 import logging
+import os
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
@@ -329,6 +330,18 @@ def _build_middlewares(
 
     # Add MemoryMiddleware (after TitleMiddleware)
     middlewares.append(MemoryMiddleware(agent_name=agent_name, memory_config=resolved_app_config.memory))
+
+    # Add PythiaRetrievalMiddleware: for company-knowledge questions, retrieve
+    # from the company KB (Pythia) and inject the cited results BEFORE the model
+    # call, so retrieval is deterministic rather than left to the model choosing
+    # to call pythia_query (which non-thinking Qwen does not do reliably). Gated
+    # by PYTHIA_RETRIEVAL_ENABLED (set per-stack, e.g. on Atlas) — the middleware
+    # no-ops if unset, so this append is cheap on other projects. Placed before
+    # the model call; runs early so injected context is in state.
+    if os.environ.get("PYTHIA_RETRIEVAL_ENABLED", "").lower() in ("1", "true", "yes"):
+        from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
+
+        middlewares.append(PythiaRetrievalMiddleware())
 
     # Add ViewImageMiddleware only if the current model supports vision.
     # Use the resolved runtime model_name from make_lead_agent to avoid stale config values.
