@@ -31,7 +31,7 @@ from typing import override
 
 import httpx
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.thread_state import ThreadState
@@ -168,7 +168,11 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             "[pythia-retrieval] fired: hits=%d elapsed=%.0fms%s",
             len(hits), elapsed * 1000.0, f" error={error}" if error else "",
         )
-        return {"messages": [SystemMessage(content=self._format_context(query, hits, error))]}
+        # Inject as a HumanMessage, NOT a SystemMessage: this is appended AFTER
+        # the user's message, and Qwen/vLLM rejects a system message anywhere but
+        # the start ("System message must be at the beginning"). ViewImageMiddleware
+        # injects a HumanMessage for the same reason.
+        return {"messages": [HumanMessage(content=self._format_context(query, hits, error))]}
 
     @override
     def before_model(self, state: ThreadState, runtime: Runtime) -> dict | None:
