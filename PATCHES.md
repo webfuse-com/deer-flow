@@ -211,6 +211,28 @@ line count is tests.
   upstreamed; the `/f/`-link presenter is Argus-specific (depends on our
   per-stack fileserver) and stays local.
 
+### 11. `pythia_retrieval_middleware`: deterministic company-KB retrieval before the model call
+
+- **What:** A `before_model` middleware (gated by `PYTHIA_ROUTER_INJECT`; legacy
+  alias `PYTHIA_RETRIEVAL_ENABLED`) that, on the first model call of a turn,
+  asks kb-api's router what company-knowledge context to fetch and injects the
+  cited results as a `HumanMessage`, so a non-thinking Qwen lead agent answers
+  from authoritative context in ONE shot instead of (unreliably) emitting a
+  `pythia_query` MCP tool call or confabulating "no access".
+- **Thin client (2026-06-02 rewrite):** routing + fetching now live server-side
+  in kb-api `POST /{project}/answer` (router.py: entity vs chunk vs recency vs
+  current_record vs none; 97% routing accuracy on the live golden set, zero new
+  GPU). The middleware no longer classifies or calls pythia_query itself — it
+  makes one `/answer` call and injects whatever `context_blocks` return; empty
+  result (Route.NONE / off-topic / kb-api error) injects nothing and the agent
+  falls back to its MCP tools. All routing logic + tests are in kb-api, shared
+  with the Slack @pythia bot. (Superseded the original patch #11, which embedded
+  its own company-vs-other embedding classifier + a pythia_query call here.)
+- **Conflict risk:** Low. One new file, `before_model` is a stable middleware
+  API; injects a `HumanMessage` (system-msg-not-at-start 400 fix).
+- **Delete-when:** if DeerFlow gains a first-class pre-model retrieval hook that
+  can call an external router. Until then this is Argus product behavior.
+
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch
   tests. New file, zero conflict risk.
