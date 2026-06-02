@@ -331,14 +331,17 @@ def _build_middlewares(
     # Add MemoryMiddleware (after TitleMiddleware)
     middlewares.append(MemoryMiddleware(agent_name=agent_name, memory_config=resolved_app_config.memory))
 
-    # Add PythiaRetrievalMiddleware: for company-knowledge questions, retrieve
-    # from the company KB (Pythia) and inject the cited results BEFORE the model
+    # Add PythiaRetrievalMiddleware: for company-knowledge questions, ask the
+    # kb-api router what to fetch and inject the cited results BEFORE the model
     # call, so retrieval is deterministic rather than left to the model choosing
     # to call pythia_query (which non-thinking Qwen does not do reliably). Gated
-    # by PYTHIA_RETRIEVAL_ENABLED (set per-stack, e.g. on Atlas) — the middleware
-    # no-ops if unset, so this append is cheap on other projects. Placed before
-    # the model call; runs early so injected context is in state.
-    if os.environ.get("PYTHIA_RETRIEVAL_ENABLED", "").lower() in ("1", "true", "yes"):
+    # by PYTHIA_ROUTER_INJECT (legacy alias PYTHIA_RETRIEVAL_ENABLED) — set
+    # per-stack, e.g. on Atlas. The append is cheap on other projects. This
+    # gate MUST accept the same flags the middleware reads, or the middleware
+    # is never added to the graph and before_model never runs.
+    _pythia_flag = (os.environ.get("PYTHIA_ROUTER_INJECT")
+                    or os.environ.get("PYTHIA_RETRIEVAL_ENABLED", ""))
+    if _pythia_flag.lower() in ("1", "true", "yes"):
         from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
 
         middlewares.append(PythiaRetrievalMiddleware())
