@@ -120,33 +120,6 @@ line count is tests.
   move to upstream's default.
 - **PR-candidate:** maybe (generalize first).
 
-### 9. `langgraph_auth`: lazy-init persistence engine for standalone `langgraph dev`
-- **File:** `backend/app/gateway/langgraph_auth.py`
-- **Why:** Upstream's `langgraph_auth.py` calls `get_local_provider()` on every
-  authenticated request, but `init_engine_from_config()` runs only in the
-  gateway's lifespan — never in the standalone `langgraph dev` server. Result:
-  every authenticated `/api/langgraph/*` request 500s with "users table not
-  initialized." We add a lazy `_ensure_engine_initialized()` (idempotent under
-  an asyncio lock) in `@auth.authenticate`.
-- **Companion (NOT a fork patch — deploy config):** the lazy init does
-  synchronous filesystem work (os.getcwd, sqlite path resolution) that
-  `langgraph dev`'s blockbuster watcher flags. Each per-project langgraph
-  Quadlet runs `langgraph dev --allow-blocking`. That flag lives in the
-  Quadlet Exec= line in the Argus infra repo, not here.
-- **Conflict risk:** Medium. `langgraph_auth.py` is small and changes rarely,
-  but it's gateway-auth code touched in the 2.0-rc wave.
-- **Delete-when:** NOW DEAD CODE (2026-06-03). Argus stopped running the
-  standalone langgraph dev server entirely. Every projects nginx now routes
-  /api/langgraph/* to the gateway runtime (app.gateway.app), which inits the
-  engine in its lifespan and sets the user contextvar via auth_middleware.
-  langgraph_auth.py only executes under langgraph dev, which no longer runs,
-  so this patch and the --allow-blocking flag are inert. DROP on next rebase.
-  (Switching to the gateway runtime also fixed a user-identity bug: standalone
-  langgraph resolved every run to user=default, so uploads/sandbox/view_image
-  looked in the wrong dir.)
-- **PR-candidate:** **yes — strongest candidate.** This is a genuine upstream
-  bug in standalone-langgraph-dev mode, not Argus-specific tuning.
-
 ### 10. `telegram`: HTML formatting + animated emoji indicator + channel-aware artifact presenter
 - **Files:** `backend/app/channels/_telegram_format.py` (new),
   `backend/app/channels/_artifact_presenter.py` (new),
@@ -277,6 +250,17 @@ line count is tests.
 
 ## Dropped patches (history — do not re-add)
 
+- **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -
+  retired 2026-06-03 when Argus stopped running the standalone `langgraph dev`
+  server. Every project's nginx now routes `/api/langgraph/*` to the gateway
+  runtime (`app.gateway.app`), whose lifespan already runs
+  `init_engine_from_config()` and whose `auth_middleware` sets the user
+  contextvar. `langgraph_auth.py` only executed under `langgraph dev`, so the
+  patch was dead code; reverted to upstream. The standalone server also had a
+  user-identity bug (every run resolved user=default, breaking
+  uploads/sandbox/view_image), independently fixed by the gateway-runtime move.
+  Do not revive unless we go back to running `langgraph dev` standalone.
+
 - **3 loop-detector patches** (nudge-toward-observation, edit-aware-reset +
   thresholds 5/8, drop layer-2 frequency detection) — retired during the
   2026-05-28 upgrade because upstream rewrote the loop detector with a
@@ -297,8 +281,7 @@ The cheapest fork is the smallest one. Candidates to shrink the patch surface:
   patches from the most-churned file.
 - **Constants (#2, #3):** push upstream to make `_MAX_COMMAND_LENGTH` and the
   loop-detector buckets configurable; then carry config, not code.
-- **aprune (#4) and langgraph_auth (#9):** upstream PRs. Both are real gaps,
-  not tuning — best path to zero.
+- **aprune (#4):** upstream PR candidate. A real gap, not tuning.
 
 ---
 

@@ -12,20 +12,8 @@ Two layers:
   1. @auth.authenticate — validates JWT cookie, extracts user_id,
      and enforces CSRF on state-changing methods (POST/PUT/DELETE/PATCH)
   2. @auth.on — returns metadata filter so each user only sees own threads
-
-ARGUS PATCH (carried on the webfuse-com/deer-flow `argus` branch):
-lazy-init the persistence engine on first auth call. The standalone
-`langgraph dev` server doesn't run the gateway's lifespan handler
-(langgraph_runtime), so init_engine_from_config() never gets called and
-get_local_provider() throws on the first user lookup. Pair with the
-`--allow-blocking` flag in the langgraph Quadlet's Exec= line (the lazy
-init does synchronous filesystem work the blockbuster watcher flags).
-PR-candidate: yes — upstream should run init_engine_from_config in the
-langgraph dev lifespan, after which this patch becomes deletable.
-See PATCHES.md for the full carry-list rationale.
 """
 
-import asyncio
 import secrets
 
 from langgraph_sdk import Auth
@@ -38,27 +26,6 @@ auth = Auth()
 
 # Methods that require CSRF validation (state-changing per RFC 7231).
 _CSRF_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
-
-# Lazy persistence-engine init. Idempotent under the lock.
-_engine_init_lock = asyncio.Lock()
-_engine_initialized = False
-
-
-async def _ensure_engine_initialized() -> None:
-    global _engine_initialized
-    if _engine_initialized:
-        return
-    async with _engine_init_lock:
-        if _engine_initialized:
-            return
-        from deerflow.config import get_app_config
-        from deerflow.persistence.engine import init_engine_from_config
-        # init_engine_from_config does synchronous filesystem work (os.getcwd,
-        # sqlite path resolution) that langgraph dev's `blockbuster` watcher
-        # flags as a BlockingError. We pair this lazy init with the
-        # `--allow-blocking` flag in the langgraph Quadlet's Exec= line.
-        await init_engine_from_config(get_app_config().database)
-        _engine_initialized = True
 
 
 def _check_csrf(request) -> None:
@@ -98,10 +65,6 @@ async def authenticate(request):
     # CSRF check before authentication so forged cross-site requests
     # are rejected early, even if the cookie carries a valid JWT.
     _check_csrf(request)
-
-    # Standalone `langgraph dev` doesn't run the gateway's lifespan handler,
-    # so the persistence engine isn't initialized. Lazy-init on first use.
-    await _ensure_engine_initialized()
 
     token = request.cookies.get("access_token")
     if not token:
