@@ -135,9 +135,15 @@ line count is tests.
   Quadlet Exec= line in the Argus infra repo, not here.
 - **Conflict risk:** Medium. `langgraph_auth.py` is small and changes rarely,
   but it's gateway-auth code touched in the 2.0-rc wave.
-- **Delete-when:** upstream runs `init_engine_from_config()` in the
-  `langgraph dev` lifespan (the proper fix). At that point both this patch AND
-  the `--allow-blocking` flag come off.
+- **Delete-when:** NOW DEAD CODE (2026-06-03). Argus stopped running the
+  standalone langgraph dev server entirely. Every projects nginx now routes
+  /api/langgraph/* to the gateway runtime (app.gateway.app), which inits the
+  engine in its lifespan and sets the user contextvar via auth_middleware.
+  langgraph_auth.py only executes under langgraph dev, which no longer runs,
+  so this patch and the --allow-blocking flag are inert. DROP on next rebase.
+  (Switching to the gateway runtime also fixed a user-identity bug: standalone
+  langgraph resolved every run to user=default, so uploads/sandbox/view_image
+  looked in the wrong dir.)
 - **PR-candidate:** **yes — strongest candidate.** This is a genuine upstream
   bug in standalone-langgraph-dev mode, not Argus-specific tuning.
 
