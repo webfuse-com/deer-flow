@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 _OUTLINE_PREVIEW_LINES = 5
 
+# Image extensions the view_image tool can read (mirrors the allowlist in
+# deerflow/tools/builtins/view_image_tool.py). Uploaded images need
+# view_image-specific guidance: read_file/grep/glob cannot open them, and
+# the frontend sends images by path (additional_kwargs.files), never inline
+# as image_url blocks, so the model would otherwise have no route to the
+# pixels. See PATCHES.md patch #13.
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
 
 def _extract_outline_for_file(file_path: Path) -> tuple[list[dict], list[str]]:
     """Return the document outline and fallback preview for *file_path*.
@@ -88,6 +96,16 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
         lines.append(f"- {file['filename']} ({size_str})")
         lines.append(f"  Path: {file['path']}")
+        # Images are not text: read_file/grep/glob cannot open them. Point the
+        # model at view_image, the only tool that gets the pixels into context.
+        if Path(file.get("filename", "")).suffix.lower() in _IMAGE_EXTENSIONS:
+            lines.append(
+                f"  This is an image. Call `view_image(image_path='{file['path']}')` "
+                "to view it before answering. Do NOT use read_file/grep/glob on it "
+                "and do NOT claim you cannot see images."
+            )
+            lines.append("")
+            return
         outline = file.get("outline") or []
         if outline:
             truncated = outline[-1].get("truncated", False)

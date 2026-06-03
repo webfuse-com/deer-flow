@@ -233,6 +233,34 @@ line count is tests.
 - **Delete-when:** if DeerFlow gains a first-class pre-model retrieval hook that
   can call an external router. Until then this is Argus product behavior.
 
+### 12. `sandbox`: detect Created-but-not-Running (rootless port-bind race)
+
+- **What:** On per-thread sandbox start, treat a container stuck in `Created`
+  (never reaching `Running`) as a failure and surface it, instead of hanging
+  the turn. Root cause was a rootless-podman port-bind race, not the model.
+- **Conflict risk:** Low. Localized to the sandbox start path.
+- **Delete-when:** upstream sandbox start grows its own Created-state timeout.
+
+### 13. `uploads_middleware`: steer uploaded images to `view_image`
+
+- **What:** In the `<uploaded_files>` context block, detect image uploads
+  (`.jpg/.jpeg/.png/.webp`, mirroring `view_image_tool.py`s allowlist) and
+  emit `view_image(image_path=...)` guidance instead of the document
+  read_file/grep/glob workflow.
+- **Why:** The frontend uploads images by path (`additional_kwargs.files`)
+  and never inlines them as `image_url` blocks, so `view_image` is the ONLY
+  route to the pixels. The doc-oriented guidance is useless for an image and
+  left a vision-capable Qwen with no way to see an uploaded screenshot. The
+  capability was wired (supports_vision + tool + ViewImageMiddleware) but the
+  model was never told to call the tool, so image understanding never worked
+  end-to-end through the chat UI.
+- **Conflict risk:** Low. One early-return branch in `_format_file_entry`;
+  non-image entries are byte-for-byte unchanged. Test in
+  `tests/test_uploads_middleware_core_logic.py::TestImageFileGuidance`.
+- **Delete-when:** the frontend inlines image uploads as `image_url` content
+  blocks (then the model sees them directly, no tool round-trip), OR upstream
+  adds image-aware guidance to the uploads block.
+
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch
   tests. New file, zero conflict risk.

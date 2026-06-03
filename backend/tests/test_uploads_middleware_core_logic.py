@@ -198,6 +198,57 @@ class TestCreateFilesMessage:
         assert "</uploaded_files>" in msg
 
 
+class TestImageFileGuidance:
+    """patch #13: uploaded images get view_image guidance, not read_file/grep.
+
+    The frontend uploads images by path (additional_kwargs.files) and never
+    inlines them as image_url blocks, so view_image is the only route to the
+    pixels. The doc-oriented grep/read_file/glob guidance is useless for an
+    image and previously left the model with no way to see it.
+    """
+
+    def _img(self, filename="shot.png", size=2048):
+        return {"filename": filename, "size": size, "path": f"/mnt/user-data/uploads/{filename}"}
+
+    def test_image_gets_view_image_call(self, tmp_path):
+        mw = _middleware(tmp_path)
+        msg = mw._create_files_message([self._img()], [])
+        assert "view_image(image_path='/mnt/user-data/uploads/shot.png')" in msg
+        assert "This is an image" in msg
+
+    def test_image_entry_omits_doc_search_guidance(self, tmp_path):
+        mw = _middleware(tmp_path)
+        # Build the per-file entry directly so we are not asserting against
+        # the trailing global 'To work with these files' block.
+        lines = []
+        mw._format_file_entry(self._img(), lines)
+        entry = "\n".join(lines)
+        assert "view_image" in entry
+        # The doc-search WORKFLOW must be gone (outline header + the grep/read_file
+        # example calls). The words read_file/grep still appear inside the 'Do NOT
+        # use read_file/grep/glob' warning, so assert on the example invocations
+        # rather than the bare substrings.
+        assert "Document outline" not in entry
+        assert "grep(pattern=" not in entry
+        assert "read_file` with line ranges" not in entry
+
+    def test_all_image_extensions_recognized(self, tmp_path):
+        mw = _middleware(tmp_path)
+        for ext in (".jpg", ".jpeg", ".png", ".webp", ".PNG"):
+            lines = []
+            mw._format_file_entry(self._img(filename=f"a{ext}"), lines)
+            assert "view_image" in "\n".join(lines), ext
+
+    def test_non_image_keeps_doc_guidance(self, tmp_path):
+        mw = _middleware(tmp_path)
+        lines = []
+        mw._format_file_entry({"filename": "notes.txt", "size": 1024,
+                               "path": "/mnt/user-data/uploads/notes.txt"}, lines)
+        entry = "\n".join(lines)
+        assert "view_image" not in entry
+        assert "grep" in entry
+
+
 # ---------------------------------------------------------------------------
 # before_agent
 # ---------------------------------------------------------------------------
