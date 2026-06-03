@@ -248,6 +248,30 @@ class TestImageFileGuidance:
         assert "view_image" not in entry
         assert "grep" in entry
 
+    def test_image_only_upload_omits_trailing_doc_block(self, tmp_path):
+        mw = _middleware(tmp_path)
+        msg = mw._create_files_message([self._img()], [])
+        # No doc-search workflow when every file is an image.
+        assert "To work with these files" not in msg
+        assert "glob(pattern=" not in msg
+        assert "view_image" in msg
+
+    def test_mixed_upload_keeps_trailing_doc_block(self, tmp_path):
+        mw = _middleware(tmp_path)
+        doc = {"filename": "notes.txt", "size": 1024,
+               "path": "/mnt/user-data/uploads/notes.txt"}
+        msg = mw._create_files_message([self._img(), doc], [])
+        assert "To work with these files" in msg
+        assert "view_image" in msg
+
+    def test_image_new_with_historical_doc_keeps_block(self, tmp_path):
+        # The trailing block must consider historical files too, not just new.
+        mw = _middleware(tmp_path)
+        doc = {"filename": "old.md", "size": 512,
+               "path": "/mnt/user-data/uploads/old.md"}
+        msg = mw._create_files_message([self._img()], [doc])
+        assert "To work with these files" in msg
+
 
 # ---------------------------------------------------------------------------
 # before_agent
