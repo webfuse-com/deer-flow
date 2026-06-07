@@ -33,6 +33,8 @@ Toggle / config (env, read once at construction):
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import time
@@ -45,6 +47,29 @@ from langchain_core.messages import AIMessage, HumanMessage
 from deerflow.agents.thread_state import ThreadState
 
 logger = logging.getLogger(__name__)
+
+# Per-person rings require a gateway-signed caller token; external/internal
+# do not. Mirrors kb-api pythia/rings.PRIVATE_RINGS.
+_PRIVATE_RINGS = frozenset({"hierarchical", "personal"})
+
+
+def _sign_caller(email: str, ttl_seconds: int = 120) -> str:
+    """Mint a gateway-signed caller token kb-api will verify.
+
+    CONTRACT (must stay byte-identical to kb-api pythia/caller_auth.py
+    verify_caller): token = f"{email}.{exp}.{hexsig}", hexsig = HMAC-SHA256
+    over f"{email}.{exp}" with key PYTHIA_CALLER_SIGNING_SECRET. The two
+    sides are deliberately duplicated (kb-api module is not importable from
+    the DeerFlow tree); the shared secret + this format are the coupling.
+    Returns "" if no secret or no email (-> no token sent -> no private ring).
+    """
+    secret = os.environ.get("PYTHIA_CALLER_SIGNING_SECRET", "").encode()
+    email = (email or "").strip().lower()
+    if not secret or not email:
+        return ""
+    exp = int(time.time()) + ttl_seconds
+    sig = hmac.new(secret, f"{email}.{exp}".encode(), hashlib.sha256).hexdigest()
+    return f"{email}.{exp}.{sig}"
 
 # Marker so we never re-inject within the same turn (mirrors ViewImage's guard).
 _INJECT_MARKER = "[pythia-kb-context]"
@@ -111,16 +136,32 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
 
     # --- routing + retrieval (delegated to kb-api /answer) -----------------
 
-    def _route_and_fetch(self, query: str) -> tuple[dict, float, str | None]:
+    def _route_and_fetch(self, query: str,
+                         caller_email: str | None = None) -> tuple[dict, float, str | None]:
         """One call to the kb-api router. Returns (answer_json, elapsed_s,
-        error). Never raises — a router/kb-api hiccup must not block the turn."""
+        error). Never raises — a router/kb-api hiccup must not block the turn.
+
+        For a private (personal/hierarchical) ring we mint a gateway-signed
+        caller_token from the verified SSO email so kb-api can grant the
+        owner-scoped ring. external/internal send no token (unchanged)."""
         url = f"{self.base_url}/{self.project}/answer"
+        body = {"query": query, "top_k": self.top_k, "caller_ring": self.ring}
+        if self.ring in _PRIVATE_RINGS and caller_email:
+            token = _sign_caller(caller_email)
+            if token:
+                body["caller_token"] = token
+                logger.info("[pythia-router] minted caller_token for %s (ring=%s)",
+                            caller_email, self.ring)
+            else:
+                logger.warning("[pythia-router] ring=%s needs a token but signing "
+                               "secret/email missing -> kb-api will clamp to internal",
+                               self.ring)
         t = time.monotonic()
         try:
             r = httpx.post(
                 url,
                 headers={"X-Kb-Api-Key": self.api_key, "Content-Type": "application/json"},
-                json={"query": query, "top_k": self.top_k, "caller_ring": self.ring},
+                json=body,
                 timeout=self.timeout,
             )
             r.raise_for_status()
@@ -156,7 +197,8 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             lines.append("")
         return "\n".join(lines)
 
-    def _build_context_message(self, messages: list) -> HumanMessage | None:
+    def _build_context_message(self, messages: list,
+                               caller_email: str | None = None) -> HumanMessage | None:
         """Route+fetch for the current user turn and return a HumanMessage to
         inject into the MODEL REQUEST (not thread state), or None to inject
         nothing. Never raises."""
@@ -172,7 +214,7 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             logger.info("[pythia-router] skip: no user text found")
             return None
 
-        answer, elapsed, error = self._route_and_fetch(query)
+        answer, elapsed, error = self._route_and_fetch(query, caller_email)
         if error:
             # A router/kb-api failure: stay silent and let the agent use its MCP
             # tools rather than injecting a "couldn't reach KB" message (the
@@ -208,8 +250,18 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
     # request.override() is immutable and leaves thread state untouched: the KB
     # context reaches the model for THIS call only and is never persisted.
 
+    @staticmethod
+    def _caller_email(request) -> str | None:
+        """The verified SSO email, stamped into runtime.context by the
+        gateway (inject_authenticated_user_context). The authoritative,
+        boundary-safe channel — see runtime/user_context.resolve_runtime_user_id."""
+        ctx = getattr(getattr(request, "runtime", None), "context", None)
+        if isinstance(ctx, dict):
+            return ctx.get("user_email") or None
+        return None
+
     def _inject_into_request(self, request):
-        msg = self._build_context_message(request.messages)
+        msg = self._build_context_message(request.messages, self._caller_email(request))
         if msg is None:
             return request
         return request.override(messages=[*request.messages, msg])

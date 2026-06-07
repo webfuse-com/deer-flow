@@ -169,6 +169,14 @@ def inject_authenticated_user_context(config: dict[str, Any], request: Request) 
     runtime_context = config.setdefault("context", {})
     if isinstance(runtime_context, dict):
         runtime_context["user_id"] = str(user_id)
+        # Also stamp the verified SSO email (server-side auth state, never
+        # client input). PythiaRetrievalMiddleware mints a gateway-signed
+        # caller_token from this so kb-api can grant the per-person
+        # (personal/hierarchical) rings to the owner only. See the Pythia
+        # ring-access model (kb-api pythia/caller_auth.py + ownership.py).
+        user_email = getattr(user, "email", None)
+        if user_email:
+            runtime_context["user_email"] = str(user_email)
 
 
 def resolve_agent_factory(assistant_id: str | None):
