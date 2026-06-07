@@ -47,6 +47,16 @@ class AgentConfig(BaseModel):
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
+    # pythia_ring controls deterministic company-KB retrieval (PythiaRetrievalMiddleware):
+    # - None (or omitted): inherit the stack default (env PYTHIA_ROUTER_INJECT gate;
+    #   ring defaults to "internal" for the SSO'd employee Atlas).
+    # - "none": NO retrieval (the "flash" / never-RAG agent).
+    # - "external": retrieve from the external (public-safe) ring ONLY.
+    # - "internal": retrieve from internal (+ external). Capped by caller identity
+    #   in kb-api; an agent ring can only narrow, never widen, what the caller may see.
+    # personal/hierarchical are reserved (per-person rings) and require the
+    # gateway-signed-caller hardening before use (see plans/phase-3-atlas-agents-and-rings.md).
+    pythia_ring: str | None = None
 
 
 def resolve_agent_dir(name: str, *, user_id: str | None = None) -> Path:

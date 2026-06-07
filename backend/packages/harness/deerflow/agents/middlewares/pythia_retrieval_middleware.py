@@ -55,13 +55,20 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
 
     state_schema = ThreadState
 
-    def __init__(self) -> None:
+    def __init__(self, ring: str = "internal") -> None:
         super().__init__()
-        # PYTHIA_ROUTER_INJECT is the current flag; PYTHIA_RETRIEVAL_ENABLED is
-        # the legacy alias kept so existing stack env files keep working.
+        # ring is decided by the lead_agent gate from the agent's pythia_ring
+        # (config.yaml), falling back to the stack PYTHIA_ROUTER_INJECT flag.
+        # The gate does not construct this middleware for ring "none", so being
+        # constructed at all means retrieval is on. We still read the env flag as
+        # a belt-and-suspenders enable check for the legacy stack-wide path.
+        # ring is forwarded to kb-api as a CEILING (caller_ring); kb-api caps it
+        # to what the verified caller may see and never escalates beyond it.
+        self.ring = (ring or "internal").strip().lower()
         flag = (os.environ.get("PYTHIA_ROUTER_INJECT")
                 or os.environ.get("PYTHIA_RETRIEVAL_ENABLED", ""))
-        self.enabled = flag.lower() in ("1", "true", "yes")
+        # Enabled if a real retrieving ring was assigned OR the stack flag is on.
+        self.enabled = self.ring in ("external", "internal", "hierarchical", "personal") or flag.lower() in ("1", "true", "yes")
         self.base_url = os.environ.get("PYTHIA_KB_URL", "http://argus-kb-api:8000").rstrip("/")
         self.project = os.environ.get("PYTHIA_KB_PROJECT", "pythia")
         self.api_key = os.environ.get("KB_API_KEY", "")
@@ -113,7 +120,7 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             r = httpx.post(
                 url,
                 headers={"X-Kb-Api-Key": self.api_key, "Content-Type": "application/json"},
-                json={"query": query, "top_k": self.top_k},
+                json={"query": query, "top_k": self.top_k, "caller_ring": self.ring},
                 timeout=self.timeout,
             )
             r.raise_for_status()
@@ -185,8 +192,8 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
                         route, elapsed * 1000.0, query[:120])
             return None
 
-        logger.info("[pythia-router] fired: route=%s blocks=%d conf=%.3f (%.0fms) q=%r",
-                    route, len(blocks), answer.get("confidence", 0.0),
+        logger.info("[pythia-router] fired: ring=%s route=%s blocks=%d conf=%.3f (%.0fms) q=%r",
+                    self.ring, route, len(blocks), answer.get("confidence", 0.0),
                     elapsed * 1000.0, query[:120])
         # Injected as a HumanMessage (not SystemMessage): Qwen/vLLM rejects a
         # system message anywhere but the start. This message is appended to the

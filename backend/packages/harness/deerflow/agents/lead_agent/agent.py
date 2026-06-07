@@ -287,6 +287,7 @@ def _build_middlewares(
     custom_middlewares: list[AgentMiddleware] | None = None,
     *,
     app_config: AppConfig | None = None,
+    agent_config: "AgentConfig | None" = None,
 ):
     """Build middleware chain based on runtime configuration.
 
@@ -339,12 +340,26 @@ def _build_middlewares(
     # per-stack, e.g. on Atlas. The append is cheap on other projects. This
     # gate MUST accept the same flags the middleware reads, or the middleware
     # is never added to the graph and before_model never runs.
-    _pythia_flag = (os.environ.get("PYTHIA_ROUTER_INJECT")
-                    or os.environ.get("PYTHIA_RETRIEVAL_ENABLED", ""))
-    if _pythia_flag.lower() in ("1", "true", "yes"):
+    # Ring resolution: an agent's pythia_ring (config.yaml) is the source of
+    # truth. "none" -> no retrieval (flash). "external"/"internal" -> attach
+    # with that ring. If the agent declares nothing, fall back to the
+    # stack-wide PYTHIA_ROUTER_INJECT flag (legacy) with ring "internal"
+    # (the SSO'd employee Atlas default; fixes the old external-only bug).
+    # The ring is a CEILING enforced server-side in kb-api, never an escalation.
+    _agent_ring = getattr(agent_config, "pythia_ring", None)
+    _stack_flag_on = (os.environ.get("PYTHIA_ROUTER_INJECT")
+                      or os.environ.get("PYTHIA_RETRIEVAL_ENABLED", "")
+                      ).lower() in ("1", "true", "yes")
+    if _agent_ring is not None:
+        _ring = _agent_ring.strip().lower()
+    elif _stack_flag_on:
+        _ring = "internal"
+    else:
+        _ring = "none"
+    if _ring not in ("none", ""):
         from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
 
-        middlewares.append(PythiaRetrievalMiddleware())
+        middlewares.append(PythiaRetrievalMiddleware(ring=_ring))
 
     # Add ViewImageMiddleware only if the current model supports vision.
     # Use the resolved runtime model_name from make_lead_agent to avoid stale config values.
@@ -516,7 +531,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False),
         tools=filter_tools_by_skill_allowed_tools(tools + extra_tools, skills_for_tool_policy),
-        middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name, app_config=resolved_app_config),
+        middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name, app_config=resolved_app_config, agent_config=agent_config),
         system_prompt=apply_prompt_template(
             subagent_enabled=subagent_enabled,
             max_concurrent_subagents=max_concurrent_subagents,
