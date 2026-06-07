@@ -41,7 +41,6 @@ from typing import override
 import httpx
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.runtime import Runtime
 
 from deerflow.agents.thread_state import ThreadState
 
@@ -83,16 +82,24 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
         return None
 
     def _already_handled_this_turn(self, messages: list) -> bool:
-        """True if we've already injected for the current user turn, OR the
-        model has already produced output this turn (we only act on the FIRST
-        model call of a turn — before any assistant message exists for it)."""
+        """True if we should NOT inject for this model call. We inject only on the
+        FIRST model call of a user turn.
+
+        IMPORTANT (wrap_model_call vs before_model): wrap_model_call fires on
+        EVERY model call in the agent loop (including tool-result follow-ups),
+        whereas the old before_model fired once. We no longer persist an injected
+        marker to state (the whole point of the move), so we can't detect "already
+        injected" by scanning for _INJECT_MARKER in history. Instead: walk back
+        from the end; if we hit an AIMessage before the latest HumanMessage, the
+        model has already spoken this turn -> not the first call -> skip. We also
+        still honor a marker if one somehow appears (belt-and-suspenders)."""
         for msg in reversed(messages):
             if isinstance(msg, HumanMessage):
                 if _INJECT_MARKER in str(msg.content):
-                    return True
-                return False  # reached the user turn with no injection yet
+                    return True  # legacy/persisted inject present -> don't double
+                return False  # reached the user turn, no assistant after it -> first call
             if isinstance(msg, AIMessage) and getattr(msg, "content", None):
-                continue  # an assistant turn already happened -> not first call
+                return True  # assistant already produced output this turn -> not first
         return False
 
     # --- routing + retrieval (delegated to kb-api /answer) -----------------
@@ -142,14 +149,16 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             lines.append("")
         return "\n".join(lines)
 
-    def _maybe_inject(self, state: ThreadState) -> dict | None:
+    def _build_context_message(self, messages: list) -> HumanMessage | None:
+        """Route+fetch for the current user turn and return a HumanMessage to
+        inject into the MODEL REQUEST (not thread state), or None to inject
+        nothing. Never raises."""
         if not self.enabled:
             return None
-        messages = state.get("messages", []) or []
         if not messages:
             return None
         if self._already_handled_this_turn(messages):
-            logger.info("[pythia-router] skip: already handled this turn")
+            logger.info("[pythia-router] skip: not the first model call this turn")
             return None
         query = self._latest_user_text(messages)
         if not query:
@@ -179,18 +188,32 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
         logger.info("[pythia-router] fired: route=%s blocks=%d conf=%.3f (%.0fms) q=%r",
                     route, len(blocks), answer.get("confidence", 0.0),
                     elapsed * 1000.0, query[:120])
-        # Inject as a HumanMessage, NOT a SystemMessage: appended AFTER the
-        # user's message, and Qwen/vLLM rejects a system message anywhere but the
-        # start. ViewImageMiddleware injects a HumanMessage for the same reason.
-        return {"messages": [HumanMessage(content=self._format_context(query, answer))]}
+        # Injected as a HumanMessage (not SystemMessage): Qwen/vLLM rejects a
+        # system message anywhere but the start. This message is appended to the
+        # MODEL REQUEST only (see wrap_model_call), never to thread state, so it
+        # is invisible on every surface (WebUI / Slack / Telegram / exports).
+        return HumanMessage(content=self._format_context(query, answer))
+
+    # --- model-call wrapping (NON-persisting injection) --------------------
+    # We inject via wrap_model_call + request.override(), NOT before_model.
+    # before_model returns a STATE UPDATE that gets committed to thread history
+    # (which is why the [pythia-kb-context] block used to render in the thread).
+    # request.override() is immutable and leaves thread state untouched: the KB
+    # context reaches the model for THIS call only and is never persisted.
+
+    def _inject_into_request(self, request):
+        msg = self._build_context_message(request.messages)
+        if msg is None:
+            return request
+        return request.override(messages=[*request.messages, msg])
 
     @override
-    def before_model(self, state: ThreadState, runtime: Runtime) -> dict | None:
-        return self._maybe_inject(state)
+    def wrap_model_call(self, request, handler):
+        return handler(self._inject_into_request(request))
 
     @override
-    async def abefore_model(self, state: ThreadState, runtime: Runtime) -> dict | None:
+    async def awrap_model_call(self, request, handler):
         # One bounded HTTP call (route+fetch, timeout-capped); acceptable to run
         # sync inside the async hook. Kept simple to avoid an async httpx client
         # lifecycle here.
-        return self._maybe_inject(state)
+        return await handler(self._inject_into_request(request))

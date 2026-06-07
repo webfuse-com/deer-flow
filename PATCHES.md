@@ -207,8 +207,21 @@ line count is tests.
   falls back to its MCP tools. All routing logic + tests are in kb-api, shared
   with the Slack @pythia bot. (Superseded the original patch #11, which embedded
   its own company-vs-other embedding classifier + a pythia_query call here.)
-- **Conflict risk:** Low. One new file, `before_model` is a stable middleware
-  API; injects a `HumanMessage` (system-msg-not-at-start 400 fix).
+- **Non-persisting injection (2026-06-07):** switched from `before_model`
+  (which returns a STATE UPDATE — the injected `HumanMessage` was committed to
+  thread history and rendered in the WebUI/Slack/Telegram/exports) to
+  `wrap_model_call` / `awrap_model_call` + `ModelRequest.override(messages=...)`.
+  `override()` is immutable, so the KB context reaches the model for THAT call
+  only and is NEVER persisted to thread state. It is therefore invisible on every
+  surface by construction (no per-channel suppression, no frontend patch).
+  Verified live: thread checkpoints contain the user msg + AI answer but zero
+  `[pythia-kb-context]` blobs. Note: `wrap_model_call` fires on EVERY model call
+  in the loop (not once like `before_model`), so the once-per-turn guard moved to
+  message inspection (skip if an `AIMessage` already follows the latest
+  `HumanMessage`).
+- **Conflict risk:** Low. One file; `wrap_model_call`/`override` are stable
+  langchain 1.x agent-middleware APIs. Injects a `HumanMessage` into the request
+  (system-msg-not-at-start 400 fix).
 - **Delete-when:** if DeerFlow gains a first-class pre-model retrieval hook that
   can call an external router. Until then this is Argus product behavior.
 
