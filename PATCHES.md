@@ -253,6 +253,26 @@ line count is tests.
   blocks (then the model sees them directly, no tool round-trip), OR upstream
   adds image-aware guidance to the uploads block.
 
+### 14. `gateway/routers/channels`: proactive notify endpoint
+
+- **What:** `POST /api/channels/{name}/notify` — injects a synthetic
+  `InboundMessage` (chat_id, text, optional user_id/topic_id) onto the
+  channel MessageBus. Guarded by the internal service token specifically
+  (`X-DeerFlow-Internal-Token`); an SSO session is NOT accepted because the
+  caller chooses chat_id/user_id (identity impersonation otherwise).
+- **Why:** Scheduled jobs (Atlas morning briefing, Chronos-fired turns) need
+  to start a turn that is DELIVERED to the citizen's IM chat. The channel
+  pipeline already does everything (thread mapping via the store, agent run,
+  HTML formatting, artifact delivery, reply threading) but only fires on
+  polled inbound messages; this is the missing trigger surface. With
+  `topic_id=None` a Telegram private chat reuses its persistent thread, so
+  the citizen can reply to the briefing naturally.
+- **Conflict risk:** Low. Additive endpoint at the end of a small router
+  upstream rarely touches; one import widened (`Request`). Tests in
+  `tests/test_channel_notify.py`.
+- **Delete-when:** upstream grows a proactive/outbound message API for
+  channels (watch `app/channels/` for a send-without-inbound surface).
+
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch
   tests. New file, zero conflict risk.
