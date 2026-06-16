@@ -19,6 +19,7 @@ from starlette.types import ASGIApp
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
 from app.gateway.authz import _ALL_PERMISSIONS, AuthContext
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
+from app.gateway.sso_auth import trusted_sso_email
 from deerflow.runtime.user_context import reset_current_user, set_current_user
 
 # Paths that never require authentication.
@@ -80,8 +81,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):
             internal_user = get_internal_user()
 
-        # Non-public path: require session cookie
+        # Trusted-proxy SSO: when Caddy has authenticated the browser via Google
+        # SSO it injects a verified X-Auth-Email plus the proxy secret. If both
+        # are present (and no cookie session), resolve/auto-provision the user by
+        # email so the citizen is not asked to log in a second time. The secret
+        # gate (sso_auth) blocks a direct tailnet caller from forging the email.
+        sso_user = None
         if internal_user is None and not request.cookies.get("access_token"):
+            _sso_email = trusted_sso_email(request.headers)
+            if _sso_email:
+                from app.gateway.deps import resolve_or_provision_sso_user
+                sso_user = await resolve_or_provision_sso_user(_sso_email)
+
+        # Non-public path: require session cookie (or internal token, or SSO)
+        if internal_user is None and sso_user is None and not request.cookies.get("access_token"):
             return JSONResponse(
                 status_code=401,
                 content={
@@ -107,6 +120,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         if internal_user is not None:
             user = internal_user
+        elif sso_user is not None:
+            user = sso_user
         else:
             try:
                 user = await get_current_user_from_request(request)

@@ -378,8 +378,18 @@ async def change_password(request: Request, response: Response, body: ChangePass
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(request: Request):
-    """Get current authenticated user info."""
-    user = await get_current_user_from_request(request)
+    """Get current authenticated user info.
+
+    Prefer the user the AuthMiddleware already resolved onto request.state
+    (covers the trusted-proxy SSO path, where there is no access_token cookie
+    but Caddy proved the identity). Fall back to the cookie resolver otherwise.
+    """
+    user = getattr(getattr(request, "state", None), "user", None)
+    # Only a real (email-bearing) user answers /me. The synthetic internal-token
+    # user (SimpleNamespace, no email) must fall through to the cookie resolver,
+    # which 401s as before — /me is a human-identity route, not for service callers.
+    if user is None or getattr(user, "email", None) is None:
+        user = await get_current_user_from_request(request)
     return UserResponse(id=str(user.id), email=user.email, system_role=user.system_role, needs_setup=user.needs_setup)
 
 

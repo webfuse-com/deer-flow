@@ -273,6 +273,44 @@ line count is tests.
 - **Delete-when:** upstream grows a proactive/outbound message API for
   channels (watch `app/channels/` for a send-without-inbound surface).
 
+### 15. `gateway` + `frontend`: trust the Caddy SSO identity (drop the second login)
+
+- **What:** Let the gateway authenticate a request off the edge-verified
+  `X-Auth-Email` header in place of DeerFlow's own email+password login, so a
+  citizen who already passed Google SSO at the Caddy edge is not asked to log
+  in again.
+  - `app/gateway/sso_auth.py` (new): `trusted_sso_email(headers)` returns the
+    email ONLY when the request also carries a matching `X-Auth-Proxy-Secret`
+    (constant-time compare vs `DEER_FLOW_SSO_PROXY_SECRET`). Fail-closed: no
+    secret configured → SSO trust disabled.
+  - `app/gateway/auth_middleware.py`: no cookie + trusted SSO email →
+    resolve/auto-provision the user by email, stamp `request.state.user`
+    (parallel to the `X-DeerFlow-Internal-Token` branch).
+  - `app/gateway/deps.py`: `resolve_or_provision_sso_user(email)`.
+  - `app/gateway/routers/auth.py`: `/me` prefers `request.state.user` (set by
+    the middleware) before the cookie resolver — and guards against the
+    email-less synthetic internal user.
+  - `frontend/src/core/auth/server.ts`: the SSR auth check
+    (`getServerSideUser`) now reads the incoming request's SSO headers and
+    forwards them to the gateway `/me`; without this the Next.js server-side
+    fetch only sent the cookie, so a cookieless SSO browser still SSR-redirected
+    to `/login`.
+- **Why:** Caddy already proves identity (Google SSO via oauth2-proxy, injects
+  a spoof-protected `X-Auth-Email`). The second DeerFlow login was pure
+  friction and split the user identity. Trusting the edge identity also unifies
+  the `user_email` the PythiaRetrievalMiddleware uses to mint per-person ring
+  caller tokens.
+- **Security:** the gateway is reachable on the tailnet bypassing Caddy, so the
+  proxy-secret gate is what makes the header trustworthy — a direct caller
+  lacks the secret and its `X-Auth-Email` is ignored (falls back to
+  cookie/login). Caddy injects `X-Auth-Proxy-Secret` on the DeerFlow stacks and
+  strips any client-supplied copy. Mirrors the Lexis trusted-proxy pattern.
+- **Conflict risk:** Medium. Touches `auth_middleware.py` and `auth.py` (auth
+  hot path) and one frontend SSR file; new `sso_auth.py` is additive.
+- **Delete-when:** upstream gains a first-class "trust an upstream-authenticated
+  identity header" / reverse-proxy-auth mode for both the gateway and the SSR
+  auth check.
+
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch
   tests. New file, zero conflict risk.
