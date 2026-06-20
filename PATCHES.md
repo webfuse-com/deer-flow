@@ -311,6 +311,39 @@ line count is tests.
   identity header" / reverse-proxy-auth mode for both the gateway and the SSR
   auth check.
 
+### 16. `gateway/csrf_middleware`: mint the CSRF cookie for trusted-SSO sessions
+
+- **What:** Issue the `csrf_token` cookie to a citizen whose session is
+  established via the patch #15 trusted-SSO path, not only on a local-login
+  POST. The Double Submit Cookie design mints `csrf_token` solely in the
+  `is_auth_endpoint and POST` branch (login/register/initialize). An SSO
+  citizen never POSTs those endpoints, so they got no cookie, and the frontend
+  (`fetcher.ts` / `api-client.ts`) had nothing to echo in `X-CSRF-Token`. Their
+  first state-changing request (e.g. sending a query -> POST /api/threads,
+  /api/langgraph/*) was then rejected by the very CSRF check this fork relies
+  on, with 403 "CSRF token missing. Include X-CSRF-Token header.".
+  - `app/gateway/csrf_middleware.py`: compute `_sso_first_contact` =
+    `trusted_sso_email(headers) is not None and no csrf_token cookie`. When
+    true, (a) skip the double-submit rejection for THAT request only (genuine
+    first contact, symmetric with how auth-endpoint POSTs are exempt), and
+    (b) mint + `set_cookie(csrf_token, ...)` on the response. Subsequent
+    requests carry the cookie and take the normal double-submit path unchanged.
+- **Why:** patches #15 (SSO trust) and the pre-existing CSRF double-submit
+  design were never reconciled: #15 removed the only event that minted the
+  cookie. This is the missing half of #15 - without it, SSO citizens can load
+  the UI but every query 403s.
+- **Security:** the relaxation is gated by `trusted_sso_email`, the same
+  proxy-secret (`DEER_FLOW_SSO_PROXY_SECRET`, constant-time) gate as #15, so a
+  direct tailnet caller cannot use it to bypass CSRF - without the secret
+  `_sso_first_contact` is always False and the standard double-submit check
+  applies. The minted cookie keeps the existing attributes
+  (`httponly=False` for JS read, `secure` when https, `samesite=strict`).
+- **Conflict risk:** Low. One method (`CSRFMiddleware.dispatch`) plus one
+  import; additive to the existing minting branch.
+- **Delete-when:** patch #15 is dropped (upstream reverse-proxy-auth mode), or
+  upstream's CSRF middleware learns to mint the token for proxy-authenticated
+  sessions.
+
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch
   tests. New file, zero conflict risk.
