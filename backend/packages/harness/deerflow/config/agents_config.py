@@ -77,7 +77,16 @@ def resolve_agent_dir(name: str, *, user_id: str | None = None) -> Path:
     paths = get_paths()
     effective_user = user_id or get_effective_user_id()
     user_path = paths.user_agent_dir(effective_user, name)
-    if user_path.exists():
+    # [argus] patch #17: prefer the per-user dir only if it actually defines the
+    # agent (has a config.yaml). A per-user dir can exist holding ONLY a
+    # memory.json (DeerFlow writes per-agent memory there even for agents whose
+    # definition lives in the shared layout). Returning such a config-less dir
+    # shadowed the shared config.yaml and made load_agent_config raise
+    # FileNotFoundError — e.g. selecting pythia-internal in the web UI, or
+    # routing a channel turn (effective user_id=default) to a shared agent. Fall
+    # back to the shared definition when the per-user dir has no config.yaml; the
+    # per-user memory.json is still picked up by MemoryMiddleware independently.
+    if (user_path / "config.yaml").exists():
         return user_path
 
     legacy_path = paths.agent_dir(name)

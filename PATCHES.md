@@ -344,6 +344,33 @@ line count is tests.
   upstream's CSRF middleware learns to mint the token for proxy-authenticated
   sessions.
 
+### 17. `config/agents_config`: fall back to the shared agent dir when the per-user dir has no config.yaml
+
+- **What:** `resolve_agent_dir` preferred the per-user layout
+  (`users/<uid>/agents/<name>/`) whenever that directory merely *existed*. But
+  DeerFlow writes per-agent `memory.json` into that per-user dir even for agents
+  whose *definition* (config.yaml + SOUL.md) lives only in the shared layout
+  (`agents/<name>/`). So a per-user dir holding nothing but `memory.json`
+  shadowed the shared `config.yaml`, and `load_agent_config` then raised
+  `FileNotFoundError: Agent config not found`. Symptoms: selecting
+  `pythia-internal` / `pythia-ext` in the web UI (per-user memory dirs exist for
+  the SSO user), and routing a channel turn to a shared agent (Telegram/briefing
+  run with effective `user_id=default`, whose `agents/atlas/` orphan dir blocked
+  `atlas`).
+  - `backend/packages/harness/deerflow/config/agents_config.py`
+    (`resolve_agent_dir`): prefer the per-user dir only if `user_path /
+    "config.yaml"` exists; otherwise fall back to the shared dir. The per-user
+    `memory.json` is still loaded independently by MemoryMiddleware, so no
+    memory is lost.
+- **Why:** the opt-in agent framework (Atlas / Pythia-Internal / Pythia-External
+  / Plain as first-class selectable agents) requires every shared agent to
+  resolve regardless of which orphan per-user memory dirs happen to exist. The
+  prior data-layer workaround (co-locating config.yaml into each per-user dir)
+  did not scale to new citizens.
+- **Conflict risk:** Low. One condition in one function; additive.
+- **Delete-when:** upstream makes per-user agent dirs config-complete (writes a
+  config.yaml alongside memory.json), or unifies the two layouts.
+
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch
   tests. New file, zero conflict risk.
