@@ -57,6 +57,12 @@ class AgentConfig(BaseModel):
     # personal/hierarchical are reserved (per-person rings) and require the
     # gateway-signed-caller hardening before use (see plans/phase-3-atlas-agents-and-rings.md).
     pythia_ring: str | None = None
+    # When True, the lead-agent factory attaches ArgusTodoMiddleware (planner-
+    # aligned prompt) instead of the upstream TodoMiddleware. Set this on any
+    # agent that uses the planner/critic skill pipeline (qwen-local-coder,
+    # glm-planner, etc). Previously the factory matched on agent_name ==
+    # "qwen-local-coder"; the flag generalizes it. Fork patch #16.
+    uses_planner_pipeline: bool = False
 
 
 def resolve_agent_dir(name: str, *, user_id: str | None = None) -> Path:

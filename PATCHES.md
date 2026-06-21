@@ -371,11 +371,45 @@ line count is tests.
 - **Delete-when:** upstream makes per-user agent dirs config-complete (writes a
   config.yaml alongside memory.json), or unifies the two layouts.
 
+### 18. `agents_config` + `lead_agent/factory`: `uses_planner_pipeline` flag
+
+- **Files:** `config/agents_config.py`, `agents/lead_agent/agent.py`,
+  `tests/test_argus_todo_middleware.py`
+- **What:** Adds a `uses_planner_pipeline: bool = False` field to
+  `AgentConfig`. The `_create_todo_list_middleware` factory now checks
+  `agent_config.uses_planner_pipeline` instead of matching on
+  `agent_name == "qwen-local-coder"`. Any agent that sets the flag gets
+  `ArgusTodoMiddleware` (planner-aligned prompt); others get the upstream
+  `TodoMiddleware`.
+- **Why:** The glm-planner agent (GLM-5.2 lead + local-qwen subagent) needs
+  the same ArgusTodoMiddleware as qwen-local-coder, but the name-based match
+  would not cover it. The flag generalizes the routing so any agent using the
+  planner/critic skill pipeline gets the right middleware.
+- **Delete-when:** upstream DeerFlow gains a first-class "planner pipeline"
+  agent type or makes the middleware selection configurable per-agent.
+
 ### Infra-only (not a code patch)
 - `.github/workflows/argus-ci.yml` — Argus-only test workflow. Runs the patch
   tests. New file, zero conflict risk.
 - `fix(lint)` commit — ruff cleanup after an upstream merge. Folds away on the
   next squash; not a standalone concern.
+
+### 16. `agents_config` + `lead_agent/factory`: `uses_planner_pipeline` flag
+
+- **Files:** `config/agents_config.py`, `agents/lead_agent/agent.py`,
+  `tests/test_argus_todo_middleware.py`
+- **What:** Adds a `uses_planner_pipeline: bool = False` field to
+  `AgentConfig`. The `_create_todo_list_middleware` factory now checks
+  `agent_config.uses_planner_pipeline` instead of matching on
+  `agent_name == "qwen-local-coder"`. Any agent that sets the flag gets
+  `ArgusTodoMiddleware` (planner-aligned prompt); others get the upstream
+  `TodoMiddleware`.
+- **Why:** The glm-planner agent (GLM-5.2 lead + local-qwen subagent) needs
+  the same ArgusTodoMiddleware as qwen-local-coder, but the name-based match
+  would not cover it. The flag generalizes the routing so any agent using the
+  planner/critic skill pipeline gets the right middleware.
+- **Delete-when:** upstream DeerFlow gains a first-class "planner pipeline"
+  agent type or makes the middleware selection configurable per-agent.
 
 ---
 

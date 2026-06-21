@@ -6,10 +6,10 @@ The subclass should:
   3. Inherit behavioural hooks from TodoMiddleware (smoke check).
 
 The factory (``_create_todo_list_middleware``) should:
-  4. Return ArgusTodoMiddleware when agent_name == "qwen-local-coder".
-  5. Return a vanilla TodoMiddleware (with the upstream prompt) for any
-     other agent_name.
-  6. Return None when is_plan_mode is False, regardless of agent_name.
+  4. Return ArgusTodoMiddleware when agent_config.uses_planner_pipeline is True.
+  5. Return a vanilla TodoMiddleware (with the upstream prompt) when the
+     flag is False or agent_config is None.
+  6. Return None when is_plan_mode is False, regardless of the flag.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from deerflow.agents.middlewares.argus_todo_middleware import (
     _ARGUS_TOOL_DESCRIPTION,
 )
 from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
+from deerflow.config.agents_config import AgentConfig
 
 
 # ---------------------------------------------------------------------------
@@ -108,30 +109,39 @@ def test_inherits_context_loss_reminder_path():
 # ---------------------------------------------------------------------------
 
 
-def test_factory_returns_argus_for_qwen_local_coder():
-    mw = _create_todo_list_middleware(is_plan_mode=True, agent_name="qwen-local-coder")
+def test_factory_returns_argus_for_planner_pipeline_agent():
+    """AgentConfig with uses_planner_pipeline=True gets ArgusTodoMiddleware."""
+    cfg = AgentConfig(name="qwen-local-coder", uses_planner_pipeline=True)
+    mw = _create_todo_list_middleware(is_plan_mode=True, agent_name="qwen-local-coder", agent_config=cfg)
     assert isinstance(mw, ArgusTodoMiddleware)
 
 
-def test_factory_returns_vanilla_for_other_agents():
-    """Any agent name other than qwen-local-coder gets the upstream
-    TodoMiddleware. Confirm by type — ArgusTodoMiddleware is a subclass,
-    so we check the exact type rather than isinstance."""
-    mw = _create_todo_list_middleware(is_plan_mode=True, agent_name="code-reviewer")
+def test_factory_returns_argus_for_glm_planner():
+    """Any agent with the flag set gets ArgusTodoMiddleware, not just qwen-local-coder."""
+    cfg = AgentConfig(name="glm-planner", uses_planner_pipeline=True)
+    mw = _create_todo_list_middleware(is_plan_mode=True, agent_name="glm-planner", agent_config=cfg)
+    assert isinstance(mw, ArgusTodoMiddleware)
+
+
+def test_factory_returns_vanilla_without_flag():
+    """AgentConfig without the flag gets the upstream TodoMiddleware."""
+    cfg = AgentConfig(name="code-reviewer", uses_planner_pipeline=False)
+    mw = _create_todo_list_middleware(is_plan_mode=True, agent_name="code-reviewer", agent_config=cfg)
     assert isinstance(mw, TodoMiddleware)
     assert not isinstance(mw, ArgusTodoMiddleware), (
         "code-reviewer should keep the upstream prompt, not Argus's override"
     )
 
 
-def test_factory_returns_vanilla_when_agent_name_is_empty():
-    """No agent_name (the default) means no override — straight upstream."""
-    mw = _create_todo_list_middleware(is_plan_mode=True)
+def test_factory_returns_vanilla_when_agent_config_is_none():
+    """No agent_config means no override — straight upstream."""
+    mw = _create_todo_list_middleware(is_plan_mode=True, agent_name="qwen-local-coder")
     assert isinstance(mw, TodoMiddleware)
     assert not isinstance(mw, ArgusTodoMiddleware)
 
 
 def test_factory_returns_none_when_plan_mode_off():
-    """Even for qwen-local-coder, plan_mode off means no middleware."""
-    mw = _create_todo_list_middleware(is_plan_mode=False, agent_name="qwen-local-coder")
+    """Even with the flag set, plan_mode off means no middleware."""
+    cfg = AgentConfig(name="qwen-local-coder", uses_planner_pipeline=True)
+    mw = _create_todo_list_middleware(is_plan_mode=False, agent_name="qwen-local-coder", agent_config=cfg)
     assert mw is None
