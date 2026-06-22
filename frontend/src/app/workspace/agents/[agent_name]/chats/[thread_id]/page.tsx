@@ -72,7 +72,14 @@ export default function AgentChatPage() {
     loadMoreHistory,
   } = useThreadStream({
     threadId: isNewThread ? undefined : threadId,
-    context: { ...settings.context, agent_name: agent_name },
+    context: {
+      ...settings.context,
+      agent_name: agent_name,
+      // Agent may pin a model (glm-planner -> glm-nw). Drive the input
+      // context from it so mode gating (derived from supports_thinking)
+      // reflects the model the agent runs, not the stale global setting.
+      model_name: agent?.model ?? settings.context.model_name,
+    },
     isMock,
     onSend: () => {
       setIsWelcomeMode(false);
@@ -242,7 +249,10 @@ export default function AgentChatPage() {
                         ? "streaming"
                         : "ready"
                   }
-                  context={settings.context}
+                  context={{
+                    ...settings.context,
+                    model_name: agent?.model ?? settings.context.model_name,
+                  }}
                   extraHeader={
                     isWelcomeMode && (
                       <AgentWelcome agent={agent} agentName={agent_name} />

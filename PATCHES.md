@@ -394,6 +394,23 @@ line count is tests.
 - `fix(lint)` commit — ruff cleanup after an upstream merge. Folds away on the
   next squash; not a standalone concern.
 
+### 19. `frontend/agent chat page`: drive the input context from the agent's pinned model
+
+- **File:** `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`
+- **What:** When rendering an agent chat, set the input `context.model_name`
+  to `agent?.model ?? settings.context.model_name` (both the `useThreadStream`
+  context and the `<InputBox>` prop), instead of the bare global
+  `settings.context`.
+- **Why:** The InputBox derives Flash/Reasoning/Pro/Ultra mode gating from
+  `selectedModel.supports_thinking`, where `selectedModel` resolves from
+  `context.model_name`. The agent page only injected `agent_name`, never the
+  agent's pinned `model`, so for a thinking-capable agent (e.g. glm-planner ->
+  glm-nw) the UI resolved the stale global model and greyed out every mode but
+  Flash, even though the agent ran on glm-nw server-side. Sourcing model_name
+  from the agent makes the UI gating match the model the agent actually uses.
+- **Delete-when:** upstream threads the agent's pinned model into the chat
+  input context, or the mode gating reads the agent model directly.
+
 ### 16. `agents_config` + `lead_agent/factory`: `uses_planner_pipeline` flag
 
 - **Files:** `config/agents_config.py`, `agents/lead_agent/agent.py`,
