@@ -32,6 +32,29 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
 
     state_schema = ViewImageMiddlewareState
 
+    # Render-verification-focused describe prompt: when the lead model is NOT
+    # vision-capable, a vision model (Qwen) describes the screenshot and we
+    # inject that TEXT so the lead can act on visual defects it cannot see.
+    _DESCRIBE_PROMPT = (
+        "Describe this rendered screenshot for a developer verifying their UI. "
+        "State, specifically and literally: the overall layout, ALL visible text "
+        "verbatim, the colors used, and ANY rendering problems you can see - blank "
+        "or all-white areas, overlapping or cut-off elements, error messages, and "
+        "missing or broken images. If it looks correct, say so plainly. Do not "
+        "speculate about code; report only what is visible."
+    )
+
+    def __init__(self, *, vision_model_name: str | None = None, app_config=None) -> None:
+        """vision_model_name: when set, the LEAD model is non-vision, so route
+        each viewed image through this vision-capable model (e.g. local-qwen)
+        for a TEXT description that is injected instead of the raw image. When
+        None, the lead model is vision-capable and the image is injected directly
+        (the original behavior)."""
+        super().__init__()
+        self._vision_model_name = vision_model_name
+        self._app_config = app_config
+
+
     def _get_last_assistant_message(self, messages: list) -> AIMessage | None:
         """Get the last assistant message from the message list.
 
@@ -187,6 +210,58 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         # Return state update with the new message
         return {"messages": [human_msg]}
 
+    async def _describe_images_text(self, state: "ViewImageMiddlewareState") -> list[dict]:
+        """Non-vision lead path: ask the vision model to describe each viewed
+        image, return text content blocks for the injected HumanMessage."""
+        from langchain_core.messages import HumanMessage as _HM
+
+        from deerflow.models import create_chat_model
+
+        viewed_images = state.get("viewed_images", {})
+        if not viewed_images:
+            return [{"type": "text", "text": "No images have been viewed."}]
+
+        model = create_chat_model(
+            name=self._vision_model_name,
+            thinking_enabled=False,
+            app_config=self._app_config,
+            attach_tracing=False,
+        )
+
+        blocks: list[dict] = [{
+            "type": "text",
+            "text": ("Here are descriptions of the images you viewed (you cannot "
+                     "see images directly; a vision model described them for you):"),
+        }]
+        for image_path, image_data in viewed_images.items():
+            mime_type = image_data.get("mime_type", "image/png")
+            base64_data = image_data.get("base64", "")
+            if not base64_data:
+                continue
+            try:
+                resp = await model.ainvoke([_HM(content=[
+                    {"type": "text", "text": self._DESCRIBE_PROMPT},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}},
+                ])])
+                desc = resp.content if isinstance(resp.content, str) else str(resp.content)
+            except Exception as e:  # noqa: BLE001 — describe is best-effort
+                logger.warning("vision-describe failed for %s: %r", image_path, e)
+                desc = f"(vision description unavailable: {type(e).__name__})"
+            blocks.append({"type": "text", "text": f"\n- **{image_path}**:\n{desc}"})
+        return blocks
+
+    async def _ainject_image_message(self, state: "ViewImageMiddlewareState") -> dict | None:
+        """Async inject: text descriptions (non-vision lead) or raw image
+        (vision lead)."""
+        if not self._should_inject_image_message(state):
+            return None
+        if self._vision_model_name:
+            content = await self._describe_images_text(state)
+        else:
+            content = self._create_image_details_message(state)
+        return {"messages": [HumanMessage(content=content)]}
+
     @override
     def before_model(self, state: ViewImageMiddlewareState, runtime: Runtime) -> dict | None:
         """Inject image details message before LLM call if view_image tools have completed (sync version).
@@ -202,6 +277,11 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         Returns:
             State update with additional human message, or None if no update needed
         """
+        # Sync path cannot await the vision-describe call; the lead-agent loop
+        # uses abefore_model (async). For a vision lead we can inject directly;
+        # for a non-vision lead, defer to abefore_model.
+        if self._vision_model_name:
+            return None
         return self._inject_image_message(state)
 
     @override
@@ -219,4 +299,4 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         Returns:
             State update with additional human message, or None if no update needed
         """
-        return self._inject_image_message(state)
+        return await self._ainject_image_message(state)

@@ -438,6 +438,28 @@ line count is tests.
 
 ---
 
+### 20. `ViewImageMiddleware` + `lead_agent/factory`: vision-describe for non-vision leads
+
+- **Files:** `backend/packages/harness/deerflow/agents/middlewares/view_image_middleware.py`,
+  `backend/packages/harness/deerflow/agents/lead_agent/agent.py`
+- **What:** When the lead model is NOT vision-capable, `view_image` results
+  used to be dropped (the factory only attached `ViewImageMiddleware` for vision
+  leads). Now the middleware is also attached for non-vision leads with a
+  `vision_model_name` (auto-discovered: the first `supports_vision` model in
+  config, i.e. `local-qwen`). In that mode `abefore_model` routes each viewed
+  image through the vision model for a render-verification-focused TEXT
+  description (layout, verbatim text, colors, visible rendering defects) and
+  injects that text instead of the raw image. Vision leads are unchanged
+  (direct image inject). The sync `before_model` defers to `abefore_model` in
+  describe-mode (cannot await); the lead-agent loop uses the async path.
+- **Why:** `glm-planner` runs on `glm-nw` (GLM-5.2, non-vision), but its
+  `render-and-verify` skill calls `view_image` and tells the agent to inspect
+  the screenshot. With no vision routing, the visual half of the loop was
+  silently dead. This lets a non-vision planner lead still see (via Qwen's
+  description) what it rendered.
+- **Delete-when:** upstream adds vision-model routing for non-vision leads, or
+  all lead models are vision-capable.
+
 ## Dropped patches (history — do not re-add)
 
 - **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -
