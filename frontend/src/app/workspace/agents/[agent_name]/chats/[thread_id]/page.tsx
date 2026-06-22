@@ -24,7 +24,7 @@ import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
 import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
-import { useLocalSettings, useThreadSettings } from "@/core/settings";
+import { getThreadModelName, useLocalSettings, useThreadSettings } from "@/core/settings";
 import { useThreadStream, useThreadTokenUsage } from "@/core/threads/hooks";
 import { threadTokenUsageToTokenUsage } from "@/core/threads/token-usage";
 import { textOfMessage } from "@/core/threads/utils";
@@ -80,7 +80,7 @@ export default function AgentChatPage() {
       // fallback when nothing is picked yet. This keeps the picker an
       // override AND seeds a sensible default so a thinking-capable
       // agent's modes aren't greyed out on a fresh thread.
-      model_name: settings.context.model_name ?? agent?.model ?? undefined,
+      model_name: getThreadModelName(threadId) ?? agent?.model ?? undefined,
     },
     isMock,
     onSend: () => {
@@ -253,7 +253,7 @@ export default function AgentChatPage() {
                   }
                   context={{
                     ...settings.context,
-                    model_name: settings.context.model_name ?? agent?.model ?? undefined,
+                    model_name: getThreadModelName(threadId) ?? agent?.model ?? undefined,
                   }}
                   extraHeader={
                     isWelcomeMode && (

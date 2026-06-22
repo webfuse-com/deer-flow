@@ -398,13 +398,17 @@ line count is tests.
 
 - **File:** `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`
 - **What:** When rendering an agent chat, set the input `context.model_name`
-  to `settings.context.model_name ?? agent?.model ?? undefined` (both the
-  `useThreadStream` context and the `<InputBox>` prop), instead of the bare
-  global `settings.context`. Precedence: the user's explicit per-session
-  pick wins; the agent's pinned model is the fallback only when nothing is
-  picked yet. (First cut, 2026-06-22, used `agent?.model ?? settings...`,
-  which made the agent pin WIN over the picker so the dropdown snapped back
-  to the agent model on every render; corrected same day.)
+  to `getThreadModelName(threadId) ?? agent?.model ?? undefined` (both the
+  `useThreadStream` context and the `<InputBox>` prop). Precedence:
+  THIS thread's explicit model override wins; otherwise the agent's pinned
+  model is the default. Deliberately does NOT fall back to the global
+  last-picked model, so switching agents applies the new agent's default
+  (glm-planner -> GLM, atlas -> Qwen) while a per-thread pick still sticks
+  for that thread. Requires exporting `getThreadModelName` from the
+  `core/settings` barrel. (Two earlier cuts same day: `agent?.model ??
+  settings...` made the pin always win over the picker; `settings.context
+  .model_name ?? agent...` made the global last-pick stick across agents.
+  This per-thread-override-else-agent-default is the intended behavior.)
 - **Why:** The InputBox derives Flash/Reasoning/Pro/Ultra mode gating from
   `selectedModel.supports_thinking`, where `selectedModel` resolves from
   `context.model_name`. The agent page only injected `agent_name`, never the
