@@ -398,9 +398,13 @@ line count is tests.
 
 - **File:** `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`
 - **What:** When rendering an agent chat, set the input `context.model_name`
-  to `agent?.model ?? settings.context.model_name` (both the `useThreadStream`
-  context and the `<InputBox>` prop), instead of the bare global
-  `settings.context`.
+  to `settings.context.model_name ?? agent?.model ?? undefined` (both the
+  `useThreadStream` context and the `<InputBox>` prop), instead of the bare
+  global `settings.context`. Precedence: the user's explicit per-session
+  pick wins; the agent's pinned model is the fallback only when nothing is
+  picked yet. (First cut, 2026-06-22, used `agent?.model ?? settings...`,
+  which made the agent pin WIN over the picker so the dropdown snapped back
+  to the agent model on every render; corrected same day.)
 - **Why:** The InputBox derives Flash/Reasoning/Pro/Ultra mode gating from
   `selectedModel.supports_thinking`, where `selectedModel` resolves from
   `context.model_name`. The agent page only injected `agent_name`, never the

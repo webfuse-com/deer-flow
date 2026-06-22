@@ -75,10 +75,12 @@ export default function AgentChatPage() {
     context: {
       ...settings.context,
       agent_name: agent_name,
-      // Agent may pin a model (glm-planner -> glm-nw). Drive the input
-      // context from it so mode gating (derived from supports_thinking)
-      // reflects the model the agent runs, not the stale global setting.
-      model_name: agent?.model ?? settings.context.model_name,
+      // Model precedence: the user's explicit per-session pick wins; the
+      // agent's pinned model (e.g. glm-planner -> glm-nw) is only the
+      // fallback when nothing is picked yet. This keeps the picker an
+      // override AND seeds a sensible default so a thinking-capable
+      // agent's modes aren't greyed out on a fresh thread.
+      model_name: settings.context.model_name ?? agent?.model ?? undefined,
     },
     isMock,
     onSend: () => {
@@ -251,7 +253,7 @@ export default function AgentChatPage() {
                   }
                   context={{
                     ...settings.context,
-                    model_name: agent?.model ?? settings.context.model_name,
+                    model_name: settings.context.model_name ?? agent?.model ?? undefined,
                   }}
                   extraHeader={
                     isWelcomeMode && (
