@@ -132,6 +132,14 @@ _CONTEXT_CONFIGURABLE_KEYS: frozenset[str] = frozenset(
         "max_concurrent_subagents",
         "agent_name",
         "is_bootstrap",
+        # [argus patch] the channel sender identity (set in run_context by the
+        # channel manager, patch #21) must survive into ToolRuntime.context so
+        # tools can attribute an action to the requester — the Pythia
+        # correct_minutes tool reads channel_user_id to author the commit.
+        "channel_user_id",
+        "channel_name",
+        "channel_id",
+        "thread_ts",
     }
 )
 

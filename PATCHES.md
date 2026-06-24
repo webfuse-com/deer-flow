@@ -504,6 +504,22 @@ line count is tests.
   :eyes: reaction in the thread forever, cluttering every turn.
 - **Delete-when:** upstream replaces/removes its own progress ack on completion.
 
+### 24. `gateway/services`: forward the channel sender keys into ToolRuntime.context
+
+- **Files:** `backend/app/gateway/services.py`
+- **What:** Added `channel_user_id`, `channel_name`, `channel_id`, `thread_ts`
+  to `_CONTEXT_CONFIGURABLE_KEYS`, the whitelist `merge_run_context_overrides`
+  uses to copy `body.context` into `config["context"]` (= `ToolRuntime.context`).
+- **Why:** patch #21 puts the channel sender into the manager's `run_context`,
+  which is sent to the gateway as `runs.wait(context=...)`. But this whitelist
+  only forwarded agent-config keys, so the sender identity was dropped before
+  the tool ran. The Pythia `correct_minutes` tool reads
+  `runtime.context["channel_user_id"]` to author the commit; without this it saw
+  nothing and refused ("I need to know which staff member is asking"). This is
+  the missing link between patch #21 (sets the keys) and the tool (reads them).
+- **Delete-when:** upstream forwards channel/runtime identity keys natively, or
+  the tool obtains the requester another way.
+
 ## Dropped patches (history — do not re-add)
 
 - **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -
