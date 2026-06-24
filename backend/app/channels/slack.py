@@ -169,6 +169,46 @@ class SlackChannel(Channel):
             logger.exception("[Slack] failed to upload file: %s", attachment.filename)
             return False
 
+    async def fetch_thread_context(self, chat_id: str, thread_ts: str,
+                                   exclude_ts: str = "", limit: int = 30) -> str:
+        """[argus patch] Earlier messages of a Slack thread, formatted as context.
+
+        When a user replies under a message Pythia posted outside the agent (e.g.
+        the minutes draft, which is a raw chat.postMessage with no DeerFlow
+        thread), the manager has no conversation memory for that thread. This
+        lets it pull the thread's prior messages via conversations.replies so the
+        reply ("assign Nicholas to speaker 2") has the post it refers to.
+
+        Best-effort: "" on any error (incl. missing_scope on a private channel
+        without groups:history). Excludes `exclude_ts` (the current reply) and
+        the bot's own "Working on it..." acks. Bot posts are kept (the minutes
+        are a bot post and ARE the context)."""
+        if not self._web_client or not chat_id or not thread_ts:
+            return ""
+        try:
+            resp = await asyncio.to_thread(
+                self._web_client.conversations_replies,
+                channel=chat_id, ts=thread_ts, limit=limit)
+        except Exception as exc:  # noqa: BLE001 — best-effort context
+            logger.info("[Slack] thread context unavailable (%s)", exc)
+            return ""
+        msgs = resp.get("messages") or []
+        lines: list[str] = []
+        for m in msgs:
+            ts = m.get("ts", "")
+            if exclude_ts and ts == exclude_ts:
+                continue
+            body = (m.get("text") or "").strip()
+            if not body or body.startswith(":hourglass"):  # skip the ack
+                continue
+            who = "Pythia" if m.get("bot_id") else f"<@{m.get('user', 'user')}>"
+            lines.append(f"{who}: {body}")
+        if not lines:
+            return ""
+        joined = "\n".join(lines)
+        return ("[thread context — earlier messages in this Slack thread, for "
+                f"reference]\n{joined}\n[end thread context]")
+
     # -- internal ----------------------------------------------------------
 
     def _add_reaction(self, channel_id: str, timestamp: str, emoji: str) -> None:
@@ -255,6 +295,11 @@ class SlackChannel(Channel):
             thread_ts=thread_ts,
         )
         inbound.topic_id = thread_ts
+        # [argus patch] stash the message's own ts so the manager can pull the
+        # thread's earlier messages as context (and exclude this one) when the
+        # reply lands on a thread that has no DeerFlow conversation yet — e.g. a
+        # reply under the raw-posted minutes draft.
+        inbound.metadata["event_ts"] = event.get("ts", "")
 
         if self._loop and self._loop.is_running():
             # Acknowledge with an eyes reaction

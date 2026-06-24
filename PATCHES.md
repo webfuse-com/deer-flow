@@ -475,6 +475,23 @@ line count is tests.
 - **Delete-when:** upstream surfaces the channel sender identity into the agent
   run context natively.
 
+### 22. `channels/slack` + `manager`: thread-context for replies under non-agent posts
+
+- **Files:** `backend/app/channels/slack.py`, `backend/app/channels/manager.py`
+- **What:** `SlackChannel.fetch_thread_context()` pulls a thread's earlier
+  messages via `conversations.replies`. In `manager._handle_chat`, when a reply
+  lands on a topic with NO existing DeerFlow thread, the manager fetches that
+  thread's prior messages and prepends them to `msg.text` (excluding the current
+  reply + the bot ack). The slack handler stashes the message's own ts in
+  `metadata["event_ts"]` for the exclude.
+- **Why:** Pythia posts the minutes draft via a raw `chat.postMessage` (outside
+  the agent), so that Slack thread has no agent conversation/checkpoint. A reply
+  like "assign Nicholas to speaker 2" otherwise starts a fresh thread with zero
+  context. This gives the reply the post it refers to. Best-effort: empty on any
+  error (incl. missing_scope); needs `channels:history` / `groups:history`.
+- **Delete-when:** the minutes draft is posted through the agent (creating a
+  real DeerFlow thread), or upstream adds channel thread-history hydration.
+
 ## Dropped patches (history — do not re-add)
 
 - **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -
