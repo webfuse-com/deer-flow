@@ -280,7 +280,10 @@ def _stage_from_chunk(event: str, data: Any) -> str | None:
                 return "planning"
         return None
 
-    if event != "messages-tuple":
+    # This langgraph runtime serves the "messages" stream event (the SDK
+    # downgrades the requested "messages-tuple"); accept both. The payload is
+    # the message chunk, sometimes wrapped as (chunk, metadata).
+    if event not in ("messages", "messages-tuple"):
         return None
 
     payload = data
@@ -289,14 +292,32 @@ def _stage_from_chunk(event: str, data: Any) -> str | None:
     if not isinstance(payload, Mapping):
         return None
 
-    tool_calls = payload.get("tool_calls") or []
-    if isinstance(tool_calls, list) and tool_calls:
-        names = [str((tc or {}).get("name", "")).lower() for tc in tool_calls if isinstance(tc, Mapping)]
-        if any(n == "write_todos" for n in names):
-            return "planning"
-        if any(any(h in n for h in _SEARCH_TOOL_HINTS) for n in names):
-            return "searching"
-        return "working"
+    # Streamed AIMessageChunks carry tool calls as `tool_call_chunks` (the
+    # incremental form) — `tool_calls` is only populated AFTER aggregation
+    # (values mode), so reading only `tool_calls` here meant searching/working/
+    # planning never fired over a streaming channel and the indicator was stuck
+    # at thinking. Read all three shapes: tool_calls, tool_call_chunks, and
+    # additional_kwargs.tool_calls. (A later delta of a chunk may carry an empty
+    # name — we only need the first, which names the tool; we emit on change.)
+    tool_calls = list(payload.get("tool_calls") or [])
+    tool_calls += list(payload.get("tool_call_chunks") or [])
+    ak = payload.get("additional_kwargs")
+    if isinstance(ak, Mapping):
+        tool_calls += list(ak.get("tool_calls") or [])
+    if tool_calls:
+        names = []
+        for tc in tool_calls:
+            if isinstance(tc, Mapping):
+                # tool_calls: {"name": ...}; additional_kwargs form: {"function": {"name": ...}}
+                nm = tc.get("name") or ((tc.get("function") or {}).get("name") if isinstance(tc.get("function"), Mapping) else "")
+                if nm:
+                    names.append(str(nm).lower())
+        if names:
+            if any(n == "write_todos" for n in names):
+                return "planning"
+            if any(any(h in n for h in _SEARCH_TOOL_HINTS) for n in names):
+                return "searching"
+            return "working"
 
     payload_type = str(payload.get("type", "")).lower()
     if "tool" in payload_type:
