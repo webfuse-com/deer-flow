@@ -28,6 +28,7 @@ _DEFAULT_STAGE_EMOJI = {
     "planning": "📝",
     "searching": "🔍",
     "working": "🔧",
+    "writing": "✍️",
 }
 _DEFAULT_STAGE_MIN_INTERVAL = 6.0  # seconds; matches the ~6s big-emoji animation
 

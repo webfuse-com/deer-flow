@@ -1060,6 +1060,7 @@ class ChannelManager:
         # wecom) keep getting partial text as before.
         is_telegram = msg.channel_name == "telegram"
         last_stage: str | None = None
+        seen_tool = False  # has a tool stage fired this turn (for 'writing' detection)
 
         try:
             async for chunk in client.runs.stream(
@@ -1080,6 +1081,17 @@ class ChannelManager:
                 # original streamed-text path for feishu/wecom.
                 if is_telegram:
                     stage = _stage_from_chunk(event, data)
+                    # Track whether a tool has run this turn, so answer text can
+                    # be told apart from initial reasoning.
+                    if stage in ("planning", "searching", "working"):
+                        seen_tool = True
+                    # Promote answer text to a distinct 'writing' stage (early ✍️
+                    # signal before the buffered answer lands). Text after a tool
+                    # call is the answer being composed; on a no-tool turn the
+                    # answer IS the text, so the SECOND text beat (once thinking
+                    # has shown) is writing.
+                    if stage == "thinking" and (seen_tool or last_stage in ("thinking", "writing")):
+                        stage = "writing"
                     if stage and stage != last_stage:
                         last_stage = stage
                         await self.bus.publish_outbound(
