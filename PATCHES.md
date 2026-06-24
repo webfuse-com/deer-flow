@@ -460,6 +460,21 @@ line count is tests.
 - **Delete-when:** upstream adds vision-model routing for non-vision leads, or
   all lead models are vision-capable.
 
+### 21. `channels/manager`: surface the channel sender into run_context
+
+- **Files:** `backend/app/channels/manager.py`
+- **What:** In `_handle_message`, the chat branch now passes
+  `extra_context={channel_user_id, channel_name, channel_id, thread_ts}` to
+  `_handle_chat` (which already merges `extra_context` into `run_context`). So a
+  tool can read `runtime.context["channel_user_id"]` etc. and know which human
+  sent a channel message.
+- **Why:** DeerFlow otherwise only uses `msg.user_id` for the thread store; it
+  never reaches `run_context`, so no tool can attribute an action to the
+  requester. The Pythia `correct_minutes` tool needs this to author the minutes
+  commit as the staff member who asked (resolved from their Slack id).
+- **Delete-when:** upstream surfaces the channel sender identity into the agent
+  run context natively.
+
 ## Dropped patches (history — do not re-add)
 
 - **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -

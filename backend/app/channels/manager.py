@@ -854,7 +854,18 @@ class ChannelManager:
                 if msg.msg_type == InboundMessageType.COMMAND:
                     await self._handle_command(msg)
                 else:
-                    await self._handle_chat(msg)
+                    # [argus patch] Surface the channel sender into run_context so
+                    # tools can attribute an action to the requesting human (e.g.
+                    # the Pythia correct_minutes tool stamps the commit author
+                    # from channel_user_id). DeerFlow otherwise only uses
+                    # msg.user_id for the thread store; no tool ever sees it.
+                    # Channel-agnostic; merged into run_context in _handle_chat.
+                    await self._handle_chat(msg, extra_context={
+                        "channel_user_id": msg.user_id,
+                        "channel_name": msg.channel_name,
+                        "channel_id": msg.chat_id,
+                        "thread_ts": msg.thread_ts,
+                    })
             except InvalidChannelSessionConfigError as exc:
                 logger.warning(
                     "Invalid channel session config for %s (chat=%s): %s",
