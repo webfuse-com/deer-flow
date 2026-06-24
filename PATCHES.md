@@ -492,6 +492,18 @@ line count is tests.
 - **Delete-when:** the minutes draft is posted through the agent (creating a
   real DeerFlow thread), or upstream adds channel thread-history hydration.
 
+### 23. `channels/slack`: clean up the progress ack when the answer lands
+
+- **Files:** `backend/app/channels/slack.py`
+- **What:** `_send_running_reply` now records the "Working on it..." message ts
+  (and the message it put :eyes: on) in `self._acks`; `send()` calls
+  `_clear_acks` after the real answer posts, which deletes the ack message and
+  removes the :eyes: reaction. Needs `chat:write` (own-message delete) +
+  `reactions:write` (both already granted).
+- **Why:** upstream leaves the ":hourglass: Working on it..." reply and the
+  :eyes: reaction in the thread forever, cluttering every turn.
+- **Delete-when:** upstream replaces/removes its own progress ack on completion.
+
 ## Dropped patches (history — do not re-add)
 
 - **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -
