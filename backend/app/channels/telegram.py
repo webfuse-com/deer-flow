@@ -490,15 +490,47 @@ class TelegramChannel(Channel):
         logger.info("[Telegram] webhook route registered at POST /webhooks/telegram")
 
     def _check_user(self, user_id: int) -> bool:
+        # [argus patch #17] Trust-on-first-use lock. A stack whose config ships
+        # an empty allowed_users (e.g. the Console paste-token wizard before it
+        # captured a numeric id) would otherwise reply to ANY Telegram user who
+        # finds the bot. Instead: bind to the FIRST sender's id and reject all
+        # others. This is defense in depth — the Console should still write the
+        # citizen's id into allowed_users so the bot is locked from minute one.
         if not self._allowed_users:
+            self._allowed_users.add(int(user_id))
+            logger.warning(
+                "[Telegram] allowed_users was empty; trust-on-first-use bound this "
+                "bot to user_id=%s. Set channels.telegram.allowed_users to lock it "
+                "explicitly.", user_id,
+            )
             return True
-        return user_id in self._allowed_users
+        return int(user_id) in self._allowed_users
 
     async def _cmd_start(self, update, context) -> None:
         """Handle /start command."""
         if not self._check_user(update.effective_user.id):
             return
-        await update.message.reply_text("Welcome to DeerFlow! Send me a message to start a conversation.\nType /help for available commands.")
+        await update.message.reply_text(self._welcome_text(), parse_mode="HTML")
+
+    def _welcome_text(self) -> str:
+        """[argus patch #17] Role/persona-aware Telegram greeting.
+
+        The greeting comes from ``channels.telegram.welcome`` in config.yaml,
+        which the atlas-template fills per citizen (name + role + capabilities)
+        at expand time. Falls back to an Atlas-voiced default if unset — never
+        the bare "Welcome to DeerFlow!" upstream string.
+        """
+        configured = self.config.get("welcome")
+        if configured:
+            return str(configured).strip()
+        name = str(self.config.get("citizen_name", "") or "").strip()
+        hi = f"Hi {name}" if name else "Hi"
+        return (
+            f"{hi}, I'm <b>Atlas</b>, your personal agent. I can review your inbox, "
+            "prep you for meetings, track your tasks and tickets, and answer "
+            "questions from the company knowledge base.\n\n"
+            "Just tell me what you need. /help lists commands."
+        )
 
     async def _process_incoming_with_reply(self, chat_id: str, msg_id: int, inbound: InboundMessage) -> None:
         # Fire the 👀 received emoji in the background so the inbound message
