@@ -165,16 +165,37 @@ class MessageBus:
         self._outbound_listeners = [cb for cb in self._outbound_listeners if cb is not callback]
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """Dispatch an outbound message to all registered listeners."""
+        """Dispatch an outbound message to all registered listeners.
+
+        Stage-progress messages (progress_stage set, is_final=False, empty text)
+        are dispatched as fire-and-forget background tasks so they never block
+        the agent streaming loop. The final answer (is_final=True or non-empty
+        text) is awaited inline so the run completes before the manager returns.
+        """
+        is_stage_signal = msg.progress_stage is not None and not msg.is_final and not msg.text
         logger.info(
-            "[Bus] outbound dispatching: channel=%s, chat_id=%s, listeners=%d, text_len=%d",
+            "[Bus] outbound dispatching: channel=%s, chat_id=%s, listeners=%d, text_len=%d, stage=%s, fire_and_forget=%s",
             msg.channel_name,
             msg.chat_id,
             len(self._outbound_listeners),
             len(msg.text),
+            msg.progress_stage,
+            is_stage_signal,
         )
         for callback in self._outbound_listeners:
-            try:
-                await callback(msg)
-            except Exception:
-                logger.exception("Error in outbound callback for channel=%s", msg.channel_name)
+            if is_stage_signal:
+                # Fire-and-forget: the stage emoji send/delete must not stall
+                # the next langgraph chunk. Errors are logged in the task.
+                asyncio.create_task(self._safe_callback(callback, msg))
+            else:
+                try:
+                    await callback(msg)
+                except Exception:
+                    logger.exception("Error in outbound callback for channel=%s", msg.channel_name)
+
+    async def _safe_callback(self, callback: OutboundCallback, msg: OutboundMessage) -> None:
+        """Run an outbound callback, logging any exception (fire-and-forget)."""
+        try:
+            await callback(msg)
+        except Exception:
+            logger.exception("Error in fire-and-forget outbound callback for channel=%s", msg.channel_name)

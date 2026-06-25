@@ -48,6 +48,46 @@ from deerflow.tracing import build_tracing_callbacks
 
 logger = logging.getLogger(__name__)
 
+# ── Sub-component cache (patch #27) ──────────────────────────────────────
+# The model instance, tool list, and system prompt string are rebuilt on every
+# run. For a given (agent_name, model_name, thinking_enabled, reasoning_effort,
+# is_plan_mode, subagent_enabled) combination they are identical, so we cache
+# them. Middlewares are still instantiated fresh per run (they hold per-run
+# mutable state). Graph compilation stays per-run (it binds the fresh
+# middlewares). The cache key includes id(app_config) so a config reload
+# invalidates everything.
+import threading
+
+_sub_component_cache: dict[tuple, dict] = {}
+_sub_component_cache_lock = threading.Lock()
+
+
+def _cache_key(
+    agent_name: str | None,
+    model_name: str,
+    thinking_enabled: bool,
+    reasoning_effort: str | None,
+    is_plan_mode: bool,
+    subagent_enabled: bool,
+    app_config: AppConfig,
+) -> tuple:
+    return (
+        agent_name or "default",
+        model_name,
+        thinking_enabled,
+        reasoning_effort or "",
+        is_plan_mode,
+        subagent_enabled,
+        id(app_config),
+    )
+
+
+def invalidate_sub_component_cache() -> None:
+    """Clear the sub-component cache. Call after a config or skills change."""
+    with _sub_component_cache_lock:
+        _sub_component_cache.clear()
+        logger.info("Agent sub-component cache invalidated")
+
 
 def _get_runtime_config(config: RunnableConfig) -> dict:
     """Merge legacy configurable options with LangGraph runtime context."""
@@ -525,6 +565,16 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     skills_for_tool_policy = _load_enabled_skills_for_tool_policy(available_skills, app_config=resolved_app_config)
 
+    # ── Sub-component cache lookup (patch #27) ────────────────────────────
+    # Cache the model instance, tool list, and system prompt string per
+    # (agent, model, config) combination. Middlewares are always fresh.
+    ckey = _cache_key(
+        agent_name, model_name, thinking_enabled, reasoning_effort,
+        is_plan_mode, subagent_enabled, resolved_app_config,
+    )
+    with _sub_component_cache_lock:
+        cached = _sub_component_cache.get(ckey)
+
     if is_bootstrap:
         # Special bootstrap agent with minimal prompt for initial custom agent creation flow
         tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config) + [setup_agent]
@@ -544,18 +594,46 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     # Custom agents can update their own SOUL.md / config via update_agent.
     # The default agent (no agent_name) does not see this tool.
     extra_tools = [update_agent] if agent_name else []
-    # Default lead agent (unchanged behavior)
-    tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
-    return create_agent(
-        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False),
-        tools=filter_tools_by_skill_allowed_tools(tools + extra_tools, skills_for_tool_policy),
-        middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name, app_config=resolved_app_config, agent_config=agent_config),
-        system_prompt=apply_prompt_template(
+
+    if cached is not None:
+        model_instance = cached["model"]
+        tools = cached["tools"]
+        system_prompt = cached["system_prompt"]
+        logger.debug("Agent sub-components from cache (key=%s)", ckey[0])
+    else:
+        # Build sub-components from scratch and cache them.
+        model_instance = create_chat_model(
+            name=model_name, thinking_enabled=thinking_enabled,
+            reasoning_effort=reasoning_effort, app_config=resolved_app_config,
+            attach_tracing=False,
+        )
+        tools = get_available_tools(
+            model_name=model_name,
+            groups=agent_config.tool_groups if agent_config else None,
+            subagent_enabled=subagent_enabled,
+            app_config=resolved_app_config,
+        )
+        system_prompt = apply_prompt_template(
             subagent_enabled=subagent_enabled,
             max_concurrent_subagents=max_concurrent_subagents,
             agent_name=agent_name,
             available_skills=set(agent_config.skills) if agent_config and agent_config.skills is not None else None,
             app_config=resolved_app_config,
-        ),
+        )
+        with _sub_component_cache_lock:
+            _sub_component_cache[ckey] = {
+                "model": model_instance,
+                "tools": tools,
+                "system_prompt": system_prompt,
+            }
+        logger.info("Agent sub-components cached (key=%s, tools=%d)", ckey[0], len(tools))
+
+    # Middlewares are always fresh (per-run mutable state).
+    # Tracing callbacks are attached to config, not to the graph.
+    return create_agent(
+        model=model_instance,
+        tools=filter_tools_by_skill_allowed_tools(tools + extra_tools, skills_for_tool_policy),
+        middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name, app_config=resolved_app_config, agent_config=agent_config),
+        system_prompt=system_prompt,
         state_schema=ThreadState,
     )
