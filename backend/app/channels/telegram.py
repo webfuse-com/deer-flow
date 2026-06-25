@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Any
 
+from fastapi import Request, Response
+
 from app.channels._telegram_format import chunk_html, to_telegram_html
 from app.channels.base import Channel
 from app.channels.message_bus import InboundMessage, InboundMessageType, MessageBus, OutboundMessage, ResolvedAttachment
@@ -453,8 +455,6 @@ class TelegramChannel(Channel):
         # Initialize the application (bot + handlers) without starting polling.
         await self._application.initialize()
         await self._application.start()
-
-        from fastapi import FastAPI, Request, Response
 
         # Find the gateway's FastAPI app instance.
         # The gateway creates it as a module-level `app` in app.gateway.app.
