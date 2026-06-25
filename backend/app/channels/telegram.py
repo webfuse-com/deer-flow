@@ -1,4 +1,14 @@
-"""Telegram channel — connects via long-polling (no public IP needed)."""
+"""Telegram channel — connects via long-polling or webhook.
+
+In polling mode (default), the channel runs ``getUpdates`` long-polling in a
+dedicated thread (no public IP needed).
+
+In webhook mode (``webhook: true`` in config), the channel registers a
+``POST /webhooks/telegram`` route on the gateway's FastAPI app. Telegram
+pushes updates to this endpoint instantly, eliminating the 0-10s polling
+delay. Requires a public HTTPS URL (set via ``setWebhook``); the route
+verifies the ``X-Telegram-Bot-Api-Secret-Token`` header.
+"""
 
 from __future__ import annotations
 
@@ -34,11 +44,15 @@ _DEFAULT_STAGE_MIN_INTERVAL = 6.0  # seconds; matches the ~6s big-emoji animatio
 
 
 class TelegramChannel(Channel):
-    """Telegram bot channel using long-polling.
+    """Telegram bot channel using long-polling or webhook.
 
     Configuration keys (in ``config.yaml`` under ``channels.telegram``):
         - ``bot_token``: Telegram Bot API token (from @BotFather).
         - ``allowed_users``: (optional) List of allowed Telegram user IDs. Empty = allow all.
+        - ``webhook``: (optional) When true, use webhook mode instead of polling.
+        - ``webhook_secret``: (optional) Secret token for webhook verification.
+          When set, the ``/webhooks/telegram`` route rejects requests whose
+          ``X-Telegram-Bot-Api-Secret-Token`` header doesn't match.
     """
 
     # [argus patch #10] Take the manager's streaming path so we receive
@@ -90,6 +104,10 @@ class TelegramChannel(Channel):
         except (ValueError, TypeError):
             self._stage_min_interval = _DEFAULT_STAGE_MIN_INTERVAL
 
+        # Webhook mode config.
+        self._webhook_mode: bool = bool(config.get("webhook", False))
+        self._webhook_secret: str = str(config.get("webhook_secret", ""))
+
     async def start(self) -> None:
         if self._running:
             return
@@ -125,19 +143,35 @@ class TelegramChannel(Channel):
 
         self._application = app
 
-        # Run polling in a dedicated thread with its own event loop
-        self._thread = threading.Thread(target=self._run_polling, daemon=True)
-        self._thread.start()
-        logger.info("Telegram channel started")
+        if self._webhook_mode:
+            # Webhook mode: register a FastAPI route on the gateway app.
+            # No polling thread, no separate event loop — Telegram pushes
+            # updates to us and the gateway's event loop handles them.
+            await self._register_webhook_route()
+            logger.info("Telegram channel started (webhook mode)")
+        else:
+            # Polling mode: run getUpdates in a dedicated thread.
+            self._thread = threading.Thread(target=self._run_polling, daemon=True)
+            self._thread.start()
+            logger.info("Telegram channel started (polling mode)")
 
     async def stop(self) -> None:
         self._running = False
         self.bus.unsubscribe_outbound(self._on_outbound)
-        if self._tg_loop and self._tg_loop.is_running():
-            self._tg_loop.call_soon_threadsafe(self._tg_loop.stop)
-        if self._thread:
-            self._thread.join(timeout=10)
-            self._thread = None
+        if not self._webhook_mode:
+            # Polling mode: stop the dedicated thread + event loop.
+            if self._tg_loop and self._tg_loop.is_running():
+                self._tg_loop.call_soon_threadsafe(self._tg_loop.stop)
+            if self._thread:
+                self._thread.join(timeout=10)
+                self._thread = None
+        elif self._application:
+            # Webhook mode: just stop the application (no thread to join).
+            try:
+                await self._application.stop()
+                await self._application.shutdown()
+            except Exception:
+                logger.exception("Error during Telegram webhook shutdown")
         self._application = None
         logger.info("Telegram channel stopped")
 
@@ -405,6 +439,55 @@ class TelegramChannel(Channel):
                 self._tg_loop.run_until_complete(self._application.shutdown())
             except Exception:
                 logger.exception("Error during Telegram shutdown")
+
+    # -- webhook mode ------------------------------------------------------
+
+    async def _register_webhook_route(self) -> None:
+        """Register the /webhooks/telegram POST route on the gateway FastAPI app.
+
+        In webhook mode, Telegram pushes updates to this endpoint. The route
+        deserializes the Update JSON and feeds it into the same handler
+        functions used by polling mode. This runs entirely on the gateway's
+        event loop — no separate thread or loop needed.
+        """
+        # Initialize the application (bot + handlers) without starting polling.
+        await self._application.initialize()
+        await self._application.start()
+
+        from fastapi import FastAPI, Request, Response
+
+        # Find the gateway's FastAPI app instance.
+        # The gateway creates it as a module-level `app` in app.gateway.app.
+        from app.gateway.app import app as gateway_app
+
+        telegram_channel = self
+
+        @gateway_app.post("/webhooks/telegram")
+        async def telegram_webhook(request: Request) -> Response:
+            # Verify the secret token if configured.
+            if telegram_channel._webhook_secret:
+                secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+                if secret != telegram_channel._webhook_secret:
+                    logger.warning("[Telegram] webhook rejected: invalid secret token")
+                    return Response(status_code=403)
+
+            # Deserialize the update and feed it to the handlers.
+            try:
+                from telegram import Update
+
+                body = await request.json()
+                update = Update.de_json(body, telegram_channel._application.bot)
+
+                # Dispatch to the registered handlers. In webhook mode we call
+                # process_update directly on the main loop — no thread hop needed.
+                await telegram_channel._application.process_update(update)
+            except Exception:
+                logger.exception("[Telegram] webhook handler error")
+                return Response(status_code=500)
+
+            return Response(status_code=200)
+
+        logger.info("[Telegram] webhook route registered at POST /webhooks/telegram")
 
     def _check_user(self, user_id: int) -> bool:
         if not self._allowed_users:
