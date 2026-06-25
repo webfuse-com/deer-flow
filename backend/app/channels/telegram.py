@@ -501,8 +501,20 @@ class TelegramChannel(Channel):
         await update.message.reply_text("Welcome to DeerFlow! Send me a message to start a conversation.\nType /help for available commands.")
 
     async def _process_incoming_with_reply(self, chat_id: str, msg_id: int, inbound: InboundMessage) -> None:
-        await self._send_running_reply(chat_id, msg_id)
+        # Fire the 👀 received emoji in the background so the inbound message
+        # reaches the agent pipeline immediately. The emoji is a UI indicator,
+        # not functional — if it fails, the degraded mode (reaction fallback)
+        # already handles it. Saves ~200ms of Telegram API round-trip on the
+        # critical path.
+        asyncio.create_task(self._send_running_reply_safe(chat_id, msg_id))
         await self.bus.publish_inbound(inbound)
+
+    async def _send_running_reply_safe(self, chat_id: str, msg_id: int) -> None:
+        """Fire-and-forget wrapper for _send_running_reply that logs errors."""
+        try:
+            await self._send_running_reply(chat_id, msg_id)
+        except Exception:
+            logger.exception("[Telegram] fire-and-forget _send_running_reply failed in chat=%s", chat_id)
 
     async def _cmd_generic(self, update, context) -> None:
         """Forward slash commands to the channel manager."""
