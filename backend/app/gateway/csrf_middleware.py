@@ -44,6 +44,10 @@ def should_check_csrf(request: Request) -> bool:
     # Exempt /api/v1/auth/me endpoint
     if path == "/api/v1/auth/me":
         return False
+    # Exempt webhook endpoints (verified via platform-specific secrets,
+    # not browser cookies — CSRF doesn't apply)
+    if path.startswith("/webhooks/"):
+        return False
     return True
 
 
