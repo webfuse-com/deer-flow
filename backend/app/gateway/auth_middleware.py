@@ -28,6 +28,7 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/docs",
     "/redoc",
     "/openapi.json",
+    "/webhooks/",  # Telegram webhook (verified via X-Telegram-Bot-Api-Secret-Token)
 )
 
 # Exact auth paths that are public (login/register/status check).
