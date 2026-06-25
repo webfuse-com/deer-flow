@@ -517,6 +517,53 @@ def test_reconcile_idle_timeout_zero_adopts_all():
     assert "young_one" in provider._warm_pool
 
 
+# ── Orphan purge on startup reconciliation ──────────────────────────────────
+
+
+def test_reconcile_purges_non_running_orphans():
+    """_reconcile_orphans() force-removes Created/Exited containers so the
+    deterministic sandbox name is free for the next spawn (the root cause fix
+    for the 'sandbox needs to be restarted' hang under rootless Podman)."""
+    provider = _make_provider_for_reconciliation()
+
+    # list_running returns nothing (no warm-pool adoption).
+    provider._backend.list_running.return_value = []
+    # list_orphaned returns two dead containers.
+    provider._backend.list_orphaned.return_value = ["deer-flow-sandbox-dead1", "deer-flow-sandbox-dead2"]
+    # purge returns True (success).
+    provider._backend.purge.return_value = True
+
+    provider._reconcile_orphans()
+
+    provider._backend.list_orphaned.assert_called_once()
+    assert provider._backend.purge.call_count == 2
+    purged_names = [call.args[0] for call in provider._backend.purge.call_args_list]
+    assert sorted(purged_names) == ["deer-flow-sandbox-dead1", "deer-flow-sandbox-dead2"]
+
+
+def test_reconcile_logs_when_purge_fails():
+    """When purge() returns False, the provider logs an error (loud failure)."""
+    provider = _make_provider_for_reconciliation()
+    provider._backend.list_running.return_value = []
+    provider._backend.list_orphaned.return_value = ["deer-flow-sandbox-stuck"]
+    provider._backend.purge.return_value = False
+
+    provider._reconcile_orphans()
+
+    provider._backend.purge.assert_called_once_with("deer-flow-sandbox-stuck")
+
+
+def test_reconcile_purge_handles_backend_exception():
+    """If list_orphaned() raises, reconciliation still completes (warm pool intact)."""
+    provider = _make_provider_for_reconciliation()
+    provider._backend.list_running.return_value = []
+    provider._backend.list_orphaned.side_effect = RuntimeError("docker not found")
+
+    provider._reconcile_orphans()  # should not raise
+
+    provider._backend.purge.assert_not_called()
+
+
 # ── SIGHUP signal handler ───────────────────────────────────────────────────
 
 

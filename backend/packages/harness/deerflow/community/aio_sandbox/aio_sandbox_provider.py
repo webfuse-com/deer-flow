@@ -192,6 +192,7 @@ class AioSandboxProvider(SandboxProvider):
             container_prefix=self._config["container_prefix"],
             config_mounts=self._config["mounts"],
             environment=self._config["environment"],
+            network=self._config["network"],
         )
 
     # ── Configuration ────────────────────────────────────────────────────
@@ -208,6 +209,7 @@ class AioSandboxProvider(SandboxProvider):
             "image": sandbox_config.image or DEFAULT_IMAGE,
             "port": sandbox_config.port or DEFAULT_PORT,
             "container_prefix": sandbox_config.container_prefix or DEFAULT_CONTAINER_PREFIX,
+            "network": getattr(sandbox_config, "network", None),
             "idle_timeout": idle_timeout if idle_timeout is not None else DEFAULT_IDLE_TIMEOUT,
             "replicas": replicas if replicas is not None else DEFAULT_REPLICAS,
             "mounts": sandbox_config.mounts or [],
@@ -247,6 +249,29 @@ class AioSandboxProvider(SandboxProvider):
         This closes the fundamental gap where in-memory state loss (process
         restart, crash, SIGKILL) leaves Docker containers running forever.
         """
+        # Purge non-running orphans (Created/Exited/Dead) FIRST. These accumulate
+        # when a rootless-Podman port-bind race leaves a container stuck in Created
+        # state; list_running() only sees running containers, so the idle checker
+        # never reclaims them. Each orphan holds the deterministic sandbox name, so
+        # the next spawn for that thread hits a name conflict and hangs forever.
+        # Force-remove them here so the name is free for the next acquire. This runs
+        # before the warm-pool adoption so a dead orphan is not adopted.
+        try:
+            orphaned = self._backend.list_orphaned()
+        except Exception as e:
+            logger.warning(f"Failed to enumerate orphaned containers during startup reconciliation: {e}")
+            orphaned = []
+
+        purged = 0
+        for container_name in orphaned:
+            if self._backend.purge(container_name):
+                purged += 1
+                logger.info(f"Purged orphaned container {container_name} during startup reconciliation")
+            else:
+                logger.error(f"Failed to purge orphaned container {container_name} during startup reconciliation")
+        if orphaned:
+            logger.info(f"Orphan purge complete: {purged}/{len(orphaned)} removed")
+
         try:
             running = self._backend.list_running()
         except Exception as e:

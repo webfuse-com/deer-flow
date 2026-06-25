@@ -22,6 +22,11 @@ class SandboxConfig(BaseModel):
         port: Base port for sandbox containers (default: 8080)
         replicas: Maximum number of concurrent sandbox containers (default: 3). When the limit is reached the least-recently-used sandbox is evicted to make room.
         container_prefix: Prefix for container names (default: deer-flow-sandbox)
+        network: Container network to attach sandboxes to (e.g. argus-net). When set,
+            sandboxes are reached by container DNS name instead of published host
+            ports, eliminating host-port conflicts under rootless Podman (the
+            rootlessport async bind race that leaves containers stuck in Created
+            state). When unset, the legacy host-port-publishing path is used.
         idle_timeout: Idle timeout in seconds before sandbox is released (default: 600 = 10 minutes). Set to 0 to disable.
         mounts: List of volume mounts to share directories with the container
         environment: Environment variables to inject into the container (values starting with $ are resolved from host env)
@@ -50,6 +55,15 @@ class SandboxConfig(BaseModel):
     container_prefix: str | None = Field(
         default=None,
         description="Prefix for container names",
+    )
+    network: str | None = Field(
+        default=None,
+        description=(
+            "Container network to attach sandboxes to (e.g. argus-net). "
+            "When set, sandboxes are reached by container DNS name instead of "
+            "published host ports, eliminating host-port conflicts under rootless "
+            "Podman. When unset, the legacy host-port-publishing path is used."
+        ),
     )
     idle_timeout: int | None = Field(
         default=None,

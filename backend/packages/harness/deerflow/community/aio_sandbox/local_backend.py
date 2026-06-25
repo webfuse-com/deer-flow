@@ -191,6 +191,7 @@ class LocalContainerBackend(SandboxBackend):
         container_prefix: str,
         config_mounts: list,
         environment: dict[str, str],
+        network: str | None = None,
     ):
         """Initialize the local container backend.
 
@@ -200,13 +201,23 @@ class LocalContainerBackend(SandboxBackend):
             container_prefix: Prefix for container names (e.g., "deer-flow-sandbox").
             config_mounts: Volume mount configurations from config (list of VolumeMountConfig).
             environment: Environment variables to inject into containers.
+            network: Container network to attach sandboxes to (e.g. "argus-net").
+                When set, sandboxes are reached by container DNS name instead of
+                published host ports, eliminating host-port conflicts under rootless
+                Podman. When None, the legacy host-port-publishing path is used.
         """
         self._image = image
         self._base_port = base_port
         self._container_prefix = container_prefix
         self._config_mounts = config_mounts
         self._environment = environment
+        self._network = network
         self._runtime = self._detect_runtime()
+
+    @property
+    def network(self) -> str | None:
+        """The configured container network, or None for host-port publishing."""
+        return self._network
 
     @property
     def runtime(self) -> str:
@@ -258,6 +269,38 @@ class LocalContainerBackend(SandboxBackend):
         """
         container_name = f"{self._container_prefix}-{sandbox_id}"
 
+        # Network mode: sandboxes join a named network and are reached by
+        # container DNS name (http://<container_name>:8080). No host port is
+        # published, so there is no port-allocation retry loop — the only
+        # recoverable failure is a name conflict from a stale non-running
+        # container, handled by force-remove-and-retry.
+        if self._network:
+            container_id: str | None = None
+            for attempt in range(10):
+                try:
+                    container_id = self._start_container(container_name, self._base_port, extra_mounts)
+                    break
+                except RuntimeError as exc:
+                    err_lower = str(exc).lower()
+                    if "the container name" in err_lower and "is already in use" in err_lower:
+                        logger.warning(
+                            f"Container name {container_name} already in use (attempt {attempt + 1}/10), "
+                            f"force-removing stale container and retrying"
+                        )
+                        self._force_remove(container_name)
+                        continue
+                    raise
+            else:
+                raise RuntimeError(f"Could not start sandbox container {container_name}: name conflict not resolved after 10 attempts")
+
+            return SandboxInfo(
+                sandbox_id=sandbox_id,
+                sandbox_url=f"http://{container_name}:{self._base_port}",
+                container_name=container_name,
+                container_id=container_id,
+            )
+
+        # Legacy host-port-publishing mode.
         # Retry loop: if Docker rejects the port (e.g. a stale container still
         # holds the binding after a process restart), skip that port and try the
         # next one.  The socket-bind check in get_free_port mirrors Docker's
@@ -280,14 +323,31 @@ class LocalContainerBackend(SandboxBackend):
                     logger.warning(f"Port {port} rejected by Docker (already allocated), retrying with next port")
                     _next_start = port + 1
                     continue
-                # Container-name conflict: another process may have already started
-                # the deterministic sandbox container for this sandbox_id. Try to
-                # discover and adopt the existing container instead of failing.
+                # Container-name conflict: a stale non-running container (e.g.
+                # a Created-state orphan from a rootless-Podman port-bind race)
+                # holds the deterministic name. Force-remove it and retry on
+                # the same port. Broadened to match both Docker ("is already in
+                # use by container") and Podman ("is already in use by <hash>")
+                # error formats.
+                if "is already in use" in err_lower and "the container name" in err_lower:
+                    logger.warning(
+                        f"Container name {container_name} already in use, force-removing stale container and retrying on port {port}"
+                    )
+                    self._force_remove(container_name)
+                    _next_start = port  # same port; the orphan was the blocker
+                    continue
+                # Legacy name-conflict matcher (older Docker phrasing).
                 if "is already in use by container" in err_lower or "conflict. the container name" in err_lower:
                     logger.warning(f"Container name {container_name} already in use, attempting to discover existing sandbox instance")
                     existing = self.discover(sandbox_id)
                     if existing is not None:
                         return existing
+                    # No running instance — force-remove the stale container
+                    # and retry so the caller isn't wedged forever.
+                    logger.warning(f"No running instance of {container_name}; force-removing stale container")
+                    self._force_remove(container_name)
+                    _next_start = port
+                    continue
                 raise
         else:
             raise RuntimeError("Could not start sandbox container: all candidate ports are already allocated by Docker")
@@ -310,6 +370,9 @@ class LocalContainerBackend(SandboxBackend):
         stop_target = info.container_id or info.container_name
         if stop_target:
             self._stop_container(stop_target)
+        # Release host port (legacy host-port-publishing mode only).
+        if self._network:
+            return
         # Extract port from sandbox_url for release
         try:
             from urllib.parse import urlparse
@@ -342,6 +405,17 @@ class LocalContainerBackend(SandboxBackend):
 
         if not self._is_container_running(container_name):
             return None
+
+        # Network mode: reach the sandbox by container DNS name (no host port).
+        if self._network:
+            sandbox_url = f"http://{container_name}:{self._base_port}"
+            if not wait_for_sandbox_ready(sandbox_url, timeout=5):
+                return None
+            return SandboxInfo(
+                sandbox_id=sandbox_id,
+                sandbox_url=sandbox_url,
+                container_name=container_name,
+            )
 
         port = self._get_container_port(container_name)
         if port is None:
@@ -421,7 +495,11 @@ class LocalContainerBackend(SandboxBackend):
                 continue
             created_at, host_port = data
             sandbox_id = container_name[len(self._container_prefix) + 1 :]
-            sandbox_url = f"http://{sandbox_host}:{host_port}" if host_port else ""
+            if self._network:
+                # Network mode: reach by container DNS name (host port is unused).
+                sandbox_url = f"http://{container_name}:{self._base_port}"
+            else:
+                sandbox_url = f"http://{sandbox_host}:{host_port}" if host_port else ""
 
             infos.append(
                 SandboxInfo(
@@ -508,7 +586,13 @@ class LocalContainerBackend(SandboxBackend):
         if self._runtime == "docker":
             cmd.extend(["--security-opt", "seccomp=unconfined"])
 
-        if self._runtime == "docker":
+        if self._network:
+            # Network mode: attach to a named network and reach the sandbox by
+            # container DNS name. No host port is published, eliminating the
+            # rootless-Podman async port-bind race that leaves containers stuck
+            # in Created state.
+            cmd.extend(["--network", self._network])
+        elif self._runtime == "docker":
             port_mapping = f"{_resolve_docker_bind_host()}:{port}:8080"
         else:
             port_mapping = f"{port}:8080"
@@ -517,12 +601,14 @@ class LocalContainerBackend(SandboxBackend):
             [
                 "--rm",
                 "-d",
-                "-p",
-                port_mapping,
-                "--name",
-                container_name,
             ]
         )
+
+        # Host-port publish (legacy mode only).
+        if not self._network:
+            cmd.extend(["-p", port_mapping])
+
+        cmd.extend(["--name", container_name])
 
         # Environment variables
         for key, value in self._environment.items():
@@ -578,10 +664,14 @@ class LocalContainerBackend(SandboxBackend):
             if state in ("exited", "dead") or (state == "created" and err):
                 # Terminal failure (not just "still creating"). Clean up the
                 # dead container and raise so the port-retry loop kicks in.
-                self._force_remove(container_name)
+                self._force_remove(container_name) or logger.error(
+                    f"Failed to force-remove dead container {container_name} after terminal failure (state={state})"
+                )
                 raise RuntimeError(f"sandbox container did not start (state={state}): {err or 'unknown'}")
             time.sleep(0.1)
-        self._force_remove(container_name)
+        self._force_remove(container_name) or logger.error(
+            f"Failed to force-remove container {container_name} after non-running timeout"
+        )
         raise RuntimeError(f"sandbox container {container_name} stuck in non-running state")
 
     def _inspect_state_error(self, container_name: str) -> tuple[str, str]:
@@ -598,12 +688,26 @@ class LocalContainerBackend(SandboxBackend):
             pass
         return "", ""
 
-    def _force_remove(self, container_name: str) -> None:
+    def _force_remove(self, container_name: str) -> bool:
+        """Force-remove a container, returning True on success.
+
+        Logs at ERROR when removal fails so a silently-swallowed failure no
+        longer leaves a stale container wedging future spawns (the root cause
+        of the "sandbox needs to be restarted" hang under rootless Podman).
+        """
         try:
             subprocess.run([self._runtime, "rm", "-f", container_name],
                            capture_output=True, text=True, timeout=10)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            pass
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to force-remove container {container_name}: {e.stderr}")
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timed out force-removing container {container_name} (10s)")
+            return False
+        except (FileNotFoundError, OSError) as e:
+            logger.error(f"Cannot run {self._runtime} rm for container {container_name}: {e}")
+            return False
 
     def _stop_container(self, container_id: str) -> None:
         """Stop a container (--rm ensures automatic removal)."""
@@ -658,3 +762,64 @@ class LocalContainerBackend(SandboxBackend):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
             pass
         return None
+
+    # ── Orphan reaping ───────────────────────────────────────────────────
+
+    def list_orphaned(self) -> list[str]:
+        """Enumerate non-running containers matching the configured prefix.
+
+        Returns container names in ``Created``, ``Exited``, or ``Dead`` state
+        (i.e. not ``Running`` or ``Paused``). These accumulate forever when a
+        rootless-Podman port-bind race leaves a container stuck in ``Created``,
+        because ``list_running()`` (the only enumeration the idle checker used)
+        only sees running containers. The provider force-removes each on startup
+        reconciliation so the deterministic sandbox name is free for the next
+        spawn.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._runtime,
+                    "ps",
+                    "-a",
+                    "--filter",
+                    "status=created",
+                    "--filter",
+                    "status=exited",
+                    "--filter",
+                    "status=dead",
+                    "--format",
+                    "{{.Names}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                logger.warning(
+                    "Failed to list orphaned containers (returncode=%s, stderr=%s)",
+                    result.returncode,
+                    stderr or "<empty>",
+                )
+                return []
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            logger.warning(f"Failed to list orphaned containers: {e}")
+            return []
+
+        if not result.stdout.strip():
+            return []
+
+        names = [
+            name.strip()
+            for name in result.stdout.strip().splitlines()
+            if name.strip().startswith(self._container_prefix + "-")
+        ]
+        return names
+
+    def purge(self, container_name: str) -> bool:
+        """Force-remove a non-running container by name.
+
+        Returns True if removed (or already gone), False on failure.
+        """
+        return self._force_remove(container_name)

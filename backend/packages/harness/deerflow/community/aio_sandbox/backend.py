@@ -142,3 +142,33 @@ class SandboxBackend(ABC):
             A list of SandboxInfo for all currently running sandboxes.
         """
         return []
+
+    def list_orphaned(self) -> list[str]:
+        """Enumerate non-running containers managed by this backend.
+
+        Used for startup reconciliation: containers left in ``Created`` or
+        ``Exited`` state by a previous process (e.g. a rootless-Podman port-bind
+        race that never reached ``Running``) accumulate forever because the
+        idle checker only inspects running containers.  The provider calls this
+        on startup and force-removes each orphan so the deterministic sandbox
+        name is free for the next spawn.
+
+        The default implementation returns an empty list (no-op for backends
+        that don't manage local containers).
+
+        Returns:
+            A list of container names in non-running states.
+        """
+        return []
+
+    def purge(self, container_name: str) -> bool:
+        """Force-remove a non-running container by name.
+
+        Called by the provider's orphan-reconciliation for each name returned
+        by ``list_orphaned``.  Returns True if the container was removed (or was
+        already gone), False if removal failed and the caller should log loudly.
+
+        The default implementation is a no-op returning True (backends that
+        don't manage local containers have nothing to purge).
+        """
+        return True
