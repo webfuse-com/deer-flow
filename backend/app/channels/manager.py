@@ -1020,6 +1020,7 @@ class ChannelManager:
         require_bound_identity: bool = False,
         inbound_dedupe_store: InboundDedupeStore | None = None,
         get_stream_bridge: Callable[[], StreamBridge | None] | None = None,
+        coalesce_window: float | None = None,
     ) -> None:
         if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or max_concurrency <= 0:
             raise ValueError("max_concurrency must be a positive integer")
@@ -1029,6 +1030,9 @@ class ChannelManager:
         self.store = store
         self._max_concurrency = max_concurrency
         self._shutdown_grace_period_seconds = float(shutdown_grace_period_seconds)
+        # [argus patch #10] Debounced coalescing of split-paste CHAT messages.
+        self._coalesce_window = coalesce_window
+        self._coalescer = None
         self._langgraph_url = langgraph_url
         self._gateway_url = gateway_url
         self._assistant_id = assistant_id
@@ -1642,6 +1646,10 @@ class ChannelManager:
         self._worker_tasks.clear()
         self._running = True
         self._stopped = False
+        from app.channels._coalesce import DEFAULT_COALESCE_WINDOW, MessageCoalescer
+
+        window = self._coalesce_window if self._coalesce_window is not None else DEFAULT_COALESCE_WINDOW
+        self._coalescer = MessageCoalescer(self._handle_message, window=window) if window > 0 else None
         self.bus.open_inbound()
         self._worker_tasks = {
             asyncio.create_task(
@@ -1678,6 +1686,11 @@ class ChannelManager:
         attached to the service and shutdown can be retried.
         """
         invalidated_reservations = self.begin_shutdown()
+        if self._coalescer is not None:
+            try:
+                await self._coalescer.flush()
+            except Exception:
+                logger.exception("[Manager] coalescer flush on stop failed")
         loop = asyncio.get_running_loop()
         grace_deadline = loop.time() + self._shutdown_grace_period_seconds
         worker_tasks = list(self._worker_tasks)
@@ -1740,7 +1753,6 @@ class ChannelManager:
                 invalidated_reservations,
                 discarded_messages,
             )
-
         logger.info("ChannelManager stopped")
 
     # -- worker pool -------------------------------------------------------
@@ -1773,8 +1785,10 @@ class ChannelManager:
                     len(msg.text or ""),
                     len(msg.files),
                 )
-                # Deliberately awaited inline: never create a task per message.
-                await self._handle_message(msg)
+                if self._coalescer is not None and msg.msg_type == InboundMessageType.CHAT:
+                    self._coalescer.add(msg)
+                else:
+                    await self._handle_message(msg)
             except asyncio.CancelledError:
                 # A cancellation after dedupe admission must make provider
                 # redelivery retryable rather than retaining a TTL-long key for
@@ -1801,7 +1815,6 @@ class ChannelManager:
                         logger.exception("[Manager] failed to release inbound dedupe key after worker error")
             finally:
                 self.bus.inbound_task_done()
-
     @staticmethod
     def _inbound_dedupe_key(msg: InboundMessage) -> tuple[str, str, str, str] | None:
         metadata = msg.metadata or {}
