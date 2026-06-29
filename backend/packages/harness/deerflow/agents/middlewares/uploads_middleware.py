@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 _OUTLINE_PREVIEW_LINES = 5
 
+# [argus] Image extensions the view_image tool can read (mirrors the allowlist
+# in deerflow/tools/builtins/view_image_tool.py). Uploaded images need
+# view_image-specific guidance: read_file/grep/glob cannot open them, and the
+# frontend sends images by path (additional_kwargs.files), never inline as
+# image_url blocks, so the model would otherwise have no route to the pixels.
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
 
 def _extract_outline_for_file(file_path: Path) -> tuple[list[dict], list[str]]:
     """Return the document outline and fallback preview for *file_path*.
@@ -90,6 +97,17 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
         lines.append(f"- {file['filename']} ({size_str})")
         lines.append(f"  Path: {file['path']}")
+        # [argus] Images are not text: read_file/grep/glob cannot open them.
+        # Point the model at view_image, the only tool that gets the pixels
+        # into context.
+        if Path(file.get("filename", "")).suffix.lower() in _IMAGE_EXTENSIONS:
+            lines.append(
+                f"  This is an image. Call `view_image(image_path='{file['path']}')` "
+                "to view it before answering. Do NOT use read_file/grep/glob on it "
+                "and do NOT claim you cannot see images."
+            )
+            lines.append("")
+            return
         outline = file.get("outline") or []
         if outline:
             truncated = outline[-1].get("truncated", False)
@@ -137,13 +155,20 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
             for file in historical_files:
                 self._format_file_entry(file, lines)
 
-        lines.append("To work with these files:")
-        lines.append("- Read from the file first — use the outline line numbers and `read_file` to locate relevant sections.")
-        lines.append("- Use `grep` to search for keywords when you are not sure which section to look at")
-        lines.append("  (e.g. `grep(pattern='revenue', path='/mnt/user-data/uploads/')`).")
-        lines.append("- Use `glob` to find files by name pattern")
-        lines.append("  (e.g. `glob(pattern='**/*.md', path='/mnt/user-data/uploads/')`).")
-        lines.append("- Only fall back to web search if the file content is clearly insufficient to answer the question.")
+        # [argus] The trailing doc-search workflow (read_file/grep/glob) only
+        # makes sense for text documents. When every uploaded file is an image
+        # the per-file view_image guidance stands alone — emitting the doc
+        # block would contradict it and nudge the model back toward read_file.
+        all_files = [*new_files, *historical_files]
+        has_non_image = any(Path(f.get("filename", "")).suffix.lower() not in _IMAGE_EXTENSIONS for f in all_files)
+        if has_non_image:
+            lines.append("To work with these files:")
+            lines.append("- Read from the file first — use the outline line numbers and `read_file` to locate relevant sections.")
+            lines.append("- Use `grep` to search for keywords when you are not sure which section to look at")
+            lines.append("  (e.g. `grep(pattern='revenue', path='/mnt/user-data/uploads/')`).")
+            lines.append("- Use `glob` to find files by name pattern")
+            lines.append("  (e.g. `glob(pattern='**/*.md', path='/mnt/user-data/uploads/')`).")
+            lines.append("- Only fall back to web search if the file content is clearly insufficient to answer the question.")
         lines.append("</uploaded_files>")
 
         return "\n".join(lines)
