@@ -90,6 +90,28 @@ def _slim_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in meta.items() if k not in _METADATA_DROP_KEYS}
 
 
+def _is_trivial_unattended_text(text: str | None) -> bool:
+    """[argus patch #31/#32] True if *text* carries no real content for an
+    unattended (scheduled) turn.
+
+    Patch #31 suppressed a fully-empty unattended response. But a model asked to
+    "produce no output" often emits a single filler token instead of nothing —
+    a ``.``, ``-``, ``…``, an ellipsis, or whitespace — which slips past an
+    ``if not response_text`` check and gets delivered every cron tick (e.g. the
+    hourly meeting-prep poll posting a lone ``.``). Treat such a response as
+    empty so the unattended-suppression branch fires.
+
+    Conservative: only blanks (a) empty/whitespace-only, or (b) a short run
+    (<= 3 chars) with no alphanumeric character. Any real word, number, or
+    longer string is preserved, so genuine briefs are never dropped. Applied
+    ONLY on the unattended path; interactive turns are unaffected.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    return len(stripped) <= 3 and re.search(r"\w", stripped) is None
+
+
 INBOUND_FILE_READERS: dict[str, InboundFileReader] = {}
 
 
@@ -1369,6 +1391,16 @@ class ChannelManager:
         # channel.receive_file returns a rewritten InboundMessage.
         response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, user_id=storage_user_id)
 
+        # [argus patch #31/#32] Stay silent on a contentless unattended (scheduled)
+        # turn. A job with nothing to report (e.g. the hourly meeting-prep poll
+        # with no meeting imminent) must not post "(No response from agent)" or a
+        # lone filler token to the citizen's chat every tick. Only fires on the
+        # unattended path with no real text AND no artifacts; interactive turns
+        # and real errors are untouched.
+        if msg.unattended and not attachments and _is_trivial_unattended_text(response_text):
+            logger.info("[Manager] unattended turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
+            return
+
         if not response_text:
             if attachments:
                 response_text = _format_artifact_text([a.virtual_path for a in attachments])
@@ -1477,6 +1509,14 @@ class ChannelManager:
             # (and its possible filesystem touch) on the streaming-error path.
             response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, user_id=storage_user_id)
 
+            # [argus patch #31/#32] Stay silent on a contentless unattended turn
+            # (see the non-streaming guard). Only when there is no real text, no
+            # attachments, AND no stream error — a real error must still be
+            # delivered, and interactive turns are untouched. Use a flag (NOT a
+            # bare return) because we are inside a finally block: returning here
+            # would swallow any in-flight exception from the try body.
+            suppress_final = bool(msg.unattended and not attachments and not stream_error and _is_trivial_unattended_text(response_text) and _is_trivial_unattended_text(latest_text))
+
             if not response_text:
                 if attachments:
                     response_text = _format_artifact_text([attachment.virtual_path for attachment in attachments])
@@ -1488,28 +1528,31 @@ class ChannelManager:
                 else:
                     response_text = latest_text or "(No response from agent)"
 
-            logger.info(
-                "[Manager] streaming response completed: thread_id=%s, response_len=%d, artifacts=%d, error=%s",
-                thread_id,
-                len(response_text),
-                len(artifacts),
-                stream_error,
-            )
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel_name=msg.channel_name,
-                    chat_id=msg.chat_id,
-                    thread_id=thread_id,
-                    text=response_text,
-                    artifacts=artifacts,
-                    attachments=attachments,
-                    is_final=True,
-                    thread_ts=msg.thread_ts,
-                    connection_id=msg.connection_id,
-                    owner_user_id=msg.owner_user_id,
-                    metadata=_response_metadata(msg.metadata, pending_clarification=pending_clarification),
+            if suppress_final:
+                logger.info("[Manager] unattended streaming turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
+            else:
+                logger.info(
+                    "[Manager] streaming response completed: thread_id=%s, response_len=%d, artifacts=%d, error=%s",
+                    thread_id,
+                    len(response_text),
+                    len(artifacts),
+                    stream_error,
                 )
-            )
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel_name=msg.channel_name,
+                        chat_id=msg.chat_id,
+                        thread_id=thread_id,
+                        text=response_text,
+                        artifacts=artifacts,
+                        attachments=attachments,
+                        is_final=True,
+                        thread_ts=msg.thread_ts,
+                        connection_id=msg.connection_id,
+                        owner_user_id=msg.owner_user_id,
+                        metadata=_response_metadata(msg.metadata, pending_clarification=pending_clarification),
+                    )
+                )
 
     # -- command handling --------------------------------------------------
 
