@@ -97,6 +97,12 @@ def _ensure_postgres_imports():
     except ImportError as exc:
         raise ImportError(POSTGRES_INSTALL) from exc
 
+    # [argus] Install AsyncPostgresSaver.aprune (absent from
+    # langgraph-checkpoint-postgres) so operators can bound checkpoint history
+    # in-process. Self-activating + idempotent on import; no-op if upstream
+    # ever ships a native aprune. See _postgres_aprune.py.
+    from deerflow.runtime.checkpointer import _postgres_aprune  # noqa: F401
+
     return AsyncPostgresSaver, AsyncConnectionPool
 
 
