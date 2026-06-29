@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 _MAX_FILES_PER_CONTEXT_SECTION = 10
 
+# [argus] Image extensions the view_image tool can read (mirrors the allowlist
+# in deerflow/tools/builtins/view_image_tool.py). Uploaded images need
+# view_image-specific guidance: read_file/grep/glob cannot open them, and the
+# frontend sends images by path (additional_kwargs.files), never inline as
+# image_url blocks, so the model would otherwise have no route to the pixels.
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
 
 def _extension_label(file: dict) -> str:
     extension = str(file.get("extension") or Path(str(file.get("filename") or "")).suffix).lower()
@@ -88,6 +95,17 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
         lines.append(f"- {neutralize_untrusted_tags(file['filename'])} ({size_str})")
         lines.append(f"  Path: {neutralize_untrusted_tags(file['path'])}")
+        # [argus] Images are not text: read_file/grep/glob cannot open them.
+        # Point the model at view_image, the only tool that gets the pixels
+        # into context.
+        if Path(file.get("filename", "")).suffix.lower() in _IMAGE_EXTENSIONS:
+            lines.append(
+                f"  This is an image. Call `view_image(image_path='{file['path']}')` "
+                "to view it before answering. Do NOT use read_file/grep/glob on it "
+                "and do NOT claim you cannot see images."
+            )
+            lines.append("")
+            return
         if file.get("selection_reason") == "query_match":
             lines.append("  Selected because: matched the current query.")
         outline = file.get("outline") or []
@@ -149,13 +167,15 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
             lines.append("(empty)")
             lines.append("")
 
-        lines.append("To work with these files:")
-        lines.append("- Read from the file first — use the outline line numbers and `read_file` to locate relevant sections.")
-        lines.append("- Use `grep` to search for keywords when you are not sure which section to look at")
-        lines.append("  (e.g. `grep(pattern='revenue', path='/mnt/user-data/uploads/')`).")
-        lines.append("- Use `glob` to find files by name pattern")
-        lines.append("  (e.g. `glob(pattern='**/*.md', path='/mnt/user-data/uploads/')`).")
-        lines.append("- Only fall back to web search if the file content is clearly insufficient to answer the question.")
+        has_non_image = any(Path(f.get("filename", "")).suffix.lower() not in _IMAGE_EXTENSIONS for f in files)
+        if has_non_image:
+            lines.append("To work with these files:")
+            lines.append("- Read from the file first — use the outline line numbers and `read_file` to locate relevant sections.")
+            lines.append("- Use `grep` to search for keywords when you are not sure which section to look at")
+            lines.append("  (e.g. `grep(pattern='revenue', path='/mnt/user-data/uploads/')`).")
+            lines.append("- Use `glob` to find files by name pattern")
+            lines.append("  (e.g. `glob(pattern='**/*.md', path='/mnt/user-data/uploads/')`).")
+            lines.append("- Only fall back to web search if the file content is clearly insufficient to answer the question.")
         lines.append("</current_uploads>")
 
         return "\n".join(lines)
