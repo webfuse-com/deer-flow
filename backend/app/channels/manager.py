@@ -60,6 +60,28 @@ def _slim_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in meta.items() if k not in _METADATA_DROP_KEYS}
 
 
+def _is_trivial_unattended_text(text: str | None) -> bool:
+    """[argus patch #32] True if *text* carries no real content for an
+    unattended (scheduled) turn.
+
+    Patch #31 only suppressed a fully-empty unattended response. But a model
+    asked to "produce no output" often emits a single filler token instead of
+    nothing — a ``.``, ``-``, ``…``, an ellipsis, or whitespace — and that slips
+    past an ``if not response_text`` check and gets delivered every cron tick
+    (e.g. the hourly meeting-prep poll posting a lone ``.``). Treat such a
+    response as empty so the unattended-suppression branch fires.
+
+    Conservative: only blanks (a) empty/whitespace-only, or (b) a short run
+    (<= 3 chars) with no alphanumeric character. Any real word, number, or
+    longer string is preserved, so genuine briefs are never dropped. Applied
+    ONLY on the unattended path; interactive turns are unaffected.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    return len(stripped) <= 3 and re.search(r"\w", stripped) is None
+
+
 INBOUND_FILE_READERS: dict[str, InboundFileReader] = {}
 
 
@@ -906,12 +928,15 @@ class ChannelManager:
                     # from channel_user_id). DeerFlow otherwise only uses
                     # msg.user_id for the thread store; no tool ever sees it.
                     # Channel-agnostic; merged into run_context in _handle_chat.
-                    await self._handle_chat(msg, extra_context={
-                        "channel_user_id": msg.user_id,
-                        "channel_name": msg.channel_name,
-                        "channel_id": msg.chat_id,
-                        "thread_ts": msg.thread_ts,
-                    })
+                    await self._handle_chat(
+                        msg,
+                        extra_context={
+                            "channel_user_id": msg.user_id,
+                            "channel_name": msg.channel_name,
+                            "channel_id": msg.chat_id,
+                            "thread_ts": msg.thread_ts,
+                        },
+                    )
             except InvalidChannelSessionConfigError as exc:
                 logger.warning(
                     "Invalid channel session config for %s (chat=%s): %s",
@@ -964,17 +989,14 @@ class ChannelManager:
             # Best-effort + only fetches when the channel supports it.
             try:
                 from .service import get_channel_service
-                channel = (get_channel_service() or None) and \
-                    get_channel_service().get_channel(msg.channel_name)
+
+                channel = (get_channel_service() or None) and get_channel_service().get_channel(msg.channel_name)
                 fetch = getattr(channel, "fetch_thread_context", None) if channel else None
                 if fetch and msg.topic_id:
-                    ctx = await fetch(msg.chat_id, msg.topic_id,
-                                      (msg.metadata or {}).get("event_ts", ""))
+                    ctx = await fetch(msg.chat_id, msg.topic_id, (msg.metadata or {}).get("event_ts", ""))
                     if ctx:
                         msg.text = f"{ctx}\n\n{msg.text}".strip()
-                        logger.info("[Manager] prepended thread context "
-                                    "(%d chars) for new topic_id=%s",
-                                    len(ctx), msg.topic_id)
+                        logger.info("[Manager] prepended thread context (%d chars) for new topic_id=%s", len(ctx), msg.topic_id)
             except Exception:  # noqa: BLE001 — context is best-effort
                 logger.exception("[Manager] thread-context fetch failed")
 
@@ -1038,9 +1060,13 @@ class ChannelManager:
             len(artifacts),
         )
 
-        response_text, attachments = _prepare_artifact_delivery(
-            thread_id, response_text, artifacts, msg.channel_name, run_start=run_start
-        )
+        response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name, run_start=run_start)
+
+        # [argus patch #32] On the unattended path, collapse a trivial filler
+        # response (a lone ".", "-", "…", whitespace) to empty so the silence
+        # branch below catches it. Interactive turns are never touched.
+        if getattr(msg, "unattended", False) and _is_trivial_unattended_text(response_text):
+            response_text = ""
 
         if not response_text:
             if attachments:
@@ -1052,9 +1078,10 @@ class ChannelManager:
                 # "nothing to report" message every hour is pure noise. A citizen
                 # chatting interactively still gets the placeholder below.
                 logger.info(
-                    "[Manager] unattended turn produced no output; suppressing delivery "
-                    "(channel=%s, chat_id=%s, thread=%s)",
-                    msg.channel_name, msg.chat_id, thread_id,
+                    "[Manager] unattended turn produced no output; suppressing delivery (channel=%s, chat_id=%s, thread=%s)",
+                    msg.channel_name,
+                    msg.chat_id,
+                    thread_id,
                 )
                 return
             else:
@@ -1197,9 +1224,13 @@ class ChannelManager:
             result = last_values if last_values is not None else {"messages": [{"type": "ai", "content": latest_text}]}
             response_text = _extract_response_text(result)
             artifacts = _extract_artifacts(result)
-            response_text, attachments = _prepare_artifact_delivery(
-                thread_id, response_text, artifacts, msg.channel_name, run_start=run_start
-            )
+            response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name, run_start=run_start)
+
+            # [argus patch #32] Collapse a trivial unattended filler response
+            # ("." etc.) to empty so the silence branch below fires. See
+            # _is_trivial_unattended_text. Interactive/error paths unaffected.
+            if getattr(msg, "unattended", False) and not stream_error and _is_trivial_unattended_text(response_text):
+                response_text = ""
 
             suppress_final = False
             if not response_text:
