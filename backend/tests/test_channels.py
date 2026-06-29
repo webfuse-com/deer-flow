@@ -7910,6 +7910,123 @@ class TestSlackSendRetry:
         _run(go())
 
 
+class TestSlackAckCleanup:
+    """[argus patch #23] The 'Working on it...' ack and :eyes: reaction are
+    deleted once the real answer posts, instead of accumulating per turn."""
+
+    def test_running_reply_records_ack(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        mock_web.chat_postMessage.return_value = {"ts": "111.222"}
+        ch._web_client = mock_web
+
+        ch._send_running_reply("C1", "thr1", react_ts="999.000")
+
+        assert ch._acks[("C1", "thr1")] == {"ack_ts": "111.222", "react_ts": "999.000"}
+
+    def test_clear_acks_deletes_message_and_removes_reaction(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        ch._acks[("C1", "thr1")] = {"ack_ts": "111.222", "react_ts": "999.000"}
+        mock_web = MagicMock()
+
+        ch._clear_acks(mock_web, "C1", "thr1")
+
+        mock_web.chat_delete.assert_called_once_with(channel="C1", ts="111.222")
+        mock_web.reactions_remove.assert_called_once_with(channel="C1", timestamp="999.000", name="eyes")
+        # Entry is consumed so a later turn doesn't double-clear.
+        assert ("C1", "thr1") not in ch._acks
+
+    def test_clear_acks_is_noop_without_recorded_ack(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        ch._clear_acks(mock_web, "C1", "thr1")  # nothing recorded
+        mock_web.chat_delete.assert_not_called()
+        mock_web.reactions_remove.assert_not_called()
+
+    def test_send_clears_ack_after_answer(self):
+        from app.channels.slack import SlackChannel
+
+        async def go():
+            ch = SlackChannel(bus=MessageBus(), config={})
+            mock_web = MagicMock()
+            mock_web.chat_postMessage.return_value = {"ts": "ack.1"}
+            ch._web_client = mock_web
+            # A running reply was sent for this thread.
+            ch._send_running_reply("C1", "thr1", react_ts="user.1")
+            assert ("C1", "thr1") in ch._acks
+
+            msg = OutboundMessage(channel_name="slack", chat_id="C1", thread_id="t1", text="answer", thread_ts="thr1")
+            await ch.send(msg)
+
+            # send() posted the answer and then cleared the ack.
+            mock_web.chat_delete.assert_called_once_with(channel="C1", ts="ack.1")
+            assert ("C1", "thr1") not in ch._acks
+
+        _run(go())
+
+
+class TestSlackThreadContext:
+    """[argus patch #22] fetch_thread_context pulls a Slack thread's earlier
+    messages so a reply under a non-agent post (e.g. the minutes draft) has the
+    context it refers to."""
+
+    def _channel(self, replies):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        mock_web.conversations_replies.return_value = {"messages": replies}
+        ch._web_client = mock_web
+        return ch, mock_web
+
+    def test_formats_bot_and_user_messages(self):
+        ch, _ = self._channel([
+            {"ts": "1.0", "bot_id": "B1", "text": "Minutes: speaker 2 said hi"},
+            {"ts": "2.0", "user": "U9", "text": "assign Nicholas to speaker 2"},
+        ])
+        out = _run(ch.fetch_thread_context("C1", "1.0"))
+        assert "Pythia: Minutes: speaker 2 said hi" in out
+        assert "<@U9>: assign Nicholas to speaker 2" in out
+        assert out.startswith("[thread context")
+
+    def test_excludes_current_reply_and_acks(self):
+        ch, _ = self._channel([
+            {"ts": "1.0", "bot_id": "B1", "text": "the draft"},
+            {"ts": "2.0", "bot_id": "B1", "text": ":hourglass_flowing_sand: Working on it..."},
+            {"ts": "3.0", "user": "U9", "text": "this is the current reply"},
+        ])
+        out = _run(ch.fetch_thread_context("C1", "1.0", exclude_ts="3.0"))
+        assert "the draft" in out
+        assert "Working on it" not in out
+        assert "current reply" not in out
+
+    def test_empty_thread_returns_empty(self):
+        ch, _ = self._channel([])
+        assert _run(ch.fetch_thread_context("C1", "1.0")) == ""
+
+    def test_api_error_returns_empty(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        mock_web.conversations_replies.side_effect = RuntimeError("missing_scope")
+        ch._web_client = mock_web
+        assert _run(ch.fetch_thread_context("C1", "1.0")) == ""
+
+    def test_no_web_client_returns_empty(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        ch._web_client = None
+        assert _run(ch.fetch_thread_context("C1", "1.0")) == ""
+
+
 class TestSlackAllowedUsers:
     @staticmethod
     def _submit_coro(coro, loop, **_kwargs):
