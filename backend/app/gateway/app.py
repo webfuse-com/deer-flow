@@ -20,6 +20,7 @@ from app.gateway.routers import (
     mcp,
     memory,
     models,
+    playbooks,
     runs,
     skills,
     suggestions,
@@ -359,6 +360,10 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Channels API is mounted at /api/channels
     app.include_router(channels.router)
+
+    # [argus patch #30] Playbook-fire API is mounted at /api/playbooks
+    # (scheduled-playbook delivery; Chronos channel_notify jobs fire here).
+    app.include_router(playbooks.router)
 
     # Assistants compatibility API (LangGraph Platform stub)
     app.include_router(assistants_compat.router)

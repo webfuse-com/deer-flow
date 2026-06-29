@@ -140,6 +140,13 @@ _CONTEXT_CONFIGURABLE_KEYS: frozenset[str] = frozenset(
         "channel_name",
         "channel_id",
         "thread_ts",
+        # [argus patch #30] per-job memory policy (§4b). The channel manager
+        # sets these on run_context for an unattended (scheduled) turn; they must
+        # survive into ToolRuntime.context so MemoryMiddleware.after_agent and
+        # DynamicContextMiddleware can honor the read-only/off policy. Without
+        # this whitelist entry the keys are dropped and a job would write memory.
+        "unattended",
+        "memory_mode",
     }
 )
 

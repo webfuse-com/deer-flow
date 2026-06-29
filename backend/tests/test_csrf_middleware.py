@@ -233,3 +233,47 @@ def test_non_auth_mutation_rejects_mismatched_double_submit_token():
 
     assert response.status_code == 403
     assert response.json()["detail"] == "CSRF token mismatch."
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #30] internal-token CSRF exemption
+# ---------------------------------------------------------------------------
+
+
+def test_internal_token_exempts_csrf(monkeypatch):
+    """A request bearing a valid internal-auth token skips CSRF entirely — no
+    cookie pair needed. The token is a strictly stronger guard than CSRF, and
+    Chronos fires /api/playbooks/<id>/fire with it (no browser cookies)."""
+    import app.gateway.internal_auth as internal_auth
+
+    monkeypatch.setattr(internal_auth, "_INTERNAL_AUTH_TOKEN", "the-internal-token")
+    client = TestClient(_make_app(), base_url="https://deerflow.example")
+
+    response = client.post(
+        "/api/threads/abc/runs/stream",
+        headers={
+            "Origin": "https://deerflow.example",
+            internal_auth.INTERNAL_AUTH_HEADER_NAME: "the-internal-token",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_wrong_internal_token_still_requires_csrf(monkeypatch):
+    """An invalid internal token is NOT an exemption — CSRF is not weakened."""
+    import app.gateway.internal_auth as internal_auth
+
+    monkeypatch.setattr(internal_auth, "_INTERNAL_AUTH_TOKEN", "the-internal-token")
+    client = TestClient(_make_app(), base_url="https://deerflow.example")
+
+    response = client.post(
+        "/api/threads/abc/runs/stream",
+        headers={
+            "Origin": "https://deerflow.example",
+            internal_auth.INTERNAL_AUTH_HEADER_NAME: "wrong-token",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "CSRF token missing. Include X-CSRF-Token header."

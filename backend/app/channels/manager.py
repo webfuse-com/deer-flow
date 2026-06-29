@@ -761,12 +761,37 @@ class ChannelManager:
             {"thread_id": thread_id},
         )
 
+        # [argus patch #30] Per-message agent override wins ahead of the channel
+        # layers. A scheduled playbook (§3a) pins its own runner (default
+        # `atlas`) on the InboundMessage, independent of the channel's pinned
+        # agent (telegram → pythia-internal). When set it takes precedence over
+        # the user/channel/default `assistant_id` resolved above.
+        if isinstance(msg.agent_name, str) and msg.agent_name.strip():
+            assistant_id = _normalize_custom_agent_name(msg.agent_name)
+
         # Custom agents are implemented as lead_agent + agent_name context.
         # Keep backward compatibility for channel configs that set
         # assistant_id: <custom-agent-name> by routing through lead_agent.
         if assistant_id != DEFAULT_ASSISTANT_ID:
-            run_context.setdefault("agent_name", _normalize_custom_agent_name(assistant_id))
+            # A per-message override must win even when the channel/default layer
+            # already seeded an agent_name, so set (not setdefault) when it came
+            # from msg.agent_name.
+            if isinstance(msg.agent_name, str) and msg.agent_name.strip():
+                run_context["agent_name"] = assistant_id
+            else:
+                run_context.setdefault("agent_name", _normalize_custom_agent_name(assistant_id))
             assistant_id = DEFAULT_ASSISTANT_ID
+
+        # [argus patch #30] Per-job memory policy (§4b). Unattended turns (a
+        # scheduled fire) default to memory read-only so a job never silently
+        # mutates the citizen's long-term memory; an explicit `memory_mode`
+        # overrides. Both ride run_context → runtime.context, read by
+        # MemoryMiddleware.after_agent and DynamicContextMiddleware.
+        if msg.unattended:
+            run_context["unattended"] = True
+        memory_mode = msg.memory_mode or ("read-only" if msg.unattended else None)
+        if memory_mode:
+            run_context["memory_mode"] = memory_mode
 
         return assistant_id, run_config, run_context
 

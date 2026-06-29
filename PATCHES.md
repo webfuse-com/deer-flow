@@ -520,6 +520,53 @@ line count is tests.
 - **Delete-when:** upstream forwards channel/runtime identity keys natively, or
   the tool obtains the requester another way.
 
+### 30. `gateway/routers/playbooks` + `channels` + `memory`: scheduled-playbook fire with per-job agent & memory
+
+- **Files:** `backend/app/gateway/routers/playbooks.py` (new),
+  `backend/app/gateway/app.py` (register router),
+  `backend/app/gateway/csrf_middleware.py` (internal-token CSRF exemption),
+  `backend/app/gateway/services.py` (`unattended`/`memory_mode` in
+  `_CONTEXT_CONFIGURABLE_KEYS`),
+  `backend/app/channels/message_bus.py` (`InboundMessage.agent_name` /
+  `unattended` / `memory_mode`),
+  `backend/app/channels/manager.py` (`_resolve_run_params` per-message agent
+  precedence + memory policy),
+  `backend/packages/harness/deerflow/agents/memory/write_policy.py` (new; the
+  shared per-turn write-policy helper),
+  `backend/packages/harness/deerflow/agents/middlewares/memory_middleware.py`
+  (read-only/off early-return via the helper),
+  `backend/packages/harness/deerflow/agents/memory/summarization_hook.py`
+  (the pre-compression flush is a SECOND memory-write path — gate it too),
+  `backend/packages/harness/deerflow/agents/middlewares/dynamic_context_middleware.py`
+  (suppress memory injection for `memory: off`); tests
+  `backend/tests/test_playbook_fire.py`, `backend/tests/test_per_job_memory.py`.
+- **What:** Adds `POST /api/playbooks/<schedule_id>/fire`. A reconciled Chronos
+  `channel_notify` job fires here; the endpoint reads the assembled prompt from
+  `config/atlas-playbooks/<id>.md`, expands `{{TODAY}}`/`{{THIS_MONDAY}}`,
+  discovers the citizen's chat from the channel store, and publishes a synthetic
+  `InboundMessage` onto the bus (reusing the whole channel pipeline, like the
+  patch #14 `/notify`). The message carries a **per-job agent** (`agent_name`,
+  default `atlas`) that `_resolve_run_params` honors **ahead of** the channel's
+  pinned agent (§3a), and a **per-job memory policy** (`unattended=True` +
+  `memory_mode` ∈ off|read-only|read-write, default read-only) that
+  `MemoryMiddleware.after_agent` honors (read-only/off → no memory write) and
+  `DynamicContextMiddleware` honors (off → no memory injection) (§4b).
+- **Auth:** Guarded by the internal-auth token (`is_valid_internal_auth_token`),
+  the same contract `/notify` enforces. That token is a single GLOBAL secret in
+  `/opt/argus/.env`, which the `argus-scheduler` (Chronos) container already
+  holds, so Chronos authenticates the fire with it directly — no per-stack secret
+  distribution. CSRF middleware now exempts any request bearing a valid internal
+  token (the token is a strictly stronger guard than the double-submit cookie),
+  so internal callers no longer need a dummy cookie pair.
+- **Conflict risk:** Low-medium. The new router + app.py registration are
+  additive. `manager._resolve_run_params` and the two memory middlewares are the
+  churn-prone bits; the changes are small and localized (one precedence check,
+  one early-return, one injection guard).
+- **Delete-when:** upstream grows a first-class scheduled-turn / per-message
+  agent + per-turn memory-policy mechanism. Until then this is the delivery path
+  for the citizen `schedules/*.md` restructure (replaces the retired host-side
+  `scripts/atlas-briefing.py` + systemd timers).
+
 ## Dropped patches (history — do not re-add)
 
 - **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -

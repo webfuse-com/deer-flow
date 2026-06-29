@@ -44,6 +44,18 @@ class InboundMessage:
         files: Optional list of file attachments (platform-specific dicts).
         metadata: Arbitrary extra data from the channel.
         created_at: Unix timestamp when the message was created.
+        agent_name: [argus patch #30] Optional per-message agent override. When
+            set, the dispatcher runs *this* agent for the turn, ahead of the
+            channel's pinned agent. Scheduled playbooks (§3a) use it so a job
+            chooses its runner (default ``atlas``) independent of the channel,
+            which is pinned to ``pythia-internal``.
+        unattended: [argus patch #30] True for machine-triggered turns (a
+            scheduled playbook fire), as opposed to a human typing in the chat.
+            Memory writes default to off for unattended turns (§4b).
+        memory_mode: [argus patch #30] Per-turn memory policy
+            (``off`` | ``read-only`` | ``read-write``). When None the runtime
+            default applies (read-write for attended turns, read-only for
+            unattended ones). Honored by Memory/DynamicContext middleware.
     """
 
     channel_name: str
@@ -56,6 +68,10 @@ class InboundMessage:
     files: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
+    # [argus patch #30] per-job agent / memory controls (see docstring).
+    agent_name: str | None = None
+    unattended: bool = False
+    memory_mode: str | None = None
 
 
 @dataclass

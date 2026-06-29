@@ -10,6 +10,7 @@ from langgraph.runtime import Runtime
 
 from deerflow.agents.memory.message_processing import detect_correction, detect_reinforcement, filter_messages_for_memory
 from deerflow.agents.memory.queue import get_memory_queue
+from deerflow.agents.memory.write_policy import memory_write_allowed
 from deerflow.config.memory_config import get_memory_config
 from deerflow.runtime.user_context import get_effective_user_id
 
@@ -62,6 +63,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
         """
         config = self._memory_config or get_memory_config()
         if not config.enabled:
+            return None
+
+        # [argus patch #30] Per-turn memory policy (§4b). Unattended turns (a
+        # scheduled playbook fire) are read-only against memory by default: same
+        # agent, same thread, same memory.json, but a job turn must not silently
+        # teach Atlas new facts. The channel manager sets `memory_mode` and
+        # `unattended` on run_context (→ runtime.context). Only `read-write`
+        # turns queue a memory update; `read-only`/`off` early-return here.
+        # Interactive turns have no memory_mode and fall through unchanged.
+        if not memory_write_allowed(runtime):
             return None
 
         # Get thread ID from runtime context first, then fall back to LangGraph's configurable metadata
