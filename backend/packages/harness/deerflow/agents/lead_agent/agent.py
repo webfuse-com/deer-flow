@@ -21,6 +21,7 @@ middleware, and the async path inside ``TitleMiddleware``. Any new in-graph
 from __future__ import annotations
 
 import logging
+import os
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
@@ -338,13 +339,16 @@ def build_middlewares(
     # (planner-aligned prompt); other agents stay on the upstream TodoMiddleware.
     cfg = _get_runtime_config(config)
     is_plan_mode = cfg.get("is_plan_mode", False)
-    _todo_agent_config = None
+    # [argus] Load the agent's config once here; reused by the planner-pipeline
+    # routing and the Pythia retrieval ring below. Best-effort — absence must
+    # not block the middleware build.
+    _agent_config = None
     if agent_name:
         try:
-            _todo_agent_config = load_agent_config(agent_name)
-        except Exception:  # noqa: BLE001 — config absence must not block middleware build
-            _todo_agent_config = None
-    todo_list_middleware = _create_todo_list_middleware(is_plan_mode, agent_name=agent_name, agent_config=_todo_agent_config)
+            _agent_config = load_agent_config(agent_name)
+        except Exception:  # noqa: BLE001
+            _agent_config = None
+    todo_list_middleware = _create_todo_list_middleware(is_plan_mode, agent_name=agent_name, agent_config=_agent_config)
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 
@@ -357,6 +361,28 @@ def build_middlewares(
 
     # Add MemoryMiddleware (after TitleMiddleware)
     middlewares.append(MemoryMiddleware(agent_name=agent_name, memory_config=resolved_app_config.memory))
+
+    # [argus] Add PythiaRetrievalMiddleware: for company-knowledge questions, ask
+    # the kb-api router what to fetch and inject the cited results BEFORE the model
+    # call, so retrieval is deterministic rather than left to the model choosing to
+    # call pythia_query (which non-thinking Qwen does not do reliably). Gated by
+    # PYTHIA_ROUTER_INJECT (legacy alias PYTHIA_RETRIEVAL_ENABLED), set per-stack.
+    # Ring resolution: an agent's pythia_ring (config.yaml) is the source of truth.
+    # "none" -> no retrieval. "external"/"internal" -> attach with that ring. If the
+    # agent declares nothing, fall back to the stack flag with ring "internal". The
+    # ring is a CEILING enforced server-side in kb-api, never an escalation.
+    _agent_ring = getattr(_agent_config, "pythia_ring", None)
+    _stack_flag_on = (os.environ.get("PYTHIA_ROUTER_INJECT") or os.environ.get("PYTHIA_RETRIEVAL_ENABLED", "")).lower() in ("1", "true", "yes")
+    if _agent_ring is not None:
+        _ring = _agent_ring.strip().lower()
+    elif _stack_flag_on:
+        _ring = "internal"
+    else:
+        _ring = "none"
+    if _ring not in ("none", ""):
+        from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
+
+        middlewares.append(PythiaRetrievalMiddleware(ring=_ring))
 
     # Add ViewImageMiddleware. If the lead model is vision-capable, it injects
     # the image directly. [argus] If NOT (e.g. glm-planner -> glm-nw), route each
