@@ -26,6 +26,7 @@ from app.gateway.auth_disabled import (
 )
 from app.gateway.authz import _ALL_PERMISSIONS, AuthContext
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
+from app.gateway.sso_auth import trusted_sso_email
 from deerflow.runtime.user_context import reset_current_user, set_current_user
 
 # Paths that never require authentication.
@@ -90,10 +91,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_source = AUTH_SOURCE_SESSION
         access_token = request.cookies.get("access_token")
 
-        # Non-public path: require session cookie
+        # [argus patch #15] Trusted-proxy SSO: when Caddy has authenticated the
+        # browser via Google SSO it injects a verified X-Auth-Email plus the
+        # proxy secret. If both are present (and there is no internal token and
+        # no cookie session), resolve/auto-provision the user by email so the
+        # citizen is not asked to log in a second time. The secret gate
+        # (sso_auth) blocks a direct tailnet caller from forging the email.
+        sso_user = None
+        if internal_user is None and not access_token:
+            _sso_email = trusted_sso_email(request.headers)
+            if _sso_email:
+                from app.gateway.deps import resolve_or_provision_sso_user
+
+                sso_user = await resolve_or_provision_sso_user(_sso_email)
+
+        # Non-public path: require session cookie (or internal token, or SSO)
         if internal_user is not None:
             user = internal_user
             auth_source = AUTH_SOURCE_INTERNAL
+        elif sso_user is not None:
+            user = sso_user
         elif access_token:
             # Strict JWT validation: reject junk/expired tokens with 401
             # right here instead of silently passing through. This closes

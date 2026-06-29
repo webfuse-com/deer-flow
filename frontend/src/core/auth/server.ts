@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import { isStaticWebsiteOnly } from "../static-mode";
 
@@ -31,11 +31,54 @@ export async function getServerSideUser(): Promise<AuthResult> {
   const cookieStore = await cookies();
   const sessionCookie = cookieStore.get("access_token");
 
+  // [argus patch #15] Trusted-proxy SSO: Caddy injects X-Auth-Email +
+  // X-Auth-Proxy-Secret on edge-authenticated (Google SSO) browser requests.
+  // Forward them to the gateway's /me so a citizen who already passed SSO is
+  // not bounced to /login. The gateway only trusts the email when the proxy
+  // secret matches (sso_auth.py), so forwarding works only from behind the edge.
+  const reqHeaders = await headers();
+  const ssoEmail = reqHeaders.get("x-auth-email");
+  const ssoSecret = reqHeaders.get("x-auth-proxy-secret");
+  const ssoHeaders: Record<string, string> = {};
+  if (ssoEmail) ssoHeaders["X-Auth-Email"] = ssoEmail;
+  if (ssoSecret) ssoHeaders["X-Auth-Proxy-Secret"] = ssoSecret;
+  const hasSso = Boolean(ssoEmail && ssoSecret);
+
   let internalGatewayUrl: string;
   try {
     internalGatewayUrl = getGatewayConfig().internalGatewayUrl;
   } catch (err) {
     return { tag: "config_error", message: String(err) };
+  }
+
+  if (!sessionCookie && hasSso) {
+    // No DeerFlow cookie but the edge proved identity via SSO — authenticate
+    // off the forwarded headers instead of bouncing to /login.
+    const ssoController = new AbortController();
+    const ssoTimeout = setTimeout(
+      () => ssoController.abort(),
+      SSR_AUTH_TIMEOUT_MS,
+    );
+    try {
+      const ssoRes = await fetch(`${internalGatewayUrl}/api/v1/auth/me`, {
+        headers: ssoHeaders,
+        cache: "no-store",
+        signal: ssoController.signal,
+      });
+      clearTimeout(ssoTimeout);
+      if (ssoRes.ok) {
+        const parsedSso = userSchema.safeParse(await ssoRes.json());
+        if (parsedSso.success) {
+          if (parsedSso.data.needs_setup) {
+            return { tag: "needs_setup", user: parsedSso.data };
+          }
+          return { tag: "authenticated", user: parsedSso.data };
+        }
+      }
+    } catch {
+      clearTimeout(ssoTimeout);
+      // fall through to the normal no-session path below
+    }
   }
 
   if (!sessionCookie) {
