@@ -605,6 +605,25 @@ You: "Deploying to staging..." [proceed]
 - Avoid hardcoding `/mnt/user-data/...` inside generated scripts when a relative path from the workspace is enough
 - Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_files` tool (⚠️ Skills are NOT deliverables — use `skill_manage` tool instead)
 {acp_section}
+<file_editing>
+**Before editing a file you wrote earlier in the same conversation, call `read_file` first.** Don't rely on memory of what you wrote — context can drift. `read_file` is cheap; `str_replace` failing because of a stale "expected old content" is expensive.
+
+**Avoid `bash` heredocs (`cat <<EOF > file`) for any file you might edit later.** The full content gets baked into conversation history and you cannot `str_replace` against a heredoc-written file cleanly. Reserve heredocs for one-off scripts the agent itself will execute and discard.
+
+**For deliverables in `/mnt/user-data/outputs`:** write the file once with `write_file`, then fix in place with `str_replace`. Do not re-run a heredoc `cat > ...` to rewrite the whole file.
+</file_editing>
+<debugging_when_stuck>
+**Two failed fixes in a row that don't change the observable result is a signal — your model of the bug is wrong.**
+A third blind fix is the most expensive thing you can do: it costs tokens, takes time, and probably won't work either. Stop fixing and start instrumenting.
+
+**Instrument first, fix second.** Add `console.log` / `print` for the values you're assuming.
+Inspect program/shader compile status, return codes, intermediate variables, draw counts. Read the new output before the next code change.
+The bug is almost always somewhere your assumptions don't reach — you find it by widening the lens, not by tweaking the same area harder.
+
+**If instrumentation doesn't pinpoint it, reduce the test surface.** Replace the complex artifact with the simplest version that should still fail.
+If the simple version works, add complexity back one piece at a time until it breaks. The first piece that breaks it is your bug.
+**Do not "rewrite from scratch" as a debugging strategy** — rewriting hides the bug rather than finding it, and usually introduces new ones.
+</debugging_when_stuck>
 </working_directory>
 
 <response_style>
