@@ -67,6 +67,7 @@ _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
 _DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
 _DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
+_DEFAULT_READ_FILE_BUCKET_SIZE = 200  # [argus] read_file line-range bucket (upstream default)
 _MAX_PENDING_WARNINGS_PER_RUN = 4
 
 
@@ -96,14 +97,19 @@ def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     return {}, json.dumps(raw_args, sort_keys=True, default=str)
 
 
-def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
-    """Derive a stable key from salient args without overfitting to noise."""
+def _stable_tool_key(name: str, args: dict, fallback_key: str | None, read_file_bucket_size: int = 200) -> str:
+    """Derive a stable key from salient args without overfitting to noise.
+
+    ``read_file_bucket_size`` ([argus]) controls how coarsely read_file line
+    ranges are bucketed; defaults to 200 (upstream) so bare callers and the
+    existing unit tests are unaffected.
+    """
     if name == "read_file" and fallback_key is None:
         path = args.get("path") or ""
         start_line = args.get("start_line")
         end_line = args.get("end_line")
 
-        bucket_size = 200
+        bucket_size = read_file_bucket_size
         try:
             start_line = int(start_line) if start_line is not None else 1
         except (TypeError, ValueError):
@@ -139,18 +145,21 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     return json.dumps(args, sort_keys=True, default=str)
 
 
-def _hash_tool_calls(tool_calls: list[dict]) -> str:
+def _hash_tool_calls(tool_calls: list[dict], read_file_bucket_size: int = 200) -> str:
     """Deterministic hash of a set of tool calls (name + stable key).
 
     This is intended to be order-independent: the same multiset of tool calls
     should always produce the same hash, regardless of their input order.
+
+    ``read_file_bucket_size`` ([argus]) is forwarded to ``_stable_tool_key``;
+    it defaults to 200 so bare test callers keep their current behavior.
     """
     # Normalize each tool call to a stable (name, key) structure.
     normalized: list[str] = []
     for tc in tool_calls:
         name = tc.get("name", "")
         args, fallback_key = _normalize_tool_call_args(tc.get("args", {}))
-        key = _stable_tool_key(name, args, fallback_key)
+        key = _stable_tool_key(name, args, fallback_key, read_file_bucket_size)
 
         normalized.append(f"{name}:{key}")
 
@@ -211,6 +220,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         tool_freq_warn: int = _DEFAULT_TOOL_FREQ_WARN,
         tool_freq_hard_limit: int = _DEFAULT_TOOL_FREQ_HARD_LIMIT,
         tool_freq_overrides: dict[str, tuple[int, int]] | None = None,
+        read_file_bucket_size_lines: int = _DEFAULT_READ_FILE_BUCKET_SIZE,
     ):
         super().__init__()
         self.warn_threshold = warn_threshold
@@ -219,6 +229,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self.max_tracked_threads = max_tracked_threads
         self.tool_freq_warn = tool_freq_warn
         self.tool_freq_hard_limit = tool_freq_hard_limit
+        self.read_file_bucket_size_lines = read_file_bucket_size_lines
         self._tool_freq_overrides: dict[str, tuple[int, int]] = tool_freq_overrides or {}
         self._lock = threading.Lock()
         self._history: OrderedDict[str, list[str]] = OrderedDict()
@@ -243,6 +254,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             tool_freq_warn=config.tool_freq_warn,
             tool_freq_hard_limit=config.tool_freq_hard_limit,
             tool_freq_overrides={name: (o.warn, o.hard_limit) for name, o in config.tool_freq_overrides.items()},
+            read_file_bucket_size_lines=config.read_file_bucket_size_lines,
         )
 
     def _get_thread_id(self, runtime: Runtime) -> str:
@@ -344,7 +356,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             return None, False
 
         thread_id = self._get_thread_id(runtime)
-        call_hash = _hash_tool_calls(tool_calls)
+        call_hash = _hash_tool_calls(tool_calls, self.read_file_bucket_size_lines)
 
         with self._lock:
             # Touch / create entry (move to end for LRU)

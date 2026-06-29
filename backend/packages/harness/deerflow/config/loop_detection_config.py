@@ -62,6 +62,11 @@ class LoopDetectionConfig(BaseModel):
         default_factory=dict,
         description=("Per-tool overrides for tool_freq_warn / tool_freq_hard_limit, keyed by tool name. Values can be higher or lower than the global defaults. Commonly used to raise thresholds for high-frequency tools like bash."),
     )
+    read_file_bucket_size_lines: int = Field(
+        default=200,
+        ge=1,
+        description=("[argus] Line-range bucket size used when hashing read_file calls for loop detection. read_file calls whose start/end lines fall in the same bucket are treated as the same call. Smaller values (e.g. 50) stop a model that surgically reads distinct sections of one long file from tripping the identical-call detector. Default 200 matches upstream."),
+    )
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":
