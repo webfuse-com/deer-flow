@@ -216,7 +216,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         self._agent_name = agent_name
         self._app_config = app_config
 
-    def _build_full_reminder(self, runtime: Runtime | None = None) -> tuple[str, str | None]:
+    def _build_full_reminder(self, runtime: Runtime | None = None, *, inject_memory: bool = True) -> tuple[str, str | None]:
         """Return (date_reminder, memory_block | None).
 
         Framework-owned data (date) is separated from user-owned data (memory)
@@ -226,7 +226,12 @@ class DynamicContextMiddleware(AgentMiddleware):
         """
         from deerflow.agents.lead_agent.prompt import _get_memory_context
 
-        injection_enabled = self._app_config.memory.injection_enabled if self._app_config else True
+        # Memory injection is gated by injection_enabled; date is always included.
+        # [argus patch #30] A per-turn `memory_mode: off` (§4b) also suppresses
+        # injection for that turn (inject_memory=False) — the job neither reads
+        # nor writes the citizen's memory. `read-only`/`read-write`/unset all
+        # inject normally.
+        injection_enabled = (self._app_config.memory.injection_enabled if self._app_config else True) and inject_memory
         memory_context = (
             _get_memory_context(
                 self._agent_name,
@@ -300,13 +305,6 @@ class DynamicContextMiddleware(AgentMiddleware):
             )
         )
         return messages
-
-    def _inject(self, state, runtime: Runtime | None = None) -> dict | None:
-        messages = list(state.get("messages", []))
-        if not messages:
-            return None
-
-        current_date = _format_current_date()
         last_date = _last_injected_date(messages)
         logger.debug(
             "DynamicContextMiddleware._inject: msg_count=%d last_date=%r current_date=%r",
@@ -320,8 +318,7 @@ class DynamicContextMiddleware(AgentMiddleware):
             first_idx = next((i for i, m in enumerate(messages) if _is_user_injection_target(m)), None)
             if first_idx is None:
                 return None
-            date_reminder, memory_block = self._build_full_reminder(runtime)
-            logger.info(
+            date_reminder, memory_block = self._build_full_reminder(runtime)            logger.info(
                 "DynamicContextMiddleware: injecting full reminder (has_memory=%s) into first HumanMessage id=%r",
                 memory_block is not None,
                 messages[first_idx].id,
@@ -347,7 +344,6 @@ class DynamicContextMiddleware(AgentMiddleware):
         result = self._inject(state, runtime)
         self._record_effective_memory(state, result, runtime)
         return result
-
     @override
     async def abefore_agent(self, state, runtime: Runtime) -> dict | None:
         # _inject() performs synchronous file I/O (memory JSON loading) and
@@ -362,8 +358,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         # the request degrades gracefully (no new dynamic-context update)
         # rather than hanging. Frozen context already in state remains active.
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(self._inject, state, runtime),
+            result = await asyncio.wait_for(                asyncio.to_thread(self._inject, state, runtime),
                 timeout=_INJECT_TIMEOUT_SECONDS,
             )
         except TimeoutError:

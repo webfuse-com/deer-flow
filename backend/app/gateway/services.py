@@ -300,6 +300,19 @@ _CONTEXT_CONFIGURABLE_KEYS: frozenset[str] = frozenset(
         "max_total_subagents",
         "agent_name",
         "is_bootstrap",
+        # [argus patch #21/#24] channel sender identity -> ToolRuntime.context,
+        # so tools can attribute an action to the requesting human (e.g. the
+        # Pythia correct_minutes commit author). channel_user_id is set natively
+        # upstream in _resolve_run_params; channel_name/channel_id/thread_ts are
+        # surfaced by the Argus plumbing in manager._resolve_run_params.
+        "channel_user_id",
+        "channel_name",
+        "channel_id",
+        "thread_ts",
+        # [argus patch #30] per-job agent/memory policy for scheduled playbook
+        # fires (unattended turns); enforced in the memory write paths.
+        "unattended",
+        "memory_mode",
     }
 )
 
