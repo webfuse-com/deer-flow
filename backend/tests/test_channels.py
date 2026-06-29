@@ -5131,6 +5131,62 @@ class TestSlackAckCleanup:
         _run(go())
 
 
+class TestSlackThreadContext:
+    """[argus patch #22] fetch_thread_context pulls a Slack thread's earlier
+    messages so a reply under a non-agent post (e.g. the minutes draft) has the
+    context it refers to."""
+
+    def _channel(self, replies):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        mock_web.conversations_replies.return_value = {"messages": replies}
+        ch._web_client = mock_web
+        return ch, mock_web
+
+    def test_formats_bot_and_user_messages(self):
+        ch, _ = self._channel([
+            {"ts": "1.0", "bot_id": "B1", "text": "Minutes: speaker 2 said hi"},
+            {"ts": "2.0", "user": "U9", "text": "assign Nicholas to speaker 2"},
+        ])
+        out = _run(ch.fetch_thread_context("C1", "1.0"))
+        assert "Pythia: Minutes: speaker 2 said hi" in out
+        assert "<@U9>: assign Nicholas to speaker 2" in out
+        assert out.startswith("[thread context")
+
+    def test_excludes_current_reply_and_acks(self):
+        ch, _ = self._channel([
+            {"ts": "1.0", "bot_id": "B1", "text": "the draft"},
+            {"ts": "2.0", "bot_id": "B1", "text": ":hourglass_flowing_sand: Working on it..."},
+            {"ts": "3.0", "user": "U9", "text": "this is the current reply"},
+        ])
+        out = _run(ch.fetch_thread_context("C1", "1.0", exclude_ts="3.0"))
+        assert "the draft" in out
+        assert "Working on it" not in out
+        assert "current reply" not in out
+
+    def test_empty_thread_returns_empty(self):
+        ch, _ = self._channel([])
+        assert _run(ch.fetch_thread_context("C1", "1.0")) == ""
+
+    def test_api_error_returns_empty(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        mock_web.conversations_replies.side_effect = RuntimeError("missing_scope")
+        ch._web_client = mock_web
+        assert _run(ch.fetch_thread_context("C1", "1.0")) == ""
+
+    def test_no_web_client_returns_empty(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        ch._web_client = None
+        assert _run(ch.fetch_thread_context("C1", "1.0")) == ""
+
+
 class TestSlackAllowedUsers:
     @staticmethod
     def _submit_coro(coro, loop):

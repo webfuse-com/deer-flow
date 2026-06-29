@@ -1316,6 +1316,23 @@ class ChannelManager:
         # No existing thread found — create a new one
         if thread_id is None:
             thread_id = await self._create_thread(client, msg)
+            # [argus patch #22] This topic has no DeerFlow conversation yet. If it
+            # is a reply under an existing thread (e.g. the raw-posted minutes
+            # draft, which never created an agent thread), pull the thread's
+            # earlier messages so the reply has the context it refers to.
+            # Best-effort + only fetches when the channel supports it.
+            try:
+                from .service import get_channel_service
+
+                channel = (get_channel_service() or None) and get_channel_service().get_channel(msg.channel_name)
+                fetch = getattr(channel, "fetch_thread_context", None) if channel else None
+                if fetch and msg.topic_id:
+                    ctx = await fetch(msg.chat_id, msg.topic_id, (msg.metadata or {}).get("event_ts", ""))
+                    if ctx:
+                        msg.text = f"{ctx}\n\n{msg.text}".strip()
+                        logger.info("[Manager] prepended thread context (%d chars) for new topic_id=%s", len(ctx), msg.topic_id)
+            except Exception:  # noqa: BLE001 — context is best-effort
+                logger.exception("[Manager] thread-context fetch failed")
 
         assistant_id, run_config, run_context = self._resolve_run_params(msg, thread_id)
 
