@@ -134,6 +134,11 @@ class OutboundMessage:
     connection_id: str | None = None
     owner_user_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # [argus patch #10] Coarse progress stage (received/thinking/planning/
+    # searching/working/writing) derived from the langgraph stream; rendered by
+    # the Telegram channel as an animated stage emoji. A stage signal carries no
+    # text and is_final=False.
+    progress_stage: str | None = None
     created_at: float = field(default_factory=time.time)
 
 
@@ -351,16 +356,38 @@ class MessageBus:
         self._outbound_listeners = [cb for cb in self._outbound_listeners if cb != callback]
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """Dispatch an outbound message to all registered listeners."""
+        """Dispatch an outbound message to all registered listeners.
+
+        [argus patch #27/#26a] Stage-progress messages (progress_stage set,
+        is_final=False, empty text) are dispatched as fire-and-forget background
+        tasks so a Telegram stage-emoji send/delete (~1-2s of HTTP) never blocks
+        the agent streaming loop. The final answer (is_final=True or non-empty
+        text) is awaited inline so the run completes before the manager returns.
+        """
+        is_stage_signal = msg.progress_stage is not None and not msg.is_final and not msg.text
         logger.info(
-            "[Bus] outbound dispatching: channel=%s, chat_id=%s, listeners=%d, text_len=%d",
+            "[Bus] outbound dispatching: channel=%s, chat_id=%s, listeners=%d, text_len=%d, stage=%s, fire_and_forget=%s",
             msg.channel_name,
             msg.chat_id,
             len(self._outbound_listeners),
             len(msg.text),
+            msg.progress_stage,
+            is_stage_signal,
         )
         for callback in self._outbound_listeners:
-            try:
-                await callback(msg)
-            except Exception:
-                logger.exception("Error in outbound callback for channel=%s", msg.channel_name)
+            if is_stage_signal:
+                # Fire-and-forget: the stage emoji send/delete must not stall the
+                # next langgraph chunk. Errors are logged inside the task.
+                asyncio.create_task(self._safe_callback(callback, msg))
+            else:
+                try:
+                    await callback(msg)
+                except Exception:
+                    logger.exception("Error in outbound callback for channel=%s", msg.channel_name)
+
+    async def _safe_callback(self, callback: OutboundCallback, msg: OutboundMessage) -> None:
+        """[argus patch #27/#26a] Run an outbound callback, logging any exception (fire-and-forget)."""
+        try:
+            await callback(msg)
+        except Exception:
+            logger.exception("Error in fire-and-forget outbound callback for channel=%s", msg.channel_name)

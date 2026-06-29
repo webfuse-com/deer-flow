@@ -2094,7 +2094,11 @@ class TestChannelManager:
     def test_handle_streaming_chat_accepts_runtime_messages_event(self, monkeypatch):
         """The embedded runtime emits SSE event name "messages" (LangGraph
         Platform semantics) for the requested "messages-tuple" stream mode —
-        the manager must accumulate text from those events too."""
+        the manager must accumulate text from those events too.
+
+        [argus] Uses a feishu channel: telegram now receives stage-emoji signals
+        instead of streamed partial text (patch #10), so the partial-text
+        accumulation path is exercised via a non-telegram streaming channel."""
         from app.channels.manager import ChannelManager
 
         monkeypatch.setattr("app.channels.manager.STREAM_UPDATE_MIN_INTERVAL_SECONDS", 0.0)
@@ -2145,7 +2149,7 @@ class TestChannelManager:
             await manager.start()
 
             inbound = InboundMessage(
-                channel_name="telegram",
+                channel_name="feishu",
                 chat_id="chat1",
                 user_id="user1",
                 text="hi",
@@ -9335,7 +9339,11 @@ class TestTelegramInboundMessages:
 class TestTelegramProcessingOrder:
     """Ensure 'working on it...' is sent before inbound is published."""
 
-    def test_running_reply_sent_before_publish(self):
+    def test_running_reply_is_fire_and_forget_not_blocking_publish(self):
+        """[argus patch #28/#29] The 👀 received emoji is dispatched
+        fire-and-forget so it never sits on the inbound critical path:
+        publish_inbound reaches the bus WITHOUT waiting for the ~200ms Telegram
+        API round-trip, and the reply still fires afterwards."""
         from app.channels.telegram import TelegramChannel
 
         async def go():
@@ -9356,8 +9364,13 @@ class TestTelegramProcessingOrder:
             ch.bus.publish_inbound = mock_publish_inbound
 
             await ch._process_incoming_with_reply(chat_id="chat1", msg_id=123, inbound=InboundMessage(channel_name="telegram", chat_id="chat1", user_id="user1", text="hello"))
+            # Let the fire-and-forget reply task run.
+            await asyncio.sleep(0)
 
-            assert order == ["running_reply", "publish_inbound"]
+            # publish is NOT blocked by the reply (fire-and-forget), so it lands
+            # first; the reply still fires once control yields.
+            assert order[0] == "publish_inbound"
+            assert "running_reply" in order
 
         _run(go())
 
@@ -9389,6 +9402,7 @@ class TestSlackMarkdownConversion:
         result = _slack_md_converter.convert("# Title")
         assert "*Title*" in result
         assert "#" not in result
+<<<<<<< HEAD
 
     def test_converter_passes_reserved_characters_through_unchanged(self):
         # The library itself never escapes Slack's reserved characters -- this
@@ -10530,3 +10544,5 @@ def test_streaming_chat_never_publishes_hidden_memory_context(monkeypatch):
         assert [m.text for m in outbound_received] == ["All green. ▉", "All green."]
 
     _run(go())
+=======
+>>>>>>> eb379ae8 ([argus] telegram streaming chain: stage-emoji + HTML + webhook + welcome)

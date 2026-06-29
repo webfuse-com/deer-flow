@@ -1,3 +1,4 @@
+from fastapi import Request, Response
 """Telegram channel — connects via long-polling (no public IP needed)."""
 
 from __future__ import annotations
@@ -59,6 +60,9 @@ class TelegramChannel(Channel):
 
     def __init__(self, bus: MessageBus, config: dict[str, Any]) -> None:
         super().__init__(name="telegram", bus=bus, config=config)
+        self._webhook_mode = bool(config.get("webhook_mode", False))
+        self._webhook_secret = config.get("webhook_secret")
+        self._webhook_url = config.get("webhook_url")
         self._application = None
         self._thread: threading.Thread | None = None
         self._tg_loop: asyncio.AbstractEventLoop | None = None
@@ -128,10 +132,13 @@ class TelegramChannel(Channel):
 
         self._application = app
 
-        # Run polling in a dedicated thread with its own event loop
-        self._thread = threading.Thread(target=self._run_polling, daemon=True)
-        self._thread.start()
-        logger.info("Telegram channel started")
+        if self._webhook_mode:
+            await self._register_webhook_route()
+            logger.info("Telegram channel started (webhook mode)")
+        else:
+            self._thread = threading.Thread(target=self._run_polling, daemon=True)
+            self._thread.start()
+            logger.info("Telegram channel started (polling mode)")
 
     async def stop(self) -> None:
         self._running = False
@@ -789,6 +796,38 @@ class TelegramChannel(Channel):
             normalized = f"{normalized} {parts[1]}"
         return normalized
 
+    async def _register_webhook_route(self) -> None:
+        from app.gateway.app import app as gateway_app
+        telegram_channel = self
+
+        @gateway_app.post("/webhooks/telegram")
+        async def telegram_webhook(request: Request) -> Response:
+            if telegram_channel._webhook_secret:
+                secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+                if secret != telegram_channel._webhook_secret:
+                    return Response(status_code=403)
+            body = await request.json()
+            if telegram_channel._application:
+                from telegram import Update
+                update = Update.de_json(body, telegram_channel._application.bot)
+                if update:
+                    await telegram_channel._application.process_update(update)
+            return Response(status_code=200)
+        logger.info("[Telegram] webhook route registered at POST /webhooks/telegram")
+
+    def _welcome_text(self) -> str:
+        configured = self.config.get("welcome")
+        if configured:
+            return str(configured).strip()
+        name = str(self.config.get("citizen_name", "") or "").strip()
+        hi = f"Hi {name}" if name else "Hi"
+        return (
+            f"{hi}, I'm <b>Atlas</b>, your personal agent. I can review your inbox, "
+            "prep you for meetings, track your tasks and tickets, and answer "
+            "questions from the company knowledge base.\n\n"
+            "Just tell me what you need. /help lists commands."
+        )
+
     async def _cmd_start(self, update, context) -> None:
         """Handle /start command."""
         args = getattr(context, "args", []) if context is not None else []
@@ -800,7 +839,7 @@ class TelegramChannel(Channel):
                 return
         if not self._check_user(update.effective_user.id):
             return
-        await update.message.reply_text("Welcome to DeerFlow! Send me a message to start a conversation.\nType /help for available commands.")
+        await update.message.reply_text(self._welcome_text(), parse_mode="HTML")
 
     async def _process_incoming_with_reply(
         self,

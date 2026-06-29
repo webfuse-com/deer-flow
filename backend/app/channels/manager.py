@@ -172,6 +172,75 @@ def _is_trivial_unattended_text(text: str | None) -> bool:
     return len(stripped) <= 3 and re.search(r"\w", stripped) is None
 
 
+# [argus patch #10/#24] Tool-name hints that map a tool call to the "searching" stage.
+_SEARCH_TOOL_HINTS = ("search", "web", "tavily", "exa", "browse", "fetch_url")
+
+
+def _stage_from_chunk(event: str, data: Any) -> str | None:
+    """[argus patch #10/#24] Derive a coarse execution stage from one langgraph
+    stream chunk, for the live Telegram progress indicator. Returns one of
+    received/thinking/planning/searching/working, or None if the chunk implies
+    no stage change.
+
+    - messages-tuple AI chunk with tool_calls → planning (write_todos) /
+      searching (search-ish tool) / working (any other tool).
+    - messages-tuple AI chunk with text, no tool_calls → thinking.
+    - values dict that contains a non-empty todos list → planning.
+    """
+    if event == "values":
+        if isinstance(data, Mapping):
+            todos = data.get("todos")
+            if isinstance(todos, list) and todos:
+                return "planning"
+        return None
+
+    # This langgraph runtime serves the "messages" stream event (the SDK
+    # downgrades the requested "messages-tuple"); accept both. The payload is
+    # the message chunk, sometimes wrapped as (chunk, metadata).
+    if event not in ("messages", "messages-tuple"):
+        return None
+
+    payload = data
+    if isinstance(data, (list, tuple)) and data:
+        payload = data[0]
+    if not isinstance(payload, Mapping):
+        return None
+
+    # Streamed AIMessageChunks carry tool calls as `tool_call_chunks` (the
+    # incremental form) — `tool_calls` is only populated AFTER aggregation
+    # (values mode), so reading only `tool_calls` here meant searching/working/
+    # planning never fired over a streaming channel and the indicator was stuck
+    # at thinking. Read all three shapes: tool_calls, tool_call_chunks, and
+    # additional_kwargs.tool_calls. (A later delta of a chunk may carry an empty
+    # name — we only need the first, which names the tool; we emit on change.)
+    tool_calls = list(payload.get("tool_calls") or [])
+    tool_calls += list(payload.get("tool_call_chunks") or [])
+    ak = payload.get("additional_kwargs")
+    if isinstance(ak, Mapping):
+        tool_calls += list(ak.get("tool_calls") or [])
+    if tool_calls:
+        names = []
+        for tc in tool_calls:
+            if isinstance(tc, Mapping):
+                # tool_calls: {"name": ...}; additional_kwargs form: {"function": {"name": ...}}
+                nm = tc.get("name") or ((tc.get("function") or {}).get("name") if isinstance(tc.get("function"), Mapping) else "")
+                if nm:
+                    names.append(str(nm).lower())
+        if names:
+            if any(n == "write_todos" for n in names):
+                return "planning"
+            if any(any(h in n for h in _SEARCH_TOOL_HINTS) for n in names):
+                return "searching"
+            return "working"
+
+    payload_type = str(payload.get("type", "")).lower()
+    if "tool" in payload_type:
+        return None  # a tool *result* coming back; the stage was set on the call
+    if _extract_text_content(payload.get("content")):
+        return "thinking"
+    return None
+
+
 INBOUND_FILE_READERS: dict[str, InboundFileReader] = {}
 
 
@@ -2421,6 +2490,12 @@ class ChannelManager:
         last_published_len = 0
         last_publish_at = 0.0
         stream_error: BaseException | None = None
+        # [argus patch #10/#24] Telegram gets stage-emoji progress signals instead
+        # of streamed partial answer text. Other streaming channels (feishu,
+        # wecom) keep getting partial text as before.
+        is_telegram = msg.channel_name == "telegram"
+        last_stage: str | None = None
+        seen_tool = False  # has a tool stage fired this turn (for 'writing' detection)
         stream_kwargs: dict[str, Any] = {
             "input": {"messages": [human_message]},
             "config": run_config,
@@ -2439,6 +2514,45 @@ class ChannelManager:
             ):
                 event = getattr(chunk, "event", "")
                 data = getattr(chunk, "data", None)
+
+                # [argus patch #10/#24] Telegram: emit a coarse stage signal on
+                # change (the channel renders it as an animated emoji) and do NOT
+                # stream partial answer text. Everything below is the original
+                # streamed-text path for feishu/wecom.
+                if is_telegram:
+                    stage = _stage_from_chunk(event, data)
+                    if stage in ("planning", "searching", "working"):
+                        seen_tool = True
+                    # Promote answer text to a distinct 'writing' stage (early ✍️
+                    # before the buffered answer lands): text after a tool call is
+                    # the answer being composed; on a no-tool turn the answer IS
+                    # the text, so the SECOND text beat (once thinking has shown)
+                    # is writing.
+                    if stage == "thinking" and (seen_tool or last_stage in ("thinking", "writing")):
+                        stage = "writing"
+                    # Suppress live stage emojis on unattended (scheduled) turns —
+                    # a cron poll shouldn't ping the citizen with indicators,
+                    # especially when it ends up silent (patch #31/#32).
+                    if stage and stage != last_stage and not getattr(msg, "unattended", False):
+                        last_stage = stage
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel_name=msg.channel_name,
+                                chat_id=msg.chat_id,
+                                thread_id=thread_id,
+                                text="",
+                                is_final=False,
+                                progress_stage=stage,
+                                thread_ts=msg.thread_ts,
+                                connection_id=msg.connection_id,
+                                owner_user_id=msg.owner_user_id,
+                                metadata=_response_metadata(msg.metadata),
+                            )
+                        )
+                    # Still track values for the final result + artifact extraction.
+                    if event == "values" and isinstance(data, (dict, list)):
+                        last_values = data
+                    continue
 
                 if event in MESSAGE_STREAM_EVENTS:
                     accumulated_text, current_message_id = _accumulate_stream_text(streamed_buffers, current_message_id, data)
