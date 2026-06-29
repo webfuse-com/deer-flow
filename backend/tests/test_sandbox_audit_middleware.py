@@ -550,6 +550,19 @@ class TestValidateInput:
         cmd = "a" * 10_001
         assert self.mw._validate_input(cmd) == "command too long"
 
+    def test_configured_higher_cap_accepts_large_heredoc(self):
+        """[argus] command_max_chars raises the per-command cap (e.g. for a
+        ~20 KB HTML heredoc) without weakening the config-less default."""
+        mw = SandboxAuditMiddleware(command_max_chars=131_072)
+        assert mw._validate_input("a" * 20_000) is None
+        assert mw._validate_input("a" * 131_073) == "command too long"
+
+    def test_command_max_chars_none_falls_back_to_class_default(self):
+        """[argus] None preserves upstream behavior."""
+        mw = SandboxAuditMiddleware(command_max_chars=None)
+        assert mw._validate_input("a" * 10_000) is None
+        assert mw._validate_input("a" * 10_001) == "command too long"
+
     def test_null_byte_rejected(self):
         assert self.mw._validate_input("ls\x00; rm -rf /") == "null byte detected"
 

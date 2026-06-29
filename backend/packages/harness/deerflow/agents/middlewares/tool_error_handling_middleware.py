@@ -253,7 +253,7 @@ def _build_runtime_middlewares(
 
     from deerflow.agents.middlewares.sandbox_audit_middleware import SandboxAuditMiddleware
 
-    tail.append(SandboxAuditMiddleware())
+    tail.append(SandboxAuditMiddleware(command_max_chars=app_config.sandbox.command_max_chars))
 
     # ReadBeforeWriteMiddleware is the outermost write gate: it blocks writes to files
     # the model hasn't read in their current version.  It must sit outside ToolProgress
@@ -278,11 +278,6 @@ def _build_runtime_middlewares(
     tail.append(ToolErrorHandlingMiddleware(app_config=app_config))
 
     middlewares = [*outer_wrappers, *thread_hooks, *tail]
-
-    # Ordering invariants are declared in deerflow.extensions.ordering and
-    # validated once at the end of the composing builder, after extension
-    # contributions are merged in — otherwise a contribution could silently
-    # reverse an invariant this builder had already checked.
     return middlewares
 
 

@@ -445,11 +445,18 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
     # attack string.
     _MAX_COMMAND_LENGTH = 10_000
 
+    def __init__(self, command_max_chars: int | None = None):
+        """[argus] ``command_max_chars`` overrides the per-command length cap;
+        ``None`` falls back to the upstream class default so a config-less
+        ``SandboxAuditMiddleware()`` keeps its original behavior."""
+        super().__init__()
+        self._command_max_chars = command_max_chars if command_max_chars is not None else self._MAX_COMMAND_LENGTH
+
     def _validate_input(self, command: str) -> str | None:
         """Return ``None`` if *command* is acceptable, else a rejection reason."""
         if not command.strip():
             return "empty command"
-        if len(command) > self._MAX_COMMAND_LENGTH:
+        if len(command) > self._command_max_chars:
             return "command too long"
         if "\x00" in command:
             return "null byte detected"
