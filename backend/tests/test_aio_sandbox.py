@@ -161,6 +161,44 @@ class TestErrorObservationRetry:
         assert call_count == 1
 
 
+class TestBashHistoryExpansionDisabled:
+    """[argus] Verify execute_command prefixes `set +H;` to disable history expansion."""
+
+    def test_set_h_prefixed_to_command(self, sandbox):
+        """Bash history expansion (`!foo`) breaks any command piping HTML/JS
+        through python3 -c or cat <<EOF. `set +H;` turns off expansion for
+        the sub-shell."""
+        captured = []
+
+        def mock_exec(command, **kwargs):
+            captured.append(command)
+            return SimpleNamespace(data=SimpleNamespace(output="ok"))
+
+        sandbox._client.shell.exec_command = mock_exec
+        sandbox.execute_command("echo '<!DOCTYPE html>'")
+
+        assert len(captured) == 1
+        assert captured[0].startswith("set +H; ")
+        assert captured[0].endswith("echo '<!DOCTYPE html>'")
+
+    def test_set_h_prefixed_on_retry(self, sandbox):
+        """Wrapping survives the ErrorObservation retry path too."""
+        captured = []
+
+        def mock_exec(command, **kwargs):
+            captured.append(command)
+            if len(captured) == 1:
+                return SimpleNamespace(data=SimpleNamespace(output="'ErrorObservation' object has no attribute 'exit_code'"))
+            return SimpleNamespace(data=SimpleNamespace(output="ok"))
+
+        sandbox._client.shell.exec_command = mock_exec
+        sandbox.execute_command("cat <<EOF\n!gl world\nEOF")
+
+        assert len(captured) == 2
+        for cmd in captured:
+            assert cmd.startswith("set +H; ")
+
+
 class TestListDirSerialization:
     """Verify that list_dir also acquires the lock."""
 

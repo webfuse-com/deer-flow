@@ -126,9 +126,16 @@ class AioSandbox(Sandbox):
         Returns:
             The output of the command.
         """
+        # [argus] Disable bash history expansion for every sandboxed command.
+        # The AIO sandbox shell runs interactively with history expansion on, so
+        # any command piping HTML/JS that contains `!`-prefixed tokens (`!DOCTYPE`,
+        # `!gl`) or using `cat <<EOF` heredocs / `python3 -c` aborts with bash
+        # "event not found". `set +H` disables expansion and has no other side
+        # effects; it only affects this command's shell.
+        wrapped_command = f"set +H; {command}"
         with self._lock:
             try:
-                result = self._client.shell.exec_command(command=command, no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
+                result = self._client.shell.exec_command(command=wrapped_command, no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
                 output = result.data.output if result.data else ""
 
                 if output and _ERROR_OBSERVATION_SIGNATURE in output:
@@ -139,7 +146,7 @@ class AioSandbox(Sandbox):
                     fresh_id = str(uuid.uuid4())
                     self._client.shell.create_session(id=fresh_id)
                     try:
-                        result = self._client.shell.exec_command(command=command, id=fresh_id, no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
+                        result = self._client.shell.exec_command(command=wrapped_command, id=fresh_id, no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
                         output = result.data.output if result.data else ""
                     finally:
                         # Release the one-shot recovery session, best-effort, so
