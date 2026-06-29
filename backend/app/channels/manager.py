@@ -1045,6 +1045,18 @@ class ChannelManager:
         if not response_text:
             if attachments:
                 response_text = _format_artifact_text([a.virtual_path for a in attachments])
+            elif getattr(msg, "unattended", False):
+                # [argus patch] Unattended (scheduled playbook) turn that produced
+                # nothing: stay SILENT. These fire on a cron (e.g. the hourly
+                # T-15min meeting-prep poll), so a "(No response from agent)" /
+                # "nothing to report" message every hour is pure noise. A citizen
+                # chatting interactively still gets the placeholder below.
+                logger.info(
+                    "[Manager] unattended turn produced no output; suppressing delivery "
+                    "(channel=%s, chat_id=%s, thread=%s)",
+                    msg.channel_name, msg.chat_id, thread_id,
+                )
+                return
             else:
                 response_text = "(No response from agent)"
 
@@ -1117,7 +1129,10 @@ class ChannelManager:
                     # has shown) is writing.
                     if stage == "thinking" and (seen_tool or last_stage in ("thinking", "writing")):
                         stage = "writing"
-                    if stage and stage != last_stage:
+                    # [argus patch] Suppress live stage emojis for unattended
+                    # (scheduled) turns — a cron poll shouldn't ping the citizen
+                    # with ✍️ indicators, especially when it ends up silent.
+                    if stage and stage != last_stage and not getattr(msg, "unattended", False):
                         last_stage = stage
                         await self.bus.publish_outbound(
                             OutboundMessage(
@@ -1147,6 +1162,12 @@ class ChannelManager:
                         latest_text = snapshot_text
 
                 if not latest_text or latest_text == last_published_text:
+                    continue
+
+                # [argus patch] No intermediate partial-text streaming for
+                # unattended (scheduled) turns — only the final answer (if any)
+                # is delivered; an empty result stays fully silent.
+                if getattr(msg, "unattended", False):
                     continue
 
                 now = time.monotonic()
@@ -1180,6 +1201,7 @@ class ChannelManager:
                 thread_id, response_text, artifacts, msg.channel_name, run_start=run_start
             )
 
+            suppress_final = False
             if not response_text:
                 if attachments:
                     response_text = _format_artifact_text([attachment.virtual_path for attachment in attachments])
@@ -1188,16 +1210,26 @@ class ChannelManager:
                         response_text = THREAD_BUSY_MESSAGE
                     else:
                         response_text = "An error occurred while processing your request. Please try again."
+                elif getattr(msg, "unattended", False):
+                    # [argus patch] Unattended (scheduled playbook) turn with no
+                    # output and no error: stay SILENT rather than sending
+                    # "(No response from agent)". These fire on a cron (e.g. the
+                    # hourly T-15min meeting-prep poll), so a "nothing to report"
+                    # message every hour is noise. Real errors above still surface.
+                    suppress_final = True
                 else:
                     response_text = latest_text or "(No response from agent)"
 
             logger.info(
-                "[Manager] streaming response completed: thread_id=%s, response_len=%d, artifacts=%d, error=%s",
+                "[Manager] streaming response completed: thread_id=%s, response_len=%d, artifacts=%d, error=%s, suppressed=%s",
                 thread_id,
                 len(response_text),
                 len(artifacts),
                 stream_error,
+                suppress_final,
             )
+            if suppress_final:
+                return
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel_name=msg.channel_name,

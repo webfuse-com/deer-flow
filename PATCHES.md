@@ -567,6 +567,30 @@ line count is tests.
   for the citizen `schedules/*.md` restructure (replaces the retired host-side
   `scripts/atlas-briefing.py` + systemd timers).
 
+### 31. `channels/manager`: stay silent on an empty unattended (scheduled) turn
+
+- **Files:** `backend/app/channels/manager.py` (both the non-streaming
+  `_handle_chat` final dispatch and the streaming `_handle_streaming_chat`
+  `finally` dispatch + its intermediate stage-emoji and partial-text publishes).
+- **What:** When a turn produces no answer text and no attachments, the manager
+  used to send `"(No response from agent)"`. For **unattended** turns
+  (`InboundMessage.unattended`, set by the patch #30 playbook-fire path) it now
+  delivers **nothing at all** — and for the streaming path also suppresses the
+  intermediate stage emojis (✍️) and partial-text updates. So a scheduled
+  `channel_notify` playbook whose run legitimately has nothing to say (e.g. the
+  hourly T-15min `meeting-prep` poll when no meeting is imminent) is completely
+  silent rather than pinging the citizen every hour.
+- **Why:** Scheduled polls are noisy by nature; "nothing to report" hourly is
+  worse than useless. Interactive turns are unaffected — a human who gets an
+  empty result still sees the placeholder. Real errors (thread-busy, run
+  failures) still surface even on unattended turns, so failures aren't hidden.
+- **Pairs with:** the citizen-side prompt convention — a `schedules/*.md`
+  playbook should instruct the agent to produce NO output when there's nothing
+  to do (e.g. meeting-prep: "if no meeting in the window, produce no output").
+  This patch is the backstop that makes that actually silent on the wire.
+- **Delete-when:** upstream adds a "suppress empty scheduled-turn output"
+  notion, or the channel-notify path grows its own empty-result handling.
+
 ## Dropped patches (history — do not re-add)
 
 - **#9 `langgraph_auth` lazy-init** (plus the `--allow-blocking` deploy flag) -
