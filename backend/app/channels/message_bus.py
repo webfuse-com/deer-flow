@@ -68,6 +68,13 @@ class InboundMessage:
     files: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
+    # [argus patch #30] per-message agent override + per-job memory policy for
+    # scheduled playbook fires. agent_name: run THIS agent ahead of the
+    # channel's pinned agent. unattended: machine-triggered turn (suppresses
+    # empty output, see patch #31/#32). memory_mode: off|read-only|read-write.
+    agent_name: str | None = None
+    unattended: bool = False
+    memory_mode: str | None = None
 
 
 @dataclass

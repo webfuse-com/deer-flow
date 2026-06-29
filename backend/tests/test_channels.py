@@ -1237,6 +1237,74 @@ class TestChannelManager:
 
         _run(go())
 
+    def test_per_message_agent_overrides_channel_agent(self):
+        """[argus patch #30] A scheduled playbook pins its own agent on the
+        InboundMessage; it must win ahead of the channel's pinned agent (§3a)."""
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(
+                bus=bus,
+                store=store,
+                # Channel is pinned to pythia-internal — the wrong agent for a
+                # personal briefing. The job's agent_name must override it.
+                channel_sessions={"slack": {"assistant_id": "pythia_internal"}},
+            )
+
+            outbound_received = []
+            bus.subscribe_outbound(lambda m: outbound_received.append(m))
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="slack", chat_id="chat1", user_id="user1", text="hi",
+                agent_name="atlas",
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            call_args = mock_client.runs.wait.call_args
+            assert call_args[0][1] == "lead_agent"
+            # The per-message agent wins over the channel's pythia-internal pin.
+            assert call_args[1]["context"]["agent_name"] == "atlas"
+
+        _run(go())
+
+    def test_unattended_job_carries_read_only_memory(self):
+        """[argus patch #30] An unattended turn defaults to memory read-only and
+        surfaces unattended + memory_mode into the run context (§4b)."""
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            outbound_received = []
+            bus.subscribe_outbound(lambda m: outbound_received.append(m))
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="slack", chat_id="chat1", user_id="user1", text="hi",
+                agent_name="atlas", unattended=True,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            ctx = mock_client.runs.wait.call_args[1]["context"]
+            assert ctx["unattended"] is True
+            assert ctx["memory_mode"] == "read-only"
+            assert ctx["agent_name"] == "atlas"
+
+        _run(go())
+
     def test_clarification_follow_up_preserves_history(self, monkeypatch):
         """Conversation should continue after ask_clarification instead of resetting history."""
         from app.channels.manager import ChannelManager

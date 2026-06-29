@@ -47,6 +47,17 @@ def should_check_csrf(request: Request) -> bool:
     # Exempt /api/v1/auth/me endpoint
     if path == "/api/v1/auth/me":
         return False
+    # [argus patch #30] Exempt requests that carry a valid internal-auth token.
+    # CSRF defends against a browser silently attaching ambient cookies on a
+    # cross-site request; a trusted service call bearing the shared internal
+    # secret is not that vector, and the token is a strictly stronger guard than
+    # the double-submit cookie. This lets Chronos fire /api/playbooks/<id>/fire
+    # (and any internal caller) without minting a dummy cookie pair. Non-internal
+    # callers are unaffected — without the token this falls through to True.
+    from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, is_valid_internal_auth_token
+
+    if is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):
+        return False
     return True
 
 
