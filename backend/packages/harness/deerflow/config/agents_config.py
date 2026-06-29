@@ -214,6 +214,11 @@ class AgentConfig(BaseModel):
     # webhook events from the gateway dispatcher. None means "no GitHub
     # integration", which is the case for every existing agent.
     github: GitHubAgentConfig | None = None
+    # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware
+    # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
+    # on any agent that uses the planner/critic skill pipeline (qwen-local-coder,
+    # glm-planner, etc).
+    uses_planner_pipeline: bool = False
 
 
 # Fields explicitly managed by agent-update surfaces. Anything else declared
