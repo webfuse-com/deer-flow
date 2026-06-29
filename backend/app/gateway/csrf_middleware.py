@@ -18,6 +18,7 @@ from app.gateway.auth.config import get_auth_config
 from app.gateway.auth.session_cookie_state import SESSION_COOKIE_ISSUED_STATE_ATTR, SESSION_COOKIE_MAX_AGE_STATE_ATTR, SESSION_COOKIE_SECURE_STATE_ATTR, SKIP_AUTH_CSRF_COOKIE_STATE_ATTR
 from app.gateway.auth_disabled import is_auth_disabled
 from app.gateway.request_path import get_request_route_path
+from app.gateway.sso_auth import trusted_sso_email
 
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
@@ -227,13 +228,25 @@ class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         _is_auth = is_auth_endpoint(request)
 
+        # [argus patch #16] Trusted-proxy SSO citizens never POST the local login
+        # endpoint, so the only place that mints the csrf_token cookie (the
+        # `_is_auth and POST` branch below) never fires for them. The double-submit
+        # check then 403s their first state-changing request with "CSRF token
+        # missing" because there is no cookie to echo. Treat a trusted-SSO request
+        # with no csrf_token cookie yet as first contact: skip the double-submit
+        # rejection for THIS request and mint the cookie on the response, exactly
+        # as a login POST would. The trusted_sso_email gate (proxy-secret,
+        # constant-time) means a direct tailnet caller cannot use this to bypass
+        # CSRF. Once the cookie is set, subsequent requests take the normal path.
+        _sso_first_contact = trusted_sso_email(request.headers) is not None and not request.cookies.get(CSRF_COOKIE_NAME)
+
         if should_check_csrf(request) and _is_auth and not is_allowed_auth_origin(request):
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Cross-site auth request denied."},
             )
 
-        if should_check_csrf(request) and not _is_auth:
+        if should_check_csrf(request) and not _is_auth and not _sso_first_contact:
             cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
             header_token = request.headers.get(CSRF_HEADER_NAME)
 
@@ -251,11 +264,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # For auth endpoints that set up session, also set CSRF cookie.
-        # Session-creating handlers may stamp the final access-token max_age on
-        # request.state; mirroring it here keeps the double-submit cookie pair
-        # from diverging across HTTPS, localhost, and sandbox deployments.
-        if _is_auth and request.method == "POST" and not getattr(request.state, SKIP_AUTH_CSRF_COOKIE_STATE_ATTR, False):
+        # Mint the CSRF cookie for sessions that establish here: auth-endpoint
+        # POSTs (local login/register) and [argus patch #16] trusted-SSO first contact.
+        if (_is_auth and request.method == "POST" and not getattr(request.state, SKIP_AUTH_CSRF_COOKIE_STATE_ATTR, False)) or _sso_first_contact:
             # Generate a new CSRF token for the session
             csrf_token = generate_csrf_token()
             secure, max_age = auth_csrf_cookie_settings(request)

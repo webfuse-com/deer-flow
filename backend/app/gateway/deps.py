@@ -804,6 +804,21 @@ async def require_admin_user(request: Request, *, detail: str) -> None:
         raise HTTPException(status_code=403, detail=detail)
 
 
+async def resolve_or_provision_sso_user(email: str):
+    """[argus patch #15] Resolve a DeerFlow user for an edge-verified SSO email,
+    creating the record on first sight (auto-provision). Used by the
+    trusted-proxy SSO path (sso_auth.trusted_sso_email) so a citizen who already
+    passed Google SSO at the Caddy edge is not asked to log in again. The email
+    is trusted because it arrived with the Caddy proxy secret (constant-time
+    verified upstream)."""
+    provider = get_local_provider()
+    user = await provider.get_user_by_email(email)
+    if user is None:
+        # No local password: SSO-only account. create_user(password=None).
+        user = await provider.create_user(email=email, password=None, system_role="user")
+    return user
+
+
 async def get_optional_user_from_request(request: Request):
     """Get optional authenticated user from request.
 
