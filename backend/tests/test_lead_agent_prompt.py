@@ -109,6 +109,57 @@ def test_apply_prompt_template_includes_relative_path_guidance(monkeypatch):
     assert "`hello.txt`, `../uploads/data.csv`, and `../outputs/report.md`" in prompt
 
 
+def test_apply_prompt_template_includes_file_editing_block(monkeypatch):
+    """[argus] The trimmed <file_editing> block carries the Qwen-specific
+    residuals (read-before-edit, avoid heredocs for files you may edit, edit
+    deliverables in place). The str_replace-over-write_file pillar is now
+    stated natively by upstream's <critical_reminders>, so it is NOT duplicated
+    here."""
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(mounts=[]),
+        skills=SimpleNamespace(container_path="/mnt/skills"),
+    )
+    monkeypatch.setattr("deerflow.config.get_app_config", lambda: config)
+    monkeypatch.setattr(prompt_module, "_get_enabled_skills", lambda: [])
+    monkeypatch.setattr(prompt_module, "get_deferred_tools_prompt_section", lambda **kwargs: "")
+    monkeypatch.setattr(prompt_module, "_build_acp_section", lambda **kwargs: "")
+    monkeypatch.setattr(prompt_module, "_get_memory_context", lambda agent_name=None, **kwargs: "")
+    monkeypatch.setattr(prompt_module, "get_agent_soul", lambda agent_name=None: "")
+
+    prompt = prompt_module.apply_prompt_template()
+
+    assert "<file_editing>" in prompt
+    assert "</file_editing>" in prompt
+    assert "Before editing a file you wrote earlier in the same conversation" in prompt
+    assert "Avoid `bash` heredocs" in prompt
+    # The dropped str_replace-over-write_file pillar must NOT be duplicated here
+    # (upstream states it natively in <critical_reminders>).
+    assert "Prefer targeted edits over full rewrites" not in prompt
+
+
+def test_apply_prompt_template_includes_debugging_when_stuck_block(monkeypatch):
+    """[argus] The <debugging_when_stuck> block (no upstream equivalent) gives
+    smaller models an explicit instrument-first / reduce-surface decision rule
+    instead of progressively weaker blind fixes."""
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(mounts=[]),
+        skills=SimpleNamespace(container_path="/mnt/skills"),
+    )
+    monkeypatch.setattr("deerflow.config.get_app_config", lambda: config)
+    monkeypatch.setattr(prompt_module, "_get_enabled_skills", lambda: [])
+    monkeypatch.setattr(prompt_module, "get_deferred_tools_prompt_section", lambda **kwargs: "")
+    monkeypatch.setattr(prompt_module, "_build_acp_section", lambda **kwargs: "")
+    monkeypatch.setattr(prompt_module, "_get_memory_context", lambda agent_name=None, **kwargs: "")
+    monkeypatch.setattr(prompt_module, "get_agent_soul", lambda agent_name=None: "")
+
+    prompt = prompt_module.apply_prompt_template()
+
+    assert "<debugging_when_stuck>" in prompt
+    assert "</debugging_when_stuck>" in prompt
+    assert "Two failed fixes in a row" in prompt
+    assert "Instrument first, fix second" in prompt
+
+
 def test_apply_prompt_template_threads_explicit_app_config_without_global_config(monkeypatch):
     mounts = [SimpleNamespace(container_path="/home/user/shared", read_only=False)]
     explicit_config = SimpleNamespace(
