@@ -5070,6 +5070,67 @@ class TestSlackSendRetry:
         _run(go())
 
 
+class TestSlackAckCleanup:
+    """[argus patch #23] The 'Working on it...' ack and :eyes: reaction are
+    deleted once the real answer posts, instead of accumulating per turn."""
+
+    def test_running_reply_records_ack(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        mock_web.chat_postMessage.return_value = {"ts": "111.222"}
+        ch._web_client = mock_web
+
+        ch._send_running_reply("C1", "thr1", react_ts="999.000")
+
+        assert ch._acks[("C1", "thr1")] == {"ack_ts": "111.222", "react_ts": "999.000"}
+
+    def test_clear_acks_deletes_message_and_removes_reaction(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        ch._acks[("C1", "thr1")] = {"ack_ts": "111.222", "react_ts": "999.000"}
+        mock_web = MagicMock()
+
+        ch._clear_acks(mock_web, "C1", "thr1")
+
+        mock_web.chat_delete.assert_called_once_with(channel="C1", ts="111.222")
+        mock_web.reactions_remove.assert_called_once_with(channel="C1", timestamp="999.000", name="eyes")
+        # Entry is consumed so a later turn doesn't double-clear.
+        assert ("C1", "thr1") not in ch._acks
+
+    def test_clear_acks_is_noop_without_recorded_ack(self):
+        from app.channels.slack import SlackChannel
+
+        ch = SlackChannel(bus=MessageBus(), config={})
+        mock_web = MagicMock()
+        ch._clear_acks(mock_web, "C1", "thr1")  # nothing recorded
+        mock_web.chat_delete.assert_not_called()
+        mock_web.reactions_remove.assert_not_called()
+
+    def test_send_clears_ack_after_answer(self):
+        from app.channels.slack import SlackChannel
+
+        async def go():
+            ch = SlackChannel(bus=MessageBus(), config={})
+            mock_web = MagicMock()
+            mock_web.chat_postMessage.return_value = {"ts": "ack.1"}
+            ch._web_client = mock_web
+            # A running reply was sent for this thread.
+            ch._send_running_reply("C1", "thr1", react_ts="user.1")
+            assert ("C1", "thr1") in ch._acks
+
+            msg = OutboundMessage(channel_name="slack", chat_id="C1", thread_id="t1", text="answer", thread_ts="thr1")
+            await ch.send(msg)
+
+            # send() posted the answer and then cleared the ack.
+            mock_web.chat_delete.assert_called_once_with(channel="C1", ts="ack.1")
+            assert ("C1", "thr1") not in ch._acks
+
+        _run(go())
+
+
 class TestSlackAllowedUsers:
     @staticmethod
     def _submit_coro(coro, loop):
@@ -5104,7 +5165,7 @@ class TestSlackAllowedUsers:
             channel._handle_message_event(event)
 
         channel._add_reaction.assert_called_once_with("C123", "1710000000.000100", "eyes")
-        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100")
+        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100", "1710000000.000100")
         submit.assert_called_once()
         inbound = bus.publish_inbound.call_args.args[0]
         assert inbound.user_id == "123456"
@@ -5139,7 +5200,7 @@ class TestSlackAllowedUsers:
             channel._handle_message_event(event)
 
         channel._add_reaction.assert_called_once_with("C123", "1710000000.000100", "eyes")
-        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100")
+        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100", "1710000000.000100")
         submit.assert_called_once()
         inbound = bus.publish_inbound.call_args.args[0]
         assert inbound.user_id == "U123456"
