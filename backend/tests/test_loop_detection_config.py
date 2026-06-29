@@ -70,3 +70,14 @@ class TestLoopDetectionConfig:
     def test_tool_freq_override_rejects_hard_limit_below_warn(self):
         with pytest.raises(ValueError, match="hard_limit"):
             LoopDetectionConfig(tool_freq_overrides={"bash": {"warn": 100, "hard_limit": 50}})
+
+    def test_read_file_bucket_size_defaults_to_upstream_200(self):
+        """[argus] Field defaults to the upstream 200 so it is purely additive."""
+        assert LoopDetectionConfig().read_file_bucket_size_lines == 200
+
+    def test_read_file_bucket_size_accepts_custom_value(self):
+        assert LoopDetectionConfig(read_file_bucket_size_lines=50).read_file_bucket_size_lines == 50
+
+    def test_read_file_bucket_size_rejects_zero(self):
+        with pytest.raises(ValueError):
+            LoopDetectionConfig(read_file_bucket_size_lines=0)
