@@ -1182,3 +1182,100 @@ def test_stream_chunk_timeout_popped_for_non_openai_provider_when_user_set_it(mo
     factory_module.create_chat_model(name="anthropic-with-stray-timeout")
 
     assert "stream_chunk_timeout" not in captured
+
+
+# ---------------------------------------------------------------------------
+# Per-event-loop httpx client (langchain-openai cross-loop bypass)
+# ---------------------------------------------------------------------------
+
+
+class TestPerLoopHttpxClient:
+    """The factory injects a per-event-loop httpx.AsyncClient into ChatOpenAI
+    subclasses to bypass langchain-openai's process-global @lru_cache, which
+    breaks under LangGraph's loop-per-task model.
+
+    See module docstring on _PER_LOOP_HTTPX_CLIENTS for the full context.
+    """
+
+    def test_returns_none_outside_async_context(self):
+        """Sync model construction (e.g. config validation) should get None
+        and let ChatOpenAI fall back to its default."""
+        client = factory_module._httpx_client_for_current_loop()
+        assert client is None
+
+    def test_same_loop_returns_same_client(self):
+        """Two calls inside the same event loop must return the same client
+        (otherwise we'd leak connections per call)."""
+        import asyncio as _asyncio
+
+        async def grab_two():
+            a = factory_module._httpx_client_for_current_loop()
+            b = factory_module._httpx_client_for_current_loop()
+            return a, b
+
+        a, b = _asyncio.run(grab_two())
+        assert a is not None
+        assert a is b
+
+    def test_closed_client_is_replaced(self):
+        """A cached client that has been closed must not be reused — the
+        helper must produce a fresh one. This is the key behavior under
+        LangGraph's loop-per-task model: the previous loop's client may be
+        closed but its id() can still be in our cache (because Python
+        recycles loop addresses across sequential asyncio.run calls)."""
+        import asyncio as _asyncio
+
+        captured: dict = {}
+
+        async def grab_first():
+            client = factory_module._httpx_client_for_current_loop()
+            captured["first"] = client
+            await client.aclose()
+
+        async def grab_second():
+            captured["second"] = factory_module._httpx_client_for_current_loop()
+
+        _asyncio.run(grab_first())
+        _asyncio.run(grab_second())
+
+        assert captured["first"] is not None
+        assert captured["second"] is not None
+        assert captured["second"] is not captured["first"]
+        assert not captured["second"].is_closed
+
+    def test_non_chatopenai_does_not_get_http_client_kwarg(self, monkeypatch):
+        """FakeChatModel extends BaseChatModel directly, not ChatOpenAI —
+        the http_async_client injection must not touch it."""
+        cfg = _make_app_config([_make_model("vanilla")])
+        _patch_factory(monkeypatch, cfg)
+
+        FakeChatModel.captured_kwargs = {}
+        factory_module.create_chat_model(name="vanilla")
+
+        assert "http_async_client" not in FakeChatModel.captured_kwargs
+
+    def test_explicit_http_async_client_in_kwargs_is_preserved(self, monkeypatch):
+        """If a caller already provides http_async_client, the factory must
+        not overwrite it. This protects a future code path that wants to
+        inject its own client (e.g. with custom proxies)."""
+        from langchain_openai import ChatOpenAI
+
+        captured: dict = {}
+        sentinel = object()
+
+        class CapturingChatOpenAI(ChatOpenAI):
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                # Don't actually try to build a real client; bail early
+                raise _StopFactory()
+
+        class _StopFactory(Exception):
+            pass
+
+        cfg = _make_app_config([_make_model("openai-clone", use="langchain_openai:ChatOpenAI")])
+        _patch_factory(monkeypatch, cfg, model_class=CapturingChatOpenAI)
+
+        with pytest.raises(_StopFactory):
+            factory_module.create_chat_model(name="openai-clone", http_async_client=sentinel)
+
+        assert captured.get("http_async_client") is sentinel

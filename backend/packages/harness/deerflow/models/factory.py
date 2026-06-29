@@ -1,6 +1,10 @@
+import asyncio
 import logging
+import weakref
 
+import httpx
 from langchain.chat_models import BaseChatModel
+from langchain_openai import ChatOpenAI
 
 from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
@@ -8,6 +12,51 @@ from deerflow.reflection import resolve_class
 from deerflow.tracing import build_tracing_callbacks
 
 logger = logging.getLogger(__name__)
+
+
+# [argus] Per-event-loop httpx.AsyncClient cache.
+#
+# langchain-openai (as of 1.1.7) caches the async httpx client with a
+# process-global @lru_cache. LangGraph's worker model spins up a fresh
+# asyncio loop per task; reusing an httpx connection from a prior loop
+# after that loop has been torn down raises:
+#
+#     RuntimeError: Event loop is closed
+#
+# at stream-cleanup time. The upstream issue (langchain-ai/langchain#35783)
+# is open as of 2026-06. Until it's fixed there, we side-step the broken
+# cache by passing an explicit http_async_client into ChatOpenAI ourselves,
+# scoped to the *currently running* event loop.
+#
+# WeakValueDictionary so the client is GC'd when its loop is GC'd; no leak
+# across long-lived processes that handle thousands of short-lived loops.
+_PER_LOOP_HTTPX_CLIENTS: "weakref.WeakValueDictionary[int, httpx.AsyncClient]" = weakref.WeakValueDictionary()
+
+
+def _httpx_client_for_current_loop() -> httpx.AsyncClient | None:
+    """Return an httpx.AsyncClient bound to the currently-running event loop.
+
+    Returns None when called outside an async context (e.g. sync model
+    construction during config validation), in which case ChatOpenAI falls
+    back to its default — which is fine for non-async paths.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+    loop_id = id(loop)
+    client = _PER_LOOP_HTTPX_CLIENTS.get(loop_id)
+    if client is not None and not client.is_closed:
+        return client
+
+    # Default keepalive is fine because the pool is per-loop now — when the
+    # loop dies the client is GC'd and the connections close cleanly.
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(600.0, connect=10.0),
+    )
+    _PER_LOOP_HTTPX_CLIENTS[loop_id] = client
+    return client
 
 
 def _deep_merge_dicts(base: dict | None, override: dict) -> dict:
@@ -193,7 +242,17 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         if "stream_usage" in getattr(model_class, "model_fields", {}):
             model_settings_from_config["stream_usage"] = True
 
-    model_instance = model_class(**kwargs, **model_settings_from_config)
+    final_kwargs = {**model_settings_from_config, **kwargs}
+
+    # [argus] Bypass langchain-openai's process-global httpx client cache (see
+    # _PER_LOOP_HTTPX_CLIENTS docstring above). Only relevant for ChatOpenAI
+    # subclasses; native Anthropic/Google clients have their own pooling.
+    if issubclass(model_class, ChatOpenAI) and "http_async_client" not in final_kwargs:
+        per_loop_client = _httpx_client_for_current_loop()
+        if per_loop_client is not None:
+            final_kwargs["http_async_client"] = per_loop_client
+
+    model_instance = model_class(**final_kwargs)
 
     if attach_tracing:
         callbacks = build_tracing_callbacks()
