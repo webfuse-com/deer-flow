@@ -47,6 +47,11 @@ class AgentConfig(BaseModel):
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
+    # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware
+    # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
+    # on any agent that uses the planner/critic skill pipeline (qwen-local-coder,
+    # glm-planner, etc).
+    uses_planner_pipeline: bool = False
 
 
 def resolve_agent_dir(name: str, *, user_id: str | None = None) -> Path:

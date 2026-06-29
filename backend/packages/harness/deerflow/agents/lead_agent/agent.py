@@ -142,17 +142,33 @@ def _create_summarization_middleware(*, app_config: AppConfig | None = None) -> 
     )
 
 
-def _create_todo_list_middleware(is_plan_mode: bool) -> TodoMiddleware | None:
+def _create_todo_list_middleware(is_plan_mode: bool, agent_name: str | None = "", agent_config: "AgentConfig | None" = None) -> TodoMiddleware | None:
     """Create and configure the TodoList middleware.
 
     Args:
         is_plan_mode: Whether to enable plan mode with TodoList middleware.
+        agent_name: Custom-agent name from the runtime context (informational).
+        agent_config: Custom-agent config. [argus] When ``uses_planner_pipeline``
+            is True, returns ``ArgusTodoMiddleware`` whose system prompt and tool
+            description defer planning judgment to the planner SKILL.md.
+            Otherwise returns the upstream ``TodoMiddleware``.
 
     Returns:
-        TodoMiddleware instance if plan mode is enabled, None otherwise.
+        TodoMiddleware (or subclass) instance if plan mode is enabled, None otherwise.
     """
     if not is_plan_mode:
         return None
+
+    # [argus] Agents with uses_planner_pipeline=True have a mandatory planner
+    # skill that decides when to plan and what the steps are. The upstream
+    # system prompt below tells the agent NOT to use write_todos for "simple
+    # tasks", which contradicts the planner's "always plan" mandate.
+    # ArgusTodoMiddleware replaces only the prompt; behavior (reminders, exit
+    # prevention) inherits unchanged.
+    if agent_config is not None and getattr(agent_config, "uses_planner_pipeline", False):
+        from deerflow.agents.middlewares.argus_todo_middleware import ArgusTodoMiddleware
+
+        return ArgusTodoMiddleware()
 
     # Custom prompts matching DeerFlow's style
     system_prompt = """
@@ -317,10 +333,18 @@ def build_middlewares(
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
-    # Add TodoList middleware if plan mode is enabled
+    # Add TodoList middleware if plan mode is enabled. [argus] An agent whose
+    # config sets uses_planner_pipeline=True is routed onto ArgusTodoMiddleware
+    # (planner-aligned prompt); other agents stay on the upstream TodoMiddleware.
     cfg = _get_runtime_config(config)
     is_plan_mode = cfg.get("is_plan_mode", False)
-    todo_list_middleware = _create_todo_list_middleware(is_plan_mode)
+    _todo_agent_config = None
+    if agent_name:
+        try:
+            _todo_agent_config = load_agent_config(agent_name)
+        except Exception:  # noqa: BLE001 — config absence must not block middleware build
+            _todo_agent_config = None
+    todo_list_middleware = _create_todo_list_middleware(is_plan_mode, agent_name=agent_name, agent_config=_todo_agent_config)
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 

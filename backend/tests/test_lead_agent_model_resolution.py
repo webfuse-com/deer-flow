@@ -326,7 +326,7 @@ def test_build_middlewares_uses_resolved_model_name_for_vision(monkeypatch):
 
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"model_name": "stale-model", "is_plan_mode": False, "subagent_enabled": False}},
@@ -362,7 +362,7 @@ def test_build_middlewares_passes_explicit_app_config_to_shared_factory(monkeypa
         _fake_build_lead_runtime_middlewares,
     )
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
     monkeypatch.setattr(
         lead_agent_module,
         "TitleMiddleware",
@@ -405,7 +405,7 @@ def test_build_middlewares_uses_loop_detection_config(monkeypatch):
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda *, app_config=None: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
@@ -431,7 +431,7 @@ def test_build_middlewares_omits_loop_detection_when_disabled(monkeypatch):
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda *, app_config=None: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
