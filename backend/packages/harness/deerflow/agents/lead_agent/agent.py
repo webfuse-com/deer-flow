@@ -334,11 +334,19 @@ def build_middlewares(
     # Add MemoryMiddleware (after TitleMiddleware)
     middlewares.append(MemoryMiddleware(agent_name=agent_name, memory_config=resolved_app_config.memory))
 
-    # Add ViewImageMiddleware only if the current model supports vision.
+    # Add ViewImageMiddleware. If the lead model is vision-capable, it injects
+    # the image directly. [argus] If NOT (e.g. glm-planner -> glm-nw), route each
+    # viewed image through a vision-capable model (the first supports_vision model
+    # in config, e.g. local-qwen) for a TEXT description that is injected instead,
+    # so render-and-verify / view_image work on non-vision leads too.
     # Use the resolved runtime model_name from make_lead_agent to avoid stale config values.
     model_config = resolved_app_config.get_model_config(model_name) if model_name else None
     if model_config is not None and model_config.supports_vision:
         middlewares.append(ViewImageMiddleware())
+    else:
+        _vision_model = next((m.name for m in resolved_app_config.models if m.supports_vision), None)
+        if _vision_model is not None:
+            middlewares.append(ViewImageMiddleware(vision_model_name=_vision_model, app_config=resolved_app_config))
 
     # Hide deferred tool schemas from model binding until tool_search promotes them.
     # The deferred set + catalog hash come from the build-time setup (assembled
