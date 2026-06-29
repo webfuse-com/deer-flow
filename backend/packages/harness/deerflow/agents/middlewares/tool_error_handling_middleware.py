@@ -182,7 +182,7 @@ def _build_runtime_middlewares(
 
     from deerflow.agents.middlewares.sandbox_audit_middleware import SandboxAuditMiddleware
 
-    middlewares.append(SandboxAuditMiddleware())
+    middlewares.append(SandboxAuditMiddleware(command_max_chars=app_config.sandbox.command_max_chars))
     middlewares.append(ToolErrorHandlingMiddleware())
     return middlewares
 
