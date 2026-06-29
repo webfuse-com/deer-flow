@@ -104,6 +104,10 @@ class ChannelService:
         langgraph_url = _resolve_service_url(config, "langgraph_url", _CHANNELS_LANGGRAPH_URL_ENV, DEFAULT_LANGGRAPH_URL)
         gateway_url = _resolve_service_url(config, "gateway_url", _CHANNELS_GATEWAY_URL_ENV, DEFAULT_GATEWAY_URL)
         default_session = config.pop("session", None)
+        # [argus patch #10] Optional split-paste coalescing window, set via
+        # `channels.coalesce_window` in config.yaml; default lives in the manager.
+        # Popped before channel_sessions is built so it is not mistaken for a channel.
+        coalesce_window = config.pop("coalesce_window", None)
         channel_sessions = {name: channel_config.get("session") for name, channel_config in config.items() if isinstance(channel_config, dict)}
         self.manager = ChannelManager(
             bus=self.bus,
@@ -114,6 +118,7 @@ class ChannelService:
             channel_sessions=channel_sessions,
             connection_repo=connection_repo,
             require_bound_identity=require_bound_identity,
+            coalesce_window=float(coalesce_window) if isinstance(coalesce_window, (int, float)) else None,
         )
         self._channels: dict[str, Any] = {}  # name -> Channel instance
         self._config = config

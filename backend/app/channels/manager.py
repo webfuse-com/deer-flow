@@ -815,10 +815,14 @@ class ChannelManager:
         channel_sessions: dict[str, Any] | None = None,
         connection_repo: Any | None = None,
         require_bound_identity: bool = False,
+        coalesce_window: float | None = None,
     ) -> None:
         self.bus = bus
         self.store = store
         self._max_concurrency = max_concurrency
+        # [argus patch #10] Debounced coalescing of split-paste CHAT messages.
+        self._coalesce_window = coalesce_window
+        self._coalescer = None  # built in start() once the loop exists
         self._langgraph_url = langgraph_url
         self._gateway_url = gateway_url
         self._assistant_id = assistant_id
@@ -991,12 +995,25 @@ class ChannelManager:
             return
         self._running = True
         self._semaphore = asyncio.Semaphore(self._max_concurrency)
+        # [argus patch #10] Build the coalescer now that we're on the loop.
+        from app.channels._coalesce import DEFAULT_COALESCE_WINDOW, MessageCoalescer
+
+        window = self._coalesce_window if self._coalesce_window is not None else DEFAULT_COALESCE_WINDOW
+        # window <= 0 disables coalescing (each message dispatches immediately) —
+        # used by tests and any caller that wants the legacy 1-message-1-turn path.
+        self._coalescer = MessageCoalescer(self._dispatch_handle, window=window) if window > 0 else None
         self._task = asyncio.create_task(self._dispatch_loop())
-        logger.info("ChannelManager started (max_concurrency=%d)", self._max_concurrency)
+        logger.info("ChannelManager started (max_concurrency=%d, coalesce_window=%.1fs)", self._max_concurrency, window)
 
     async def stop(self) -> None:
         """Stop the dispatch loop."""
         self._running = False
+        # [argus patch #10] Don't lose a buffered burst on shutdown.
+        if self._coalescer is not None:
+            try:
+                await self._coalescer.flush()
+            except Exception:
+                logger.exception("[Manager] coalescer flush on stop failed")
         if self._task:
             self._task.cancel()
             try:
@@ -1034,8 +1051,24 @@ class ChannelManager:
                 len(msg.text or ""),
                 len(msg.files),
             )
-            task = asyncio.create_task(self._handle_message(msg))
-            task.add_done_callback(self._log_task_error)
+            # [argus patch #10] Coalesce CHAT messages per conversation so a
+            # split paste (Telegram chunks a long message into several) becomes
+            # ONE agent turn instead of racing on the same thread (the 2nd+ would
+            # 409 "thread busy" and be lost). Commands bypass coalescing — a /new
+            # must run immediately and never merge.
+            if self._coalescer is not None and msg.msg_type == InboundMessageType.CHAT:
+                self._coalescer.add(msg)
+            else:
+                # Commands, or coalescing disabled (window<=0) -> dispatch now.
+                await self._dispatch_handle(msg)
+
+    async def _dispatch_handle(self, msg: InboundMessage) -> None:
+        """[argus patch #10] Spawn the actual message handler (used directly for
+        commands and as the coalescer's dispatch callback for combined chat
+        turns). Async so the coalescer can `await` it; returns as soon as the
+        task is scheduled."""
+        task = asyncio.create_task(self._handle_message(msg))
+        task.add_done_callback(self._log_task_error)
 
     @staticmethod
     def _inbound_dedupe_key(msg: InboundMessage) -> tuple[str, str, str, str] | None:
