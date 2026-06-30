@@ -192,6 +192,7 @@ class AioSandboxProvider(SandboxProvider):
             container_prefix=self._config["container_prefix"],
             config_mounts=self._config["mounts"],
             environment=self._config["environment"],
+            network=self._config.get("network"),
         )
 
     # ── Configuration ────────────────────────────────────────────────────
@@ -214,6 +215,10 @@ class AioSandboxProvider(SandboxProvider):
             "environment": self._resolve_env_vars(sandbox_config.environment or {}),
             # provisioner URL for dynamic pod management (e.g. http://provisioner:8002)
             "provisioner_url": getattr(sandbox_config, "provisioner_url", None) or "",
+            # [argus] Container network for sandbox DNS mode (LocalContainerBackend
+            # only). When set, sandboxes join this network and are reached by container
+            # DNS name on port 8080 with NO host port published (DeerFlow patch #26).
+            "network": getattr(sandbox_config, "network", None) or None,
         }
 
     @staticmethod

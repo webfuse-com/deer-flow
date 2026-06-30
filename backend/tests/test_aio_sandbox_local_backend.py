@@ -333,3 +333,153 @@ def test_is_container_running_raises_on_unrelated_not_found_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Failed to inspect container sandbox-busy"):
         backend._is_container_running("sandbox-busy")
+
+
+# ── [argus] Sandbox network-DNS mode (DeerFlow patch #26 fix) ────────────────
+# When `network` is set, sandboxes join that container network and are reached by
+# container DNS name on port 8080 with NO host port published — eliminating the
+# rootless-Podman host-port-bind race that wedged runs. When unset, the legacy
+# host-publish path is unchanged.
+
+
+def _network_backend():
+    return LocalContainerBackend(
+        image="sandbox:latest",
+        base_port=8080,
+        container_prefix="sandbox",
+        config_mounts=[],
+        environment={},
+        network="argus-net",
+    )
+
+
+def _legacy_backend():
+    return LocalContainerBackend(
+        image="sandbox:latest",
+        base_port=8080,
+        container_prefix="sandbox",
+        config_mounts=[],
+        environment={},
+    )
+
+
+def test_start_container_network_mode_adds_network_and_skips_port_publish(monkeypatch):
+    backend = _network_backend()
+    captured_cmd = _capture_start_container_command(monkeypatch, backend)
+
+    assert "--network" in captured_cmd
+    assert captured_cmd[captured_cmd.index("--network") + 1] == "argus-net"
+    assert "-p" not in captured_cmd
+    # Still names the container.
+    assert captured_cmd[captured_cmd.index("--name") + 1] == "sandbox-test"
+
+
+def test_start_container_legacy_mode_unchanged_when_network_none(monkeypatch):
+    backend = _legacy_backend()
+    monkeypatch.delenv("DEER_FLOW_SANDBOX_HOST", raising=False)
+    monkeypatch.delenv("DEER_FLOW_SANDBOX_BIND_HOST", raising=False)
+
+    captured_cmd = _capture_start_container_command(monkeypatch, backend)
+
+    assert "-p" in captured_cmd
+    assert "--network" not in captured_cmd
+
+
+def test_create_network_mode_builds_dns_url_and_skips_port_alloc(monkeypatch):
+    backend = _network_backend()
+    monkeypatch.setattr(backend, "_start_container", lambda name, port, mounts=None: "container-id")
+
+    # get_free_port must NOT be called in network mode.
+    def _boom(*args, **kwargs):
+        raise AssertionError("get_free_port must not be called in network mode")
+
+    monkeypatch.setattr("deerflow.community.aio_sandbox.local_backend.get_free_port", _boom)
+
+    info = backend.create(thread_id=None, sandbox_id="abc12345")
+
+    assert info.container_name == "sandbox-abc12345"
+    assert info.sandbox_url == "http://sandbox-abc12345:8080"
+
+
+def test_create_legacy_mode_builds_host_port_url(monkeypatch):
+    backend = _legacy_backend()
+    monkeypatch.setenv("DEER_FLOW_SANDBOX_HOST", "host.docker.internal")
+    monkeypatch.setattr("deerflow.community.aio_sandbox.local_backend.get_free_port", lambda start_port: 18080)
+    monkeypatch.setattr(backend, "_start_container", lambda name, port, mounts=None: "container-id")
+
+    info = backend.create(thread_id=None, sandbox_id="abc12345")
+
+    assert info.sandbox_url == "http://host.docker.internal:18080"
+
+
+def test_discover_network_mode_skips_host_port_lookup(monkeypatch):
+    backend = _network_backend()
+    monkeypatch.setattr(backend, "_is_container_running", lambda name: True)
+    monkeypatch.setattr(
+        "deerflow.community.aio_sandbox.local_backend.wait_for_sandbox_ready",
+        lambda url, timeout=5: True,
+    )
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("_get_container_port must not be called in network mode")
+
+    monkeypatch.setattr(backend, "_get_container_port", _boom)
+
+    info = backend.discover("abc12345")
+
+    assert info is not None
+    assert info.sandbox_url == "http://sandbox-abc12345:8080"
+
+
+def test_discover_legacy_mode_uses_host_port(monkeypatch):
+    backend = _legacy_backend()
+    monkeypatch.setenv("DEER_FLOW_SANDBOX_HOST", "host.docker.internal")
+    monkeypatch.setattr(backend, "_is_container_running", lambda name: True)
+    monkeypatch.setattr(backend, "_get_container_port", lambda name: 18081)
+    monkeypatch.setattr(
+        "deerflow.community.aio_sandbox.local_backend.wait_for_sandbox_ready",
+        lambda url, timeout=5: True,
+    )
+
+    info = backend.discover("abc12345")
+
+    assert info is not None
+    assert info.sandbox_url == "http://host.docker.internal:18081"
+
+
+def test_destroy_network_mode_does_not_release_port(monkeypatch):
+    backend = _network_backend()
+    monkeypatch.setattr(backend, "_stop_container", lambda target: None)
+
+    def _boom(port):
+        raise AssertionError("release_port must not be called in network mode")
+
+    monkeypatch.setattr("deerflow.community.aio_sandbox.local_backend.release_port", _boom)
+
+    backend.destroy(
+        SimpleNamespace(
+            container_id="cid",
+            container_name="sandbox-x",
+            sandbox_url="http://sandbox-x:8080",
+        )
+    )  # must not raise
+
+
+def test_destroy_legacy_mode_releases_host_port(monkeypatch):
+    backend = _legacy_backend()
+    monkeypatch.setattr(backend, "_stop_container", lambda target: None)
+    released: list[int] = []
+    monkeypatch.setattr(
+        "deerflow.community.aio_sandbox.local_backend.release_port",
+        lambda port: released.append(port),
+    )
+
+    backend.destroy(
+        SimpleNamespace(
+            container_id="cid",
+            container_name="sandbox-x",
+            sandbox_url="http://host.docker.internal:18080",
+        )
+    )
+
+    assert released == [18080]

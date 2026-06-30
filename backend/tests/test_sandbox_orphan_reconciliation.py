@@ -174,6 +174,37 @@ def test_list_running_includes_containers_without_port(monkeypatch):
     assert infos[0].sandbox_url == ""
 
 
+def test_list_running_network_mode_builds_dns_urls(monkeypatch):
+    """[argus] In network mode containers publish no host port, but list_running
+    must still yield a usable container-DNS URL so orphan adoption works (a "" URL
+    would build a broken AioSandbox client)."""
+    from deerflow.community.aio_sandbox.local_backend import LocalContainerBackend
+
+    backend = LocalContainerBackend(
+        image="test-image:latest",
+        base_port=8080,
+        container_prefix="deer-flow-sandbox",
+        config_mounts=[],
+        environment={},
+        network="argus-net",
+    )
+    monkeypatch.setattr(backend, "_runtime", "docker")
+
+    _mock_ps_and_inspect(
+        monkeypatch,
+        ps_output="deer-flow-sandbox-abc12345\n",
+        # No host_port — network-mode containers publish nothing.
+        inspect_payload=[
+            _make_inspect_entry("deer-flow-sandbox-abc12345", "2026-04-08T01:22:50Z", host_port=None),
+        ],
+    )
+
+    infos = backend.list_running()
+    assert len(infos) == 1
+    assert infos[0].sandbox_id == "abc12345"
+    assert infos[0].sandbox_url == "http://deer-flow-sandbox-abc12345:8080"
+
+
 def test_list_running_handles_docker_failure(monkeypatch):
     """list_running should return empty list when docker ps fails."""
     backend = _make_local_backend()

@@ -208,6 +208,7 @@ class LocalContainerBackend(SandboxBackend):
         container_prefix: str,
         config_mounts: list,
         environment: dict[str, str],
+        network: str | None = None,
     ):
         """Initialize the local container backend.
 
@@ -217,18 +218,38 @@ class LocalContainerBackend(SandboxBackend):
             container_prefix: Prefix for container names (e.g., "deer-flow-sandbox").
             config_mounts: Volume mount configurations from config (list of VolumeMountConfig).
             environment: Environment variables to inject into containers.
+            network: [argus] Container network to attach sandboxes to. When set,
+                sandboxes join this network and are reached by container DNS name on
+                port 8080 with NO host port published. When None, the legacy
+                host-port publish path is used.
         """
         self._image = image
         self._base_port = base_port
         self._container_prefix = container_prefix
         self._config_mounts = config_mounts
         self._environment = environment
+        self._network = (network or "").strip() or None
         self._runtime = self._detect_runtime()
 
     @property
     def runtime(self) -> str:
         """The detected container runtime ("docker" or "container")."""
         return self._runtime
+
+    def _sandbox_url(self, container_name: str, host_port: int | None) -> str:
+        """Build the URL the gateway uses to reach a sandbox.
+
+        [argus] Network-DNS mode: the gateway is on the same container network, so
+        it resolves the sandbox by container name on the container's own port 8080
+        (no host port is published). Legacy host-publish mode: reach it via
+        DEER_FLOW_SANDBOX_HOST and the published host port.
+        """
+        if self._network:
+            return f"http://{container_name}:8080"
+        if not host_port:
+            return ""
+        sandbox_host = os.environ.get("DEER_FLOW_SANDBOX_HOST", "localhost")
+        return f"http://{sandbox_host}:{host_port}"
 
     def _detect_runtime(self) -> str:
         """Detect which container runtime to use.
@@ -275,31 +296,18 @@ class LocalContainerBackend(SandboxBackend):
         """
         container_name = f"{self._container_prefix}-{sandbox_id}"
 
-        # Retry loop: if Docker rejects the port (e.g. a stale container still
-        # holds the binding after a process restart), skip that port and try the
-        # next one.  The socket-bind check in get_free_port mirrors Docker's
-        # 0.0.0.0 bind, but Docker's port-release can be slightly asynchronous,
-        # so a reactive fallback here ensures we always make progress.
-        _next_start = self._base_port
         container_id: str | None = None
         port: int = 0
-        for _attempt in range(10):
-            port = get_free_port(start_port=_next_start)
+
+        if self._network:
+            # [argus] Network-DNS mode: no host port is published, so there is
+            # nothing to allocate and no "port already allocated" failure mode. A
+            # container-name conflict is still possible (another process won the
+            # race) and is handled by adopting the existing container.
             try:
-                container_id = self._start_container(container_name, port, extra_mounts)
-                break
+                container_id = self._start_container(container_name, 0, extra_mounts)
             except RuntimeError as exc:
-                release_port(port)
-                err = str(exc)
-                err_lower = err.lower()
-                # Port already bound: skip this port and retry with the next one.
-                if "port is already allocated" in err or "address already in use" in err_lower:
-                    logger.warning(f"Port {port} rejected by Docker (already allocated), retrying with next port")
-                    _next_start = port + 1
-                    continue
-                # Container-name conflict: another process may have already started
-                # the deterministic sandbox container for this sandbox_id. Try to
-                # discover and adopt the existing container instead of failing.
+                err_lower = str(exc).lower()
                 if "is already in use by container" in err_lower or "conflict. the container name" in err_lower:
                     logger.warning(f"Container name {container_name} already in use, attempting to discover existing sandbox instance")
                     existing = self.discover(sandbox_id)
@@ -307,14 +315,45 @@ class LocalContainerBackend(SandboxBackend):
                         return existing
                 raise
         else:
-            raise RuntimeError("Could not start sandbox container: all candidate ports are already allocated by Docker")
+            # Legacy host-publish retry loop: if Docker rejects the port (e.g. a
+            # stale container still holds the binding after a process restart),
+            # skip that port and try the next one.  The socket-bind check in
+            # get_free_port mirrors Docker's 0.0.0.0 bind, but Docker's
+            # port-release can be slightly asynchronous, so a reactive fallback
+            # here ensures we always make progress.
+            _next_start = self._base_port
+            for _attempt in range(10):
+                port = get_free_port(start_port=_next_start)
+                try:
+                    container_id = self._start_container(container_name, port, extra_mounts)
+                    break
+                except RuntimeError as exc:
+                    release_port(port)
+                    err = str(exc)
+                    err_lower = err.lower()
+                    # Port already bound: skip this port and retry with the next one.
+                    if "port is already allocated" in err or "address already in use" in err_lower:
+                        logger.warning(f"Port {port} rejected by Docker (already allocated), retrying with next port")
+                        _next_start = port + 1
+                        continue
+                    # Container-name conflict: another process may have already started
+                    # the deterministic sandbox container for this sandbox_id. Try to
+                    # discover and adopt the existing container instead of failing.
+                    if "is already in use by container" in err_lower or "conflict. the container name" in err_lower:
+                        logger.warning(f"Container name {container_name} already in use, attempting to discover existing sandbox instance")
+                        existing = self.discover(sandbox_id)
+                        if existing is not None:
+                            return existing
+                    raise
+            else:
+                raise RuntimeError("Could not start sandbox container: all candidate ports are already allocated by Docker")
 
-        # When running inside Docker (DooD), sandbox containers are reachable via
-        # host.docker.internal rather than localhost (they run on the host daemon).
-        sandbox_host = os.environ.get("DEER_FLOW_SANDBOX_HOST", "localhost")
+        # In network mode the URL is the container DNS name on port 8080 (port is
+        # 0/ignored); in legacy mode it is DEER_FLOW_SANDBOX_HOST and the published
+        # host port (host.docker.internal under DooD).
         return SandboxInfo(
             sandbox_id=sandbox_id,
-            sandbox_url=f"http://{sandbox_host}:{port}",
+            sandbox_url=self._sandbox_url(container_name, port),
             container_name=container_name,
             container_id=container_id,
         )
@@ -327,7 +366,12 @@ class LocalContainerBackend(SandboxBackend):
         stop_target = info.container_id or info.container_name
         if stop_target:
             self._stop_container(stop_target)
-        # Extract port from sandbox_url for release
+        # [argus] In network-DNS mode no host port was allocated, so there is
+        # nothing to release (and the URL port is the container's own 8080, not a
+        # host port — releasing it would be semantically wrong).
+        if self._network:
+            return
+        # Extract host port from sandbox_url for release
         try:
             from urllib.parse import urlparse
 
@@ -370,12 +414,15 @@ class LocalContainerBackend(SandboxBackend):
         if not running:
             return None
 
-        port = self._get_container_port(container_name)
-        if port is None:
-            return None
+        if self._network:
+            # [argus] No host port is published; reach the container by DNS name on 8080.
+            sandbox_url = self._sandbox_url(container_name, None)
+        else:
+            port = self._get_container_port(container_name)
+            if port is None:
+                return None
+            sandbox_url = self._sandbox_url(container_name, port)
 
-        sandbox_host = os.environ.get("DEER_FLOW_SANDBOX_HOST", "localhost")
-        sandbox_url = f"http://{sandbox_host}:{port}"
         if not wait_for_sandbox_ready(sandbox_url, timeout=5):
             return None
 
@@ -440,7 +487,6 @@ class LocalContainerBackend(SandboxBackend):
         inspections = self._batch_inspect(container_names)
 
         infos: list[SandboxInfo] = []
-        sandbox_host = os.environ.get("DEER_FLOW_SANDBOX_HOST", "localhost")
         for container_name in container_names:
             data = inspections.get(container_name)
             if data is None:
@@ -448,7 +494,10 @@ class LocalContainerBackend(SandboxBackend):
                 continue
             created_at, host_port = data
             sandbox_id = container_name[len(self._container_prefix) + 1 :]
-            sandbox_url = f"http://{sandbox_host}:{host_port}" if host_port else ""
+            # [argus] In network mode host_port is None (nothing published) but
+            # _sandbox_url returns the DNS URL, so orphan adoption still gets a
+            # usable URL instead of "".
+            sandbox_url = self._sandbox_url(container_name, host_port)
 
             infos.append(
                 SandboxInfo(
@@ -535,21 +584,23 @@ class LocalContainerBackend(SandboxBackend):
         if self._runtime == "docker":
             cmd.extend(["--security-opt", "seccomp=unconfined"])
 
-        if self._runtime == "docker":
-            port_mapping = f"{_resolve_docker_bind_host()}:{port}:8080"
-        else:
-            port_mapping = f"{port}:8080"
+        cmd.extend(["--rm", "-d"])
 
-        cmd.extend(
-            [
-                "--rm",
-                "-d",
-                "-p",
-                port_mapping,
-                "--name",
-                container_name,
-            ]
-        )
+        if self._network:
+            # [argus] Network-DNS mode: join the shared network and rely on
+            # container DNS. No host port is published, so there is no port-bind
+            # race; the gateway (also on this network) reaches the sandbox at
+            # http://<container_name>:8080.
+            cmd.extend(["--network", self._network])
+        else:
+            # Legacy host-publish mode: map an allocated host port to container 8080.
+            if self._runtime == "docker":
+                port_mapping = f"{_resolve_docker_bind_host()}:{port}:8080"
+            else:
+                port_mapping = f"{port}:8080"
+            cmd.extend(["-p", port_mapping])
+
+        cmd.extend(["--name", container_name])
 
         # Environment variables
         for key, value in self._environment.items():

@@ -586,3 +586,60 @@ def test_destroy_swallows_close_errors_and_still_destroys_backend(tmp_path, capl
 
     assert "Error closing sandbox sandbox-dest-err during destroy" in caplog.text
     provider._backend.destroy.assert_called_once()
+
+
+# ── [argus] sandbox network-DNS config wiring (patch #26 fix) ─────────────────
+
+
+def test_load_config_reads_network_key(tmp_path, monkeypatch):
+    """_load_config must surface sandbox.network into the backend config dict."""
+    import importlib
+
+    aio_mod = importlib.import_module("deerflow.community.aio_sandbox.aio_sandbox_provider")
+    provider = _make_provider(tmp_path)
+
+    sandbox_config = SimpleNamespace(
+        image="img:latest",
+        port=8080,
+        container_prefix="argus-x-sandbox",
+        idle_timeout=600,
+        replicas=6,
+        mounts=[],
+        environment={},
+        provisioner_url=None,
+        network="argus-net",
+    )
+    monkeypatch.setattr(
+        aio_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_config)
+    )
+
+    cfg = provider._load_config()
+    assert cfg["network"] == "argus-net"
+
+
+def test_create_backend_threads_network_to_local_backend(tmp_path, monkeypatch):
+    """_create_backend must pass network= into LocalContainerBackend."""
+    import importlib
+
+    aio_mod = importlib.import_module("deerflow.community.aio_sandbox.aio_sandbox_provider")
+    provider = _make_provider(tmp_path)
+    provider._config = {
+        "image": "img:latest",
+        "port": 8080,
+        "container_prefix": "argus-x-sandbox",
+        "mounts": [],
+        "environment": {},
+        "provisioner_url": "",
+        "network": "argus-net",
+    }
+
+    captured = {}
+
+    class _SpyBackend:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(aio_mod, "LocalContainerBackend", _SpyBackend)
+
+    provider._create_backend()
+    assert captured.get("network") == "argus-net"

@@ -64,6 +64,16 @@ class SandboxConfig(BaseModel):
         default=None,
         description="Prefix for container names",
     )
+    network: str | None = Field(
+        default=None,
+        description=(
+            "startup-only: [argus] Container network to attach sandbox containers to "
+            "(LocalContainerBackend only). When set, sandboxes join this network and are "
+            "reached by container DNS name on container port 8080 with NO host port "
+            "published. When unset, the legacy host-port publish path is used. Eliminates "
+            "the rootless-Podman port-bind race that wedged runs (DeerFlow patch #26)."
+        ),
+    )
     idle_timeout: int | None = Field(
         default=None,
         description="Idle timeout in seconds before sandbox is released (default: 600 = 10 minutes). Set to 0 to disable.",
