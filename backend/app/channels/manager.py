@@ -90,26 +90,64 @@ def _slim_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in meta.items() if k not in _METADATA_DROP_KEYS}
 
 
+# [argus patch #34] A model told to "stay silent" on a contentless unattended
+# turn often narrates the decision instead of emitting nothing — e.g. the hourly
+# meeting-prep poll posting "No meetings in the window. Staying silent." Such a
+# message is itself the noise the silence branch exists to suppress. Match it as
+# a SHORT one-liner (real briefs are longer, multi-line, with names/times) whose
+# only content is a "nothing to report" and/or "staying silent" announcement.
+# Tight on purpose: requires the announcement phrasing AND a length cap, so a
+# genuine brief that merely mentions a meeting or the word "silent" is preserved.
+_SILENCE_ANNOUNCEMENT_RE = re.compile(
+    r"""
+    ^\W*(?:
+        (?:no|nothing|none)\b .*? \b(?:meeting|meetings|event|events|
+            report|update|updates|upcoming|scheduled|to\s+report|to\s+share)\b
+      | (?:staying|stay|remaining|going|i'?ll\s+stay|i\s+will\s+stay)\s+silent\b
+      | no\s+output\b
+    ) .*$
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+# A real brief is never this short; the disobedient one-liner is. Cap well above
+# the longest plausible announcement, well below any actual brief.
+_SILENCE_ANNOUNCEMENT_MAX_LEN = 120
+
+
+def _is_silence_announcement(stripped: str) -> bool:
+    """True if *stripped* is a short 'nothing to report / staying silent'
+    announcement rather than a real brief. Conservative: length-capped and
+    phrasing-anchored so genuine briefs are never matched."""
+    if len(stripped) > _SILENCE_ANNOUNCEMENT_MAX_LEN:
+        return False
+    return _SILENCE_ANNOUNCEMENT_RE.match(stripped) is not None
+
+
 def _is_trivial_unattended_text(text: str | None) -> bool:
-    """[argus patch #31/#32] True if *text* carries no real content for an
+    """[argus patch #31/#32/#34] True if *text* carries no real content for an
     unattended (scheduled) turn.
 
-    Patch #31 suppressed a fully-empty unattended response. But a model asked to
-    "produce no output" often emits a single filler token instead of nothing —
-    a ``.``, ``-``, ``…``, an ellipsis, or whitespace — which slips past an
-    ``if not response_text`` check and gets delivered every cron tick (e.g. the
-    hourly meeting-prep poll posting a lone ``.``). Treat such a response as
-    empty so the unattended-suppression branch fires.
+    Patch #31 suppressed a fully-empty unattended response. Patch #32 added the
+    single filler token a model emits instead of nothing — a ``.``, ``-``,
+    ``…``, an ellipsis, or whitespace — which slips past an ``if not
+    response_text`` check and gets delivered every cron tick (e.g. the hourly
+    meeting-prep poll posting a lone ``.``). Patch #34 adds the next escalation:
+    a model that NARRATES its silence in a full sentence ("No meetings in the
+    window. Staying silent.") — itself the noise the silence branch exists to
+    drop. Treat all three as empty so the unattended-suppression branch fires.
 
-    Conservative: only blanks (a) empty/whitespace-only, or (b) a short run
-    (<= 3 chars) with no alphanumeric character. Any real word, number, or
-    longer string is preserved, so genuine briefs are never dropped. Applied
-    ONLY on the unattended path; interactive turns are unaffected.
+    Conservative: blanks (a) empty/whitespace-only, (b) a short run (<= 3 chars)
+    with no alphanumeric character, or (c) a short, phrasing-anchored
+    "nothing to report / staying silent" announcement. Any real word, number,
+    or longer brief is preserved. Applied ONLY on the unattended path;
+    interactive turns are unaffected.
     """
     stripped = (text or "").strip()
     if not stripped:
         return True
-    return len(stripped) <= 3 and re.search(r"\w", stripped) is None
+    if len(stripped) <= 3 and re.search(r"\w", stripped) is None:
+        return True
+    return _is_silence_announcement(stripped)
 
 
 # [argus patch #10/#24] Tool-name hints that map a tool call to the "searching" stage.
