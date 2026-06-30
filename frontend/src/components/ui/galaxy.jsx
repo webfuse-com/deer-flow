@@ -38,7 +38,11 @@ uniform bool uTransparent;
 
 varying vec2 vUv;
 
-#define NUM_LAYER 4.0
+// [argus patch #35] NUM_LAYER 4 -> 3: the per-pixel shader runs StarLayer
+// (a 3x3 neighbourhood with hashing + glow) once per layer, so layer count is
+// the dominant GPU cost. Three depth layers keep the parallax look while cutting
+// ~25% of the per-pixel work for weak/software-GL machines.
+#define NUM_LAYER 3.0
 #define STAR_COLOR_CUTOFF 0.2
 #define MAT45 mat2(0.7071, -0.7071, 0.7071, 0.7071)
 #define PERIOD 3.0
@@ -232,9 +236,17 @@ export default function Galaxy({
     /** @type {Program | undefined} */
     let program;
 
+    // [argus patch #35] Cap the device-pixel-ratio used for the backing store.
+    // The shader cost scales with pixel count; on a HiDPI display the default
+    // DPR (2-3x) quadruples the work for a background that does not need crisp
+    // detail. Cap at 1.5 and let the browser upscale the canvas via CSS.
+    const dprCap = Math.min(
+      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1,
+      1.5,
+    );
+
     function resize() {
-      const scale = 1;
-      renderer.setSize(ctn.offsetWidth * scale, ctn.offsetHeight * scale);
+      renderer.setSize(ctn.offsetWidth * dprCap, ctn.offsetHeight * dprCap);
       if (program) {
         program.uniforms.uResolution.value = new Color(
           gl.canvas.width,
@@ -286,30 +298,84 @@ export default function Galaxy({
     const mesh = new Mesh(gl, { geometry, program });
     let animateId;
 
-    function update(t) {
-      animateId = requestAnimationFrame(update);
+    // [argus patch #35] Respect prefers-reduced-motion: many low-power machines
+    // and accessibility configs set it. When on, render a single static frame
+    // and never start the rAF loop — zero ongoing CPU/GPU.
+    const reduceMotionMQ =
+      typeof window !== "undefined" && window.matchMedia
+        ? window.matchMedia("(prefers-reduced-motion: reduce)")
+        : null;
+    const prefersReducedMotion = !!reduceMotionMQ && reduceMotionMQ.matches;
+
+    // [argus patch #35] Whether the mouse-driven offset actually does anything.
+    // The hero passes mouseRepulsion={false}; with no repulsion the per-frame
+    // mouse lerp + listeners are wasted work, so skip them entirely.
+    const mouseAffectsRender = mouseInteraction && mouseRepulsion;
+
+    // [argus patch #35] Cap the animation to ~30fps. A slow-drifting starfield
+    // is visually indistinguishable from 60fps but halves render() calls.
+    const FRAME_INTERVAL_MS = 1000 / 30;
+    let lastFrameT = 0;
+
+    function renderFrame(t) {
       if (!disableAnimation) {
         program.uniforms.uTime.value = t * 0.001;
         program.uniforms.uStarSpeed.value = (t * 0.001 * starSpeed) / 10.0;
       }
 
-      const lerpFactor = 0.05;
-      smoothMousePos.current.x +=
-        (targetMousePos.current.x - smoothMousePos.current.x) * lerpFactor;
-      smoothMousePos.current.y +=
-        (targetMousePos.current.y - smoothMousePos.current.y) * lerpFactor;
+      if (mouseAffectsRender) {
+        const lerpFactor = 0.05;
+        smoothMousePos.current.x +=
+          (targetMousePos.current.x - smoothMousePos.current.x) * lerpFactor;
+        smoothMousePos.current.y +=
+          (targetMousePos.current.y - smoothMousePos.current.y) * lerpFactor;
+        smoothMouseActive.current +=
+          (targetMouseActive.current - smoothMouseActive.current) * lerpFactor;
 
-      smoothMouseActive.current +=
-        (targetMouseActive.current - smoothMouseActive.current) * lerpFactor;
-
-      program.uniforms.uMouse.value[0] = smoothMousePos.current.x;
-      program.uniforms.uMouse.value[1] = smoothMousePos.current.y;
-      program.uniforms.uMouseActiveFactor.value = smoothMouseActive.current;
+        program.uniforms.uMouse.value[0] = smoothMousePos.current.x;
+        program.uniforms.uMouse.value[1] = smoothMousePos.current.y;
+        program.uniforms.uMouseActiveFactor.value = smoothMouseActive.current;
+      }
 
       renderer.render({ scene: mesh });
     }
-    animateId = requestAnimationFrame(update);
+
+    function update(t) {
+      animateId = requestAnimationFrame(update);
+      // FPS cap: skip render work between intervals (still cheap to schedule).
+      if (t - lastFrameT < FRAME_INTERVAL_MS) return;
+      lastFrameT = t;
+      renderFrame(t);
+    }
+
+    // [argus patch #35] Pause the loop while the tab/page is hidden — the
+    // default loop kept rendering at full rate in a backgrounded tab.
+    function startLoop() {
+      if (animateId == null) {
+        lastFrameT = 0;
+        animateId = requestAnimationFrame(update);
+      }
+    }
+    function stopLoop() {
+      if (animateId != null) {
+        cancelAnimationFrame(animateId);
+        animateId = null;
+      }
+    }
+    function handleVisibility() {
+      if (document.hidden) stopLoop();
+      else startLoop();
+    }
+
     ctn.appendChild(gl.canvas);
+
+    if (prefersReducedMotion) {
+      // Single static frame, no loop.
+      renderFrame(0);
+    } else {
+      animateId = requestAnimationFrame(update);
+      document.addEventListener("visibilitychange", handleVisibility);
+    }
 
     function handleMouseMove(e) {
       const rect = ctn.getBoundingClientRect();
@@ -323,15 +389,18 @@ export default function Galaxy({
       targetMouseActive.current = 0.0;
     }
 
-    if (mouseInteraction) {
+    // [argus patch #35] Only wire mouse listeners when they affect the render
+    // (mouseRepulsion on). The hero disables repulsion, so this is a no-op there.
+    if (mouseAffectsRender) {
       ctn.addEventListener("mousemove", handleMouseMove);
       ctn.addEventListener("mouseleave", handleMouseLeave);
     }
 
     return () => {
-      cancelAnimationFrame(animateId);
+      stopLoop();
       window.removeEventListener("resize", resize);
-      if (mouseInteraction) {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      if (mouseAffectsRender) {
         ctn.removeEventListener("mousemove", handleMouseMove);
         ctn.removeEventListener("mouseleave", handleMouseLeave);
       }

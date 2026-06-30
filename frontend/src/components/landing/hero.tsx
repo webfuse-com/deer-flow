@@ -19,11 +19,15 @@ export function Hero({ className }: { className?: string }) {
       )}
     >
       <div className="absolute inset-0 z-0 bg-black/40">
+        {/* [argus patch #35] Lighter galaxy: lower density + glow trims the
+            per-pixel shader fill cost on weak/software-GL machines. Combined
+            with galaxy.jsx's reduced layer count, fps cap, hidden-tab pause,
+            and prefers-reduced-motion fallback. */}
         <Galaxy
           mouseRepulsion={false}
           starSpeed={0.2}
-          density={0.6}
-          glowIntensity={0.35}
+          density={0.45}
+          glowIntensity={0.25}
           twinkleIntensity={0.3}
           speed={0.5}
         />
