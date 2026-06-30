@@ -35,6 +35,10 @@ _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/docs",
     "/redoc",
     "/openapi.json",
+    # [argus patch #28] Telegram webhook — these are server-to-server pushes from
+    # Telegram, not browser sessions; they carry no auth cookie and are verified
+    # by the X-Telegram-Bot-Api-Secret-Token header in the route handler itself.
+    "/webhooks/",
 )
 
 # Exact auth paths that are public (login/register/status check).

@@ -48,6 +48,11 @@ def should_check_csrf(request: Request) -> bool:
     # Exempt /api/v1/auth/me endpoint
     if path == "/api/v1/auth/me":
         return False
+    # [argus patch #28] Telegram webhook — server-to-server pushes from Telegram,
+    # not browser cookies, so CSRF does not apply; verified by the
+    # X-Telegram-Bot-Api-Secret-Token header in the route handler.
+    if path.startswith("/webhooks/"):
+        return False
     # [argus patch #30] Exempt requests that carry a valid internal-auth token.
     # CSRF defends against a browser silently attaching ambient cookies on a
     # cross-site request; a trusted service call bearing the shared internal

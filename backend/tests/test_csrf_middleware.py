@@ -289,3 +289,34 @@ def test_wrong_internal_token_still_requires_csrf(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "CSRF token missing. Include X-CSRF-Token header."
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #28] /webhooks/ exemptions (regression guard for the v2 rebase,
+# where these were briefly lost — Telegram webhooks 403'd at the auth layer).
+# ---------------------------------------------------------------------------
+
+
+def test_webhooks_path_is_csrf_exempt():
+    """Telegram pushes server-to-server to /webhooks/telegram with no browser
+    cookie; CSRF must not apply (the route verifies the secret-token header)."""
+    from types import SimpleNamespace
+
+    from app.gateway.csrf_middleware import should_check_csrf
+
+    req = SimpleNamespace(
+        method="POST",
+        url=SimpleNamespace(path="/webhooks/telegram"),
+        headers={},
+        cookies={},
+    )
+    assert should_check_csrf(req) is False
+
+
+def test_webhooks_path_is_public_in_auth_middleware():
+    """The auth middleware must treat /webhooks/ as public, else the request is
+    401/403'd before it reaches the webhook route's own secret check."""
+    from app.gateway.auth_middleware import _is_public
+
+    assert _is_public("/webhooks/telegram") is True
+    assert _is_public("/api/threads/abc/runs/stream") is False
