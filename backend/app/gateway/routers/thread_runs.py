@@ -45,7 +45,6 @@ from deerflow.runtime.secret_context import redact_config_secrets, redact_metada
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, get_original_user_content_text, message_to_text
 from deerflow.utils.thread_id import ThreadId
 from deerflow.workspace_changes import get_workspace_changes_response
-
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["runs"])
 REGENERATE_HISTORY_SCAN_LIMIT = 200
@@ -1126,6 +1125,11 @@ async def list_thread_messages(
         feedback_map = await feedback_repo.list_by_thread_grouped(thread_id, user_id=user_id)
 
     last_ai_indices = set(last_ai_per_run.values())
+
+    # [argus patch #37] Surface a visible marker for a blank final assistant turn
+    # (local-qwen sometimes ends a run empty). Web-side counterpart to patch #36.
+    mark_blank_final_ai_messages(messages, last_ai_indices)
+
     for i, msg in enumerate(messages):
         if i in last_ai_indices:
             run_id = msg["run_id"]

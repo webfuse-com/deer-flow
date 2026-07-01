@@ -48,7 +48,7 @@ from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.slash import parse_slash_skill_reference
 from deerflow.skills.storage import get_or_new_skill_storage
 from deerflow.skills.storage.skill_storage import SkillStorage
-from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY
+from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, is_blank_text as _is_blank_text
 
 logger = logging.getLogger(__name__)
 
@@ -183,33 +183,13 @@ def _is_silence_announcement(stripped: str) -> bool:
     return _SILENCE_ANNOUNCEMENT_RE.match(stripped) is not None
 
 
-def _is_blank_text(text: str | None) -> bool:
-    """[argus patch #36] True if *text* carries no deliverable content on ANY
-    path (attended or unattended).
-
-    Two failure modes make ``if not response_text`` an insufficient
-    emptiness check:
-      (a) whitespace-only — a model that emits an empty final turn often leaves
-          the last streamed partial as ``"\\n\\n"`` or ``" "``; that is truthy,
-          so ``latest_text or "(No response from agent)"`` keeps the whitespace
-          and the visible fallback never fires;
-      (b) a short (<= 3 chars) non-alphanumeric filler — ``.``, ``-``, ``…`` —
-          same as patch #32's unattended case, but it can reach an interactive
-          turn too.
-    In both cases the whitespace/filler then renders to empty HTML in
-    ``telegram.py::send`` (``to_telegram_html("") -> "" -> chunks=[]``), so the
-    send loop never runs and the answer is silently dropped — only the working
-    indicator is cleared. Treating such text as blank lets the ``(No response
-    from agent)`` fallback surface instead.
-
-    This is the interactive-safe subset of :func:`_is_trivial_unattended_text`:
-    it deliberately OMITS the silence-announcement clause, which is a
-    scheduled-turn-only signal (a real interactive "nothing to report" sentence
-    is a legitimate answer and must be delivered)."""
-    stripped = (text or "").strip()
-    if not stripped:
-        return True
-    return len(stripped) <= 3 and re.search(r"\w", stripped) is None
+# [argus patch #36 → #37] `_is_blank_text` moved to `deerflow.utils.messages`
+# (harness layer) so the web gateway serialization guard and the run-loop
+# retry-on-empty guard can share it without the harness importing from `app.*`
+# (that import direction is banned by tests/test_harness_boundary.py). It is
+# imported above as `_is_blank_text`; this remains the interactive-safe subset
+# of `_is_trivial_unattended_text` (which omits the silence-announcement clause,
+# a scheduled-turn-only signal). Call sites below are unchanged.
 
 
 def _is_trivial_unattended_text(text: str | None) -> bool:

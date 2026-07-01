@@ -36,7 +36,7 @@ from langchain_core.runnables import RunnableConfig
 from deerflow.agents.lead_agent.prompt import apply_prompt_template
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.configured_extensions import load_configured_extension_middlewares
-from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
+from deerflow.agents.middlewares.empty_final_retry_middleware import EmptyFinalRetryMiddlewarefrom deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
 from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
@@ -615,6 +615,14 @@ def build_middlewares(
         max_total_subagents = cfg.get("max_total_subagents", _default_max_total_subagents(resolved_app_config))
         effective_max_subagents_per_run = max_total_subagents
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents, max_total=max_total_subagents))
+
+    # [argus patch #37] EmptyFinalRetryMiddleware — re-invoke the model once if it
+    # returns a blank FINAL turn (no content, no tool_calls). local-qwen does this
+    # after long tool loops, silently blanking the answer. Registered before
+    # LoopDetection so a retried final still flows through loop/safety after_model
+    # accounting; its wrap_model_call retries only a genuine empty final (a blank
+    # turn carrying tool_calls is a normal intermediate step and is left alone).
+    middlewares.append(EmptyFinalRetryMiddleware())
 
     # LoopDetectionMiddleware — detect and break repetitive tool call loops
     loop_detection_config = resolved_app_config.loop_detection
