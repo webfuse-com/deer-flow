@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from app.gateway.authz import require_permission
 from app.gateway.deps import get_checkpointer, get_current_user, get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
-from app.gateway.pagination import trim_run_message_page
+from app.gateway.pagination import mark_blank_final_ai_messages, trim_run_message_page
 from app.gateway.services import sse_consumer, start_run, wait_for_run_completion
 from deerflow.runtime import RunRecord, RunStatus, serialize_channel_values_for_api
 
@@ -365,6 +365,11 @@ async def list_thread_messages(
 
     # Attach feedback field
     last_ai_indices = set(last_ai_per_run.values())
+
+    # [argus patch #37] Surface a visible marker for a blank final assistant turn
+    # (local-qwen sometimes ends a run empty). Web-side counterpart to patch #36.
+    mark_blank_final_ai_messages(messages, last_ai_indices)
+
     for i, msg in enumerate(messages):
         if i in last_ai_indices:
             run_id = msg["run_id"]

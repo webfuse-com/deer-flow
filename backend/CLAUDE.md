@@ -220,8 +220,9 @@ Lead-agent middlewares are assembled in strict append order across `packages/har
 15. **ViewImageMiddleware** - Injects base64 image data before LLM call (conditional on vision support)
 16. **DeferredToolFilterMiddleware** - Hides deferred (MCP) tool schemas from the bound model using a build-time deferred-name set + catalog hash, reading per-thread promotions from `ThreadState.promoted` (hash-scoped, no ContextVar); a tool becomes bound on subsequent turns after `tool_search` returns its schema (optional, if `tool_search.enabled`)
 17. **SubagentLimitMiddleware** - Truncates excess `task` tool calls from model response to enforce `MAX_CONCURRENT_SUBAGENTS` limit (optional, if `subagent_enabled`)
-18. **LoopDetectionMiddleware** - Detects repeated tool-call loops; hard-stop responses clear both structured `tool_calls` and raw provider tool-call metadata before forcing a final text answer
-19. **ClarificationMiddleware** - Intercepts `ask_clarification` tool calls, interrupts via `Command(goto=END)` (must be last)
+18. **EmptyFinalRetryMiddleware** *(argus patch #37)* - Re-invokes the model once when it returns a blank FINAL turn (an AIMessage with no content AND no tool_calls); a blank turn carrying tool_calls is a normal intermediate step and is left alone. Bounded to a single retry (never loops); if the retry is also blank the blank is returned and the visible-marker guards (patch #36 channels, patch #37 web) surface it. Registered before LoopDetection so a retried final still flows through loop/safety `after_model` accounting.
+19. **LoopDetectionMiddleware** - Detects repeated tool-call loops; hard-stop responses clear both structured `tool_calls` and raw provider tool-call metadata before forcing a final text answer
+20. **ClarificationMiddleware** - Intercepts `ask_clarification` tool calls, interrupts via `Command(goto=END)` (must be last)
 
 ### Configuration System
 
