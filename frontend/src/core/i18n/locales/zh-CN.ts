@@ -73,7 +73,8 @@ export const zhCN: Translations = {
     minutes: (value) => `${value} 分`,
     seconds: (value) => `${value} 秒`,
     separator: " ",
-  },
+    debugSandbox: "调试",
+    debugSandboxError: "无法打开该会话的调试沙盒。",  },
 
   // Home
   home: {

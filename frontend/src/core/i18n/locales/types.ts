@@ -61,7 +61,8 @@ export interface Translations {
     minutes: (value: number) => string;
     seconds: (value: number) => string;
     separator: string;
-  };
+    debugSandbox: string;
+    debugSandboxError: string;  };
 
   home: {
     docs: string;

@@ -74,7 +74,8 @@ export const enUS: Translations = {
     minutes: (value) => `${value}m`,
     seconds: (value) => `${value}s`,
     separator: " ",
-  },
+    debugSandbox: "Debug",
+    debugSandboxError: "Could not open the debug sandbox for this thread.",  },
 
   // Home
   home: {

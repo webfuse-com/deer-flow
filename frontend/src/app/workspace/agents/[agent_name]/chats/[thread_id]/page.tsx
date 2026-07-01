@@ -12,7 +12,7 @@ import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ChatBox, useThreadChat } from "@/components/workspace/chats";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
-import { ExportTrigger } from "@/components/workspace/export-trigger";
+import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { GoalStatus } from "@/components/workspace/goal-status";
 import {
   InputBox,
@@ -256,7 +256,77 @@ export default function AgentChatPage() {
         <ChatBox threadId={threadId} browserEnabled={browserEnabled}>
           <div className="relative flex size-full min-h-0 justify-between">
             <header
-              className={cn(
+    <ThreadContext.Provider value={{ thread }}>
+      <ChatBox threadId={threadId}>
+        <div className="relative flex size-full min-h-0 justify-between">
+          <header
+            className={cn(
+              "absolute top-0 right-0 left-0 z-30 flex h-12 shrink-0 items-center gap-2 px-2 sm:px-4",
+              isWelcomeMode
+                ? "bg-background/0 backdrop-blur-none"
+                : "bg-background/80 shadow-xs backdrop-blur",
+            )}
+          >
+            <SidebarTrigger className="md:hidden" />
+            {/* Agent badge */}
+            <div className="flex min-w-0 shrink-0 items-center gap-1.5 rounded-md border px-2 py-1">
+              <BotIcon className="text-primary h-3.5 w-3.5" />
+              <span className="hidden max-w-24 truncate text-xs font-medium sm:inline sm:max-w-none">
+                {agent?.name ?? agent_name}
+              </span>
+            </div>
+
+            <div className="flex min-w-0 flex-1 items-center text-sm font-medium">
+              <ThreadTitle threadId={threadId} thread={thread} />
+            </div>
+            <div className="flex shrink-0 items-center sm:mr-4">
+              <Tooltip content={t.agents.newChat}>
+                <Button
+                  className="px-2 sm:px-3"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    router.push(`/workspace/agents/${agent_name}/chats/new`);
+                  }}
+                >
+                  <PlusSquare />
+                  <span className="hidden sm:inline">{t.agents.newChat}</span>
+                </Button>
+              </Tooltip>
+              <TokenUsageIndicator
+                threadId={isNewThread ? undefined : threadId}
+                backendUsage={backendTokenUsage}
+                enabled={tokenUsageEnabled}
+                messages={thread.messages}
+                pendingMessages={pendingUsageMessages}
+                preferences={localSettings.tokenUsage}
+                onPreferencesChange={(preferences) =>
+                  setLocalSettings("tokenUsage", preferences)
+                }
+              />
+              <ExportTrigger threadId={threadId} />
+              <DebugSandboxTrigger
+                threadId={isNewThread ? undefined : threadId}
+              />
+              <ArtifactTrigger />
+            </div>
+          </header>
+
+          <main className="flex min-h-0 max-w-full grow flex-col">
+            <div className="flex min-h-0 flex-1 justify-center">
+              <MessageList
+                className={cn("size-full", !isWelcomeMode && "pt-10")}
+                threadId={threadId}
+                thread={thread}
+                paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
+                hasMoreHistory={hasMoreHistory}
+                loadMoreHistory={loadMoreHistory}
+                isHistoryLoading={isHistoryLoading}
+                tokenUsageInlineMode={tokenUsageInlineMode}
+              />
+            </div>
+
+            <div              className={cn(
                 "absolute top-0 right-0 left-0 z-30 flex h-12 shrink-0 items-center gap-2 px-2 sm:px-4",
                 isWelcomeMode
                   ? "bg-background/0 backdrop-blur-none"
