@@ -183,6 +183,35 @@ def _is_silence_announcement(stripped: str) -> bool:
     return _SILENCE_ANNOUNCEMENT_RE.match(stripped) is not None
 
 
+def _is_blank_text(text: str | None) -> bool:
+    """[argus patch #36] True if *text* carries no deliverable content on ANY
+    path (attended or unattended).
+
+    Two failure modes make ``if not response_text`` an insufficient
+    emptiness check:
+      (a) whitespace-only — a model that emits an empty final turn often leaves
+          the last streamed partial as ``"\\n\\n"`` or ``" "``; that is truthy,
+          so ``latest_text or "(No response from agent)"`` keeps the whitespace
+          and the visible fallback never fires;
+      (b) a short (<= 3 chars) non-alphanumeric filler — ``.``, ``-``, ``…`` —
+          same as patch #32's unattended case, but it can reach an interactive
+          turn too.
+    In both cases the whitespace/filler then renders to empty HTML in
+    ``telegram.py::send`` (``to_telegram_html("") -> "" -> chunks=[]``), so the
+    send loop never runs and the answer is silently dropped — only the working
+    indicator is cleared. Treating such text as blank lets the ``(No response
+    from agent)`` fallback surface instead.
+
+    This is the interactive-safe subset of :func:`_is_trivial_unattended_text`:
+    it deliberately OMITS the silence-announcement clause, which is a
+    scheduled-turn-only signal (a real interactive "nothing to report" sentence
+    is a legitimate answer and must be delivered)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    return len(stripped) <= 3 and re.search(r"\w", stripped) is None
+
+
 def _is_trivial_unattended_text(text: str | None) -> bool:
     """[argus patch #31/#32/#34] True if *text* carries no real content for an
     unattended (scheduled) turn.
@@ -202,12 +231,11 @@ def _is_trivial_unattended_text(text: str | None) -> bool:
     or longer brief is preserved. Applied ONLY on the unattended path;
     interactive turns are unaffected.
     """
-    stripped = (text or "").strip()
-    if not stripped:
+    # (a) + (b) are the channel-agnostic blank check (patch #36); (c) is the
+    # unattended-only silence-announcement escalation from patch #34.
+    if _is_blank_text(text):
         return True
-    if len(stripped) <= 3 and re.search(r"\w", stripped) is None:
-        return True
-    return _is_silence_announcement(stripped)
+    return _is_silence_announcement((text or "").strip())
 
 
 # [argus patch #10/#24] Tool-name hints that map a tool call to the "searching" stage.
@@ -2508,7 +2536,10 @@ class ChannelManager:
             logger.info("[Manager] unattended turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
             return
 
-        if not response_text:
+        # [argus patch #36] Use _is_blank_text, not `if not response_text`: a
+        # whitespace-only final ("\n\n") is truthy but renders to empty HTML and
+        # is silently dropped downstream. Fall back to the visible marker.
+        if _is_blank_text(response_text):
             if attachments:
                 response_text = _format_artifact_text([a.virtual_path for a in attachments])
             else:
@@ -2678,7 +2709,14 @@ class ChannelManager:
             # would swallow any in-flight exception from the try body.
             suppress_final = bool(msg.unattended and not attachments and not stream_error and _is_trivial_unattended_text(response_text) and _is_trivial_unattended_text(latest_text))
 
-            if not response_text:
+            # [argus patch #36] _is_blank_text (not `if not response_text`): the
+            # model can end a turn with empty final content while the last
+            # streamed partial (latest_text) is whitespace-only. That whitespace
+            # is truthy, so the old `latest_text or "(No response from agent)"`
+            # kept it, and telegram.py::send rendered it to empty HTML and
+            # dropped it silently (working indicator cleared, no answer sent).
+            # Treat blank latest_text as absent so the visible marker surfaces.
+            if _is_blank_text(response_text):
                 if attachments:
                     response_text = _format_artifact_text([attachment.virtual_path for attachment in attachments])
                 elif stream_error:
@@ -2686,8 +2724,10 @@ class ChannelManager:
                         response_text = THREAD_BUSY_MESSAGE
                     else:
                         response_text = "An error occurred while processing your request. Please try again."
+                elif not _is_blank_text(latest_text):
+                    response_text = latest_text
                 else:
-                    response_text = latest_text or "(No response from agent)"
+                    response_text = "(No response from agent)"
 
             if suppress_final:
                 logger.info("[Manager] unattended streaming turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)

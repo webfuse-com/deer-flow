@@ -19,7 +19,73 @@ from __future__ import annotations
 
 import pytest
 
-from app.channels.manager import _is_trivial_unattended_text
+from app.channels.manager import _is_blank_text, _is_trivial_unattended_text
+
+
+class TestIsBlankText:
+    """[argus patch #36] `_is_blank_text` is the channel-agnostic emptiness
+    check used on BOTH the attended and unattended delivery paths so a
+    whitespace-only / short-filler final (which is truthy, so `if not
+    response_text` misses it) surfaces the visible "(No response from agent)"
+    marker instead of being rendered to empty HTML and silently dropped by
+    telegram.py::send. It is the interactive-safe SUBSET of
+    _is_trivial_unattended_text: it must NOT treat a silence-announcement
+    sentence as blank (on an interactive turn that is a real answer)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",  # fully empty
+            "   ",  # whitespace only
+            "\n\n",  # the exact reported case: model's empty-final partial
+            "\n\t ",  # mixed whitespace
+            None,  # no response object at all
+            ".",
+            "..",
+            "...",
+            " . ",
+            "-",
+            "--",
+            "…",
+        ],
+    )
+    def test_blank_and_filler_are_blank(self, text):
+        assert _is_blank_text(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "ok",
+            "No.",
+            "1",
+            "a",
+            "....",  # 4+ chars: out of the trivial window
+            "Meeting with Acme at 15:00",
+            # A silence-announcement sentence is a REAL answer on an interactive
+            # turn — _is_blank_text must preserve it (only the unattended
+            # predicate collapses it).
+            "No meetings in the window. Staying silent.",
+            "Nothing to report.",
+            "Staying silent.",
+        ],
+    )
+    def test_real_or_interactive_content_is_preserved(self, text):
+        assert _is_blank_text(text) is False
+
+
+class TestUnattendedStillCollapsesAnnouncements:
+    """[argus patch #36] The refactor routes _is_trivial_unattended_text through
+    _is_blank_text for clauses (a)+(b) but must still catch clause (c), the
+    unattended-only silence announcement that _is_blank_text intentionally
+    leaves alone."""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["No meetings in the window. Staying silent.", "Nothing to report.", "Staying silent."],
+    )
+    def test_announcement_blank_only_on_unattended_path(self, text):
+        assert _is_blank_text(text) is False
+        assert _is_trivial_unattended_text(text) is True
 
 
 class TestIsTrivialUnattendedText:
