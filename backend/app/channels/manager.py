@@ -762,15 +762,37 @@ def _prepare_artifact_delivery(
     thread_id: str,
     response_text: str,
     artifacts: list[str],
+    channel_name: str | None = None,
     *,
     user_id: str | None = None,
 ) -> tuple[str, list[ResolvedAttachment]]:
-    """Resolve attachments and append filename fallbacks to the text response."""
+    """Resolve attachments and append filename fallbacks to the text response.
+
+    [argus patch #10] When the target channel is Telegram, hand off to the
+    channel-aware presenter (_artifact_presenter.present_artifacts): it turns
+    web-viewable artifacts (HTML/SVG) into VIEWABLE links to the per-stack
+    /f/ fileserver instead of attaching the raw file, and links+attaches other
+    binaries. For every other channel the original behavior is unchanged.
+
+    (This presenter hand-off was dropped when the owner-scoping refactor #3579
+    rewrote this function upstream; restored here so chat channels get a
+    clickable remote link again instead of a bare filename.)
+    """
     attachments: list[ResolvedAttachment] = []
     if not artifacts:
         return response_text, attachments
 
     attachments = _resolve_attachments(thread_id, artifacts, user_id=user_id)
+
+    # [argus] Channel-aware presentation for Telegram.
+    if channel_name == "telegram":
+        from app.channels._artifact_presenter import present_artifacts
+
+        block, attachments = present_artifacts(channel_name, thread_id, artifacts, attachments)
+        if block:
+            response_text = (response_text + "\n\n" + block) if response_text else block
+        return response_text, attachments
+
     resolved_virtuals = {attachment.virtual_path for attachment in attachments}
     unresolved = [path for path in artifacts if path not in resolved_virtuals]
 
@@ -1546,7 +1568,7 @@ class ChannelManager:
         # Reuse the storage owner cached at the top of _handle_chat so uploads and
         # artifact delivery always resolve to the same bucket, even if a future
         # channel.receive_file returns a rewritten InboundMessage.
-        response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, user_id=storage_user_id)
+        response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name, user_id=storage_user_id)
 
         # [argus patch #31/#32] Stay silent on a contentless unattended (scheduled)
         # turn. A job with nothing to report (e.g. the hourly meeting-prep poll
@@ -1709,7 +1731,7 @@ class ChannelManager:
             # Reuse the storage owner resolved by _handle_chat so artifact delivery
             # matches the upload bucket and we avoid re-running _safe_user_id_for_run
             # (and its possible filesystem touch) on the streaming-error path.
-            response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, user_id=storage_user_id)
+            response_text, attachments = _prepare_artifact_delivery(thread_id, response_text, artifacts, msg.channel_name, user_id=storage_user_id)
 
             # [argus patch #31/#32] Stay silent on a contentless unattended turn
             # (see the non-streaming guard). Only when there is no real text, no
