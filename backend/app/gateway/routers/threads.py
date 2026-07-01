@@ -13,6 +13,7 @@ matching the LangGraph Platform wire format expected by the
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -117,6 +118,19 @@ def _strip_reserved_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     if not metadata:
         return metadata or {}
     return {k: v for k, v in metadata.items() if k not in _SERVER_RESERVED_METADATA_KEYS}
+
+
+# A container-backed (AIO) sandbox id is the deterministic sha256(thread_id)[:8]
+# hex hash — the same string that names the container and that the nginx
+# /debug-sandbox/<hash>/ location matches with [a-f0-9]+. Filesystem-local
+# providers return "local" or "local:<thread_id>" instead; those have no
+# container and cannot be reached over the debug proxy.
+_CONTAINER_SANDBOX_ID_RE = re.compile(r"^[a-f0-9]{8}$")
+
+
+def _is_container_sandbox_id(sandbox_id: str) -> bool:
+    """Return True if ``sandbox_id`` names a proxiable sandbox container."""
+    return bool(_CONTAINER_SANDBOX_ID_RE.fullmatch(sandbox_id or ""))
 
 
 def _is_pin_metadata_patch(metadata: dict[str, Any]) -> bool:
@@ -337,6 +351,19 @@ def _default_branch_display_name(source_title: Any, *, source_is_branch: bool = 
             display_name = display_name[len("branch:") :].strip()
 
     return display_name or None
+=======
+# A container-backed (AIO) sandbox id is the deterministic sha256(thread_id)[:8]
+# hex hash — the same string that names the container and that the nginx
+# /debug-sandbox/<hash>/ location matches with [a-f0-9]+. Filesystem-local
+# providers return "local" or "local:<thread_id>" instead; those have no
+# container and cannot be reached over the debug proxy.
+_CONTAINER_SANDBOX_ID_RE = re.compile(r"^[a-f0-9]{8}$")
+
+
+def _is_container_sandbox_id(sandbox_id: str) -> bool:
+    """Return True if ``sandbox_id`` names a proxiable sandbox container."""
+    return bool(_CONTAINER_SANDBOX_ID_RE.fullmatch(sandbox_id or ""))
+>>>>>>> 1aad692a ([argus] patch #38a: per-thread debug-sandbox gateway endpoint)
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +376,20 @@ class ThreadDeleteResponse(BaseModel):
 
     success: bool
     message: str
+
+
+class DebugSandboxResponse(BaseModel):
+    """Response model for the per-thread debug-sandbox endpoint.
+
+    ``url`` is a path (not an absolute URL) that the frontend opens in a new
+    tab. It is served by the per-project nginx ``/debug-sandbox/<hash>/``
+    location, which reverse-proxies to the thread's AIO sandbox container on
+    the shared container network. ``hash`` is the deterministic sandbox id
+    (sha256(thread_id)[:8]) that also names the container.
+    """
+
+    hash: str = Field(description="Deterministic sandbox id (sha256(thread_id)[:8]); names the container")
+    url: str = Field(description="Relative path to the thread's sandbox UI, e.g. /debug-sandbox/<hash>/")
 
 
 class _MetadataRedactingResponse(BaseModel):
@@ -671,6 +712,54 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
         logger.debug("Could not close browser session for %s (not critical)", sanitize_log_param(thread_id))
 
     return response
+
+
+@router.post("/{thread_id}/debug-sandbox", response_model=DebugSandboxResponse)
+@require_permission("threads", "read", owner_check=True, require_existing=True)
+async def acquire_debug_sandbox(thread_id: str, request: Request) -> DebugSandboxResponse:
+    """Acquire (or re-acquire) this thread's sandbox and return its debug URL.
+
+    Powers the "Debug" link in the thread UI. The thread's AIO sandbox
+    container is ephemeral (the provider's idle checker reaps it after
+    ``sandbox.idle_timeout``), so we call ``acquire_async`` to spin it up on
+    demand. Acquire is deterministic and idempotent per thread: it rebinds
+    the same container name (``sha256(thread_id)[:8]``) and re-mounts that
+    thread's ``workspace/uploads/outputs`` from host storage, so the sandbox
+    reflects the thread's files even for a long-idle thread. In-container OS
+    state from the original run (installed packages, processes, /tmp) is NOT
+    restored — this is a fresh sandbox with the thread's data mounted.
+
+    Ownership is enforced by ``@require_permission(owner_check=True)`` — a
+    caller can only open a debug sandbox for their own thread. The returned
+    ``url`` is proxied by the per-project nginx behind the same auth boundary
+    as the thread UI (Caddy edge + oauth2-proxy); this endpoint does not open
+    any new network exposure.
+
+    Only container-backed providers (AioSandboxProvider) can be reached over
+    the debug proxy. Filesystem-local providers have no container and return
+    409 so the frontend can hide or disable the link.
+    """
+    from deerflow.sandbox.sandbox_provider import get_sandbox_provider
+
+    provider = get_sandbox_provider()
+
+    try:
+        sandbox_id = await provider.acquire_async(thread_id)
+    except Exception as exc:  # noqa: BLE001 — surface acquire failures as a 502
+        logger.warning(
+            "Failed to acquire debug sandbox for thread %s: %s",
+            sanitize_log_param(thread_id),
+            exc,
+        )
+        raise HTTPException(status_code=502, detail="Failed to acquire sandbox for this thread") from exc
+
+    if not _is_container_sandbox_id(sandbox_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Debug sandbox is only available for container-backed sandbox providers",
+        )
+
+    return DebugSandboxResponse(hash=sandbox_id, url=f"/debug-sandbox/{sandbox_id}/")
 
 
 async def _resolve_existing_thread(
