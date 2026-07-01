@@ -39,6 +39,8 @@ export interface Translations {
     exportAsMarkdown: string;
     exportAsJSON: string;
     exportSuccess: string;
+    debugSandbox: string;
+    debugSandboxError: string;
   };
 
   home: {

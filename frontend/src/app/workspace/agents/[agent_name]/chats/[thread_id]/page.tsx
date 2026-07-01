@@ -10,6 +10,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import { ChatBox, useThreadChat } from "@/components/workspace/chats";
+import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { InputBox } from "@/components/workspace/input-box";
 import {
@@ -213,6 +214,9 @@ export default function AgentChatPage() {
                 }
               />
               <ExportTrigger threadId={threadId} />
+              <DebugSandboxTrigger
+                threadId={isNewThread ? undefined : threadId}
+              />
               <ArtifactTrigger />
             </div>
           </header>

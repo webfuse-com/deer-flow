@@ -50,6 +50,8 @@ export const enUS: Translations = {
     exportAsMarkdown: "Export as Markdown",
     exportAsJSON: "Export as JSON",
     exportSuccess: "Conversation exported",
+    debugSandbox: "Debug",
+    debugSandboxError: "Could not open the debug sandbox for this thread.",
   },
 
   // Home

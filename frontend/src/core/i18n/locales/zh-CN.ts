@@ -50,6 +50,8 @@ export const zhCN: Translations = {
     exportAsMarkdown: "导出为 Markdown",
     exportAsJSON: "导出为 JSON",
     exportSuccess: "对话已导出",
+    debugSandbox: "调试",
+    debugSandboxError: "无法打开该会话的调试沙盒。",
   },
 
   // Home
