@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator
 
 from langgraph.types import Checkpointer
@@ -48,12 +49,25 @@ def _prepare_database_sqlite_checkpointer_path(db_config) -> str:
 
 
 def _build_postgres_pool(conn_string: str):
-    """Build an AsyncConnectionPool with TCP keepalive and connection checking."""
+    """Build an AsyncConnectionPool with TCP keepalive and connection checking.
+
+    [argus] patch #39: bound the pool. psycopg_pool's default is a FIXED pool
+    (max_size defaults to min_size=4), so every uvicorn worker permanently
+    holds 4 idle connections. Multiplied across workers and per-project
+    gateways sharing one Postgres, that idle floor exhausted the server's
+    max_connections (2026-07-01 incident). Keep the same ceiling (4) but make
+    the pool elastic: start at 1, grow under load, shrink back after
+    ``max_idle`` seconds. Overridable per deployment via
+    DEERFLOW_CHECKPOINTER_POOL_MIN / _MAX / _MAX_IDLE.
+    """
     from psycopg.rows import dict_row
     from psycopg_pool import AsyncConnectionPool
 
     return AsyncConnectionPool(
         conn_string,
+        min_size=int(os.getenv("DEERFLOW_CHECKPOINTER_POOL_MIN", "1")),
+        max_size=int(os.getenv("DEERFLOW_CHECKPOINTER_POOL_MAX", "4")),
+        max_idle=float(os.getenv("DEERFLOW_CHECKPOINTER_POOL_MAX_IDLE", "300")),
         kwargs={
             "autocommit": True,
             "prepare_threshold": 0,
