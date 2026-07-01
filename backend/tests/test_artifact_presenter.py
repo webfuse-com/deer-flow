@@ -118,3 +118,40 @@ def test_multiple_files_header():
     assert "/f/t8/a.html" in text and "/f/t8/b.pdf" in text
     # Only the pdf is kept as an attachment.
     assert len(keep) == 1 and keep[0].filename == "b.pdf"
+
+
+# --- Manager wiring (fork patch #10) -----------------------------------------
+# These pin the seam that regressed: _prepare_artifact_delivery must hand a
+# telegram turn off to the presenter so the citizen gets a clickable /f/ link,
+# not a bare filename. The owner-scoping refactor (#3579) dropped this hand-off;
+# these tests fail if a future upstream sync drops it again.
+
+
+def test_delivery_telegram_produces_remote_link(monkeypatch):
+    from app.channels import manager
+
+    vpath = "/mnt/user-data/outputs/report.html"
+    monkeypatch.setattr(manager, "_resolve_attachments", lambda *a, **k: [_att(vpath, "text/html")])
+
+    text, keep = manager._prepare_artifact_delivery(
+        "thread-9", "Here is the report.", [vpath], "telegram", user_id="u1"
+    )
+    # A viewable /f/ link, and the raw HTML is NOT re-attached.
+    assert "https://atlas-nicholas.acro.surfly.com/f/thread-9/report.html" in text
+    assert keep == []
+
+
+def test_delivery_non_telegram_keeps_filename_fallback(monkeypatch):
+    from app.channels import manager
+
+    vpath = "/mnt/user-data/outputs/report.html"
+    att = _att(vpath, "text/html")
+    monkeypatch.setattr(manager, "_resolve_attachments", lambda *a, **k: [att])
+
+    text, keep = manager._prepare_artifact_delivery(
+        "thread-10", "Here is the report.", [vpath], "slack", user_id="u1"
+    )
+    # No /f/ link for non-telegram; the filename fallback + raw attachment stand.
+    assert "/f/" not in text
+    assert "report.html" in text
+    assert keep == [att]
