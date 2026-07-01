@@ -11,6 +11,7 @@ import {
   useSpecificChatMode,
   useThreadChat,
 } from "@/components/workspace/chats";
+import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { InputBox } from "@/components/workspace/input-box";
 import {
@@ -194,6 +195,9 @@ export default function ChatPage() {
                 }
               />
               <ExportTrigger threadId={threadId} />
+              <DebugSandboxTrigger
+                threadId={isNewThread ? undefined : threadId}
+              />
               <ArtifactTrigger />
             </div>
           </header>
