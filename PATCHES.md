@@ -65,7 +65,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#37](#patch-37) | retry blank final turn + web display guard | argus-edit | 4a19e4fe |
 | [#38](#patch-38) | per-thread debug-sandbox link | argus-additive | 1aad692a, cd03995e, 2df36c99 (merge) |
 | [#39](#patch-39) | checkpointer pool bounds | generic-upstreamable | f37b8292 (PR #4 squash-merge) |
-| [#40](#patch-40) | Telegram send-path extraction to `_telegram_sender.py` | argus-edit (carry-negative refactor) | this PR |
+| [#40](#patch-40) | Telegram send-path extraction to `_telegram_sender.py` | argus-edit (carry-negative refactor) | a8516b07 (PR #6 squash-merge) |
+| [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -794,6 +795,33 @@ carry budget ledger.
   already provides; deleting the override would shave ~9 more carried lines
   but is a real (if tiny) behavior delta - out of scope for a zero-behavior
   patch.
+
+## Patch #41
+
+**Patch #41 - coerce a stringified `write_todos` arg in the planner pipeline**
+
+- Class: argus-additive (edits only the argus-owned
+  `argus_todo_middleware.py`; zero upstream-file carry)
+- Intent: glm-nw sometimes double-encodes the `write_todos` tool argument -
+  `args.todos` arrives as the JSON STRING of a valid list instead of a native
+  array. Pydantic rejects it (`todos: list[Todo]`), the agent gets an error
+  ToolMessage, and `state.todos[]` never hydrates; caught by the weekly eval
+  2026-07-02 (pythia/planning on glm-planner: "write_todos was called but its
+  'todos' arg is str, expected list"). `ArgusTodoMiddleware.after_model` now
+  parses a string arg in place (only when it json-parses to a list) BEFORE
+  tool validation, so the trajectory records the normalized call and eval
+  graders stay strict. Unparseable strings keep the normal validation-error
+  path. The sibling flake (plan.json written but write_todos never called) is
+  NOT patched - it is model behavior the weekly eval baseline tracks.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/argus_todo_middleware.py`
+  (argus-owned file; also refreshed its stale "qwen-local-coder" selection
+  note to the #18 `uses_planner_pipeline` gate)
+- Tests: `backend/tests/test_argus_todo_middleware.py` (+3: coercion,
+  unparseable-left-alone, native-list/other-tools untouched)
+- Delete-when: glm-nw (or a replacement planner model) reliably emits native
+  arrays, or upstream langchain's todo tool grows arg coercion.
+- Upstream status: none (candidate: the coercion is generic enough for
+  upstream langchain's TodoListMiddleware).
 
 ---
 
