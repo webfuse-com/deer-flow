@@ -1,0 +1,804 @@
+# PATCHES.md - Argus carry-list on top of upstream DeerFlow
+
+This fork (`webfuse-com/deer-flow`, branch `argus`) carries a set of patches on
+top of `bytedance/deer-flow`. This file is the source of truth for *what* we
+carry, *why*, and the concrete condition under which each patch gets deleted,
+so fork drift stays legible and every patch has a documented exit.
+
+**Hard rule: any commit that adds, changes, or drops a patch updates this file
+in the same commit.** A patch that is not in this file does not exist; a
+section whose patch is gone is a bug in this file.
+
+Rebuilt **2026-07-02** from `git log v2.0.0..2df36c99` after the v2.0.0
+re-authoring. The pre-v2 numbering was unreliable (two #16s, a mislabeled #10,
+a #7/#8 collision between the prompt blocks and the todo middleware). This
+file is now canonical; where older documents disagree, the section notes the
+alias. Baseline facts:
+
+- Upstream base: tag `v2.0.0` (`7e7f0410`). Fork tip: `2df36c99` (29 commits,
+  ~26 logical patches after grouping). Deployed pin: `/opt/argus/VERSIONS.md`.
+- Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
+  `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
+
+To see the live carry-list:
+
+```
+git fetch bytedance
+git log --oneline v2.0.0..argus        # or bytedance/main..argus after a sync
+git diff --stat v2.0.0..argus
+```
+
+Class legend: **generic-upstreamable** (fix or feature any deployment wants;
+open the PR), **argus-additive** (new files, near-zero merge tax),
+**argus-edit** (edits upstream files, the real carry cost),
+**config-expressed** (a config field with upstream-default behavior; the code
+half is upstreamable, the Argus behavior lives in project config).
+
+## Table of contents
+
+| Patch | Name | Class | Commit(s) |
+|---|---|---|---|
+| [#1](#patch-1) | aio_sandbox `set +H` | generic-upstreamable | 9b025200 |
+| [#2](#patch-2) | sandbox command cap as `SandboxConfig.command_max_chars` | config-expressed | 12362d06 |
+| [#3](#patch-3) | loop-detection read_file bucket as config field | config-expressed | 8bf18954 |
+| [#4](#patch-4) | checkpointer `AsyncPostgresSaver.aprune` | generic-upstreamable | ef280bbb |
+| [#5](#patch-5) | per-event-loop httpx client for ChatOpenAI | generic-upstreamable | 86dcc0b2 |
+| [#6](#patch-6) | lead-agent prompt residual blocks | argus-edit | 2262cd29 |
+| [#7/#18](#patch-718) | ArgusTodoMiddleware + `uses_planner_pipeline` | argus-additive | dd5f7bfa |
+| [#9-chain](#patch-9-chain) | Telegram streaming chain (stage-emoji + HTML + webhook + welcome) | argus-edit | eb379ae8, 152a3d5e |
+| [#10](#patch-10) | Telegram channel-aware artifact presenter | argus-edit | eb379ae8 (file), 762b61eb (re-wire) |
+| [#11](#patch-11) | PythiaRetrievalMiddleware (company-KB retrieval) | argus-additive | fe44c5ba |
+| [#13](#patch-13) | uploads_middleware: steer images to `view_image` | argus-edit | c8d442a7 |
+| [#14](#patch-14) | proactive channel notify endpoint | generic-upstreamable | 329bccf6 |
+| [#15/#16](#patch-1516) | Caddy SSO trust + CSRF cookie mint | argus-edit | b11b3888 |
+| [#20](#patch-20) | view_image vision-describe for non-vision leads | argus-edit | 576f5db7 |
+| [#21/#24](#patch-2124) | channel-sender keys into ToolRuntime.context | argus-edit | 1be4c909 (shared with #30) |
+| [#22](#patch-22) | Slack thread-context for replies under non-agent posts | argus-edit | 4aae74cd |
+| [#23](#patch-23) | Slack progress-ack cleanup | generic-upstreamable | 999f71a8 |
+| [coalesce](#patch-coalesce) | split-paste message coalescing | argus-additive | 8a67af3c |
+| [#30](#patch-30) | scheduled-playbook fire + per-job agent & memory | argus-additive | 1be4c909, 3cc5491e |
+| [#31/#32](#patch-3132) | unattended-silence: empty/filler turns | argus-edit | 488fe077 |
+| [#33](#patch-33) | wire `sandbox.network` DNS mode (no host-port publish) | generic-upstreamable | 7e238127 |
+| [#34](#patch-34) | unattended-silence: narrated-silence announcements | argus-edit | 8bf85a9c |
+| [#35](#patch-35) | landing-galaxy CPU/GPU cost cut | generic-upstreamable | ccf1b69f |
+| [#36](#patch-36) | surface `(No response from agent)` on blank final | argus-edit | 89ea4d2f |
+| [#37](#patch-37) | retry blank final turn + web display guard | argus-edit | 4a19e4fe |
+| [#38](#patch-38) | per-thread debug-sandbox link | argus-additive | 1aad692a, cd03995e, 2df36c99 (merge) |
+| [#39](#patch-39) | checkpointer pool bounds | generic-upstreamable | 348739fc (PR #4, branch `argus-patch-39-pool-bounds`) |
+
+Dropped / deferred / not-carried records are at the bottom, followed by the
+carry budget ledger.
+
+---
+
+## Patch #1
+
+**Patch #1 - aio_sandbox: prepend `set +H;` to disable bash history expansion**
+
+- Class: generic-upstreamable
+- Intent: Commands piping `!`-prefixed tokens (`!DOCTYPE`, heredocs with `!`)
+  through the sandbox shell abort with bash "event not found" because history
+  expansion is on. Wraps both `exec_command` call sites (initial + the
+  upstream `create_session` recovery retry) with `set +H;`. No other side
+  effects.
+- Files: `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox.py` (EDITED)
+- Tests: `backend/tests/test_aio_sandbox.py` (EDITED upstream file, +cases)
+- Delete-when: upstream disables history expansion in the sandbox shell (or
+  switches to a non-interactive shell), or the aio-sandbox provider exposes a
+  shell-flags hook.
+- Upstream status: none (clean PR candidate per FORK-REVIEW; note FORK-REVIEW
+  calls this "#2", the pre-v2 PATCHES.md numbering "#1" is used here).
+
+## Patch #2
+
+**Patch #2 - sandbox command length cap as `SandboxConfig.command_max_chars`**
+
+- Class: config-expressed (RE-EXPRESS of the old `_MAX_COMMAND_LENGTH`
+  10_000 -> 131_072 constant patch)
+- Intent: The 10k default truncates legitimate large commands; Qwen routes
+  ~20 KB heredocs (e.g. a self-contained HTML page) through bash in one shot.
+  Adds `SandboxConfig.command_max_chars` (default 10000 = upstream, so purely
+  additive) read by `SandboxAuditMiddleware` via a new `__init__`; Argus sets
+  131072 in project config.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/sandbox_audit_middleware.py` (EDITED),
+  `.../middlewares/tool_error_handling_middleware.py` (EDITED, 2 lines),
+  `backend/packages/harness/deerflow/config/sandbox_config.py` (EDITED)
+- Tests: `backend/tests/test_sandbox_audit_middleware.py` (EDITED, +cases)
+- Delete-when: upstream ships `command_max_chars` (or an equivalent env/config
+  knob) in a released tag; then only the value in project config remains and
+  the code patch drops.
+- Upstream status: none (designed to be upstreamable: default equals the
+  upstream constant).
+
+## Patch #3
+
+**Patch #3 - loop-detection read_file bucket as `LoopDetectionConfig.read_file_bucket_size_lines`**
+
+- Class: config-expressed (RE-EXPRESS of the old 200 -> 50 constant patch)
+- Intent: Qwen makes surgical repeated reads of distinct sections of one file;
+  with the 200-line bucket those hash as identical calls and trip the loop
+  detector. Adds `read_file_bucket_size_lines` (default 200 = upstream),
+  threaded from `from_config` into `_hash_tool_calls`/`_stable_tool_key`;
+  Argus sets 50 in project config.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/loop_detection_middleware.py` (EDITED),
+  `backend/packages/harness/deerflow/config/loop_detection_config.py` (EDITED)
+- Tests: `backend/tests/test_loop_detection_config.py`,
+  `backend/tests/test_loop_detection_middleware.py` (both EDITED, +cases)
+- Delete-when: upstream ships the config field, or upstream's per-tool
+  frequency overrides (PR #2711, merged) grow the expressiveness to state
+  this in config alone.
+- Upstream status: none (PR candidate; default equals upstream).
+
+## Patch #4
+
+**Patch #4 - checkpointer: add `AsyncPostgresSaver.aprune`**
+
+- Class: generic-upstreamable
+- Intent: `langgraph-checkpoint-postgres` ships `adelete_thread` but no
+  `aprune`, so checkpoint history grows unbounded with no in-process prune.
+  Adds a monkeypatched `aprune` (keep-latest + delete-all strategies),
+  self-activating from `_ensure_postgres_imports()`, idempotent, and a no-op
+  if upstream ever ships a native `aprune` (it checks before installing).
+  This is what `make prune-threads` on the host relies on.
+- Files: `backend/packages/harness/deerflow/runtime/checkpointer/_postgres_aprune.py` (NEW),
+  `backend/packages/harness/deerflow/runtime/checkpointer/async_provider.py` (EDITED, +6 import hook)
+- Tests: `backend/tests/test_postgres_aprune.py` (NEW)
+- Delete-when: upstream ships native `aprune` in `langgraph-checkpoint-postgres`
+  >= some release AND the base image consumes that version; confirm the patch
+  reports itself a no-op, then drop the file + import.
+- Upstream status: none (belongs in `langgraph-checkpoint-postgres`, not
+  deer-flow; file it there).
+
+## Patch #5
+
+**Patch #5 - models/factory: per-event-loop httpx client for ChatOpenAI**
+
+- Class: generic-upstreamable (workaround for an upstream-of-upstream bug)
+- Intent: langchain-openai caches the async httpx client in a process-global
+  lru_cache; LangGraph's loop-per-task model then reuses a client from a
+  torn-down loop and streams die with "RuntimeError: Event loop is closed" at
+  cleanup. Injects an explicit `http_async_client` keyed on `id(loop)` via a
+  `WeakValueDictionary`, only for ChatOpenAI subclasses and only when the
+  caller didn't pass one. Load-bearing but fragile: re-run its test after
+  every dependency bump.
+- Files: `backend/packages/harness/deerflow/models/factory.py` (EDITED, ~60 lines)
+- Tests: `backend/tests/test_model_factory.py` (EDITED, +cases)
+- Delete-when: `langchain-ai/langchain#35783` is fixed in a released
+  langchain-openai that the image consumes, OR DeerFlow stops sharing httpx
+  clients across loops.
+- Upstream status: issue (langchain-ai/langchain#35783, still open 2026-06);
+  subsumed-watch on that issue.
+
+## Patch #6
+
+**Patch #6 - lead_agent/prompt: residual `<file_editing>` + `<debugging_when_stuck>` blocks**
+
+- Class: argus-edit
+- Intent: Qwen-specific prompt tuning: read_file before editing your own
+  earlier output, avoid heredocs for files you may edit, edit deliverables in
+  place, plus the full `<debugging_when_stuck>` instrument-first /
+  reduce-surface decision rule for smaller models. The v2.0.0 re-port DROPPED
+  the str_replace-over-write_file pillar because upstream now states it
+  natively in `<critical_reminders>` (upstream #3195); only the residuals are
+  carried. Pre-v2 this was two patches (#6 + #7); the todo-middleware commit
+  now claims #7, so the merged prompt patch is #6 alone.
+- Files: `backend/packages/harness/deerflow/agents/lead_agent/prompt.py` (EDITED; the most upstream-churned file we touch)
+- Tests: `backend/tests/test_lead_agent_prompt.py` (EDITED, +cases)
+- Delete-when: never cleanly (Qwen-specific tuning); re-express via a SOUL /
+  agent-config prompt-section injection layer if upstream ships one, and check
+  each sync whether upstream absorbed more of the guidance (as #3195 did).
+  Surface: `lead_agent/prompt.py`.
+- Upstream status: subsumed-watch (upstream absorbs pillars piecemeal, #3195
+  precedent).
+
+## Patch #7/#18
+
+**Patch #7/#18 - ArgusTodoMiddleware + `AgentConfig.uses_planner_pipeline`**
+
+- Class: argus-additive
+- Intent: A planner-aligned `TodoMiddleware` subclass whose prompt defers
+  planning judgment to the planner SKILL.md instead of upstream's "do not plan
+  simple tasks". Routed by a new `uses_planner_pipeline` flag on `AgentConfig`
+  (replaces the old `agent_name == "qwen-local-coder"` match) so glm-planner
+  and any planner/critic-pipeline agent gets it; `build_middlewares` loads the
+  agent config by name (best-effort) to read the flag. Alias note: the pre-v2
+  PATCHES.md numbered the todo middleware #8; the carried commit says
+  "#7 + #18" and that is canonical now.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/argus_todo_middleware.py` (NEW),
+  `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED, wiring),
+  `backend/packages/harness/deerflow/config/agents_config.py` (EDITED, flag)
+- Tests: `backend/tests/test_argus_todo_middleware.py` (NEW),
+  `backend/tests/test_lead_agent_model_resolution.py` (EDITED, factory stubs)
+- Delete-when: upstream's TodoMiddleware gains planner-alignment, or upstream
+  #3809 (pluggable middleware builder) lands in a shipped tag with a
+  `middlewares` config key accepted; then the class becomes a local plugin and
+  the `agent.py` wiring drops.
+- Upstream status: subsumed-watch (upstream #3809).
+
+## Patch #9-chain
+
+**Patch #9/#26a/#27/#28/#29 - Telegram streaming chain: stage-emoji + HTML + webhook + welcome**
+
+- Class: argus-edit (the single biggest carry: ~90% of our upstream-file
+  edited lines live in `app/channels/`)
+- Intent: Telegram as a first-class Argus channel. Markdown -> Telegram-native
+  HTML with a tag-safe 4096 chunker (`_telegram_format.py`); animated
+  stage-emoji progress indicator instead of upstream's edit-in-place partial
+  text (manager `_stage_from_chunk` derives received/thinking/planning/
+  searching/working from the langgraph stream; suppressed on unattended
+  turns); stage sends are fire-and-forget so Telegram API latency never stalls
+  the stream loop (#26a/#27); webhook mode `POST /webhooks/telegram` kills the
+  0-10s polling delay (#28, config-gated, polling stays as fallback); grafts
+  upstream's orthogonal v2 features (user-owned connection binding,
+  bot-username stripping, /bootstrap + unknown-slash routing) and drops
+  upstream's superseded text-stream helpers. The follow-up commit 152a3d5e
+  restores the #28 sub-commits lost in the port: `/webhooks/` in auth
+  `_PUBLIC_PATH_PREFIXES` + CSRF exemption (without them every webhook push
+  403'd before reaching the route's own secret-token check). Numbering note:
+  the commit subject also lists #10 and #24; those halves have their own
+  sections. "#9" here is the telegram-core re-port label, NOT the dead
+  langgraph_auth patch that older notes also called #9.
+- Files: `backend/app/channels/_telegram_format.py` (NEW),
+  `backend/app/channels/telegram.py` (EDITED, heavy 3-way reconciliation),
+  `backend/app/channels/manager.py` (EDITED),
+  `backend/app/channels/message_bus.py` (EDITED, `OutboundMessage.progress_stage`),
+  `backend/app/gateway/auth_middleware.py` (EDITED, 152a3d5e),
+  `backend/app/gateway/csrf_middleware.py` (EDITED, 152a3d5e)
+- Tests: `backend/tests/test_telegram_format.py` (NEW),
+  `backend/tests/test_telegram_send.py` (NEW),
+  `backend/tests/test_channels.py` (EDITED),
+  `backend/tests/test_csrf_middleware.py` (EDITED, webhook-exemption regression tests)
+- Delete-when: upstream's Telegram channel gains HTML/markdown rendering, a
+  removable working-indicator/stage hook, and per-channel formatter extension
+  points; realistically never as a whole. The exit path is FORK-REVIEW lever
+  #1: upstream the design or move it behind a cleaner extension point. Both we
+  and upstream rewrote `telegram.py` with incompatible streaming designs, so
+  expect a careful 3-way reconciliation on EVERY sync (a naive merge silently
+  produces broken code).
+- Upstream status: none.
+
+## Patch #10
+
+**Patch #10 - Telegram channel-aware artifact presenter**
+
+- Class: argus-edit (new file + a small, historically fragile manager seam)
+- Intent: For Telegram, `present_files` HTML/SVG reports become viewable links
+  to the per-stack `/f/` nginx fileserver (raw file suppressed) instead of
+  unrenderable downloads; other binaries are linked + attached; orphan
+  viewable artifacts (mtime-detected, `_ORPHAN_PRESENT_EXTS` only) are
+  auto-presented. **Sync trap, do not repeat:** the v2.0.0 rebase note
+  recorded #10 as "supports_streaming override, dropped as subsumed". That was
+  a mislabel. #10 is THIS presenter and was NOT subsumed: the rebase carried
+  `_artifact_presenter.py` but upstream's owner-scoping refactor (#3579) had
+  rewritten `_prepare_artifact_delivery` and silently dropped the Telegram
+  hand-off, regressing every atlas stack to bare-filename delivery. Re-wired
+  in 762b61eb: `_prepare_artifact_delivery` regains its `channel_name` param
+  beside the #3579 `user_id` kwarg, both ChannelManager call sites pass
+  `msg.channel_name`. Do not treat #10 as obsolete on the next sync.
+- Files: `backend/app/channels/_artifact_presenter.py` (NEW, via eb379ae8),
+  `backend/app/channels/manager.py` (EDITED, the hand-off seam, 762b61eb)
+- Tests: `backend/tests/test_artifact_presenter.py` (NEW; includes 2
+  manager-seam regression tests added in 762b61eb precisely so a future
+  upstream rewrite of `_prepare_artifact_delivery` fails loudly)
+- Delete-when: upstream grows a per-channel artifact-presentation hook in the
+  delivery path; the `/f/`-link behavior itself is Argus product behavior
+  (depends on our per-stack fileserver) and would be re-expressed against that
+  hook, not deleted.
+- Upstream status: subsumed-watch (upstream #3579 rewrote this seam once
+  already and cost us the wiring; watch it every sync).
+
+## Patch #11
+
+**Patch #11 - PythiaRetrievalMiddleware: deterministic company-KB retrieval**
+
+- Class: argus-additive
+- Intent: On the first model call of a turn, POST kb-api `/{project}/answer`
+  and inject the returned cited context blocks via
+  `wrap_model_call` + `request.override()` (non-persisting: the
+  `[pythia-kb-context]` block reaches the model for that call only and never
+  renders in UI/exports/checkpoints). Thin client: routing lives server-side
+  in kb-api. Adds `AgentConfig.pythia_ring` (a server-side ring CEILING
+  enforced by kb-api) and a gateway-signed `caller_token`
+  (`PYTHIA_CALLER_SIGNING_SECRET`, byte-identical format to kb-api's
+  verifier). Gated by `PYTHIA_ROUTER_INJECT` (alias
+  `PYTHIA_RETRIEVAL_ENABLED`), so it degrades cleanly on stacks that don't
+  use it.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/pythia_retrieval_middleware.py` (NEW),
+  `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED, wiring),
+  `backend/packages/harness/deerflow/config/agents_config.py` (EDITED, `pythia_ring`)
+- Tests: `backend/tests/test_pythia_retrieval_middleware.py` (NEW; pins ring
+  gating, the token contract, context formatting, per-turn dedup)
+- Delete-when: never - core product behavior (Pythia company-KB answers).
+  Re-express the `build_middlewares` wiring as a plugin registration when
+  upstream #3809 ships; drop only if DeerFlow gains a first-class pre-model
+  retrieval hook that can call an external router.
+- Upstream status: none (wiring: subsumed-watch on #3809).
+
+## Patch #13
+
+**Patch #13 - uploads_middleware: steer uploaded images to `view_image`**
+
+- Class: argus-edit
+- Intent: The frontend uploads images by path, never as inline `image_url`
+  blocks, so `view_image` is the only route to the pixels; upstream's
+  read_file/grep/glob guidance left vision-capable models unable to see an
+  uploaded screenshot. Emits per-image `view_image(image_path=...)` guidance
+  in `_format_file_entry` and suppresses the trailing doc-search block when
+  every uploaded file is an image. Non-image entries byte-for-byte unchanged.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/uploads_middleware.py` (EDITED)
+- Tests: `backend/tests/test_uploads_middleware_core_logic.py` (EDITED, +cases)
+- Delete-when: the frontend inlines image uploads as `image_url` content
+  blocks (no tool round-trip needed), OR upstream's uploads guidance becomes
+  image-aware.
+- Upstream status: none.
+
+## Patch #14
+
+**Patch #14 - gateway/routers/channels: proactive notify endpoint**
+
+- Class: generic-upstreamable
+- Intent: `POST /api/channels/{name}/notify` publishes a synthetic
+  `InboundMessage` onto the channel bus so scheduled jobs (Atlas briefing,
+  Chronos turns) ride the full real-user channel pipeline: thread mapping,
+  agent turn, formatting, artifact delivery, reply threading. Guarded by the
+  internal service token specifically; an SSO session is NOT accepted because
+  the caller chooses `chat_id`/`user_id` (impersonation otherwise). v2.0.0
+  already widened the router imports, so only the endpoint body is appended.
+- Files: `backend/app/gateway/routers/channels.py` (EDITED, additive endpoint)
+- Tests: `backend/tests/test_channel_notify.py` (NEW)
+- Delete-when: upstream grows a proactive/outbound message API for channels
+  (a send-without-inbound surface in `app/channels/`).
+- Upstream status: none (PR candidate per FORK-REVIEW).
+
+## Patch #15/#16
+
+**Patch #15/#16 - trust Caddy SSO identity + mint the CSRF cookie for SSO sessions**
+
+- Class: argus-edit
+- Intent: #15: the gateway authenticates off the edge-verified `X-Auth-Email`
+  header, trusted ONLY when the request carries the matching
+  `X-Auth-Proxy-Secret` (constant-time compare vs `DEER_FLOW_SSO_PROXY_SECRET`,
+  fail-closed when unset), auto-provisioning the user by email as an `elif`
+  branch in v2.0.0's internal/access_token/auth_disabled/401 ladder; `/me`
+  prefers the middleware-resolved user; the frontend SSR `/me` fetch forwards
+  the SSO headers. Kills the second login behind Caddy and unifies the
+  identity #11's caller tokens use. #16: the double-submit `csrf_token` cookie
+  was only minted on local-login POSTs, which SSO citizens never make; a
+  trusted-SSO request with no cookie is treated as first contact - skip the
+  double-submit rejection for that one request and mint the cookie. Same
+  proxy-secret gate, so both branches are inert without the secret.
+- Files: `backend/app/gateway/sso_auth.py` (NEW),
+  `backend/app/gateway/auth_middleware.py` (EDITED),
+  `backend/app/gateway/csrf_middleware.py` (EDITED),
+  `backend/app/gateway/deps.py` (EDITED, `resolve_or_provision_sso_user`),
+  `backend/app/gateway/routers/auth.py` (EDITED),
+  `frontend/src/core/auth/server.ts` (EDITED)
+- Tests: `backend/tests/test_sso_auth.py` (NEW, 5 cases)
+- Delete-when: upstream gains a first-class reverse-proxy-auth / trusted
+  identity-header mode covering both the gateway and the SSR auth check; #16
+  falls automatically with #15. Until then this is core deployment behavior
+  for every SSO-fronted stack. Surface: the gateway auth ladder (rewritten
+  once already in v2.0.0; expect to re-place the branch each major sync).
+- Upstream status: none.
+
+## Patch #20
+
+**Patch #20 - view_image: vision-describe for non-vision lead models**
+
+- Class: argus-edit
+- Intent: When the lead model is non-vision (glm-planner on glm-nw), route
+  each viewed image through the first `supports_vision` config model
+  (local-qwen) for a render-verification-focused TEXT description and inject
+  that instead of the raw image, so render-and-verify / view_image work on
+  non-vision leads instead of being silently dead. Vision leads keep the
+  direct image inject; describe is best-effort (failure injects a placeholder,
+  never aborts the turn); the sync `before_model` defers to the async path.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/view_image_middleware.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED, attach for non-vision leads)
+- Tests: `backend/tests/test_view_image_middleware.py` (EDITED, +cases)
+- Delete-when: upstream adds vision-model routing for non-vision leads, or
+  every Argus lead model is vision-capable (then the branch is unused; verify
+  before deleting).
+- Upstream status: none.
+
+## Patch #21/#24
+
+**Patch #21/#24 - surface the channel sender into ToolRuntime.context**
+
+- Class: argus-edit (carried inside commit 1be4c909, shared with #30 because
+  both edit the same `_CONTEXT_CONFIGURABLE_KEYS` frozenset)
+- Intent: #21 puts the channel sender identity into the manager's run_context
+  (`_resolve_run_params` -> `run_context_identity`); #24 whitelists those keys
+  through `_CONTEXT_CONFIGURABLE_KEYS` in `gateway/services.py` so they
+  actually reach `ToolRuntime.context` instead of being dropped at the
+  gateway. This is how a tool (Pythia `correct_minutes`) attributes an action
+  to the requesting human. Partially subsumed already: `channel_user_id`
+  became upstream-native in v2.0.0 and was dropped from the patch; the carried
+  keys are `channel_name`/`channel_id`/`thread_ts`.
+- Files: `backend/app/channels/manager.py` (EDITED),
+  `backend/app/gateway/services.py` (EDITED, whitelist)
+- Tests: covered inside `backend/tests/test_channels.py` (EDITED) and the #30
+  suites (`test_playbook_fire.py`) which exercise the same whitelist.
+- Delete-when: upstream surfaces the remaining sender keys into the run
+  context natively (it already did `channel_user_id`; watch each sync for the
+  rest), or upstream makes runtime-context key whitelisting configurable.
+- Upstream status: subsumed-watch (one of four keys absorbed in v2.0.0).
+
+## Patch #22
+
+**Patch #22 - Slack: thread-context for replies under non-agent posts**
+
+- Class: argus-edit
+- Intent: Pythia posts the minutes draft via a raw `chat.postMessage`, so that
+  Slack thread has no DeerFlow thread; a reply like "assign Nicholas to
+  speaker 2" otherwise starts a fresh agent thread with zero context.
+  `SlackChannel.fetch_thread_context` pulls the thread's earlier messages via
+  `conversations.replies` (excludes the current reply + bot acks, keeps bot
+  posts since the draft IS the context); the manager new-thread branch
+  prepends it to `msg.text`. Best-effort throughout (empty on any error,
+  incl. missing_scope).
+- Files: `backend/app/channels/slack.py` (EDITED),
+  `backend/app/channels/manager.py` (EDITED)
+- Tests: `backend/tests/test_channels.py` (EDITED, 5 new cases)
+- Delete-when: the minutes draft is posted through the agent (creating a real
+  DeerFlow thread), or upstream adds channel thread-history hydration.
+- Upstream status: none.
+
+## Patch #23
+
+**Patch #23 - Slack: clean up the progress ack on completion**
+
+- Class: generic-upstreamable
+- Intent: Upstream leaves the ":hourglass: Working on it..." reply and the
+  :eyes: reaction in the thread forever, cluttering every turn. Record both in
+  `self._acks` when the running reply is sent; delete the ack message and
+  remove the reaction once the real answer posts (inside `post_message`, via
+  the same per-message client). Best-effort; the ack entry is consumed so a
+  later turn never double-clears.
+- Files: `backend/app/channels/slack.py` (EDITED)
+- Tests: `backend/tests/test_channels.py` (EDITED, +cases)
+- Delete-when: upstream replaces or removes its own progress ack on
+  completion.
+- Upstream status: none (PR candidate per FORK-REVIEW).
+
+## Patch coalesce
+
+**Patch (unnumbered) - channels: coalesce split-paste messages**
+
+- Class: argus-additive (strong upstream-PR candidate: the lost-message race
+  hits any Telegram deployment)
+- Intent: Telegram chunks a long paste into several InboundMessages within
+  ~1s; the dispatch loop spawned a task per message, same-thread turns raced,
+  and the 2nd+ hit 409 "thread busy" (runs use `multitask_strategy="reject"`;
+  the runtime doesn't implement `enqueue`) and were silently LOST. New
+  `MessageCoalescer` debounces CHAT messages per conversation
+  (`DEFAULT_COALESCE_WINDOW=0.8s`) and dispatches the burst as ONE combined
+  turn; commands bypass it; `coalesce_window<=0` restores the legacy immediate
+  path; `stop()` flushes buffered bursts. Window configurable via
+  `channels.coalesce_window`. (Pre-v2 this lived as item 4 of the old #10
+  mega-section; it is its own logical patch now.)
+- Files: `backend/app/channels/_coalesce.py` (NEW),
+  `backend/app/channels/manager.py` (EDITED),
+  `backend/app/channels/service.py` (EDITED, config forward)
+- Tests: `backend/tests/test_message_coalesce.py` (NEW),
+  `backend/tests/test_channels.py` (EDITED; 3 pre-coalescing thread-reuse
+  tests pinned to `coalesce_window=0`)
+- Delete-when: upstream ships message coalescing/debounce on the channel bus,
+  or the runtime implements `multitask_strategy="enqueue"` so a burst queues
+  instead of being rejected (then re-evaluate whether combining is still
+  wanted for answer quality).
+- Upstream status: none (PR candidate).
+
+## Patch #30
+
+**Patch #30 - scheduled-playbook fire endpoint + per-job agent & memory policy**
+
+- Class: argus-additive (new router + policy module; small edits at named
+  seams)
+- Intent: `POST /api/playbooks/<schedule_id>/fire`: a reconciled Chronos
+  `channel_notify` job fires here; the endpoint reads
+  `config/atlas-playbooks/<id>.md`, expands dates, discovers the citizen chat
+  from the channel store, and publishes a synthetic InboundMessage (riding the
+  #14 pipeline). The message carries a per-job agent (`agent_name`, resolved
+  AHEAD of the channel's pinned agent in `_resolve_run_params`) and a per-job
+  memory policy (`unattended=True` + `memory_mode` off|read-only|read-write,
+  default read-only for unattended turns) enforced in BOTH memory-write paths
+  (`MemoryMiddleware.after_agent` AND the summarization `memory_flush_hook`)
+  plus injection suppression for `memory: off` in DynamicContextMiddleware.
+  Internal-token guarded (the global token Chronos already holds); CSRF
+  exempts valid-internal-token POSTs. Replaces the retired host-side
+  `atlas-briefing.py` + systemd timers. Commit 3cc5491e is bookkeeping for
+  this patch: two blocking_io test mocks updated to the changed
+  DynamicContextMiddleware signatures.
+- Files: `backend/app/gateway/routers/playbooks.py` (NEW),
+  `backend/packages/harness/deerflow/agents/memory/write_policy.py` (NEW),
+  `backend/app/gateway/app.py` (EDITED, router registration),
+  `backend/app/gateway/csrf_middleware.py` (EDITED, internal-token exemption),
+  `backend/app/gateway/services.py` (EDITED, whitelist keys, shared with #21/#24),
+  `backend/app/channels/message_bus.py` (EDITED, InboundMessage fields),
+  `backend/app/channels/manager.py` (EDITED, `_resolve_run_params`),
+  `backend/packages/harness/deerflow/agents/middlewares/memory_middleware.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/memory/summarization_hook.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/middlewares/dynamic_context_middleware.py` (EDITED)
+- Tests: `backend/tests/test_playbook_fire.py` (NEW),
+  `backend/tests/test_per_job_memory.py` (NEW),
+  `backend/tests/test_csrf_middleware.py` (EDITED),
+  `backend/tests/test_channels.py` (EDITED),
+  `backend/tests/blocking_io/test_dynamic_context_middleware.py` (EDITED, 3cc5491e)
+- Delete-when: never - core product behavior (Chronos scheduled playbooks are
+  the citizens' scheduling surface). Re-express if upstream grows first-class
+  scheduled-turn / per-message-agent / per-turn-memory-policy mechanisms;
+  surfaces to watch: `manager._resolve_run_params`, the
+  `_CONTEXT_CONFIGURABLE_KEYS` whitelist, and the two memory-write paths.
+- Upstream status: none.
+
+## Patch #31/#32
+
+**Patch #31/#32 - stay silent on contentless unattended turns**
+
+- Class: argus-edit
+- Intent: A scheduled (unattended) playbook fire with nothing to report must
+  not post "(No response from agent)" (#31) or a lone filler token like "."
+  that a model emits when told to produce no output (#32) to the citizen's
+  chat every cron tick. `_is_trivial_unattended_text` (empty/whitespace, or
+  <=3 chars with no alphanumeric) collapses such a response to empty and both
+  delivery guards (non-streaming + streaming finally) suppress delivery on the
+  unattended path only; the streaming path also suppresses intermediate stage
+  emojis. Interactive turns and real errors are untouched (the streaming guard
+  uses a `suppress_final` flag, not a bare return inside `finally`).
+- Files: `backend/app/channels/manager.py` (EDITED, both delivery guards)
+- Tests: `backend/tests/test_unattended_silence.py` (NEW, 19 cases; imports
+  the predicate in isolation)
+- Delete-when: never while unattended playbook turns post to chat - this is
+  the wire-level backstop for the "produce no output when nothing to do"
+  playbook convention. Re-express if upstream refactors the manager delivery
+  guards or grows a suppress-empty-scheduled-output notion. Surface:
+  `manager.py` final-dispatch guards.
+- Upstream status: none.
+
+## Patch #33
+
+**Patch #33 - wire `sandbox.network` so DNS mode skips host-port publish**
+
+- Class: generic-upstreamable (real fix for rootless-Podman deployments)
+- Intent: The `sandbox.network` config key (from legacy #26) was never
+  consumed: `LocalContainerBackend` always host-published `-p`, per-thread
+  sandboxes collided on 8080/8081/8082 under rootless Podman, stuck in
+  Created, and wedged runs holding the thread lock. Wire it end to end: when
+  `network` is set, `--network <net>` and NO `-p`; sandbox URL becomes
+  `http://<container_name>:8080` via container DNS; create/discover/
+  list_running/destroy are all network-aware (no port alloc/release, orphan
+  reconciliation adopts network-mode containers). Legacy host-publish path is
+  byte-for-byte preserved when unset.
+- Files: `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py` (EDITED),
+  `.../aio_sandbox/aio_sandbox_provider.py` (EDITED),
+  `backend/packages/harness/deerflow/config/sandbox_config.py` (EDITED, `network` field)
+- Tests: `backend/tests/test_aio_sandbox_local_backend.py`,
+  `backend/tests/test_aio_sandbox_provider.py`,
+  `backend/tests/test_sandbox_orphan_reconciliation.py` (all EDITED, 11 new
+  cases)
+- Delete-when: upstream accepts network-mode for `LocalContainerBackend` (PR
+  candidate: default-off, legacy path untouched), or upstream's sandbox
+  backend abstraction gains a first-class no-publish/DNS mode.
+- Upstream status: none (PR candidate).
+
+## Patch #34
+
+**Patch #34 - suppress narrated-silence announcements on unattended turns**
+
+- Class: argus-edit
+- Intent: #31/#32 handled empty and filler responses; the next escalation is a
+  model narrating the decision ("No meetings in the window. Staying silent.")
+  which the hourly meeting-prep poll posted to Telegram every tick.
+  `_is_trivial_unattended_text` gains a third clause: a SHORT (<=120 char),
+  phrasing-anchored nothing-to-report/staying-silent announcement is treated
+  as empty. Deliberately tight (length-capped + pattern-anchored) so a genuine
+  brief that mentions a meeting or the word "silent", or a longer digest
+  opening "No meetings, but ...", survives. Unattended path only. The filter
+  is the backstop, not the prompt.
+- Files: `backend/app/channels/manager.py` (EDITED)
+- Tests: `backend/tests/test_unattended_silence.py` (EDITED: +12 announcement
+  cases that must blank, +4 real-brief cases that must survive)
+- Delete-when: same family as #31/#32 (falls with them); additionally
+  droppable if the lead model reliably stops narrating silence (model bump,
+  verified over a canary window of scheduled polls).
+- Upstream status: none.
+
+## Patch #35
+
+**Patch #35 - cut landing-galaxy CPU/GPU cost**
+
+- Class: generic-upstreamable (pure perf fix to upstream's own landing hero)
+- Intent: The WebGL galaxy (OGL fragment shader) ran a never-pausing full-rate
+  rAF loop at full DPR with a 4-layer per-pixel star shader, heavy on
+  weak/software-GL machines and even in backgrounded tabs. Adaptive loop:
+  pause on hidden tab, honor `prefers-reduced-motion` (single static frame),
+  cap ~30fps, cap backing-store DPR at 1.5, skip mouse lerp + listeners when
+  `mouseRepulsion` is off. Lighter visuals: `NUM_LAYER` 4 -> 3, hero density
+  0.6 -> 0.45, glowIntensity 0.35 -> 0.25.
+- Files: `frontend/src/components/ui/galaxy.jsx` (EDITED),
+  `frontend/src/components/landing/hero.tsx` (EDITED)
+- Tests: none (no unit surface; validated via full `pnpm build`, the
+  frontend/Dockerfile prod target)
+- Delete-when: upstream fixes galaxy.jsx performance or replaces the landing
+  hero.
+- Upstream status: none (PR candidate).
+
+## Patch #36
+
+**Patch #36 - surface `(No response from agent)` on a blank final turn**
+
+- Class: argus-edit
+- Intent: local-qwen can end an interactive turn with empty final content
+  while the last streamed partial is whitespace-only ("\n\n"); that whitespace
+  is truthy, both delivery guards missed it, `to_telegram_html("")` produced
+  zero chunks, and the reply silently vanished (bot went "working" -> nothing;
+  observed 5 runs/2 days on atlas-nicholas). New `_is_blank_text()` (empty /
+  whitespace-only / <=3-char non-alphanumeric filler) used on BOTH delivery
+  paths so a blank final surfaces the visible marker instead of disappearing.
+  It is the interactive-safe SUBSET of `_is_trivial_unattended_text` (omits
+  the #34 announcement clause: "Nothing to report" is a real answer when
+  attended); the unattended predicate composes it, #31/#32/#34 behavior
+  unchanged. Visibility fix only; #37 is the root-cause retry.
+- Files: `backend/app/channels/manager.py` (EDITED)
+- Tests: `backend/tests/test_unattended_silence.py` (EDITED: +TestIsBlankText,
+  +TestUnattendedStillCollapsesAnnouncements)
+- Delete-when: upstream delivery guards handle blank/filler final text on
+  channels, or the blank-final failure mode is conclusively gone (model bump +
+  #37 metrics) AND we accept losing the visible marker as defense-in-depth.
+- Upstream status: none.
+
+## Patch #37
+
+**Patch #37 - retry a blank final model turn + web display guard**
+
+- Class: argus-edit (new middleware travels free; the edits are the pagination
+  guard and wiring)
+- Intent: #36 made blank finals visible; this fixes them. (1)
+  `EmptyFinalRetryMiddleware` re-invokes the model ONCE when a FINAL turn is
+  blank (AIMessage, no tool_calls, blank/filler content); a blank turn WITH
+  tool_calls is a normal intermediate step and is left alone; bounded to one
+  retry, registered before LoopDetection. (2) Web display guard
+  `mark_blank_final_ai_messages()` in gateway pagination substitutes the
+  marker for a blank last-ai-message-per-run on the thread-messages reload
+  path, so the web UI never renders an empty answer even when a blank slips
+  through. `is_blank_text` moved to `deerflow.utils.messages` (harness layer)
+  so app and harness share it without a boundary violation
+  (test_harness_boundary.py enforced); `manager.py` re-exports it.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/empty_final_retry_middleware.py` (NEW),
+  `backend/packages/harness/deerflow/utils/messages.py` (EDITED upstream file, `is_blank_text`),
+  `backend/app/gateway/pagination.py` (EDITED),
+  `backend/app/gateway/routers/thread_runs.py` (EDITED),
+  `backend/app/channels/manager.py` (EDITED, re-export/compose),
+  `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED, registration),
+  `backend/CLAUDE.md` (EDITED, note)
+- Tests: `backend/tests/test_empty_final_retry.py` (NEW: is_blank_text shapes,
+  web-guard scoping, retry-once/no-loop/no-retry-on-tool-calls, sync+async)
+- Delete-when: the middleware: the lead model stops emitting blank finals
+  (model bump validated over a canary window) or upstream ships an equivalent
+  final-turn retry; its registration re-expresses via #3809 when shipped. The
+  web guard: upstream pagination guards blank finals on the read path.
+- Upstream status: none (wiring: subsumed-watch on #3809).
+
+## Patch #38
+
+**Patch #38 - per-thread debug-sandbox link (#38a backend, #38b frontend)**
+
+- Class: argus-additive (new endpoint body, new component; small edits at
+  upstream touchpoints)
+- Intent: A "Debug" button in both chat headers opens THAT thread's AIO
+  sandbox UI (terminal/code-server/VNC/jupyter) so an operator can inspect the
+  very container that ran the thread's sandbox tools. #38a:
+  `POST /api/threads/{id}/debug-sandbox` acquires (or re-acquires, files
+  rehydrated, OS state not) the thread's sandbox and returns
+  `{hash, url: "/debug-sandbox/<hash>/"}`; guarded by
+  `@require_permission("threads","read",owner_check=True,require_existing=True)`
+  (auth boundary inherited, no new network exposure); 409 for non-container
+  providers, 502 on acquire failure. #38b: `DebugSandboxTrigger` awaits
+  acquire THEN `window.open` (popup-blocker + proxy-502-race safe); hides in
+  welcome mode and after a 409. NOTE: the matching nginx
+  `/debug-sandbox/<hash>/` reverse-proxy location is an argus-infra overlay
+  (`config/nginx/nginx.conf`), NOT in this fork; applying it needs a
+  per-project nginx restart, not just reload.
+- Files: `backend/app/gateway/routers/threads.py` (EDITED, +80),
+  `frontend/src/components/workspace/debug-sandbox-trigger.tsx` (NEW),
+  `frontend/src/core/threads/api.ts` (EDITED, `acquireDebugSandbox`),
+  `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` (EDITED),
+  `frontend/src/app/workspace/chats/[thread_id]/page.tsx` (EDITED),
+  `frontend/src/core/i18n/locales/{en-US,zh-CN,types}.ts` (EDITED)
+- Tests: `backend/tests/test_threads_debug_sandbox.py` (NEW, 5 cases),
+  `frontend/tests/unit/core/threads/api.test.ts` (EDITED, +3)
+- Delete-when: never - core Argus operator tooling (pairs with the
+  argus-infra nginx overlay and the deterministic `sha256(thread_id)[:8]`
+  container naming). Re-express if upstream refactors `routers/threads.py` or
+  the chat-header component layout; could be offered upstream as a generic
+  feature if the sandbox-provider id gating is generalized.
+- Upstream status: none.
+
+## Patch #39
+
+**Patch #39 - bound the checkpointer pool (elastic 1..4, idle-shrink)**
+
+- Class: generic-upstreamable
+- Status note: NOT yet on `argus` tip. Lives as fork PR #4, branch
+  `argus-patch-39-pool-bounds`, commit `348739fc`. Merge it and update this
+  line in the same commit.
+- Intent: psycopg_pool's default is a fixed pool (max_size falls back to
+  min_size=4), so every uvicorn worker permanently held 4 idle Postgres
+  connections; with 2 workers per gateway and one gateway per project stack,
+  the idle floor alone exhausted the shared server's max_connections on
+  2026-07-01 ("FATAL: sorry, too many clients already"). Keep the per-worker
+  ceiling (4) but make the pool elastic: min_size=1, grow under load, shrink
+  after max_idle=300s; env-overridable via `DEERFLOW_CHECKPOINTER_POOL_MIN` /
+  `_MAX` / `_MAX_IDLE`. Keepalive kwargs and check_connection wiring
+  unchanged.
+- Files: `backend/packages/harness/deerflow/runtime/checkpointer/async_provider.py` (EDITED, +16 in `_build_postgres_pool`)
+- Tests: `backend/tests/test_checkpointer_pool_bounds.py` (NEW: defaults, env
+  overrides, keepalive/check wiring; psycopg faked via sys.modules)
+- Delete-when: upstream `langgraph-checkpoint-postgres` accepts pool kwargs
+  passthrough, or bytedance accepts a checkpointer pool config knob; then the
+  bounds move to config and the code patch drops.
+- Upstream status: none (fork PR #4; both upstream candidates named above).
+
+---
+
+## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
+
+**Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**
+
+- **#8 `langgraph_auth` lazy-init** (numbered #9 in the pre-v2 PATCHES.md):
+  dead since Argus moved off standalone `langgraph dev` to the gateway
+  runtime; the fork had already self-dropped it 2026-06-03. Do not revive
+  unless we run `langgraph dev` standalone again.
+- **#17 agent-dir-fallback** (shared-dir fallback when the per-user dir has
+  only `memory.json`): upstream fixed it better (upstream issue #3390).
+- **`supports_streaming` override**: now native upstream. **CORRECTION
+  2026-07-01: this override is NOT patch #10.** The rebase note originally
+  recorded "#10 supports_streaming override, dropped" - a mislabel that
+  silently regressed Telegram artifact delivery until 762b61eb re-wired the
+  presenter. Patch #10 (the Telegram artifact presenter) is alive; see its
+  section. Do not treat #10 as obsolete on the next sync.
+- **3 pre-2026 loop-detector patches** (nudge-toward-observation,
+  edit-aware-reset, layer-2 frequency drop): subsumed by upstream's
+  warning-queue architecture back in the 2026-05-28 upgrade; if Qwen loop
+  behavior regresses, re-tune against the current architecture.
+
+**Deferred (do not port as-was):**
+
+- **#27 agent sub-component pooling** (perf-only half of the old #27; the
+  fire-and-forget emoji half lives on in the telegram chain): its cache key
+  cannot capture v2.0.0's deferred-tools subsystem inputs, so porting it
+  risks stale prompts for zero behavior change. If the perf matters,
+  re-derive against the `assemble_deferred_tools` /
+  `build_middlewares(deferred_setup=...)` shape.
+
+**Re-expressed as config fields (no longer constant patches):** see #2 and #3.
+
+**Not carried - verify on next sync (suspected silent drops, like #10 was):**
+
+- **#19 agent-chat model precedence** (3 pre-v2 frontend commits: per-thread
+  override, else the agent's pinned model, no global last-pick bleed): absent
+  from `v2.0.0..2df36c99` and NOT visibly upstream-subsumed - at tip, the
+  agent chat page still injects only `agent_name`
+  (`frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`,
+  `context: { ...settings.context, agent_name }`) and InputBox still gates
+  modes on `supports_thinking` via `context.model_name`. If glm-planner mode
+  gating is broken again in the UI, re-port as a new numbered patch.
+- **#12 sandbox Created-but-not-Running detection**: absent from the carry;
+  upstream v2.0.0 ships sandbox orphan reconciliation and #33's network mode
+  removes the port-bind root cause. Presumed subsumed; confirm if sandboxes
+  ever hang in Created again.
+
+---
+
+## Carry budget ledger
+
+Re-measure at every sync (`git diff --shortstat <upstream-base>..argus` plus
+the upstream-file edit split). The goal is that these numbers go DOWN over
+time as patches are upstreamed or subsumed; a rising channels number means the
+telegram subsystem needs the FORK-REVIEW lever-1 treatment (upstream the
+design or move it behind an extension point).
+
+| Date | Base | Commits | Files | Lines | Upstream-file edited lines |
+|---|---|---|---|---|---|
+| 2026-07-01 | v2.0.0 -> 2df36c99 | 29 | 85 | +6168 / -812 | ~1600 (~1460 in `app/channels/`) |
