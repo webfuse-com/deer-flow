@@ -64,7 +64,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#36](#patch-36) | surface `(No response from agent)` on blank final | argus-edit | 89ea4d2f |
 | [#37](#patch-37) | retry blank final turn + web display guard | argus-edit | 4a19e4fe |
 | [#38](#patch-38) | per-thread debug-sandbox link | argus-additive | 1aad692a, cd03995e, 2df36c99 (merge) |
-| [#39](#patch-39) | checkpointer pool bounds | generic-upstreamable | 348739fc (PR #4, branch `argus-patch-39-pool-bounds`) |
+| [#39](#patch-39) | checkpointer pool bounds | generic-upstreamable | f37b8292 (PR #4 squash-merge) |
+| [#40](#patch-40) | Telegram send-path extraction to `_telegram_sender.py` | argus-edit (carry-negative refactor) | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -239,7 +240,12 @@ carry budget ledger.
   sections. "#9" here is the telegram-core re-port label, NOT the dead
   langgraph_auth patch that older notes also called #9.
 - Files: `backend/app/channels/_telegram_format.py` (NEW),
-  `backend/app/channels/telegram.py` (EDITED, heavy 3-way reconciliation),
+  `backend/app/channels/_telegram_sender.py` (NEW - since patch #40 hosts the
+  telegram-side send path; state stays on the channel, shims in telegram.py),
+  `backend/app/channels/telegram.py` (EDITED - since #40 a thin carrier:
+  send/_send_running_reply/_send_running_reply_safe shims + webhook (#28) +
+  welcome/lock (#17); upstream's superseded stream helpers restored verbatim
+  as unreachable code),
   `backend/app/channels/manager.py` (EDITED),
   `backend/app/channels/message_bus.py` (EDITED, `OutboundMessage.progress_stage`),
   `backend/app/gateway/auth_middleware.py` (EDITED, 152a3d5e),
@@ -251,11 +257,14 @@ carry budget ledger.
 - Delete-when: upstream's Telegram channel gains HTML/markdown rendering, a
   removable working-indicator/stage hook, and per-channel formatter extension
   points; realistically never as a whole. The exit path is FORK-REVIEW lever
-  #1: upstream the design or move it behind a cleaner extension point. Both we
-  and upstream rewrote `telegram.py` with incompatible streaming designs, so
-  expect a careful 3-way reconciliation on EVERY sync (a naive merge silently
-  produces broken code).
+  #1: upstream the design or move it behind a cleaner extension point. Since
+  patch #40, upstream churn inside its own stream helpers merges clean (they
+  are restored verbatim, unreachable); the remaining reconciliation surface on
+  each sync is the three shim bodies, the webhook/welcome edits, and any
+  upstream change to send()'s signature or OutboundMessage fields (locked by
+  `test_telegram_sender_seam.py`).
 - Upstream status: none.
+- See also: patch #40 (send-path extraction).
 
 ## Patch #10
 
@@ -720,9 +729,10 @@ carry budget ledger.
 **Patch #39 - bound the checkpointer pool (elastic 1..4, idle-shrink)**
 
 - Class: generic-upstreamable
-- Status note: NOT yet on `argus` tip. Lives as fork PR #4, branch
-  `argus-patch-39-pool-bounds`, commit `348739fc`. Merge it and update this
-  line in the same commit.
+- Status note: merged to `argus` as `f37b8292` (PR #4 squash-merge of branch
+  `argus-patch-39-pool-bounds`; the pre-merge commit was `348739fc`). This
+  line was stale until patch #40's PR: the d8ef0d13 ledger rebuild was
+  authored against 2df36c99, before the merge landed.
 - Intent: psycopg_pool's default is a fixed pool (max_size falls back to
   min_size=4), so every uvicorn worker permanently held 4 idle Postgres
   connections; with 2 workers per gateway and one gateway per project stack,
@@ -739,6 +749,51 @@ carry budget ledger.
   passthrough, or bytedance accepts a checkpointer pool config knob; then the
   bounds move to config and the code patch drops.
 - Upstream status: none (fork PR #4; both upstream candidates named above).
+
+## Patch #40
+
+**Patch #40 - Telegram send-path extraction to `_telegram_sender.py` (merge-tax reduction)**
+
+- Class: argus-edit (refactor of #9-chain's telegram.py half; net NEGATIVE
+  carry - telegram.py drops from 574 to 251 changed lines vs v2.0.0, and
+  `app/channels/` app-code carry from 1099 to 776)
+- Intent: telegram.py was the fork's dominant merge tax (FORK-REVIEW lever
+  #1). Zero behavior change (the pre-existing suite, unmodified, is the
+  proof): the argus send path - stage-emoji indicator (show/promote/clear),
+  HTML chunked sends with retry + plain-text fallback - moves verbatim into
+  argus-owned `_telegram_sender.py` as channel-first free functions; ALL
+  mutable state stays on the channel instance (`init_state(channel, config)`
+  called from `__init__`) because tests read/patch `ch._working_msg` & friends
+  directly, and telegram.py keeps three bound-method shims (`send`,
+  `_send_running_reply`, `_send_running_reply_safe`) because tests and the
+  receive path override/dispatch per instance (`_send_running_reply_safe` goes
+  through `self._send_running_reply`, never the module function). Upstream
+  v2.0.0's superseded edit-in-place stream helpers (`_send_stream_update` ..
+  `_split_message`, their module constants, `_monotonic`, and the
+  `_stream_messages` init) are RESTORED byte-identical but unreachable -
+  `send()` never routes to them - so upstream churn in those regions merges
+  clean instead of modify/delete-conflicting on every sync. Numbering note:
+  inline `[argus patch #10]` comments inside the moved bodies are historical
+  labels for the #9-chain stage-emoji work; left verbatim on purpose.
+- Files: `backend/app/channels/_telegram_sender.py` (NEW),
+  `backend/app/channels/telegram.py` (EDITED - shrunk; residual argus content
+  is the #17 welcome/lock, the #28 webhook mode, the three #40 shims +
+  `init_state` call, and the `_log_future_error` static override noted below)
+- Tests: `backend/tests/test_telegram_sender_seam.py` (NEW - delegation +
+  contract locks so a naive future merge that resurrects upstream's send body
+  fails loudly); behavior proof is the UNTOUCHED existing suite
+  (`test_telegram_send.py`, `test_channels.py` Telegram classes,
+  `test_telegram_channel_connections.py`).
+- Delete-when: with #9-chain (this module hosts its telegram-side behavior).
+  If #9-chain is upstreamed or re-expressed behind an upstream extension
+  point, `_telegram_sender.py` goes with it and telegram.py returns to
+  vanilla + #17/#28.
+- Upstream status: n/a (fork-internal restructuring).
+- Follow-up candidate (NOT in #40, would change log wording): telegram.py's
+  static `_log_future_error` shadows the base-class method upstream v2.0.0
+  already provides; deleting the override would shave ~9 more carried lines
+  but is a real (if tiny) behavior delta - out of scope for a zero-behavior
+  patch.
 
 ---
 
@@ -802,3 +857,13 @@ design or move it behind an extension point).
 | Date | Base | Commits | Files | Lines | Upstream-file edited lines |
 |---|---|---|---|---|---|
 | 2026-07-01 | v2.0.0 -> 2df36c99 | 29 | 85 | +6168 / -812 | ~1600 (~1460 in `app/channels/`) |
+| 2026-07-02 | v2.0.0 -> #40 tip | 32 | 90 | +7433 / -668 | app-code excl. tests/docs: 1923 (776 in `app/channels/`, was 1099); tests: 1350. #40 cut `telegram.py` 574 -> 251 |
+
+Methodology note (2026-07-02): the last column is now measured against the
+`v2.0.0` tag over files that exist at v2.0.0 (insertions+deletions), split
+app-code vs tests. The 2026-07-01 row's ~1600/~1460 came from FORK-REVIEW's
+2026-06-30 measurement against merge-base 2ace78d1 with a different file
+scope and is not directly comparable; like-for-like against v2.0.0 the
+pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
+`git diff --numstat v2.0.0 | while read a d f; do git cat-file -e
+"v2.0.0:$f" 2>/dev/null && echo "$a $d $f"; done | awk '...'`.
