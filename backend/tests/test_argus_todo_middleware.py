@@ -145,3 +145,59 @@ def test_factory_returns_none_when_plan_mode_off():
     cfg = AgentConfig(name="qwen-local-coder", uses_planner_pipeline=True)
     mw = _create_todo_list_middleware(is_plan_mode=False, agent_name="qwen-local-coder", agent_config=cfg)
     assert mw is None
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #41] stringified-todos coercion
+# ---------------------------------------------------------------------------
+
+
+def _write_todos_call(todos):
+    return {"name": "write_todos", "args": {"todos": todos}, "id": "tc-1", "type": "tool_call"}
+
+
+def test_after_model_coerces_stringified_todos():
+    """glm-nw double-encodes the todos arg as a JSON string (weekly eval
+    2026-07-02, pythia/planning): after_model must parse it in place so
+    pydantic validation and state.todos hydration succeed."""
+    mw = ArgusTodoMiddleware()
+    payload = '[{"content": "S1: do the thing", "status": "in_progress"}, {"content": "S2: verify", "status": "pending"}]'
+    msg = AIMessage(content="", tool_calls=[_write_todos_call(payload)])
+    state = {"todos": [], "messages": [msg]}
+
+    mw.after_model(state, _make_runtime())
+
+    todos = msg.tool_calls[0]["args"]["todos"]
+    assert isinstance(todos, list)
+    assert todos[0] == {"content": "S1: do the thing", "status": "in_progress"}
+    assert todos[1]["status"] == "pending"
+
+
+def test_after_model_leaves_unparseable_string_for_validation():
+    """A todos string that is not JSON (or not a list) must be left alone so
+    the normal pydantic validation error path still fires."""
+    mw = ArgusTodoMiddleware()
+    not_json = AIMessage(content="", tool_calls=[_write_todos_call("do the thing")])
+    not_a_list = AIMessage(content="", tool_calls=[_write_todos_call('{"content": "x"}')])
+
+    mw.after_model({"todos": [], "messages": [not_json]}, _make_runtime())
+    mw.after_model({"todos": [], "messages": [not_a_list]}, _make_runtime())
+
+    assert not_json.tool_calls[0]["args"]["todos"] == "do the thing"
+    assert not_a_list.tool_calls[0]["args"]["todos"] == '{"content": "x"}'
+
+
+def test_after_model_ignores_native_list_and_other_tools():
+    """Native list args and non-write_todos calls pass through untouched."""
+    mw = ArgusTodoMiddleware()
+    native = [{"content": "S1", "status": "in_progress"}]
+    msg = AIMessage(content="", tool_calls=[
+        _write_todos_call(list(native)),
+        {"name": "bash", "args": {"command": '["not", "todos"]'}, "id": "tc-2", "type": "tool_call"},
+    ])
+    state = {"todos": [], "messages": [msg]}
+
+    mw.after_model(state, _make_runtime())
+
+    assert msg.tool_calls[0]["args"]["todos"] == native
+    assert msg.tool_calls[1]["args"]["command"] == '["not", "todos"]'

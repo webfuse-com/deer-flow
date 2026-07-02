@@ -16,13 +16,57 @@ decides" instead. All other behavior — context-loss reminders in
 inherits from the parent unchanged.
 
 Selected by ``deerflow.agents.lead_agent.agent._create_todo_list_middleware``
-when ``agent_name == "qwen-local-coder"``. Other agents continue to receive
-the upstream prompt.
+for agents whose config sets ``uses_planner_pipeline: true`` (e.g.
+glm-planner; historically keyed on ``agent_name == "qwen-local-coder"``).
+Other agents continue to receive the upstream prompt.
+
+[argus patch #41] also normalizes a double-encoded ``write_todos`` arg (the
+model passing ``todos`` as a JSON string instead of a list) in ``after_model``
+— see ``_coerce_stringified_todos``.
 """
 
 from __future__ import annotations
 
+import json
+import logging
+from typing import Any
+
+from langchain_core.messages import AIMessage
+
 from .todo_middleware import TodoMiddleware
+
+logger = logging.getLogger(__name__)
+
+
+def _coerce_stringified_todos(message: AIMessage) -> int:
+    """[argus patch #41] Normalize a JSON-string ``todos`` arg to a list.
+
+    glm-nw (and peers) sometimes double-encode the ``write_todos`` argument:
+    the tool call arrives with ``args.todos`` as the STRING
+    ``'[{"content": ..., "status": ...}, ...]'`` instead of a native array.
+    Pydantic then rejects the call (``todos: list[Todo]``), the agent gets an
+    error ToolMessage, and ``state.todos[]`` never hydrates — observed on the
+    weekly eval 2026-07-02 (pythia/planning, glm-planner). The payload is
+    valid; only the encoding is wrong, so parse it in place before tool
+    validation runs. Anything that does not parse to a list is left alone
+    for the normal validation error path. Returns the number of calls fixed.
+    """
+    fixed = 0
+    for tc in message.tool_calls or []:
+        if tc.get("name") != "write_todos":
+            continue
+        args = tc.get("args") or {}
+        todos = args.get("todos")
+        if not isinstance(todos, str):
+            continue
+        try:
+            parsed = json.loads(todos)
+        except ValueError:
+            continue
+        if isinstance(parsed, list):
+            args["todos"] = parsed
+            fixed += 1
+    return fixed
 
 
 _ARGUS_SYSTEM_PROMPT = """
@@ -88,3 +132,26 @@ class ArgusTodoMiddleware(TodoMiddleware):
             tool_description=tool_description if tool_description is not None else _ARGUS_TOOL_DESCRIPTION,
             **kwargs,
         )
+
+    def after_model(
+        self,
+        state: dict[str, Any],
+        runtime: Any,
+    ) -> dict[str, Any] | None:
+        """[argus patch #41] Coerce stringified todos, then run parent logic.
+
+        after_model runs between the model response and tool execution, so
+        rewriting the tool-call args in place here means (a) pydantic sees a
+        valid list, (b) the trajectory records the normalized call — eval
+        graders stay strict — and (c) the parent's premature-exit and
+        parallel-call checks operate on the corrected message.
+        """
+        messages = state.get("messages") or []
+        if messages and isinstance(messages[-1], AIMessage):
+            fixed = _coerce_stringified_todos(messages[-1])
+            if fixed:
+                logger.info(
+                    "[argus patch #41] coerced stringified todos arg in %d write_todos call(s)",
+                    fixed,
+                )
+        return super().after_model(state, runtime)
