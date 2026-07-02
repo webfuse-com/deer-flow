@@ -20,30 +20,32 @@ from typing import Any
 
 from fastapi import Request, Response
 
-from app.channels._telegram_format import chunk_html, to_telegram_html
+from app.channels import _telegram_sender
 from app.channels.base import Channel
 from app.channels.connection_identity import attach_connection_identity
 from app.channels.message_bus import InboundMessage, InboundMessageType, MessageBus, OutboundMessage, ResolvedAttachment
 
 logger = logging.getLogger(__name__)
 
-# [argus patch #10] Live stage-emoji progress indicator. Telegram renders a
-# lone-emoji message large + animated, but the animation plays ONCE on send
-# and never replays on edit (core.telegram.org/api/animated-emojis). So to
-# animate each stage we DELETE the old emoji message and SEND a new one when
-# the agent's stage changes. The manager derives stages from the langgraph
-# stream; this maps each to an emoji. Re-sends are throttled to >= the
-# animation length so each one completes. Overridable via
-# channels.telegram.{stage_emoji (map), stage_min_interval, working_emoji}.
-_DEFAULT_STAGE_EMOJI = {
-    "received": "👀",
-    "thinking": "🧠",
-    "planning": "📝",
-    "searching": "🔍",
-    "working": "🔧",
-    "writing": "✍️",
-}
-_DEFAULT_STAGE_MIN_INTERVAL = 6.0  # seconds; matches the ~6s big-emoji animation
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+STREAM_EDIT_MIN_INTERVAL_SECONDS = 1.0
+# Groups (negative chat_id) are capped at 20 messages/minute by Telegram,
+# so stream edits there must pace well below the private-chat 1 msg/s guideline.
+STREAM_EDIT_GROUP_MIN_INTERVAL_SECONDS = 3.0
+# Bound on tracked in-flight streamed messages; entries normally clear on the
+# final update, this only guards against leaks when a final never arrives.
+MAX_TRACKED_STREAM_MESSAGES = 256
+
+# Indirection so tests can patch the clock without touching the global time module.
+_monotonic = time.monotonic
+
+# [argus patch #40] The constants above and the class's stream-edit helpers
+# (_send_stream_update through _split_message, and the _stream_messages init)
+# are upstream v2.0.0's edit-in-place streaming path, restored byte-identical
+# but UNREACHABLE: send() delegates to app.channels._telegram_sender (the
+# stage-emoji + HTML design, patch #9-chain). Kept verbatim so upstream churn
+# in these regions merges clean instead of modify/delete-conflicting on every
+# sync. Do not call them; do not "clean them up". See PATCHES.md #40.
 
 
 class TelegramChannel(Channel):
@@ -57,17 +59,6 @@ class TelegramChannel(Channel):
           When set, the ``/webhooks/telegram`` route rejects requests whose
           ``X-Telegram-Bot-Api-Secret-Token`` header doesn't match.
     """
-
-    # [argus patch #10] Take the manager's streaming path so we receive
-    # progress_stage signals to drive the animated stage emoji. The manager's
-    # _channel_supports_streaming reads THIS property (not CHANNEL_CAPABILITIES)
-    # whenever a live channel object exists, so the capability flip alone is not
-    # enough — this override is what actually engages streaming. (Telegram still
-    # gets only stage signals + the final answer, never streamed partial text;
-    # that suppression lives in the manager.)
-    @property
-    def supports_streaming(self) -> bool:
-        return True
 
     def __init__(self, bus: MessageBus, config: dict[str, Any]) -> None:
         super().__init__(name="telegram", bus=bus, config=config)
@@ -83,33 +74,27 @@ class TelegramChannel(Channel):
                 pass
         # chat_id -> last sent message_id for threaded replies
         self._last_bot_message: dict[str, int] = {}
-        # [argus patch #10] Live stage-emoji indicator state, per chat:
-        #   _working_msg[chat]   -> message_id of the current stage emoji
-        #   _working_stage[chat] -> the stage that emoji represents
-        #   _working_at[chat]    -> monotonic time we last (re)sent it
-        self._working_msg: dict[str, int] = {}
-        self._working_stage: dict[str, str] = {}
-        self._working_at: dict[str, float] = {}
-        # chat -> task that auto-promotes 👀 received → 🧠 thinking after
-        # stage_min_interval if no real stage signal has arrived. Guarantees the
-        # indicator always advances even when the agent reports no tool stage.
-        self._promote_timer: dict[str, asyncio.Task] = {}
-        # Stage → emoji map (config override merges over the defaults).
-        self._stage_emoji: dict[str, str] = dict(_DEFAULT_STAGE_EMOJI)
-        cfg_map = config.get("stage_emoji")
-        if isinstance(cfg_map, dict):
-            self._stage_emoji.update({str(k): str(v) for k, v in cfg_map.items()})
-        # Back-compat: a bare working_emoji still overrides the initial beat.
-        if config.get("working_emoji"):
-            self._stage_emoji["received"] = str(config["working_emoji"])
-        try:
-            self._stage_min_interval: float = float(config.get("stage_min_interval", _DEFAULT_STAGE_MIN_INTERVAL))
-        except (ValueError, TypeError):
-            self._stage_min_interval = _DEFAULT_STAGE_MIN_INTERVAL
+        # stream_key ("chat_id:thread_ts") -> state of the in-flight streamed
+        # bot message being edited in place: {"message_id", "last_edit_at", "last_text"}
+        self._stream_messages: dict[str, dict[str, Any]] = {}
+        # [argus patch #40] Stage-emoji indicator state + config parsing
+        # (stage_emoji / working_emoji / stage_min_interval) — see _telegram_sender.
+        _telegram_sender.init_state(self, config)
 
         # Webhook mode config.
         self._webhook_mode: bool = bool(config.get("webhook", False))
         self._webhook_secret: str = str(config.get("webhook_secret", ""))
+
+    # [argus patch #10] Take the manager's streaming path so we receive
+    # progress_stage signals to drive the animated stage emoji. The manager's
+    # _channel_supports_streaming reads THIS property (not CHANNEL_CAPABILITIES)
+    # whenever a live channel object exists, so the capability flip alone is not
+    # enough — this override is what actually engages streaming. (Telegram still
+    # gets only stage signals + the final answer, never streamed partial text;
+    # that suppression lives in the manager.)
+    @property
+    def supports_streaming(self) -> bool:
+        return True
 
     async def start(self) -> None:
         if self._running:
@@ -186,79 +171,126 @@ class TelegramChannel(Channel):
         logger.info("Telegram channel stopped")
 
     async def send(self, msg: OutboundMessage, *, _max_retries: int = 3) -> None:
-        if not self._application:
+        # [argus patch #40] The argus send path (stage emoji + HTML chunking,
+        # patch #9-chain) lives in app.channels._telegram_sender; this shim is
+        # the Channel ABC entry point. Signature — including the test-facing
+        # _max_retries kwarg — matches upstream v2.0.0. The stream-edit helpers
+        # below are upstream's superseded path, kept verbatim but unreachable.
+        await _telegram_sender.send(self, msg, max_retries=_max_retries)
+
+    async def _send_stream_update(self, chat_id: int, key: str, text: str, reply_to: int | None = None) -> None:
+        """Edit the in-flight streamed message with accumulated text.
+
+        Updates are best-effort: throttled, rate-limit drops are silent.  The
+        manager always publishes a final message afterwards, which guarantees
+        delivery of the complete text.
+        """
+        if not text:
+            return
+
+        display = text
+        if len(display) > TELEGRAM_MAX_MESSAGE_LENGTH:
+            display = display[: TELEGRAM_MAX_MESSAGE_LENGTH - 1] + "…"
+
+        bot = self._application.bot
+        state = self._stream_messages.get(key)
+
+        send_kwargs: dict[str, Any] = {"chat_id": chat_id, "text": display}
+        if reply_to:
+            send_kwargs["reply_to_message_id"] = reply_to
+
+        if state is None:
+            try:
+                sent = await bot.send_message(**send_kwargs)
+            except Exception:
+                logger.exception("[Telegram] failed to start stream message in chat=%s", chat_id)
+                return
+            self._register_stream_message(key, message_id=sent.message_id, last_text=display, last_edit_at=_monotonic())
+            return
+
+        now = _monotonic()
+        min_interval = STREAM_EDIT_GROUP_MIN_INTERVAL_SECONDS if chat_id < 0 else STREAM_EDIT_MIN_INTERVAL_SECONDS
+        if now - state["last_edit_at"] < min_interval:
+            return
+        if display == state["last_text"]:
             return
 
         try:
-            chat_id = int(msg.chat_id)
-        except (ValueError, TypeError):
-            logger.error("Invalid Telegram chat_id: %s", msg.chat_id)
-            return
+            await bot.edit_message_text(chat_id=chat_id, message_id=state["message_id"], text=display)
+        except Exception as exc:
+            if self._is_not_modified(exc):
+                state["last_text"] = display
+                return
+            if self._is_retry_after(exc):
+                logger.debug("[Telegram] stream edit rate-limited in chat=%s, dropping update", chat_id)
+                return
+            logger.warning("[Telegram] stream edit failed in chat=%s, sending new message: %s", chat_id, exc)
+            try:
+                sent = await bot.send_message(**send_kwargs)
+            except Exception:
+                logger.exception("[Telegram] failed to send fallback stream message in chat=%s", chat_id)
+                return
+            state["message_id"] = sent.message_id
 
-        # [argus patch #10] A progress signal is not chat content — render it as
-        # the animated stage emoji and return BEFORE the HTML/chunk send path.
-        if msg.progress_stage is not None:
-            await self._show_stage(chat_id, msg.chat_id, msg.progress_stage)
-            return
+        state["last_edit_at"] = _monotonic()
+        state["last_text"] = display
 
-        # [argus patch #10] Convert the agent's markdown to Telegram-native HTML
-        # and split on the 4096-char ceiling without breaking tags. Empty text
-        # (e.g. an attachment-only message) sends nothing here; send_file
-        # handles the upload separately.
-        html = to_telegram_html(msg.text) if msg.text else ""
-        chunks = chunk_html(html) if html else []
-
+    async def _finalize_stream_message(self, chat_id: int, chat_key: str, state: dict[str, Any], text: str) -> None:
+        """Apply the final text: edit the streamed message, splitting overflow into follow-ups."""
         bot = self._application.bot
-        for chunk in chunks:
-            await self._send_one(bot, chat_id, msg.chat_id, chunk, _max_retries=_max_retries)
+        chunks = self._split_message(text or "")
 
-        # [argus patch #10] Only the final message in a response clears the
-        # working-indicator emoji. Streaming partials (is_final=False) leave it.
-        if msg.is_final:
-            await self._clear_working(chat_id, msg.chat_id)
+        edited = True
+        if chunks[0] != state["last_text"]:
+            edited = await self._edit_final_chunk(bot, chat_id, state["message_id"], chunks[0])
 
-    async def _send_one(self, bot, chat_id: int, chat_key: str, text: str, *, _max_retries: int = 3) -> None:
-        """Send a single (already chunked) HTML message with retry + a
-        plain-text fallback if Telegram rejects the HTML (a malformed entity
-        must never drop the message)."""
-        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if edited:
+            self._last_bot_message[chat_key] = state["message_id"]
+        else:
+            # Edit could not be applied (e.g. message deleted) — deliver the
+            # first chunk as a fresh message with the standard retry policy.
+            await self._send_new_message(chat_id, chat_key, chunks[0])
+
+        for chunk in chunks[1:]:
+            await self._send_new_message(chat_id, chat_key, chunk)
+
+    async def _edit_final_chunk(self, bot, chat_id: int, message_id: int, text: str) -> bool:
+        """Edit with one rate-limit retry. Returns False if the edit could not be applied."""
+        for attempt in range(2):
+            try:
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+                return True
+            except Exception as exc:
+                if self._is_not_modified(exc):
+                    return True
+                if self._is_retry_after(exc) and attempt == 0:
+                    await asyncio.sleep(self._retry_after_seconds(exc))
+                    continue
+                logger.warning("[Telegram] final edit failed in chat=%s: %s", chat_id, exc)
+                return False
+        return False
+
+    async def _send_new_message(self, chat_id: int, chat_key: str, text: str, *, _max_retries: int = 3) -> int | None:
+        """Send a fresh message with retry/backoff. Returns the sent message_id."""
+        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+
+        # Reply to the last bot message in this chat for threading
         reply_to = self._last_bot_message.get(chat_key)
         if reply_to:
             kwargs["reply_to_message_id"] = reply_to
 
-        last_exc: Exception | None = None
-        for attempt in range(_max_retries):
-            try:
-                sent = await bot.send_message(**kwargs)
-                self._last_bot_message[chat_key] = sent.message_id
-                return
-            except Exception as exc:
-                last_exc = exc
-                # A BadRequest is almost always malformed HTML — retrying the
-                # same HTML won't help, so drop parse_mode and resend as plain
-                # text on the next attempt (mirrors the ateam fallback).
-                if exc.__class__.__name__ == "BadRequest" and kwargs.get("parse_mode"):
-                    logger.warning("[Telegram] HTML rejected (%s); resending as plain text", exc)
-                    kwargs.pop("parse_mode", None)
-                    continue
-                if attempt < _max_retries - 1:
-                    delay = 2**attempt  # 1s, 2s
-                    logger.warning(
-                        "[Telegram] send failed (attempt %d/%d), retrying in %ds: %s",
-                        attempt + 1,
-                        _max_retries,
-                        delay,
-                        exc,
-                    )
-                    await asyncio.sleep(delay)
+        bot = self._application.bot
 
-        logger.error("[Telegram] send failed after %d attempts: %s", _max_retries, last_exc)
-        if last_exc is None:
-            # Degenerate config (_max_retries=0): the loop never ran, so there's
-            # no exception to propagate. Surface it explicitly rather than
-            # silently succeeding. (Preserves the pre-patch contract.)
-            raise RuntimeError("Telegram send failed without an exception from any attempt")
-        raise last_exc
+        async def send_message() -> int:
+            sent = await bot.send_message(**kwargs)
+            self._last_bot_message[chat_key] = sent.message_id
+            return sent.message_id
+
+        return await self._send_with_retry(
+            send_message,
+            max_retries=_max_retries,
+            log_prefix="[Telegram]",
+        )
 
     async def send_file(self, msg: OutboundMessage, attachment: ResolvedAttachment) -> bool:
         if not self._application:
@@ -304,116 +336,52 @@ class TelegramChannel(Channel):
 
     # -- helpers -----------------------------------------------------------
 
+    @staticmethod
+    def _stream_key(chat_id: str, thread_ts: str | None) -> str:
+        return f"{chat_id}:{thread_ts or ''}"
+
+    @staticmethod
+    def _parse_message_id(value: str | None) -> int | None:
+        try:
+            return int(value) if value else None
+        except (TypeError, ValueError):
+            return None
+
+    def _register_stream_message(self, key: str, *, message_id: int, last_text: str, last_edit_at: float) -> None:
+        self._stream_messages.pop(key, None)
+        while len(self._stream_messages) >= MAX_TRACKED_STREAM_MESSAGES:
+            self._stream_messages.pop(next(iter(self._stream_messages)))
+        self._stream_messages[key] = {
+            "message_id": message_id,
+            "last_edit_at": last_edit_at,
+            "last_text": last_text,
+        }
+
+    @staticmethod
+    def _is_retry_after(exc: Exception) -> bool:
+        return getattr(exc, "retry_after", None) is not None
+
+    @staticmethod
+    def _retry_after_seconds(exc: Exception) -> float:
+        value = getattr(exc, "retry_after", 0)
+        if hasattr(value, "total_seconds"):
+            return float(value.total_seconds())
+        return float(value)
+
+    @staticmethod
+    def _is_not_modified(exc: Exception) -> bool:
+        return "message is not modified" in str(exc).lower()
+
+    @staticmethod
+    def _split_message(text: str) -> list[str]:
+        return [text[i : i + TELEGRAM_MAX_MESSAGE_LENGTH] for i in range(0, len(text), TELEGRAM_MAX_MESSAGE_LENGTH)] or [text]
+
     async def _send_running_reply(self, chat_id: str, reply_to_message_id: int) -> None:
-        """[argus patch #10] Show the initial 'received' stage emoji as soon as
-        a message arrives. Subsequent stages come from the manager as
-        progress_stage OutboundMessages and are handled by _show_stage. If the
-        emoji send fails, fall back to a reaction on the user's message."""
-        if not self._application:
-            return
-        ok = await self._show_stage(int(chat_id), chat_id, "received")
-        if ok:
-            return
-        # Degraded mode: react on the user's message instead.
-        try:
-            from telegram import ReactionTypeEmoji
-
-            await self._application.bot.set_message_reaction(
-                chat_id=int(chat_id),
-                message_id=reply_to_message_id,
-                reaction=[ReactionTypeEmoji(self._stage_emoji.get("received", "👀"))],
-            )
-        except Exception:
-            logger.warning("[Telegram] reaction fallback also failed in chat=%s", chat_id)
-
-    async def _show_stage(self, chat_id: int, chat_key: str, stage: str, *, force: bool = False) -> bool:
-        """[argus patch #10] Render a stage as the animated lone emoji.
-
-        The big-emoji animation only plays on first SEND (an edit never
-        replays it), so to animate each new stage we delete the prior emoji
-        message and send a fresh one. Re-send only when (a) the stage's emoji
-        actually changes and (b) at least stage_min_interval has elapsed since
-        the last send — so each animation completes and we stay well under
-        Telegram's ~1 msg/sec per-chat limit. Rapid intermediate stages are
-        skipped (latest-wins). ``force`` bypasses the interval guard (used by
-        the 👀→🧠 auto-promote timer, which already waited the interval).
-        Returns True if an emoji is now showing.
-        """
-        if not self._application:
-            return False
-        emoji = self._stage_emoji.get(stage)
-        if not emoji:
-            return bool(self._working_msg.get(chat_key))
-
-        now = time.monotonic()
-        cur_stage = self._working_stage.get(chat_key)
-        have_msg = chat_key in self._working_msg
-
-        # No change, or too soon since the last (re)send → leave it be. The next
-        # eligible stage signal will carry the then-current stage (latest-wins).
-        if have_msg and cur_stage == stage:
-            return True
-        if have_msg and not force and (now - self._working_at.get(chat_key, 0.0)) < self._stage_min_interval:
-            return True
-
-        bot = self._application.bot
-        old_id = self._working_msg.get(chat_key)
-        try:
-            sent = await bot.send_message(chat_id=chat_id, text=emoji)
-        except Exception:
-            logger.exception("[Telegram] failed to send stage emoji in chat=%s", chat_key)
-            return have_msg
-        self._working_msg[chat_key] = sent.message_id
-        self._working_stage[chat_key] = stage
-        self._working_at[chat_key] = now
-        logger.info("[Telegram] stage %s (%s) in chat=%s", stage, emoji, chat_key)
-        # Delete the previous emoji after the new one is up (no visible gap).
-        if old_id is not None:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=old_id)
-            except Exception as exc:
-                logger.debug("[Telegram] could not delete prior stage emoji in chat=%s: %s", chat_key, exc)
-        # Any real stage supersedes a pending auto-promote; 'received' (re)arms it.
-        self._cancel_promote(chat_key)
-        if stage == "received":
-            self._schedule_promote(chat_id, chat_key)
-        return True
-
-    def _schedule_promote(self, chat_id: int, chat_key: str) -> None:
-        """Arm the 👀→🧠 auto-promotion so the indicator always advances even
-        if the agent never reports a tool stage."""
-        self._promote_timer[chat_key] = asyncio.ensure_future(self._auto_promote(chat_id, chat_key))
-
-    def _cancel_promote(self, chat_key: str) -> None:
-        task = self._promote_timer.pop(chat_key, None)
-        if task and not task.done():
-            task.cancel()
-
-    async def _auto_promote(self, chat_id: int, chat_key: str) -> None:
-        try:
-            await asyncio.sleep(self._stage_min_interval)
-        except asyncio.CancelledError:
-            return
-        # Drop our own handle first so _show_stage's _cancel_promote (which runs
-        # for every send) doesn't cancel this still-running task mid-flight.
-        self._promote_timer.pop(chat_key, None)
-        # Only promote if we're still on 'received' (no real stage arrived).
-        if self._working_stage.get(chat_key) == "received":
-            await self._show_stage(chat_id, chat_key, "thinking", force=True)
-
-    async def _clear_working(self, chat_id: int, chat_key: str) -> None:
-        """[argus patch #10] Delete the current stage emoji once the final
-        answer has been sent. Best-effort — the message may already be gone."""
-        self._cancel_promote(chat_key)
-        self._working_stage.pop(chat_key, None)
-        self._working_at.pop(chat_key, None)
-        msg_id = self._working_msg.pop(chat_key, None)
-        if msg_id is None:
-            return
-        try:
-            await self._application.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-        except Exception as exc:
-            logger.debug("[Telegram] could not delete stage emoji in chat=%s: %s", chat_key, exc)
+        # [argus patch #40] Body in _telegram_sender (initial 'received' stage
+        # emoji + reaction fallback). Kept as a bound method: tests replace it
+        # per instance, and _send_running_reply_safe dispatches through `self`
+        # so those overrides keep working.
+        await _telegram_sender.send_running_reply(self, chat_id, reply_to_message_id)
 
     # -- internal ----------------------------------------------------------
     @staticmethod
@@ -638,10 +606,9 @@ class TelegramChannel(Channel):
 
     async def _send_running_reply_safe(self, chat_id: str, msg_id: int) -> None:
         """Fire-and-forget wrapper for _send_running_reply that logs errors."""
-        try:
-            await self._send_running_reply(chat_id, msg_id)
-        except Exception:
-            logger.exception("[Telegram] fire-and-forget _send_running_reply failed in chat=%s", chat_id)
+        # [argus patch #40] Body in _telegram_sender (dispatches via the bound
+        # self._send_running_reply, preserving per-instance overrides).
+        await _telegram_sender.send_running_reply_safe(self, chat_id, msg_id)
 
     async def _cmd_generic(self, update, context) -> None:
         """Forward slash commands to the channel manager."""
