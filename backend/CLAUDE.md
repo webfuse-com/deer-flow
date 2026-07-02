@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Argus fork carry-list (hard rule)
+
+This is the `argus` fork of bytedance/deer-flow. Every logical patch we carry
+is documented in the repo-root `PATCHES.md` (intent, files, tests,
+delete-when condition). **Any commit that adds, changes, or drops an
+`[argus] patch #NN` updates PATCHES.md in the same commit** — enforced by the
+`patches-ledger` workflow on PRs. Sync policy (cadence, rebase discipline)
+lives in the argus infra repo: `docs/DEERFLOW-SYNC.md`.
+
 ## Project Overview
 
 DeerFlow is a LangGraph-based AI super agent system with a full-stack architecture. The backend provides a "super agent" with sandbox execution, persistent memory, subagent delegation, and extensible tool integration - all operating in per-thread isolated environments.

@@ -1,0 +1,17 @@
+# Enforce the PATCHES.md hard rule: a PR that lands an "[argus] patch #NN"
+# commit must update the carry-list in the same PR. See PATCHES.md header.
+name: patches-ledger
+on: [pull_request]
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: PATCHES.md updated when a patch commit lands
+        run: |
+          if git log --format=%s "origin/${{ github.base_ref }}..HEAD" | grep -qi '\[argus\] patch #'; then
+            git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qx 'PATCHES.md' \
+              || { echo '::error::PR contains an [argus] patch commit but does not update PATCHES.md (the carry-list hard rule)'; exit 1; }
+          fi
