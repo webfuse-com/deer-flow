@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator
 
 from langgraph.types import Checkpointer
@@ -49,7 +50,18 @@ def _prepare_database_sqlite_checkpointer_path(db_config) -> str:
 
 
 def _build_postgres_pool(conn_string: str, schema: str = ""):
-    """Build an AsyncConnectionPool with TCP keepalive and connection checking."""
+    """Build an AsyncConnectionPool with TCP keepalive and connection checking.
+
+    [argus] patch #39: bound the pool. psycopg_pool's default is a FIXED pool
+    (max_size defaults to min_size=4), so every uvicorn worker permanently
+    holds 4 idle connections. Multiplied across workers and per-project
+    gateways sharing one Postgres, that idle floor exhausted the server's
+    max_connections (2026-07-01 incident). Keep the same ceiling (4) but make
+    the pool elastic: start at 1, grow under load, shrink back after
+    ``max_idle`` seconds. Overridable per deployment via
+    DEERFLOW_CHECKPOINTER_POOL_MIN / _MAX / _MAX_IDLE.
+    """
+    import os
     from psycopg.rows import dict_row
     from psycopg_pool import AsyncConnectionPool
 
@@ -62,15 +74,13 @@ def _build_postgres_pool(conn_string: str, schema: str = ""):
         "keepalives_interval": 10,
         "keepalives_count": 6,
     }
-    # Inject search_path into the DSN (merging with any libpq options already in
-    # the conn string) rather than via kwargs["options"], which psycopg applies
-    # *on top of* the conninfo and would silently drop a DSN-supplied option
-    # such as statement_timeout. This also strips a SQLAlchemy ``+driver``
-    # suffix so libpq can parse the DSN. Matches the sync/DSN paths.
     dsn = dsn_with_search_path(normalize_libpq_dsn(conn_string), schema)
 
     return AsyncConnectionPool(
         dsn,
+        min_size=int(os.getenv("DEERFLOW_CHECKPOINTER_POOL_MIN", "1")),
+        max_size=int(os.getenv("DEERFLOW_CHECKPOINTER_POOL_MAX", "4")),
+        max_idle=float(os.getenv("DEERFLOW_CHECKPOINTER_POOL_MAX_IDLE", "300")),
         kwargs=kwargs,
         check=AsyncConnectionPool.check_connection,
     )
