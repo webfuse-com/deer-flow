@@ -173,9 +173,17 @@ describe("derivePendingSubtaskStatus", () => {
   it("does not revive an earlier unfinished task during a later turn", () => {
     const messages = [{ type: "ai" }] as Message[];
 
-    expect(derivePendingSubtaskStatus("call_task_1", messages, false)).toBe(
-      "failed",
-    );
+    expect(
+      derivePendingSubtaskStatus("call_task_1", messages, false, false),
+    ).toBe("failed");
+  });
+
+  it("stays in_progress for the last group even when loading is briefly false", () => {
+    const messages = [{ type: "ai" }] as Message[];
+
+    expect(
+      derivePendingSubtaskStatus("call_task_1", messages, false, true),
+    ).toBe("in_progress");
   });
 
   it("leaves result parsing to the ToolMessage path when a result exists", () => {

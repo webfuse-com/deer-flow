@@ -138,12 +138,35 @@ export function hasSubtaskToolResult(
   );
 }
 
+/**
+ * Derive the status of a subtask that has no matching ToolMessage yet.
+ *
+ * Returns ``in_progress`` when the turn is actively streaming or when a
+ * ToolMessage already exists (handled by {@link parseSubtaskResult}).
+ * When neither holds, the answer depends on whether the subtask's group
+ * is still the last group in the thread:
+ *
+ * - **Last group** (``isLastGroup=true``): the turn may still be in
+ *   progress with a transient ``isLoading=false`` (SSE stream pause,
+ *   reconnection, etc). Returning ``in_progress`` avoids a false
+ *   "failed" pill that sticks due to the terminal-status guard in
+ *   {@link useUpdateSubtask}. The real terminal status arrives later
+ *   via {@link parseSubtaskResult} when the ToolMessage lands.
+ *
+ * - **Not the last group** (``isLastGroup=false``): the run has moved
+ *   past this group without producing a ToolMessage, so the task is
+ *   genuinely abandoned. Return ``failed``.
+ */
 export function derivePendingSubtaskStatus(
   toolCallId: string | undefined,
   messages: Message[],
   isCurrentTurnLoading: boolean,
+  isLastGroup: boolean = true,
 ): SubtaskStatus {
   if (isCurrentTurnLoading || hasSubtaskToolResult(toolCallId, messages)) {
+    return "in_progress";
+  }
+  if (isLastGroup) {
     return "in_progress";
   }
   return "failed";

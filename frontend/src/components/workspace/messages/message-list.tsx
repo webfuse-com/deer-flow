@@ -279,8 +279,8 @@ export function MessageList({
         />
         {groupedMessages.map((group, groupIndex) => {
           const turnUsageMessages = turnUsageMessagesByGroupIndex[groupIndex];
-          const groupIsLoading =
-            thread.isLoading && groupIndex === lastGroupIndex;
+          const isLastGroup = groupIndex === lastGroupIndex;
+          const groupIsLoading = thread.isLoading && isLastGroup;
 
           if (group.type === "human" || group.type === "assistant") {
             return (
@@ -373,6 +373,7 @@ export function MessageList({
                       taskId,
                       group.messages,
                       groupIsLoading,
+                      isLastGroup,
                     );
                     const task: Subtask = {
                       id: taskId,

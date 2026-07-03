@@ -825,6 +825,47 @@ carry budget ledger.
 
 ---
 
+## Patch #42
+
+**Patch #42 - subtask card false-"failed" on transient SSE loading gaps**
+
+- Class: bugfix (frontend-only; edits upstream `subtask-result.ts`,
+  `message-list.tsx`, and unit tests)
+- Intent: `derivePendingSubtaskStatus` returned `"failed"` whenever
+  `isCurrentTurnLoading` was false and no ToolMessage had arrived yet.
+  During long-running background subagent tasks (900s timeout), the SSE
+  stream can briefly show `isLoading=false` (connection pause, reconnection,
+  checkpoint flush). The `"failed"` status sticks because
+  `useUpdateSubtask`'s terminal-guard prevents `"in_progress"` from
+  overwriting a terminal status. When the ToolMessage eventually arrives,
+  `parseSubtaskResult` does set the correct status, but in some SSE
+  delivery paths the tool result is delayed or grouped differently, so the
+  false "failed" persists in the UI. The fix adds an `isLastGroup`
+  parameter: when the subagent group is still the last group in the
+  thread, the function returns `"in_progress"` instead of `"failed"`
+  (the turn may still be in progress with a transient loading=false).
+  Only when the run has moved past this group (not the last group) does
+  it return `"failed"`, preserving the "stale task from a prior turn"
+  detection.
+- Files: `frontend/src/core/tasks/subtask-result.ts` (added
+  `isLastGroup` param + JSDoc),
+  `frontend/src/components/workspace/messages/message-list.tsx` (pass
+  `isLastGroup` from the group index),
+  `frontend/tests/unit/core/tasks/subtask-result.test.ts` (updated
+  existing test to pass `false`, added test for `true` case)
+- Tests: `frontend/tests/unit/core/tasks/subtask-result.test.ts` (+1:
+  "stays in_progress for the last group even when loading is briefly false";
+  updated: "does not revive an earlier unfinished task" now passes
+  `isLastGroup=false`)
+- Delete-when: upstream's `BaseStream.isLoading` reliably stays `true`
+  during active background tool execution, or when the task_tool moves
+  to a push-based result delivery that doesn't rely on polling + SSE.
+- Upstream status: none (candidate: the race is inherent to the
+  polling-based task_tool design; upstream may have a different fix
+  approach).
+
+---
+
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
 **Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**
