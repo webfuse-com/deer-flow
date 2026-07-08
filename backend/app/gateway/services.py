@@ -313,6 +313,9 @@ _CONTEXT_CONFIGURABLE_KEYS: frozenset[str] = frozenset(
         # fires (unattended turns); enforced in the memory write paths.
         "unattended",
         "memory_mode",
+        # [argus patch #43] per-run tool whitelist from the schedule frontmatter;
+        # read by _make_lead_agent and merged with skill allowed-tools.
+        "allowed_tools",
     }
 )
 

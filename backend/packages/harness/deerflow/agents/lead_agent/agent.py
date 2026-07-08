@@ -782,7 +782,15 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     agent_name = validate_agent_name(cfg.get("agent_name"))
 
     agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
-    available_skills = _available_skill_names(agent_config, is_bootstrap)
+    # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
+    # Forwarded from InboundMessage -> run_context -> runtime context. Merged
+    # with skill allowed-tools by filter_tools_by_skill_allowed_tools.
+    schedule_allowed = cfg.get("allowed_tools")
+    extra_allowed: set[str] | None = (
+        set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
+    )
+
+    agent_config = load_agent_config(agent_name) if not is_bootstrap else None    available_skills = _available_skill_names(agent_config, is_bootstrap)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
 
@@ -899,7 +907,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             setup,
             top_k=resolved_app_config.tool_search.auto_promote_top_k,
         )
-        return create_agent(
+        filtered = filter_tools_by_skill_allowed_tools(raw_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
+        final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)        return create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
             tools=final_tools,
             middleware=normalize_middleware_state_schemas(
@@ -980,7 +989,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         top_k=resolved_app_config.tool_search.auto_promote_top_k,
     )
     mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
-    return create_agent(
+    filtered = filter_tools_by_skill_allowed_tools(raw_tools + extra_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
+    final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)    return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides),
         tools=final_tools,
         middleware=normalize_middleware_state_schemas(

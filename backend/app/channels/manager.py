@@ -1685,6 +1685,16 @@ class ChannelManager:
         memory_mode = msg.memory_mode or ("read-only" if msg.unattended else None)
         if memory_mode:
             run_context["memory_mode"] = memory_mode
+<<<<<<< HEAD
+=======
+
+        # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
+        # Forwarded to run_context -> runtime.context, read by _make_lead_agent
+        # and merged with skill allowed-tools by filter_tools_by_skill_allowed_tools.
+        if msg.allowed_tools:
+            run_context["allowed_tools"] = list(msg.allowed_tools)
+
+>>>>>>> d3b2ed2c ([argus] patch #43: per-run allowed-tools from schedule frontmatter)
         return assistant_id, run_config, run_context
 
     async def _apply_channel_policy(self, msg: InboundMessage, run_context: dict[str, Any]) -> ChannelRunPolicy | None:

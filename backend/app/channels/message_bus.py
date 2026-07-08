@@ -78,9 +78,12 @@ class InboundMessage:
     # scheduled playbook fires. agent_name: run THIS agent ahead of the
     # channel's pinned agent. unattended: machine-triggered turn (suppresses
     # empty output, see patch #31/#32). memory_mode: off|read-only|read-write.
+    # [argus patch #43] allowed_tools: per-run tool whitelist from the schedule
+    # frontmatter, merged with skill allowed-tools by filter_tools_by_skill_allowed_tools.
     agent_name: str | None = None
     unattended: bool = False
     memory_mode: str | None = None
+    allowed_tools: list[str] | None = None
 
 
 @dataclass
