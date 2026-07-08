@@ -128,6 +128,26 @@ class TestFireDispatch:
         assert msg.memory_mode == "read-write"
         assert msg.topic_id == "sched:morning-briefing"
 
+    def test_allowed_tools_flow_through(self, client, playbook_dir):
+        """Per-run tool whitelist from the schedule frontmatter is forwarded on
+        the InboundMessage so the tool policy filter can merge it with skills."""
+        service = _make_service()
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client, body={"allowed_tools": ["calendar_list_events", "pythia_query"]})
+        assert resp.status_code == 200
+        msg = service.bus.publish_inbound.await_args.args[0]
+        assert msg.allowed_tools == ["calendar_list_events", "pythia_query"]
+
+    def test_allowed_tools_none_by_default(self, client, playbook_dir):
+        """No allowed_tools in the request → msg.allowed_tools is None (legacy
+        behavior: skill-based tool policy only)."""
+        service = _make_service()
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client)
+        assert resp.status_code == 200
+        msg = service.bus.publish_inbound.await_args.args[0]
+        assert msg.allowed_tools is None
+
     def test_fires_for_every_mapped_chat(self, client, playbook_dir):
         chats = [
             {"channel_name": "telegram", "chat_id": "111", "user_id": "111"},

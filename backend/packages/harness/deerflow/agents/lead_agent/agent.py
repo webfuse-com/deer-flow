@@ -491,6 +491,14 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     is_bootstrap = cfg.get("is_bootstrap", False)
     agent_name = validate_agent_name(cfg.get("agent_name"))
 
+    # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
+    # Forwarded from InboundMessage -> run_context -> runtime context. Merged
+    # with skill allowed-tools by filter_tools_by_skill_allowed_tools.
+    schedule_allowed = cfg.get("allowed_tools")
+    extra_allowed: set[str] | None = (
+        set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
+    )
+
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
@@ -555,7 +563,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         # Keep the bootstrap skill set intentionally narrow so agent creation
         # remains deterministic before the custom agent's own config exists.
         raw_tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config) + [setup_agent]
-        filtered = filter_tools_by_skill_allowed_tools(raw_tools, skills_for_tool_policy)
+        filtered = filter_tools_by_skill_allowed_tools(raw_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
         final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)
         return create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
@@ -582,7 +590,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     extra_tools = [update_agent] if agent_name else []
     # Default lead agent (unchanged behavior)
     raw_tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
-    filtered = filter_tools_by_skill_allowed_tools(raw_tools + extra_tools, skills_for_tool_policy)
+    filtered = filter_tools_by_skill_allowed_tools(raw_tools + extra_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
     final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False),

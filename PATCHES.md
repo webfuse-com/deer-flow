@@ -67,6 +67,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#39](#patch-39) | checkpointer pool bounds | generic-upstreamable | f37b8292 (PR #4 squash-merge) |
 | [#40](#patch-40) | Telegram send-path extraction to `_telegram_sender.py` | argus-edit (carry-negative refactor) | a8516b07 (PR #6 squash-merge) |
 | [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
+| [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
+| [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -863,6 +865,39 @@ carry budget ledger.
 - Upstream status: none (candidate: the race is inherent to the
   polling-based task_tool design; upstream may have a different fix
   approach).
+
+---
+
+## Patch #43
+
+**Patch #43 - per-run allowed-tools from schedule frontmatter**
+
+- Class: argus-additive (extends the #30 fire endpoint and tool policy; small
+  edits at named seams)
+- Intent: A self-contained schedule (all instructions in the prompt body) no
+  longer needs a corresponding skill file purely to declare `allowed-tools`.
+  The schedule's YAML frontmatter may now carry an `allowed-tools` list (same
+  format as skills). At fire time, the reconciler passes it through Chronos
+  job metadata; the gateway forwards it on `InboundMessage.allowed_tools`; the
+  channel manager seeds it into `run_context["allowed_tools"]`; `_make_lead_agent`
+  reads it from the runtime config and passes it as `extra_allowed` to
+  `filter_tools_by_skill_allowed_tools`, which unions it with the skill-based
+  whitelist. If no skill declares allowed-tools, the schedule's list becomes the
+  sole whitelist; if skills do declare, the two sets are unioned. A schedule
+  without `allowed-tools` is byte-for-byte unchanged (legacy behavior).
+- Files: `backend/app/channels/message_bus.py` (EDITED, +field),
+  `backend/app/gateway/routers/playbooks.py` (EDITED, +request field, +forward),
+  `backend/app/channels/manager.py` (EDITED, +run_context),
+  `backend/app/gateway/services.py` (EDITED, +whitelist key, shared with #21/#24/#30),
+  `backend/packages/harness/deerflow/skills/tool_policy.py` (EDITED, +param),
+  `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED, +read + pass)
+- Tests: `backend/tests/test_playbook_fire.py` (EDITED, +2 cases:
+  allowed_tools flow-through, default-None)
+- Delete-when: upstream grows a per-run tool-whitelist mechanism (e.g. a
+  configurable tool filter on the run request), or the schedule system is
+  re-expressed with a native scheduling API that carries tool constraints.
+- Upstream status: none (argus-additive; the tool_policy param has a clean
+  default and is upstreamable as a generic extension).
 
 ---
 

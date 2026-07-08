@@ -1085,6 +1085,12 @@ class ChannelManager:
         if memory_mode:
             run_context["memory_mode"] = memory_mode
 
+        # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
+        # Forwarded to run_context -> runtime.context, read by _make_lead_agent
+        # and merged with skill allowed-tools by filter_tools_by_skill_allowed_tools.
+        if msg.allowed_tools:
+            run_context["allowed_tools"] = list(msg.allowed_tools)
+
         return assistant_id, run_config, run_context
 
     def _resolve_available_skill_names(self, msg: InboundMessage) -> set[str] | None:

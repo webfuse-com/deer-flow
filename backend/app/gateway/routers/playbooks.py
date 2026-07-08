@@ -63,6 +63,9 @@ class PlaybookFireRequest(BaseModel):
     # thread (§3b).
     topic_id: str | None = None
     memory: str | None = None
+    # [argus patch #43] Per-run tool whitelist declared in the schedule
+    # frontmatter. Merged with skill allowed-tools by the tool policy filter.
+    allowed_tools: list[str] | None = None
 
 
 class PlaybookFireResponse(BaseModel):
@@ -160,19 +163,21 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
             agent_name=agent,
             unattended=True,
             memory_mode=memory_mode,
+            allowed_tools=body.allowed_tools,
             metadata={"source": "playbook", "schedule_id": schedule_id},
         )
         await service.bus.publish_inbound(msg)
         delivered += 1
 
     logger.info(
-        "[Playbooks] fired %s on %s for %d chat(s) (agent=%s memory=%s topic_id=%s)",
+        "[Playbooks] fired %s on %s for %d chat(s) (agent=%s memory=%s topic_id=%s allowed_tools=%s)",
         schedule_id,
         channel,
         delivered,
         agent,
         memory_mode,
         body.topic_id,
+        body.allowed_tools,
     )
     return PlaybookFireResponse(
         accepted=True,
