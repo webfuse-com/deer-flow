@@ -66,6 +66,11 @@ class PlaybookFireRequest(BaseModel):
     # [argus patch #43] Per-run tool whitelist declared in the schedule
     # frontmatter. Merged with skill allowed-tools by the tool policy filter.
     allowed_tools: list[str] | None = None
+    # [argus patch #45] Chronos's per-run delivery-report callback URL
+    # ({CHRONOS_INTERNAL_URL}/api/runs/{run_id}/output). The channel manager
+    # POSTs the outcome (delivered|silent|failed) there once the async turn
+    # resolves. Optional: a fire without it behaves exactly as before.
+    report_url: str | None = None
 
 
 class PlaybookFireResponse(BaseModel):
@@ -164,6 +169,7 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
             unattended=True,
             memory_mode=memory_mode,
             allowed_tools=body.allowed_tools,
+            report_url=body.report_url,
             metadata={"source": "playbook", "schedule_id": schedule_id},
         )
         await service.bus.publish_inbound(msg)

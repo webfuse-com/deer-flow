@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 from langgraph_sdk.errors import ConflictError
 
+from app.channels._delivery_report import report_delivery
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.message_bus import (
     PENDING_CLARIFICATION_METADATA_KEY,
@@ -1587,8 +1588,11 @@ class ChannelManager:
             if _is_thread_busy_error(exc):
                 logger.warning("[Manager] thread busy (concurrent run rejected): thread_id=%s", thread_id)
                 await self._send_error(msg, THREAD_BUSY_MESSAGE)
+                await self._report_unattended_outcome(msg, status="failed", error=repr(exc))
                 return
             else:
+                # Propagates to the bus dispatcher; an unattended fire without a
+                # report lands as Chronos's ok/unreported timeout fallback.
                 raise
 
         response_text = _extract_response_text(result)
@@ -1615,6 +1619,7 @@ class ChannelManager:
         # and real errors are untouched.
         if msg.unattended and not attachments and _is_trivial_unattended_text(response_text):
             logger.info("[Manager] unattended turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
+            await self._report_unattended_outcome(msg, status="silent")
             return
 
         # [argus patch #36] Use _is_blank_text, not `if not response_text`: a
@@ -1640,6 +1645,30 @@ class ChannelManager:
         )
         logger.info("[Manager] publishing outbound message to bus: channel=%s, chat_id=%s", msg.channel_name, msg.chat_id)
         await self.bus.publish_outbound(outbound)
+        await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
+
+    async def _report_unattended_outcome(
+        self,
+        msg: InboundMessage,
+        *,
+        status: str,
+        message_text: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """[argus patch #45] Report a scheduled turn's delivery outcome to
+        Chronos. No-op unless this is an unattended fire that carried a
+        report_url; never raises (see _delivery_report.report_delivery)."""
+        report_url = getattr(msg, "report_url", None)
+        if not (msg.unattended and report_url):
+            return
+        await report_delivery(
+            report_url,
+            status=status,  # type: ignore[arg-type]
+            channel=msg.channel_name,
+            chat_id=msg.chat_id,
+            message_text=message_text,
+            error=error,
+        )
 
     async def _handle_streaming_chat(
         self,
@@ -1803,6 +1832,7 @@ class ChannelManager:
 
             if suppress_final:
                 logger.info("[Manager] unattended streaming turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
+                await self._report_unattended_outcome(msg, status="silent")
             else:
                 logger.info(
                     "[Manager] streaming response completed: thread_id=%s, response_len=%d, artifacts=%d, error=%s",
@@ -1826,6 +1856,12 @@ class ChannelManager:
                         metadata=_response_metadata(msg.metadata, pending_clarification=pending_clarification),
                     )
                 )
+                # [argus patch #45] a captured stream error was delivered to the
+                # chat as an error message; the run itself still failed.
+                if stream_error:
+                    await self._report_unattended_outcome(msg, status="failed", error=repr(stream_error))
+                else:
+                    await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
 
     # -- command handling --------------------------------------------------
 

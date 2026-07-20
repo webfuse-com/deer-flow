@@ -78,6 +78,11 @@ class InboundMessage:
     unattended: bool = False
     memory_mode: str | None = None
     allowed_tools: list[str] | None = None
+    # [argus patch #45] Where to POST the delivery outcome
+    # (delivered|silent|failed) once this unattended turn resolves. Set by the
+    # playbook fire endpoint from Chronos's report_url; None for interactive
+    # messages and pre-#45 Chronos fires.
+    report_url: str | None = None
 
 
 @dataclass

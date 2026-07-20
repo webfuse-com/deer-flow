@@ -148,6 +148,27 @@ class TestFireDispatch:
         msg = service.bus.publish_inbound.await_args.args[0]
         assert msg.allowed_tools is None
 
+    def test_report_url_flows_through(self, client, playbook_dir):
+        """[argus patch #45] Chronos's delivery-report callback URL rides the
+        InboundMessage so the channel manager can POST the outcome."""
+        service = _make_service()
+        url = "http://argus-scheduler:8000/api/runs/123/output"
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client, body={"report_url": url})
+        assert resp.status_code == 200
+        msg = service.bus.publish_inbound.await_args.args[0]
+        assert msg.report_url == url
+
+    def test_report_url_none_by_default(self, client, playbook_dir):
+        """A fire without report_url (pre-#45 Chronos) behaves exactly as
+        before: msg.report_url is None and nothing is reported."""
+        service = _make_service()
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client)
+        assert resp.status_code == 200
+        msg = service.bus.publish_inbound.await_args.args[0]
+        assert msg.report_url is None
+
     def test_fires_for_every_mapped_chat(self, client, playbook_dir):
         chats = [
             {"channel_name": "telegram", "chat_id": "111", "user_id": "111"},

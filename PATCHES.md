@@ -70,6 +70,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
 | [#44](#patch-44) | unattended-silence: no blank-final retry, wider narration backstop, no token logging | argus-edit | this PR |
+| [#45](#patch-45) | delivery-report callback for scheduled playbook fires | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -951,6 +952,45 @@ backstop, no token logging**
 - Upstream status: none. (3) is generic-upstreamable as a standalone
   "don't log bot tokens" fix; (1)/(2) depend on the argus-only scheduled
   playbook machinery.
+
+---
+
+## Patch #45
+
+**Patch #45 - delivery-report callback for scheduled playbook fires**
+
+- Class: argus-additive (new `_delivery_report.py`; one field on
+  InboundMessage/PlaybookFireRequest; four call sites at named seams in
+  `manager.py`)
+- Intent: Chronos fires a playbook with a per-run ``report_url`` and has
+  handled a ``delivered|silent|failed`` callback since its patch-#30-era
+  contract (``scheduler/src/routes/api.py::report_run_output``) — but the
+  gateway never called back, so every ``channel_notify`` run sat ``running``
+  for CHRONOS_DELIVERY_REPORT_TIMEOUT_SEC (1800s) and closed as
+  ``ok/unreported``; the dashboard could not tell a delivered briefing from
+  a suppressed-silent tick (patch #31/#32/#34/#44) or a failed turn. The
+  fire endpoint now forwards ``report_url`` onto the InboundMessage and the
+  channel manager POSTs the outcome once the async turn resolves:
+  ``silent`` from both unattended-suppression branches, ``delivered`` after
+  the outbound publish (with the message text), ``failed`` on a captured
+  stream error or a thread-busy rejection. One POST, one retry, never
+  raises — a report failure degrades to exactly the pre-#45 unreported
+  behavior. Interactive turns and fires without ``report_url`` are
+  byte-for-byte unchanged.
+- Files: `backend/app/channels/_delivery_report.py` (NEW),
+  `backend/app/channels/message_bus.py` (EDITED, +field),
+  `backend/app/gateway/routers/playbooks.py` (EDITED, +request field,
+  +forward), `backend/app/channels/manager.py` (EDITED,
+  +`_report_unattended_outcome` + 4 call sites)
+- Tests: `backend/tests/test_delivery_report.py` (NEW: payload shape,
+  internal-token header, retry-once/never-raise, message-text cap, manager
+  gate), `backend/tests/test_playbook_fire.py` (EDITED, +2:
+  report_url flow-through, default-None)
+- Delete-when: the schedule system is re-expressed on a native scheduling
+  API where the scheduler owns the turn lifecycle end-to-end (no async
+  fire-and-deliver seam to report across).
+- Upstream status: none (argus-additive; depends on the argus-only
+  playbook fire endpoint and Chronos).
 
 ---
 
