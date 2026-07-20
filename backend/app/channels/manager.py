@@ -21,7 +21,7 @@ from langgraph_sdk.errors import ConflictError
 
 from app.channels import buzz_run_policy as _buzz_run_policy  # noqa: F401
 from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
-from app.channels.commands import KNOWN_CHANNEL_COMMANDS
+from app.channels._delivery_report import report_deliveryfrom app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.dedupe_store import InboundDedupeStore, MemoryInboundDedupeStore
 from app.channels.message_bus import (
     INBOUND_FILE_CONTENT_KEY,
@@ -1708,7 +1708,6 @@ class ChannelManager:
         memory_mode = msg.memory_mode or ("read-only" if msg.unattended else None)
         if memory_mode:
             run_context["memory_mode"] = memory_mode
-<<<<<<< HEAD
 =======
 
         # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
@@ -2392,7 +2391,6 @@ class ChannelManager:
     ) -> None:
         if storage_user_id is None:
             storage_user_id = _channel_storage_user_id(msg)
-=======
         # No existing thread found — create a new one
         if thread_id is None:
             thread_id = await self._create_thread(client, msg)
@@ -2519,8 +2517,11 @@ class ChannelManager:
                 # handled here rather than re-raised, so release explicitly.
                 await self._release_inbound_dedupe_key(msg)
                 await self._send_error(msg, THREAD_BUSY_MESSAGE)
+                await self._report_unattended_outcome(msg, status="failed", error=repr(exc))
                 return
             else:
+                # Propagates to the bus dispatcher; an unattended fire without a
+                # report lands as Chronos's ok/unreported timeout fallback.
                 raise
 
         response_text = _extract_response_text(result)
@@ -2547,6 +2548,7 @@ class ChannelManager:
         # and real errors are untouched.
         if msg.unattended and not attachments and _is_trivial_unattended_text(response_text):
             logger.info("[Manager] unattended turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
+            await self._report_unattended_outcome(msg, status="silent")
             return
 
         # [argus patch #36] Use _is_blank_text, not `if not response_text`: a
@@ -2572,6 +2574,30 @@ class ChannelManager:
         )
         logger.info("[Manager] publishing outbound message to bus: channel=%s, chat_id=%s", msg.channel_name, msg.chat_id)
         await self.bus.publish_outbound(outbound)
+        await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
+
+    async def _report_unattended_outcome(
+        self,
+        msg: InboundMessage,
+        *,
+        status: str,
+        message_text: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """[argus patch #45] Report a scheduled turn's delivery outcome to
+        Chronos. No-op unless this is an unattended fire that carried a
+        report_url; never raises (see _delivery_report.report_delivery)."""
+        report_url = getattr(msg, "report_url", None)
+        if not (msg.unattended and report_url):
+            return
+        await report_delivery(
+            report_url,
+            status=status,  # type: ignore[arg-type]
+            channel=msg.channel_name,
+            chat_id=msg.chat_id,
+            message_text=message_text,
+            error=error,
+        )
 
     async def _handle_streaming_chat(
         self,
@@ -2744,6 +2770,7 @@ class ChannelManager:
 
             if suppress_final:
                 logger.info("[Manager] unattended streaming turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
+                await self._report_unattended_outcome(msg, status="silent")
             else:
                 logger.info(
                     "[Manager] streaming response completed: thread_id=%s, response_len=%d, artifacts=%d, error=%s",
@@ -2768,6 +2795,7 @@ class ChannelManager:
                     )
                 )
 <<<<<<< HEAD
+<<<<<<< HEAD
             )
             if stream_error is not None:
                 # This path swallows its own errors, so _handle_message's generic
@@ -2777,7 +2805,13 @@ class ChannelManager:
                 await self._release_inbound_dedupe_key(msg)
 =======
 >>>>>>> 488fe077 ([argus] patch #31/#32: stay silent on contentless unattended turns)
-
+=======
+                # [argus patch #45] a captured stream error was delivered to the
+                # chat as an error message; the run itself still failed.
+                if stream_error:
+                    await self._report_unattended_outcome(msg, status="failed", error=repr(stream_error))
+                else:
+                    await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
     # -- command handling --------------------------------------------------
 
     async def _handle_command(self, msg: InboundMessage) -> None:
