@@ -69,6 +69,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
 | [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
+| [#44](#patch-44) | unattended-silence: no blank-final retry, wider narration backstop, no token logging | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -898,6 +899,58 @@ carry budget ledger.
   re-expressed with a native scheduling API that carries tool constraints.
 - Upstream status: none (argus-additive; the tool_policy param has a clean
   default and is upstreamable as a generic extension).
+
+---
+
+## Patch #44
+
+**Patch #44 - unattended-silence: no blank-final retry, wider narration
+backstop, no token logging**
+
+- Class: argus-edit (edits the #37 middleware, the #34 heuristic in
+  `app/channels/manager.py`, and the gateway logging bootstrap)
+- Intent: three fixes from the 2026-07-18/19 hourly-Telegram-spam incident.
+  (1) Patch #37's `EmptyFinalRetryMiddleware` retried blank finals on EVERY
+  turn; on an unattended (scheduled-playbook) turn a blank final — or the
+  `.` no-op sentinel the playbook prompts now ask for — is the *desired*
+  outcome (the #31/#32/#34 silence branch suppresses the send), so the
+  retry re-sampled the model into narrating ("No meetings in the
+  window...") and turned compliant silence into hourly channel noise. The
+  middleware now reads `unattended` from `request.runtime.context` (the
+  same signal the #30 memory write policy uses) and returns the blank
+  without retrying; attended turns keep retry-once byte-for-byte.
+  (2) The #34 narrated-silence backstop capped announcements at 120 chars;
+  the real narrations ran to ~250 chars (three-sentence monologues) and
+  sailed through hourly. Cap is now 280, "calendar/schedule is clear" and
+  "nothing ... attention" count as announcement phrasing, and a
+  contrast/alert-marker veto ("but", "however", "urgent", "moved",
+  "cancelled", ...) takes over from the cap as the protection for genuine
+  content behind an announcement-shaped opener.
+  (3) httpx logs every request URL at INFO, so the Telegram bot token
+  appeared in the journal in plaintext on every send; the gateway
+  bootstrap now pins `httpx`/`httpcore` to WARNING (`apply_logging_level`
+  only adjusts the deerflow/app hierarchies, so the pin survives the
+  lifespan log-level override).
+- Files:
+  `backend/packages/harness/deerflow/agents/middlewares/empty_final_retry_middleware.py`
+  (EDITED, +`_is_unattended` + skip branch),
+  `backend/app/channels/manager.py` (EDITED, #34 heuristic: cap 120→280,
+  +2 announcement alternates, +`_SILENCE_VETO_RE`),
+  `backend/app/gateway/app.py` (EDITED, +httpx/httpcore WARNING pin)
+- Tests: `backend/tests/test_empty_final_retry.py` (+`TestIsUnattended`,
+  +`TestUnattendedNeverRetries` incl. an attended-still-retries regression
+  guard; `_req` now models an explicit attended runtime),
+  `backend/tests/test_unattended_silence.py` (+6 verbatim incident
+  narrations that must blank, +5 veto cases that must survive)
+- Delete-when: (1) goes with patch #37 if the blank-final root cause is
+  fixed upstream. (2) goes with the #31/#32/#34 silence branch when
+  scheduled runs get a first-class delivery contract (the playbook fire
+  reporting `silent` instead of the model posting anything at all).
+  (3) goes if upstream adopts a redacting log filter for channel HTTP
+  clients.
+- Upstream status: none. (3) is generic-upstreamable as a standalone
+  "don't log bot tokens" fix; (1)/(2) depend on the argus-only scheduled
+  playbook machinery.
 
 ---
 

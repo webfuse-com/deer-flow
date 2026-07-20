@@ -19,6 +19,7 @@ from app.gateway.pagination import mark_blank_final_ai_messages
 from deerflow.agents.middlewares.empty_final_retry_middleware import (
     EmptyFinalRetryMiddleware,
     _is_blank_final,
+    _is_unattended,
 )
 from deerflow.utils.messages import NO_RESPONSE_MARKER, is_blank_text
 
@@ -96,9 +97,46 @@ class TestIsBlankFinal:
         assert _is_blank_final(_response([])) is False
 
 
+def _request(unattended=False, runtime="default"):
+    """ModelRequest stand-in. The middleware reads only `.runtime.context`.
+
+    `runtime="default"` builds an attended interactive request; pass
+    `runtime=None` for the no-runtime shape some test harnesses produce.
+    """
+    if runtime is None:
+        return SimpleNamespace(runtime=None)
+    context = {"unattended": True} if unattended else {}
+    return SimpleNamespace(runtime=SimpleNamespace(context=context))
+
+
+class TestIsUnattended:
+    """[argus patch #44] The unattended flag gates the retry; anything that is
+    not a mapping with a truthy `unattended` key must count as attended so
+    interactive behavior is untouched."""
+
+    def test_unattended_context(self):
+        assert _is_unattended(_request(unattended=True)) is True
+
+    def test_attended_context(self):
+        assert _is_unattended(_request()) is False
+
+    def test_no_runtime(self):
+        assert _is_unattended(_request(runtime=None)) is False
+
+    def test_no_context_attr(self):
+        assert _is_unattended(SimpleNamespace(runtime=SimpleNamespace())) is False
+
+    def test_non_dict_context(self):
+        assert _is_unattended(SimpleNamespace(runtime=SimpleNamespace(context="x"))) is False
+
+    def test_falsy_flag(self):
+        req = SimpleNamespace(runtime=SimpleNamespace(context={"unattended": False}))
+        assert _is_unattended(req) is False
+
+
 class TestEmptyFinalRetryMiddleware:
     def _req(self):
-        return MagicMock(name="ModelRequest")
+        return _request()
 
     def test_sync_retries_once_and_returns_nonblank(self):
         mw = EmptyFinalRetryMiddleware()
@@ -151,4 +189,51 @@ class TestEmptyFinalRetryMiddleware:
         handler = AsyncMock(side_effect=[good])
         out = await mw.awrap_model_call(self._req(), handler)
         assert handler.await_count == 1
+        assert out is good
+
+
+class TestUnattendedNeverRetries:
+    """[argus patch #44] On an unattended (scheduled-playbook) turn a blank
+    final — including the '.' no-op sentinel — is the DESIRED outcome; the
+    channel manager's silence branch suppresses the send. Retrying re-samples
+    the model into narrating ("No meetings in the window...") and turns a
+    compliant silent turn into hourly channel noise."""
+
+    @pytest.mark.parametrize("content", ["", "\n\n", ".", "…"])
+    def test_sync_blank_final_returned_without_retry(self, content):
+        mw = EmptyFinalRetryMiddleware()
+        blank = _response([AIMessage(content=content)])
+        handler = MagicMock(side_effect=[blank])
+        out = mw.wrap_model_call(_request(unattended=True), handler)
+        assert handler.call_count == 1  # no retry
+        assert out is blank
+
+    def test_sync_real_final_unaffected(self):
+        mw = EmptyFinalRetryMiddleware()
+        good = _response([AIMessage(content="Meeting brief: ...")])
+        handler = MagicMock(side_effect=[good])
+        out = mw.wrap_model_call(_request(unattended=True), handler)
+        assert handler.call_count == 1
+        assert out is good
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content", ["", ".", "   "])
+    async def test_async_blank_final_returned_without_retry(self, content):
+        mw = EmptyFinalRetryMiddleware()
+        blank = _response([AIMessage(content=content)])
+        handler = AsyncMock(side_effect=[blank])
+        out = await mw.awrap_model_call(_request(unattended=True), handler)
+        assert handler.await_count == 1  # no retry
+        assert out is blank
+
+    @pytest.mark.asyncio
+    async def test_async_attended_still_retries(self):
+        # Regression guard for the flag plumbing: an explicit attended request
+        # must keep the original retry-once behavior.
+        mw = EmptyFinalRetryMiddleware()
+        blank = _response([AIMessage(content="")])
+        good = _response([AIMessage(content="real")])
+        handler = AsyncMock(side_effect=[blank, good])
+        out = await mw.awrap_model_call(_request(unattended=False), handler)
+        assert handler.await_count == 2
         assert out is good
