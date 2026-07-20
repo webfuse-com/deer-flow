@@ -55,6 +55,14 @@ logging.basicConfig(
     datefmt=DEFAULT_LOG_DATE_FORMAT,
 )
 
+# [argus patch #44] httpx logs every request URL at INFO. For Telegram that
+# URL embeds the bot token (api.telegram.org/bot<token>/sendMessage), which
+# lands in the journal in plaintext on every channel send. Pin these loggers
+# to WARNING; apply_logging_level only adjusts the deerflow/app hierarchies,
+# so the pin survives the lifespan log-level override.
+for _noisy_logger in ("httpx", "httpcore"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Upper bound (seconds) each lifespan shutdown hook is allowed to run.

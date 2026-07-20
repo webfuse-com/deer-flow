@@ -131,6 +131,32 @@ class TestIsTrivialUnattendedText:
     @pytest.mark.parametrize(
         "text",
         [
+            # [argus patch #44] Verbatim narrations that spammed Telegram
+            # hourly on 2026-07-18/19 — all over the old 120-char cap:
+            "No meetings starting in the next 15-20 minutes. Calendar is clear "
+            "through the rest of Sunday. Per the hourly check rules, staying silent.",
+            "No meetings starting in the next 15-20 minutes. The earliest meeting "
+            "today is at 13:30, still over 9 hours away. Calendar is clear through "
+            "the early morning.",
+            # The longest observed (~250 chars, three sentences):
+            "No meetings starting in the next 15-20 minutes. The earliest meeting "
+            "today is at 13:30 (Kick off: new webtoppings), which is still over 12 "
+            "hours away. Calendar is clear through the rest of the early morning. "
+            "Per the hourly check rules, staying silent.",
+            # The inbox-check flavor ("attention" phrasing):
+            "Nothing new needs my attention. One unsolicited job application in "
+            "the inbox, no reply required.",
+            "No meetings are scheduled to start in the immediate 15-20 minute window.",
+            # Announcement that leads with the calendar rather than "no":
+            "Calendar is clear through the rest of Sunday evening. Staying silent.",
+        ],
+    )
+    def test_multi_sentence_narration_is_blanked(self, text):
+        assert _is_trivial_unattended_text(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
             "ok",  # short but real word
             "No.",  # has a word char
             "1",  # a digit is real content
@@ -144,9 +170,18 @@ class TestIsTrivialUnattendedText:
             "Meeting at 15:00 with Acme. They went silent last week, so push for a timeline.",
             "Standup in 15 min. No blockers reported by the team; ship the release.",
             "Who: Bob (Acme), Jane (Globex)\nContext: prior thread on pricing\nTalking points:\n- renewal\n- no upcoming gaps",
-            # Long enough to exceed the announcement cap even if phrased like one:
+            # Announcement-shaped opener with real content behind it — the
+            # contrast marker ("but") vetoes the match (patch #44; before
+            # that the length cap carried this case):
             "No meetings in the window, but here is the daily digest you asked for: "
             "three PRs merged, two issues opened, and the Acme renewal call is confirmed for tomorrow at 10.",
+            # [argus patch #44] More veto cases: genuine alerts that open like
+            # an announcement must never be suppressed, at any length.
+            "No meetings in the window, but your 13:30 was moved to 13:00.",
+            "No meetings in the next 20 minutes. However, the Acme call tomorrow was cancelled.",
+            "Nothing scheduled. Urgent: the deploy is failing, check #ops.",
+            "No new meetings. Reminder: send the board deck today.",
+            "Calendar is clear, but heads-up: the 13:30 kickoff moved rooms.",
         ],
     )
     def test_real_content_is_preserved(self, text):

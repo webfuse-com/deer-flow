@@ -150,35 +150,58 @@ def _slim_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in meta.items() if k not in _METADATA_DROP_KEYS}
 
 
-# [argus patch #34] A model told to "stay silent" on a contentless unattended
-# turn often narrates the decision instead of emitting nothing — e.g. the hourly
-# meeting-prep poll posting "No meetings in the window. Staying silent." Such a
-# message is itself the noise the silence branch exists to suppress. Match it as
-# a SHORT one-liner (real briefs are longer, multi-line, with names/times) whose
-# only content is a "nothing to report" and/or "staying silent" announcement.
-# Tight on purpose: requires the announcement phrasing AND a length cap, so a
-# genuine brief that merely mentions a meeting or the word "silent" is preserved.
+# [argus patch #34/#44] A model told to "stay silent" on a contentless
+# unattended turn often narrates the decision instead of emitting nothing —
+# e.g. the hourly meeting-prep poll posting "No meetings in the window.
+# Staying silent." Such a message is itself the noise the silence branch
+# exists to suppress. Match it as a one-liner whose only content is a
+# "nothing to report" and/or "staying silent" announcement. Patch #44 widened
+# this after multi-sentence narrations ("No meetings starting in the next
+# 15-20 minutes. The earliest meeting today is at 13:30 (...), which is still
+# over 12 hours away. Calendar is clear... Per the hourly check rules, staying
+# silent.") sailed past the original 120-char cap every hour for two days:
+# the cap is now 280, "calendar/schedule is clear" and "nothing ... attention"
+# count as announcement phrasing, and a contrast/alert marker ("but",
+# "however", "urgent", "moved", ...) vetoes the match so genuine content
+# hiding behind a no-meetings opener is never dropped.
 _SILENCE_ANNOUNCEMENT_RE = re.compile(
     r"""
     ^\W*(?:
         (?:no|nothing|none)\b .*? \b(?:meeting|meetings|event|events|
-            report|update|updates|upcoming|scheduled|to\s+report|to\s+share)\b
+            report|update|updates|upcoming|scheduled|attention|
+            to\s+report|to\s+share)\b
       | (?:staying|stay|remaining|going|i'?ll\s+stay|i\s+will\s+stay)\s+silent\b
       | no\s+output\b
+      | (?:calendar|schedule)\s+is\s+clear\b
     ) .*$
     """,
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
-# A real brief is never this short; the disobedient one-liner is. Cap well above
-# the longest plausible announcement, well below any actual brief.
-_SILENCE_ANNOUNCEMENT_MAX_LEN = 120
+# [argus patch #44] Real content hiding inside an announcement-shaped opener
+# ("No meetings in the window, but your 13:30 moved to 13:00") must never be
+# suppressed. Any contrast or alert marker vetoes the announcement match.
+# "action"/"required" are deliberately absent: they are staples of the noise
+# itself ("no action required"), and a mixed message that opens announcement-
+# shaped almost always carries one of the markers below too.
+_SILENCE_VETO_RE = re.compile(
+    r"\b(?:but|however|except|urgent|asap|heads[-\s]?up|fyi|reminder|moved|rescheduled|cancell?ed|postponed)\b",
+    re.IGNORECASE,
+)
+# Longest observed narration was ~252 chars (a three-sentence hourly
+# meeting-prep monologue); real briefs are multi-line with names/times and
+# do not open with announcement phrasing, so the anchor + veto carry the
+# safety and the cap is just a backstop against digests.
+_SILENCE_ANNOUNCEMENT_MAX_LEN = 280
 
 
 def _is_silence_announcement(stripped: str) -> bool:
-    """True if *stripped* is a short 'nothing to report / staying silent'
-    announcement rather than a real brief. Conservative: length-capped and
-    phrasing-anchored so genuine briefs are never matched."""
+    """True if *stripped* is a 'nothing to report / staying silent'
+    announcement rather than a real brief. Conservative: length-capped,
+    phrasing-anchored, and vetoed by contrast/alert markers so genuine
+    briefs are never matched."""
     if len(stripped) > _SILENCE_ANNOUNCEMENT_MAX_LEN:
+        return False
+    if _SILENCE_VETO_RE.search(stripped):
         return False
     return _SILENCE_ANNOUNCEMENT_RE.match(stripped) is not None
 
