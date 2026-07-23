@@ -60,3 +60,54 @@ def test_tool_search_no_match_empty_names():
     ts = build_tool_search_tool(catalog)
     out = ts.invoke({"type": "tool_call", "name": "tool_search", "args": {"query": "select:nonexistent"}, "id": "tc2"})
     assert out.update["promoted"]["names"] == []
+
+
+def _named_mcp_tool(name: str):
+    """A tagged MCP tool with an explicit name (mirrors the mcp_calc fixture)."""
+
+    def _fn(text: str) -> str:
+        """Echo."""
+        return text
+
+    t = as_tool(name)(_fn)
+    tag_mcp_tool(t)
+    return t
+
+
+class TestExclude:
+    """tool_search.exclude: hot MCP tools stay always-bound (patch #46)."""
+
+    def test_excluded_tool_stays_bound(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        hot = _named_mcp_tool("pythia_query")
+        cold = _named_mcp_tool("atlas_get_status")
+        final, setup = assemble_deferred_tools([hot, cold], enabled=True, exclude=["pythia_*"])
+        assert "pythia_query" not in setup.deferred_names
+        assert "atlas_get_status" in setup.deferred_names
+        assert any(t.name == "pythia_query" for t in final)
+
+    def test_all_excluded_is_empty_setup_not_error(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        hot = _named_mcp_tool("kb_query")
+        final, setup = assemble_deferred_tools([hot], enabled=True, exclude=["kb_query"])
+        assert setup.tool_search_tool is None
+        assert setup.deferred_names == frozenset()
+        assert [t.name for t in final] == ["kb_query"]
+
+    def test_exact_and_glob_patterns(self):
+        from deerflow.tools.builtins.tool_search import _is_excluded
+
+        assert _is_excluded("pythia_query", ["pythia_*"])
+        assert _is_excluded("kb_query", ["kb_query"])
+        assert not _is_excluded("atlas_get_status", ["pythia_*", "kb_query"])
+        assert not _is_excluded("pythia_query", [])
+        assert not _is_excluded("pythia_query", None)
+
+    def test_config_default_empty(self):
+        from deerflow.config.tool_search_config import ToolSearchConfig
+
+        assert ToolSearchConfig().exclude == []
+        cfg = ToolSearchConfig.model_validate({"enabled": True, "exclude": ["pythia_*"]})
+        assert cfg.exclude == ["pythia_*"]

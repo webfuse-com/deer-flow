@@ -71,6 +71,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
 | [#44](#patch-44) | unattended-silence: no blank-final retry, wider narration backstop, no token logging | argus-edit | this PR |
 | [#45](#patch-45) | delivery-report callback for scheduled playbook fires | argus-additive | this PR |
+| [#46](#patch-46) | tool_search.exclude: deferral opt-out for hot MCP tools | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1064,3 +1065,30 @@ scope and is not directly comparable; like-for-like against v2.0.0 the
 pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 `git diff --numstat v2.0.0 | while read a d f; do git cat-file -e
 "v2.0.0:$f" 2>/dev/null && echo "$a $d $f"; done | awk '...'`.
+
+
+## Patch #46
+
+**Patch #46 - tool_search.exclude: deferral opt-out for hot MCP tools.**
+
+Deferral (tool_search.enabled) is all-or-nothing over MCP-tagged tools. The
+Argus capability rewrite measured the cost on the canary (goldset-wide-v2,
+15 runs/arm, 2026-07-23): the promotion round-trip doubled mean wall clock
+(13.0s -> 26.3s) because the HOT knowledge tools (pythia_query, kb_query,
+entity_search, code_search_*) are used in most turns - their schemas cost
+less context than the extra local-27B round costs latency. The placement
+rubric wants hot tools bound and only the long tail (30 atlas control-plane
+tools, future integration suites) deferred.
+
+ gains  - fnmatch patterns matched
+against FINAL (server-prefixed) tool names. Excluded MCP tools skip the
+deferred catalog and stay always-bound; the assemble fail-closed guard
+ignores excluded tools (all-excluded is a valid empty setup, not an error).
+Threaded through all four assemble_deferred_tools call sites (lead x2,
+embedded client, subagent executor).
+
+Exit condition: upstream grows per-server or per-tool deferral control in
+extensions_config/tool_search config; migrate the exclude list there and
+drop this patch.
+
+Tests: backend/tests/test_deferred_setup.py::TestExclude (4).

@@ -449,8 +449,8 @@ class SubagentExecutor:
         # subagent's name-level allow/deny (config.tools / disallowed_tools):
         # its catalog is built from the already-filtered list, so it can never
         # surface a tool the policy denied. This matches the lead agent.
-        enabled = (self.app_config or get_app_config()).tool_search.enabled
-        final_tools, deferred_setup = assemble_deferred_tools(filtered_tools, enabled=enabled)
+        _ts_config = (self.app_config or get_app_config()).tool_search
+        final_tools, deferred_setup = assemble_deferred_tools(filtered_tools, enabled=_ts_config.enabled, exclude=_ts_config.exclude)
         skill_messages = await self._load_skill_messages(skills)
 
         # Combine system_prompt and skills into a single SystemMessage.
