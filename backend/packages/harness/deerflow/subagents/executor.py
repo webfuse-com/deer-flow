@@ -735,7 +735,11 @@ class SubagentExecutor:
             enabled=resolved_app_config.tool_search.enabled,
         )
         final_tools.extend(late_tools)
-
+        # its catalog is built from the already-filtered list, so it can never
+        # surface a tool the policy denied. This matches the lead agent.
+        _ts_config = (self.app_config or get_app_config()).tool_search
+        final_tools, deferred_setup = assemble_deferred_tools(filtered_tools, enabled=_ts_config.enabled, exclude=_ts_config.exclude)
+        skill_messages = await self._load_skill_messages(skills)
         # Combine the system prompt and skill discovery metadata into a single
         # SystemMessage. Full SKILL.md bodies are loaded only when activated.
         # Some LLM APIs reject multiple SystemMessages with

@@ -909,7 +909,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         )
         filtered = filter_tools_by_skill_allowed_tools(raw_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
         final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)        return create_agent(
-            model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
+        final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled, exclude=resolved_app_config.tool_search.exclude)
+        return create_agent(            model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
             tools=final_tools,
             middleware=normalize_middleware_state_schemas(
                 build_middlewares(
@@ -992,7 +993,9 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     filtered = filter_tools_by_skill_allowed_tools(raw_tools + extra_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
     final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)    return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides),
-        tools=final_tools,
+    final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled, exclude=resolved_app_config.tool_search.exclude)
+    return create_agent(
+        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False),        tools=final_tools,
         middleware=normalize_middleware_state_schemas(
             build_middlewares(
                 config,

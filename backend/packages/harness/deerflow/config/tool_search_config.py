@@ -32,7 +32,15 @@ class ToolSearchConfig(BaseModel):
     @classmethod
     def _clamp_auto_promote_top_k(cls, value: int) -> int:
         return clamp_auto_promote_top_k(value)
-
+    exclude: list[str] = Field(
+        default_factory=list,
+        description=(
+            "fnmatch patterns of FINAL (server-prefixed) tool names that stay "
+            "always-bound instead of deferred, e.g. ['pythia_*', 'kb_query']. "
+            "For hot tools used in most turns, where the tool_search promotion "
+            "round-trip would cost more latency than their schemas cost context."
+        ),
+    )
 
 _tool_search_config: ToolSearchConfig | None = None
 
