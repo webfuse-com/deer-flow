@@ -14,6 +14,7 @@ graph state — there is no ContextVar. Source-agnostic: a tool is "deferred"
 when it carries the ``deerflow_mcp`` metadata tag.
 """
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -160,7 +161,16 @@ def build_tool_search_tool(catalog: DeferredToolCatalog) -> BaseTool:
     return tool_search
 
 
-def build_deferred_tool_setup(filtered_tools: list[BaseTool], *, enabled: bool) -> DeferredToolSetup:
+def _is_excluded(name: str, exclude) -> bool:
+    """True when a tool name matches any tool_search.exclude pattern. Excluded
+    MCP tools stay always-bound: for hot tools (pythia_query and friends, used
+    in most turns) the promotion round-trip costs more latency than their
+    schemas cost context (measured: canary bench 2026-07-23, +13s mean wall).
+    """
+    return any(fnmatch.fnmatchcase(name, pat) for pat in exclude or ())
+
+
+def build_deferred_tool_setup(filtered_tools: list[BaseTool], *, enabled: bool, exclude=()) -> DeferredToolSetup:
     """Build the deferred-tool setup from a POLICY-FILTERED tool list.
 
     Must be called after skill/agent tool-policy filtering so the catalog never
@@ -173,7 +183,8 @@ def build_deferred_tool_setup(filtered_tools: list[BaseTool], *, enabled: bool) 
     if not enabled:
         # Deferral disabled: defer nothing; the model binds every tool as before.
         return DeferredToolSetup(None, frozenset(), None)
-    deferred = [t for t in filtered_tools if is_mcp_tool(t)]
+    deferred = [t for t in filtered_tools
+                if is_mcp_tool(t) and not _is_excluded(t.name, exclude)]
     if not deferred:
         # Enabled, but no MCP tool to defer: same empty result, different reason.
         return DeferredToolSetup(None, frozenset(), None)
@@ -181,7 +192,7 @@ def build_deferred_tool_setup(filtered_tools: list[BaseTool], *, enabled: bool) 
     return DeferredToolSetup(build_tool_search_tool(catalog), catalog.names, catalog.hash)
 
 
-def assemble_deferred_tools(filtered_tools: list[BaseTool], *, enabled: bool) -> tuple[list[BaseTool], DeferredToolSetup]:
+def assemble_deferred_tools(filtered_tools: list[BaseTool], *, enabled: bool, exclude=()) -> tuple[list[BaseTool], DeferredToolSetup]:
     """Build the final tool list + deferred setup from a POLICY-FILTERED list.
 
     Call AFTER tool-policy filtering so the deferred catalog never exposes a tool
@@ -192,8 +203,10 @@ def assemble_deferred_tools(filtered_tools: list[BaseTool], *, enabled: bool) ->
     Shared by every agent-build path (lead, embedded client, subagent) so they
     all get the same fail-closed guarantee from one place.
     """
-    deferred_setup = build_deferred_tool_setup(filtered_tools, enabled=enabled)
-    if enabled and not deferred_setup.deferred_names and any(is_mcp_tool(t) for t in filtered_tools):
+    deferred_setup = build_deferred_tool_setup(filtered_tools, enabled=enabled, exclude=exclude)
+    if enabled and not deferred_setup.deferred_names and any(
+        is_mcp_tool(t) and not _is_excluded(t.name, exclude) for t in filtered_tools
+    ):
         raise RuntimeError("tool_search enabled and MCP tools survived policy filtering, but no deferred set was recovered - refusing to bind MCP schemas (fail-closed).")
     final_tools = list(filtered_tools)
     if deferred_setup.tool_search_tool:
