@@ -1080,7 +1080,7 @@ less context than the extra local-27B round costs latency. The placement
 rubric wants hot tools bound and only the long tail (30 atlas control-plane
 tools, future integration suites) deferred.
 
- gains  - fnmatch patterns matched
+`ToolSearchConfig` gains `exclude: list[str]` - fnmatch patterns matched
 against FINAL (server-prefixed) tool names. Excluded MCP tools skip the
 deferred catalog and stay always-bound; the assemble fail-closed guard
 ignores excluded tools (all-excluded is a valid empty setup, not an error).
