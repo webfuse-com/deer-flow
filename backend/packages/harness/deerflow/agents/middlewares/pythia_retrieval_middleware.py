@@ -80,20 +80,28 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
 
     state_schema = ThreadState
 
-    def __init__(self, ring: str = "internal") -> None:
+    def __init__(self, ring: str = "none") -> None:
         super().__init__()
-        # ring is decided by the lead_agent gate from the agent's pythia_ring
-        # (config.yaml), falling back to the stack PYTHIA_ROUTER_INJECT flag.
-        # The gate does not construct this middleware for ring "none", so being
-        # constructed at all means retrieval is on. We still read the env flag as
-        # a belt-and-suspenders enable check for the legacy stack-wide path.
+        # ring comes from the lead_agent gate, which reads the agent's
+        # pythia_ring (config.yaml). The gate does not construct this middleware
+        # for ring "none", so being constructed normally means retrieval is on.
         # ring is forwarded to kb-api as a CEILING (caller_ring); kb-api caps it
         # to what the verified caller may see and never escalates beyond it.
-        self.ring = (ring or "internal").strip().lower()
+        #
+        # [argus patch #48] Both defaults here are FAIL-CLOSED. They used to
+        # default to "internal" and to enable on the stack flag alone, so
+        # constructing this middleware with no ring — or with a ring string this
+        # code does not recognise — silently granted internal-ring company-KB
+        # retrieval. Combined with the old fail-open gate that turned an agent
+        # declaring nothing into ring "internal", an agent whose config said
+        # `pythia_ring: none` could still receive injected knowledge. Now an
+        # unrecognised or absent ring retrieves NOTHING, and the env flag can
+        # only disable, never enable.
+        self.ring = (ring or "none").strip().lower()
         flag = (os.environ.get("PYTHIA_ROUTER_INJECT")
-                or os.environ.get("PYTHIA_RETRIEVAL_ENABLED", ""))
-        # Enabled if a real retrieving ring was assigned OR the stack flag is on.
-        self.enabled = self.ring in ("external", "internal", "hierarchical", "personal") or flag.lower() in ("1", "true", "yes")
+                or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
+        self.enabled = (self.ring in ("external", "internal", "hierarchical", "personal")
+                        and flag not in ("0", "false", "no", "off"))
         self.base_url = os.environ.get("PYTHIA_KB_URL", "http://argus-kb-api:8000").rstrip("/")
         self.project = os.environ.get("PYTHIA_KB_PROJECT", "pythia")
         self.api_key = os.environ.get("KB_API_KEY", "")

@@ -215,14 +215,12 @@ class AgentConfig(BaseModel):
     # integration", which is the case for every existing agent.
     github: GitHubAgentConfig | None = None
     # [argus] pythia_ring controls deterministic company-KB retrieval
-    # (PythiaRetrievalMiddleware):
-    # - None (or omitted): inherit the stack default (env PYTHIA_ROUTER_INJECT
-    #   gate; ring defaults to "internal" for the SSO'd employee Atlas).
-    # - "none": NO retrieval (the "flash" / never-RAG agent).
+    # (PythiaRetrievalMiddleware). OPT-IN and fail-closed since patch #48:
+    # - None (or omitted): NO retrieval. An agent must ask for it by name.
+    # - "none": NO retrieval (explicit form of the same thing).
     # - "external"/"internal": attach with that ring (a server-side CEILING in
     #   kb-api, never an escalation). personal/hierarchical are reserved.
-    pythia_ring: str | None = None    # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware
-    # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
+    pythia_ring: str | None = None    # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware    # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
     # on any agent that uses the planner/critic skill pipeline (qwen-local-coder,
     # glm-planner, etc).
     uses_planner_pipeline: bool = False

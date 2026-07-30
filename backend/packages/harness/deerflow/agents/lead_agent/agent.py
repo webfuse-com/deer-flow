@@ -569,19 +569,38 @@ def build_middlewares(
     # [argus] Add PythiaRetrievalMiddleware: for company-knowledge questions, ask
     # the kb-api router what to fetch and inject the cited results BEFORE the model
     # call, so retrieval is deterministic rather than left to the model choosing to
-    # call pythia_query (which non-thinking Qwen does not do reliably). Gated by
-    # PYTHIA_ROUTER_INJECT (legacy alias PYTHIA_RETRIEVAL_ENABLED), set per-stack.
-    # Ring resolution: an agent's pythia_ring (config.yaml) is the source of truth.
-    # "none" -> no retrieval. "external"/"internal" -> attach with that ring. If the
-    # agent declares nothing, fall back to the stack flag with ring "internal". The
-    # ring is a CEILING enforced server-side in kb-api, never an escalation.
+    # call pythia_query (which non-thinking Qwen does not do reliably).
+    #
+    # Ring resolution is FAIL-CLOSED (patch #48): an agent gets deterministic
+    # retrieval only if it OPTS IN by declaring `pythia_ring` in its config.yaml.
+    # An agent that declares nothing gets "none".
+    #
+    # It used to fall back to the stack flag PYTHIA_ROUTER_INJECT with ring
+    # "internal", which is fail-OPEN and silently reversed a deliberate opt-out.
+    # A turn that names no agent runs as the synthetic agent "default" (see
+    # `agent_name or "default"` below), and there is no `default` entry in
+    # agents/, so `getattr(..., "pythia_ring", None)` was None and every such
+    # turn got internal-ring company-KB prefetch. Observed on two argus stacks:
+    # the `atlas` agent sets `pythia_ring: none` with the comment "agent-driven
+    # retrieval", yet UI threads that resolved to `default` were served 6 blocks
+    # of unrelated company knowledge per turn. The model then opened its replies
+    # by dismissing its own injected context ("Those Pythia results are
+    # unrelated noise"), which costs latency, spends context, and teaches the
+    # model its inputs are untrustworthy.
+    #
+    # The stack flag is retained as a KILL SWITCH only: setting it to a false
+    # value ("0"/"false"/"no") disables retrieval stack-wide even for agents that
+    # opt in. Leaving it unset no longer enables anything. The ring is a CEILING
+    # enforced server-side in kb-api, never an escalation.
     _agent_ring = getattr(_agent_config, "pythia_ring", None)
-    _stack_flag_on = (os.environ.get("PYTHIA_ROUTER_INJECT") or os.environ.get("PYTHIA_RETRIEVAL_ENABLED", "")).lower() in ("1", "true", "yes")
-    if _agent_ring is not None:
-        _ring = _agent_ring.strip().lower()
-    elif _stack_flag_on:
-        _ring = "internal"
-    else:
+    _flag_raw = (os.environ.get("PYTHIA_ROUTER_INJECT")
+                 or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
+    _stack_disabled = _flag_raw in ("0", "false", "no", "off")
+    _ring = (_agent_ring or "none").strip().lower()
+    if _stack_disabled and _ring not in ("none", ""):
+        logger.info(
+            "PythiaRetrievalMiddleware: agent %r requests ring %r but the stack "
+            "flag disables retrieval; not attaching.", agent_name, _ring)
         _ring = "none"
     if _ring not in ("none", ""):
         from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
