@@ -1092,3 +1092,54 @@ extensions_config/tool_search config; migrate the exclude list there and
 drop this patch.
 
 Tests: backend/tests/test_deferred_setup.py::TestExclude (4).
+
+## Patch #47
+
+**Patch #47 - per-lead-model summarization overrides.**
+
+`summarization` is a single global block, but both the correct trigger and the
+correct summarizer depend on the LEAD model's context window. Two independent
+failures follow from that:
+
+1. **The window is wasted.** An absolute `tokens` trigger tuned for a 131k model
+   fires at ~9% of a 1M-context model's window. Measured on argus (LiteLLM
+   `/model/info`): `local-qwen` max_input 131,072, `glm-nw` 1,048,560. The
+   global trigger is 91,750 = 70% of local-qwen. A `glm-planner` run (lead model
+   `glm-nw`) therefore summarized at 8.7% of its window, discarding ~91% of the
+   context the operator is paying for.
+2. **The summarizer cannot read what it compresses.** The global
+   `model_name: local-qwen` (131k) was asked to summarize a thread that may hold
+   up to 1M tokens. The compression is silently lossy; nothing surfaces it.
+
+`fraction: 0.7` is the natural upstream expression of this and does NOT work
+here: LangChain's parent middleware needs a model profile to resolve a fraction,
+and our LiteLLM aliases carry none (`ModelConfig` declares no
+max_input_tokens/context_window at all), so it raises ValueError on init. Per-agent
+config is also not a lever: `AgentConfig` has no summarization field.
+
+`SummarizationConfig` gains `per_model: dict[str, SummarizationOverride]` plus
+`resolved_for(lead_model_name)`. Only fields set on the override apply; the rest
+are inherited. An absent key returns `self` unchanged, so every existing config
+behaves exactly as before. The resolved view drops `per_model` so a second
+resolution cannot compound.
+
+`_create_summarization_middleware` gains `lead_model_name: str | None = None` and
+`build_middlewares` passes the already-resolved `model_name` (the same value that
+gates ViewImageMiddleware two blocks below), so no new resolution logic is
+introduced. Passing None preserves the pre-patch behavior exactly.
+
+Implementation note worth keeping: `resolved_for` copies the override's field
+VALUES, not `model_dump()`. Dumping converts the nested `ContextSize` models into
+plain dicts, and `model_copy(update=...)` would then inject dicts where the
+factory calls `.to_tuple()` on them - an AttributeError at graph-build time.
+Caught by the tests before it ever ran.
+
+Exit condition: upstream adds a model profile / context_window to ModelConfig so
+`fraction` triggers resolve for arbitrary providers, OR upstream grows per-model
+summarization config. Then move the ratios there and drop this patch.
+
+Tests: backend/tests/test_summarization_per_model.py (16) - resolution semantics
+(inherit, no-mutation, no-recursion, list triggers, empty override), the factory
+seam (a glm-nw lead selects the glm-nw summarizer; a model without an override
+keeps the global one), and the wiring guard that `build_middlewares` passes
+`lead_model_name=model_name` rather than a literal.
