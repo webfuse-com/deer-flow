@@ -147,7 +147,21 @@ def _authorize_model_name(
     app_config: AppConfig,
 ) -> str:
     """Enforce ``model:use`` authorization on the resolved model name.
+def _create_summarization_middleware(
+    *, app_config: AppConfig | None = None, lead_model_name: str | None = None
+) -> DeerFlowSummarizationMiddleware | None:
+    """Create and configure the summarization middleware from config.
 
+    [argus] ``lead_model_name`` selects a per-model override from
+    ``summarization.per_model`` (see SummarizationOverride). Both the trigger and
+    the summarizer depend on the lead model's context window: a single absolute
+    token trigger tuned for a 131k model fires at ~9% of a 1M-context model's
+    window, so most of the context the operator is paying for is discarded, and a
+    131k summarizer cannot read a 1M-context thread it is asked to compress.
+    Passing None preserves the previous global-only behavior exactly.
+    """
+    resolved_app_config = app_config or get_app_config()
+    config = resolved_app_config.summarization.resolved_for(lead_model_name)
     When ``authorization.enabled`` is false this is a no-op (returns
     *model_name* unchanged). When enabled, the resolved model is checked
     against the provider's policy via ``authorize("model", "use")`` so the
@@ -501,7 +515,12 @@ def build_middlewares(
         app_config=resolved_app_config,
         run_model_name=model_name,
         extensions=resolved_extensions,
-    )
+    # [argus] Pass the resolved lead model so summarization.per_model can scale
+    # the trigger to this model's context window and pick a summarizer that can
+    # actually read it. model_name is already in scope (it gates the vision
+    # middleware below); None simply keeps the global settings.
+    summarization_middleware = _create_summarization_middleware(
+        app_config=resolved_app_config, lead_model_name=model_name    )
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
