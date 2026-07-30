@@ -1143,3 +1143,59 @@ Tests: backend/tests/test_summarization_per_model.py (16) - resolution semantics
 seam (a glm-nw lead selects the glm-nw summarizer; a model without an override
 keeps the global one), and the wiring guard that `build_middlewares` passes
 `lead_model_name=model_name` rather than a literal.
+
+## Patch #48
+
+**Patch #48 - fail-closed Pythia retrieval ring (opt-in, not opt-out).**
+
+Deterministic company-KB retrieval (`PythiaRetrievalMiddleware`, patch #30) was
+gated FAIL-OPEN: an agent that declared no `pythia_ring` in its `config.yaml`
+inherited ring `"internal"` from the stack env flag `PYTHIA_ROUTER_INJECT`. Two
+independent defaults pointed the same way - the `build_middlewares` gate
+(`elif _stack_flag_on: _ring = "internal"`) and the middleware constructor
+(`def __init__(self, ring: str = "internal")`, plus `enabled = <known ring> OR
+flag_on`, which enabled even an unrecognised ring string).
+
+That is the wrong default for an opt-in capability, and it silently reversed a
+deliberate opt-out in production. A turn that names no agent runs as the
+synthetic agent `"default"` (`agent_name or "default"` in the same module), and
+there is no `default` entry under `agents/`, so `load_agent_config` raises,
+`_agent_config` is None, `getattr(..., "pythia_ring", None)` is None, and the
+turn got internal-ring company knowledge injected. Observed on two argus stacks
+whose real agent sets `pythia_ring: none` with the comment "agent-driven
+retrieval": UI threads were served 6 blocks of unrelated company knowledge per
+turn, and the model opened its replies by dismissing its own injected context
+("Those Pythia results are unrelated noise. Let me give you the real answer."),
+on questions with no company-knowledge dimension at all. Cost: ~0.5-1.0s of
+added latency per turn (one observed call timed out at 6030ms and was retried),
+context spent on irrelevant blocks, and a model being trained by its own harness
+to distrust its inputs.
+
+Now: retrieval attaches only when an agent OPTS IN by declaring `pythia_ring`.
+Absent, empty, `"none"`, or unrecognised all mean no retrieval, in both the gate
+and the constructor. `PYTHIA_ROUTER_INJECT` (legacy alias
+`PYTHIA_RETRIEVAL_ENABLED`) is demoted to a KILL SWITCH: a false value
+(`0`/`false`/`no`/`off`) disables retrieval stack-wide even for agents that opt
+in, and leaving it unset enables nothing. The gate logs at INFO when it drops an
+opted-in agent's ring because of the kill switch, so a disabled stack is not
+silent.
+
+Operator-visible consequence: on a stack that relied on the flag alone to give
+every agent retrieval, agents must now name their ring. On argus this is a no-op
+for the two KB agents (`pythia-internal` -> `internal`, `pythia-ext` ->
+`external`, both already explicit fleet-wide) and intentionally turns retrieval
+OFF for `default` and for any agent that never declared one.
+
+Exit condition: upstream grows a first-class per-agent retrieval capability with
+its own gating, or `pythia_ring` moves into a shared capability config. Then the
+ring resolution moves there and this patch drops.
+
+Tests: backend/tests/test_pythia_retrieval_middleware.py - `TestRingGating`
+gains the fail-closed constructor cases (unknown ring, absent ring, empty ring,
+the kill switch across `0`/`false`/`no`/`off` + the legacy alias) replacing
+`test_stack_flag_enables_even_unknown_ring`, which asserted the old fail-open
+contract; and a new `TestLeadAgentWiring` class covers whether the middleware is
+ATTACHED AT ALL - the module docstring already claimed that coverage and did not
+have it, which is exactly where the bug lived. It includes the production path
+(the synthetic `default` agent with no config entry) and the opt-in paths. 13 of
+the 28 tests in the file fail against the pre-patch source.

@@ -48,12 +48,20 @@ class AgentConfig(BaseModel):
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
     # [argus] pythia_ring controls deterministic company-KB retrieval
-    # (PythiaRetrievalMiddleware):
-    # - None (or omitted): inherit the stack default (env PYTHIA_ROUTER_INJECT
-    #   gate; ring defaults to "internal" for the SSO'd employee Atlas).
-    # - "none": NO retrieval (the "flash" / never-RAG agent).
+    # (PythiaRetrievalMiddleware). OPT-IN and fail-closed since patch #48:
+    # - None (or omitted): NO retrieval. An agent must ask for it by name.
+    # - "none": NO retrieval (explicit form of the same thing).
     # - "external"/"internal": attach with that ring (a server-side CEILING in
     #   kb-api, never an escalation). personal/hierarchical are reserved.
+    # Anything unrecognised also means NO retrieval.
+    #
+    # Before #48, None meant "inherit the stack PYTHIA_ROUTER_INJECT flag with
+    # ring internal", which is fail-OPEN: a turn naming no agent runs as the
+    # synthetic "default" agent, which has no config entry and so declared
+    # nothing, and was therefore served internal-ring company knowledge on every
+    # turn even on stacks whose real agent set `pythia_ring: none`.
+    # PYTHIA_ROUTER_INJECT is now a kill switch only: a false value disables
+    # retrieval stack-wide, and leaving it unset enables nothing.
     pythia_ring: str | None = None
     # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware
     # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
