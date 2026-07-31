@@ -8,7 +8,7 @@ report_url only).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -71,8 +71,11 @@ class TestReportDelivery:
         fake = _CapturingClient(["ok"])
         with patch.object(delivery_report.httpx, "AsyncClient", fake):
             ok = await report_delivery(
-                REPORT_URL, status="delivered", channel="telegram",
-                chat_id="8726302666", message_text="Meeting brief ...",
+                REPORT_URL,
+                status="delivered",
+                channel="telegram",
+                chat_id="8726302666",
+                message_text="Meeting brief ...",
             )
         assert ok is True
         assert len(fake.posts) == 1
@@ -142,8 +145,12 @@ class TestReportDelivery:
 
 def _msg(*, unattended=True, report_url=REPORT_URL) -> InboundMessage:
     return InboundMessage(
-        channel_name="telegram", chat_id="8726302666", user_id="u1",
-        text="playbook prompt", unattended=unattended, report_url=report_url,
+        channel_name="telegram",
+        chat_id="8726302666",
+        user_id="u1",
+        text="playbook prompt",
+        unattended=unattended,
+        report_url=report_url,
     )
 
 
@@ -158,8 +165,7 @@ class TestManagerOutcomeGate:
     @pytest.mark.asyncio
     async def test_reports_for_unattended_with_url(self):
         mgr = self._manager()
-        with patch.object(delivery_report, "report_delivery", AsyncMock()) as rep, \
-             patch("app.channels.manager.report_delivery", rep):
+        with patch.object(delivery_report, "report_delivery", AsyncMock()) as rep, patch("app.channels.manager.report_delivery", rep):
             await mgr._report_unattended_outcome(_msg(), status="silent")
         rep.assert_awaited_once()
         kwargs = rep.await_args.kwargs

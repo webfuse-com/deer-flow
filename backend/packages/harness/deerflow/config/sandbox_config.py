@@ -95,7 +95,12 @@ class SandboxConfig(BaseModel):
     command_max_chars: int = Field(
         default=10000,
         ge=1,
-        description="[argus] Maximum length (characters) of a single bash command the SandboxAuditMiddleware will allow before rejecting it as 'command too long'. Raise it (e.g. 131072) to let agents route large heredocs such as a self-contained HTML page through bash in one shot. Default 10000 matches upstream.",
+        description=(
+            "[argus] Maximum length (characters) of a single bash command the SandboxAuditMiddleware "
+            "will allow before rejecting it as 'command too long'. Raise it (e.g. 131072) to let agents "
+            "route large heredocs such as a self-contained HTML page through bash in one shot. "
+            "Default 10000 matches upstream."
+        ),
     )
     read_file_output_max_chars: int = Field(
         default=50000,

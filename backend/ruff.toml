@@ -5,6 +5,13 @@ target-version = "py312"
 select = ["E", "F", "I", "UP"]
 ignore = []
 
+[lint.per-file-ignores]
+# [argus] Prompt templates are model-facing text inside string literals. Wrapping a
+# long line inserts a newline into what the model actually reads, and a `noqa`
+# comment would itself become prompt text, so E501 cannot be fixed here without
+# changing agent behaviour. Long lines are load-bearing in these files only.
+"packages/harness/deerflow/agents/lead_agent/prompt.py" = ["E501"]
+
 [lint.isort]
 known-first-party = ["deerflow", "app"]
 
