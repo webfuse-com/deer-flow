@@ -11,3 +11,10 @@ known-first-party = ["deerflow", "app"]
 [format]
 quote-style = "double"
 indent-style = "space"
+
+# [argus] CI runs `uvx ruff` unpinned, so the formatter version floats. ruff
+# 0.16 began formatting Python code blocks inside Markdown, which would rewrite
+# 12 UPSTREAM docs (backend/docs/, CONTRIBUTING.md) that we otherwise never
+# touch and that carry no Python we execute. Reformatting them buys nothing and
+# costs a rebase conflict against bytedance/main on every upstream doc edit.
+exclude = ["*.md"]
