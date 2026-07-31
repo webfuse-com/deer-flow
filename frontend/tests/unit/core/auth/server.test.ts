@@ -14,6 +14,9 @@ rs.mock("next/headers", () => ({
   cookies: rs.fn(() => {
     throw new Error("cookies should not be read in static website mode");
   }),
+  headers: rs.fn(() => {
+    throw new Error("headers should not be read in static website mode");
+  }),
 }));
 
 const ENV_KEYS = [
@@ -135,6 +138,12 @@ describe("getServerSideUser — gateway_unavailable contract (issue #3493)", () 
         get: (name: string) =>
           name === "access_token" ? { value: "stub-token" } : undefined,
       })),
+      // [argus patch #15/#16] server.ts also reads request headers to pick up
+      // the Caddy-injected SSO identity. Without a `headers` mock the import is
+      // undefined and the call throws before the assertion under test.
+      headers: rs.fn(async () => ({
+        get: () => null,
+      })),
     }));
     const abortErr = new DOMException("Aborted", "AbortError");
     rs.stubGlobal(
@@ -154,6 +163,12 @@ describe("getServerSideUser — gateway_unavailable contract (issue #3493)", () 
       cookies: rs.fn(async () => ({
         get: (name: string) =>
           name === "access_token" ? { value: "stub-token" } : undefined,
+      })),
+      // [argus patch #15/#16] server.ts also reads request headers to pick up
+      // the Caddy-injected SSO identity. Without a `headers` mock the import is
+      // undefined and the call throws before the assertion under test.
+      headers: rs.fn(async () => ({
+        get: () => null,
       })),
     }));
     rs.stubGlobal(

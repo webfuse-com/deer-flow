@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from deerflow.config.tool_search_config import ToolSearchConfig
 from deerflow.skills.types import Skill
 
 # Module names that need to be mocked to break circular imports
@@ -41,7 +42,7 @@ _MOCKED_MODULE_NAMES = [
 
 
 def _default_app_config():
-    return SimpleNamespace(tool_search=SimpleNamespace(enabled=False))
+    return SimpleNamespace(tool_search=ToolSearchConfig(enabled=False))
 
 
 def _patch_default_get_app_config(executor_module):
@@ -502,7 +503,7 @@ class TestAgentConstruction:
             "get_or_new_skill_storage",
             lambda *, app_config=None: SimpleNamespace(load_skills=lambda *, enabled_only: []),
         )
-        monkeypatch.setattr(executor_module, "get_app_config", lambda: SimpleNamespace(tool_search=SimpleNamespace(enabled=True)))
+        monkeypatch.setattr(executor_module, "get_app_config", lambda: SimpleNamespace(tool_search=ToolSearchConfig(enabled=True)))
 
         @as_tool
         def mcp_calc(expression: str) -> str:
@@ -543,7 +544,7 @@ class TestAgentConstruction:
             "get_or_new_skill_storage",
             lambda *, app_config=None: SimpleNamespace(load_skills=lambda *, enabled_only: []),
         )
-        monkeypatch.setattr(executor_module, "get_app_config", lambda: SimpleNamespace(tool_search=SimpleNamespace(enabled=False)))
+        monkeypatch.setattr(executor_module, "get_app_config", lambda: SimpleNamespace(tool_search=ToolSearchConfig(enabled=False)))
 
         @as_tool
         def mcp_calc(expression: str) -> str:
@@ -588,7 +589,7 @@ class TestAgentConstruction:
             "get_or_new_skill_storage",
             lambda *, app_config=None: SimpleNamespace(load_skills=lambda *, enabled_only: []),
         )
-        monkeypatch.setattr(executor_module, "get_app_config", lambda: SimpleNamespace(tool_search=SimpleNamespace(enabled=True)))
+        monkeypatch.setattr(executor_module, "get_app_config", lambda: SimpleNamespace(tool_search=ToolSearchConfig(enabled=True)))
 
         @as_tool
         def active_tool(x: str) -> str:
