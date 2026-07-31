@@ -478,9 +478,8 @@ class TelegramChannel(Channel):
         if not self._allowed_users:
             self._allowed_users.add(int(user_id))
             logger.warning(
-                "[Telegram] allowed_users was empty; trust-on-first-use bound this "
-                "bot to user_id=%s. Set channels.telegram.allowed_users to lock it "
-                "explicitly.", user_id,
+                "[Telegram] allowed_users was empty; trust-on-first-use bound this bot to user_id=%s. Set channels.telegram.allowed_users to lock it explicitly.",
+                user_id,
             )
             return True
         return int(user_id) in self._allowed_users

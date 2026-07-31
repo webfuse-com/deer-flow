@@ -14,6 +14,7 @@ constant-time compare. This mirrors the Lexis trusted-proxy pattern and the
 existing ``X-DeerFlow-Internal-Token`` gate. With no secret configured, SSO
 header trust is DISABLED (fail-closed): the gateway falls back to cookie/login.
 """
+
 from __future__ import annotations
 
 import os

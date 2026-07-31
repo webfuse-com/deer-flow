@@ -31,6 +31,7 @@ Toggle / config (env, read once at construction):
   PYTHIA_RETRIEVAL_TIMEOUT   seconds before giving up + falling back (default 6)
   PYTHIA_RETRIEVAL_TOP_K     chunk hits to request (default 6)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -71,6 +72,7 @@ def _sign_caller(email: str, ttl_seconds: int = 120) -> str:
     sig = hmac.new(secret, f"{email}.{exp}".encode(), hashlib.sha256).hexdigest()
     return f"{email}.{exp}.{sig}"
 
+
 # Marker so we never re-inject within the same turn (mirrors ViewImage's guard).
 _INJECT_MARKER = "[pythia-kb-context]"
 
@@ -98,10 +100,8 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
         # unrecognised or absent ring retrieves NOTHING, and the env flag can
         # only disable, never enable.
         self.ring = (ring or "none").strip().lower()
-        flag = (os.environ.get("PYTHIA_ROUTER_INJECT")
-                or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
-        self.enabled = (self.ring in ("external", "internal", "hierarchical", "personal")
-                        and flag not in ("0", "false", "no", "off"))
+        flag = (os.environ.get("PYTHIA_ROUTER_INJECT") or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
+        self.enabled = self.ring in ("external", "internal", "hierarchical", "personal") and flag not in ("0", "false", "no", "off")
         self.base_url = os.environ.get("PYTHIA_KB_URL", "http://argus-kb-api:8000").rstrip("/")
         self.project = os.environ.get("PYTHIA_KB_PROJECT", "pythia")
         self.api_key = os.environ.get("KB_API_KEY", "")
@@ -117,8 +117,7 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
                 if isinstance(c, str):
                     return c
                 if isinstance(c, list):  # multimodal: pull text blocks
-                    return " ".join(b.get("text", "") for b in c
-                                    if isinstance(b, dict) and b.get("type") == "text")
+                    return " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
         return None
 
     def _already_handled_this_turn(self, messages: list) -> bool:
@@ -144,8 +143,7 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
 
     # --- routing + retrieval (delegated to kb-api /answer) -----------------
 
-    def _route_and_fetch(self, query: str,
-                         caller_email: str | None = None) -> tuple[dict, float, str | None]:
+    def _route_and_fetch(self, query: str, caller_email: str | None = None) -> tuple[dict, float, str | None]:
         """One call to the kb-api router. Returns (answer_json, elapsed_s,
         error). Never raises — a router/kb-api hiccup must not block the turn.
 
@@ -158,12 +156,9 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             token = _sign_caller(caller_email)
             if token:
                 body["caller_token"] = token
-                logger.info("[pythia-router] minted caller_token for %s (ring=%s)",
-                            caller_email, self.ring)
+                logger.info("[pythia-router] minted caller_token for %s (ring=%s)", caller_email, self.ring)
             else:
-                logger.warning("[pythia-router] ring=%s needs a token but signing "
-                               "secret/email missing -> kb-api will clamp to internal",
-                               self.ring)
+                logger.warning("[pythia-router] ring=%s needs a token but signing secret/email missing -> kb-api will clamp to internal", self.ring)
         t = time.monotonic()
         try:
             r = httpx.post(
@@ -205,8 +200,7 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             lines.append("")
         return "\n".join(lines)
 
-    def _build_context_message(self, messages: list,
-                               caller_email: str | None = None) -> HumanMessage | None:
+    def _build_context_message(self, messages: list, caller_email: str | None = None) -> HumanMessage | None:
         """Route+fetch for the current user turn and return a HumanMessage to
         inject into the MODEL REQUEST (not thread state), or None to inject
         nothing. Never raises."""
@@ -227,8 +221,7 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             # A router/kb-api failure: stay silent and let the agent use its MCP
             # tools rather than injecting a "couldn't reach KB" message (the
             # tools remain the fallback path, so degradation is graceful).
-            logger.info("[pythia-router] error, no inject: %s (%.0fms) q=%r",
-                        error, elapsed * 1000.0, query[:120])
+            logger.info("[pythia-router] error, no inject: %s (%.0fms) q=%r", error, elapsed * 1000.0, query[:120])
             return None
 
         blocks = answer.get("context_blocks", []) or []
@@ -238,13 +231,10 @@ class PythiaRetrievalMiddleware(AgentMiddleware[ThreadState]):
             # a company-knowledge question, OR found nothing. Inject nothing; the
             # agent proceeds (web/personal tools, or declines). This is the Tier-3
             # design: never inject wrong/empty context.
-            logger.info("[pythia-router] no context (route=%s) — no inject (%.0fms) q=%r",
-                        route, elapsed * 1000.0, query[:120])
+            logger.info("[pythia-router] no context (route=%s) — no inject (%.0fms) q=%r", route, elapsed * 1000.0, query[:120])
             return None
 
-        logger.info("[pythia-router] fired: ring=%s route=%s blocks=%d conf=%.3f (%.0fms) q=%r",
-                    self.ring, route, len(blocks), answer.get("confidence", 0.0),
-                    elapsed * 1000.0, query[:120])
+        logger.info("[pythia-router] fired: ring=%s route=%s blocks=%d conf=%.3f (%.0fms) q=%r", self.ring, route, len(blocks), answer.get("confidence", 0.0), elapsed * 1000.0, query[:120])
         # Injected as a HumanMessage (not SystemMessage): Qwen/vLLM rejects a
         # system message anywhere but the start. This message is appended to the
         # MODEL REQUEST only (see wrap_model_call), never to thread state, so it

@@ -609,9 +609,7 @@ def test_load_config_reads_network_key(tmp_path, monkeypatch):
         provisioner_url=None,
         network="argus-net",
     )
-    monkeypatch.setattr(
-        aio_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_config)
-    )
+    monkeypatch.setattr(aio_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_config))
 
     cfg = provider._load_config()
     assert cfg["network"] == "argus-net"
