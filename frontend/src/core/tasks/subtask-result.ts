@@ -161,7 +161,7 @@ export function derivePendingSubtaskStatus(
   toolCallId: string | undefined,
   messages: Message[],
   isCurrentTurnLoading: boolean,
-  isLastGroup: boolean = true,
+  isLastGroup = true,
 ): SubtaskStatus {
   if (isCurrentTurnLoading || hasSubtaskToolResult(toolCallId, messages)) {
     return "in_progress";
