@@ -18,8 +18,13 @@ def _run(coro):
 
 def _msg(text, *, chat="c1", topic=None, channel="telegram", mtype=InboundMessageType.CHAT, files=None):
     return InboundMessage(
-        channel_name=channel, chat_id=chat, user_id="u1", text=text,
-        msg_type=mtype, topic_id=topic, files=files or [],
+        channel_name=channel,
+        chat_id=chat,
+        user_id="u1",
+        text=text,
+        msg_type=mtype,
+        topic_id=topic,
+        files=files or [],
     )
 
 

@@ -1,10 +1,10 @@
 """[argus patch #37] Tests for the blank-final-turn fixes:
 
-  * ``deerflow.utils.messages.is_blank_text`` — the shared emptiness check now
-    homed in the harness (was ``app.channels.manager._is_blank_text``).
-  * ``app.gateway.pagination.mark_blank_final_ai_messages`` — the web-side
-    display guard.
-  * ``EmptyFinalRetryMiddleware`` — re-invoke the model once on a blank final.
+* ``deerflow.utils.messages.is_blank_text`` — the shared emptiness check now
+  homed in the harness (was ``app.channels.manager._is_blank_text``).
+* ``app.gateway.pagination.mark_blank_final_ai_messages`` — the web-side
+  display guard.
+* ``EmptyFinalRetryMiddleware`` — re-invoke the model once on a blank final.
 """
 
 from __future__ import annotations

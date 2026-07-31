@@ -1260,7 +1260,10 @@ class TestChannelManager:
             await manager.start()
 
             inbound = InboundMessage(
-                channel_name="slack", chat_id="chat1", user_id="user1", text="hi",
+                channel_name="slack",
+                chat_id="chat1",
+                user_id="user1",
+                text="hi",
                 agent_name="atlas",
             )
             await bus.publish_inbound(inbound)
@@ -1291,8 +1294,12 @@ class TestChannelManager:
             await manager.start()
 
             inbound = InboundMessage(
-                channel_name="slack", chat_id="chat1", user_id="user1", text="hi",
-                agent_name="atlas", unattended=True,
+                channel_name="slack",
+                chat_id="chat1",
+                user_id="user1",
+                text="hi",
+                agent_name="atlas",
+                unattended=True,
             )
             await bus.publish_inbound(inbound)
             await _wait_for(lambda: len(outbound_received) >= 1)
@@ -5150,21 +5157,25 @@ class TestSlackThreadContext:
         return ch, mock_web
 
     def test_formats_bot_and_user_messages(self):
-        ch, _ = self._channel([
-            {"ts": "1.0", "bot_id": "B1", "text": "Minutes: speaker 2 said hi"},
-            {"ts": "2.0", "user": "U9", "text": "assign Nicholas to speaker 2"},
-        ])
+        ch, _ = self._channel(
+            [
+                {"ts": "1.0", "bot_id": "B1", "text": "Minutes: speaker 2 said hi"},
+                {"ts": "2.0", "user": "U9", "text": "assign Nicholas to speaker 2"},
+            ]
+        )
         out = _run(ch.fetch_thread_context("C1", "1.0"))
         assert "Pythia: Minutes: speaker 2 said hi" in out
         assert "<@U9>: assign Nicholas to speaker 2" in out
         assert out.startswith("[thread context")
 
     def test_excludes_current_reply_and_acks(self):
-        ch, _ = self._channel([
-            {"ts": "1.0", "bot_id": "B1", "text": "the draft"},
-            {"ts": "2.0", "bot_id": "B1", "text": ":hourglass_flowing_sand: Working on it..."},
-            {"ts": "3.0", "user": "U9", "text": "this is the current reply"},
-        ])
+        ch, _ = self._channel(
+            [
+                {"ts": "1.0", "bot_id": "B1", "text": "the draft"},
+                {"ts": "2.0", "bot_id": "B1", "text": ":hourglass_flowing_sand: Working on it..."},
+                {"ts": "3.0", "user": "U9", "text": "this is the current reply"},
+            ]
+        )
         out = _run(ch.fetch_thread_context("C1", "1.0", exclude_ts="3.0"))
         assert "the draft" in out
         assert "Working on it" not in out

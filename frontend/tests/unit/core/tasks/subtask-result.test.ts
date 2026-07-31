@@ -182,8 +182,18 @@ describe("derivePendingSubtaskStatus", () => {
     const messages = [{ type: "ai" }] as Message[];
 
     expect(
-      derivePendingSubtaskStatus("call_task_1", messages, false, true),
+      derivePendingSubtaskStatus("call_task_1", messages, false, true, true),
     ).toBe("in_progress");
+  });
+
+  it("fails the last group of a thread that never streamed this session", () => {
+    // A run stopped mid-subtask and then reloaded from history: nothing is
+    // streaming and nothing ever will be, so the card must not spin forever.
+    const messages = [{ type: "ai" }] as Message[];
+
+    expect(
+      derivePendingSubtaskStatus("call_task_1", messages, false, true, false),
+    ).toBe("failed");
   });
 
   it("leaves result parsing to the ToolMessage path when a result exists", () => {

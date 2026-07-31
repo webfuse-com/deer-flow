@@ -35,7 +35,8 @@ from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.slash import parse_slash_skill_reference
 from deerflow.skills.storage import get_or_new_skill_storage
 from deerflow.skills.storage.skill_storage import SkillStorage
-from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, is_blank_text as _is_blank_text
+from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY
+from deerflow.utils.messages import is_blank_text as _is_blank_text
 
 logger = logging.getLogger(__name__)
 

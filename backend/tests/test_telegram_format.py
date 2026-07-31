@@ -74,8 +74,7 @@ def test_chunk_respects_limit():
 
 def _tag_balanced(s: str) -> bool:
     # Every block open tag has a matching close within the same chunk.
-    for open_t, close_t in (("<pre><code>", "</code></pre>"), ("<pre>", "</pre>"),
-                            ("<blockquote", "</blockquote>")):
+    for open_t, close_t in (("<pre><code>", "</code></pre>"), ("<pre>", "</pre>"), ("<blockquote", "</blockquote>")):
         if s.count(open_t) != s.count(close_t):
             return False
     return True
@@ -109,4 +108,4 @@ def test_chunk_does_not_split_inside_tag():
     chunks = chunk_html(text, limit=4096)
     for c in chunks:
         # An opening "<a" in a chunk must have its closing ">" in the same chunk.
-        assert c.count("<a ") == c.count("</a>") or "<a " not in c or ">" in c[c.rfind("<a "):]
+        assert c.count("<a ") == c.count("</a>") or "<a " not in c or ">" in c[c.rfind("<a ") :]

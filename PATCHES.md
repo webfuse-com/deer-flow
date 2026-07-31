@@ -852,16 +852,32 @@ carry budget ledger.
   Only when the run has moved past this group (not the last group) does
   it return `"failed"`, preserving the "stale task from a prior turn"
   detection.
+- Amended 2026-07-31: the `isLastGroup` rule alone was too broad. A run
+  stopped mid-subtask and then reloaded from history has exactly the
+  protected shape (last group, not loading, no ToolMessage), so the card
+  spun "Running subtask" forever instead of resolving. Upstream's e2e
+  `subtask-card.spec.ts` "shows failed after a stopped task thread is
+  reloaded" asserts the correct behaviour and had been failing since this
+  patch landed on 2026-07-03 - unnoticed because the e2e job is not in the
+  required set and had not run since 2026-07-01. The `in_progress` branch
+  now also requires `hasStreamedThisSession`, latched in `message-list.tsx`
+  the first time `thread.isLoading` is true. A transient loading=false
+  during a live turn keeps the latch set (patch intent preserved); a thread
+  only ever loaded from history never sets it, so a genuinely stopped
+  subtask resolves to `"failed"`.
 - Files: `frontend/src/core/tasks/subtask-result.ts` (added
-  `isLastGroup` param + JSDoc),
+  `isLastGroup` + `hasStreamedThisSession` params + JSDoc),
   `frontend/src/components/workspace/messages/message-list.tsx` (pass
-  `isLastGroup` from the group index),
+  `isLastGroup` from the group index, plus the `hasStreamedRef` latch),
   `frontend/tests/unit/core/tasks/subtask-result.test.ts` (updated
-  existing test to pass `false`, added test for `true` case)
-- Tests: `frontend/tests/unit/core/tasks/subtask-result.test.ts` (+1:
-  "stays in_progress for the last group even when loading is briefly false";
+  existing test to pass `false`, added tests for the live-turn and
+  stopped-thread cases)
+- Tests: `frontend/tests/unit/core/tasks/subtask-result.test.ts` (+2:
+  "stays in_progress for the last group even when loading is briefly false",
+  "fails the last group of a thread that never streamed this session";
   updated: "does not revive an earlier unfinished task" now passes
-  `isLastGroup=false`)
+  `isLastGroup=false`). Upstream e2e `subtask-card.spec.ts` covers the
+  stopped-thread case end to end and must stay green.
 - Delete-when: upstream's `BaseStream.isLoading` reliably stays `true`
   during active background tool execution, or when the task_tool moves
   to a push-based result delivery that doesn't rely on polling + SSE.

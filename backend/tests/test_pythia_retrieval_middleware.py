@@ -161,22 +161,23 @@ class TestLeadAgentWiring:
         # config entry at all, so load_agent_config raises and _agent_config
         # stays None.
         if agent_ring is _MISSING:
-            monkeypatch.setattr(lead_agent_module, "load_agent_config",
-                                lambda name: (_ for _ in ()).throw(KeyError(name)))
+            monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda name: (_ for _ in ()).throw(KeyError(name)))
         else:
             cfg = AgentConfig(name=agent_name, pythia_ring=agent_ring)
             monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda name: cfg)
 
         app_config = AppConfig(
-            models=[ModelConfig(
-                name="m",
-                display_name="m",
-                description=None,
-                use="langchain_openai:ChatOpenAI",
-                model="m",
-                supports_thinking=False,
-                supports_vision=False,
-            )],
+            models=[
+                ModelConfig(
+                    name="m",
+                    display_name="m",
+                    description=None,
+                    use="langchain_openai:ChatOpenAI",
+                    model="m",
+                    supports_thinking=False,
+                    supports_vision=False,
+                )
+            ],
             sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
         )
         chain = lead_agent_module.build_middlewares(

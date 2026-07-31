@@ -20,13 +20,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deerflow.agents.lead_agent.agent import _create_todo_list_middleware
 from deerflow.agents.middlewares.argus_todo_middleware import (
-    ArgusTodoMiddleware,
     _ARGUS_SYSTEM_PROMPT,
     _ARGUS_TOOL_DESCRIPTION,
+    ArgusTodoMiddleware,
 )
 from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
 from deerflow.config.agents_config import AgentConfig
-
 
 # ---------------------------------------------------------------------------
 # Construction defaults
@@ -128,9 +127,7 @@ def test_factory_returns_vanilla_without_flag():
     cfg = AgentConfig(name="code-reviewer", uses_planner_pipeline=False)
     mw = _create_todo_list_middleware(is_plan_mode=True, agent_name="code-reviewer", agent_config=cfg)
     assert isinstance(mw, TodoMiddleware)
-    assert not isinstance(mw, ArgusTodoMiddleware), (
-        "code-reviewer should keep the upstream prompt, not Argus's override"
-    )
+    assert not isinstance(mw, ArgusTodoMiddleware), "code-reviewer should keep the upstream prompt, not Argus's override"
 
 
 def test_factory_returns_vanilla_when_agent_config_is_none():
@@ -191,10 +188,13 @@ def test_after_model_ignores_native_list_and_other_tools():
     """Native list args and non-write_todos calls pass through untouched."""
     mw = ArgusTodoMiddleware()
     native = [{"content": "S1", "status": "in_progress"}]
-    msg = AIMessage(content="", tool_calls=[
-        _write_todos_call(list(native)),
-        {"name": "bash", "args": {"command": '["not", "todos"]'}, "id": "tc-2", "type": "tool_call"},
-    ])
+    msg = AIMessage(
+        content="",
+        tool_calls=[
+            _write_todos_call(list(native)),
+            {"name": "bash", "args": {"command": '["not", "todos"]'}, "id": "tc-2", "type": "tool_call"},
+        ],
+    )
     state = {"todos": [], "messages": [msg]}
 
     mw.after_model(state, _make_runtime())

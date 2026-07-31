@@ -146,12 +146,19 @@ export function hasSubtaskToolResult(
  * When neither holds, the answer depends on whether the subtask's group
  * is still the last group in the thread:
  *
- * - **Last group** (``isLastGroup=true``): the turn may still be in
- *   progress with a transient ``isLoading=false`` (SSE stream pause,
+ * - **Last group of a live turn** (``isLastGroup=true`` and
+ *   ``hasStreamedThisSession=true``): the turn may still be in progress
+ *   with a transient ``isLoading=false`` (SSE stream pause,
  *   reconnection, etc). Returning ``in_progress`` avoids a false
  *   "failed" pill that sticks due to the terminal-status guard in
  *   {@link useUpdateSubtask}. The real terminal status arrives later
  *   via {@link parseSubtaskResult} when the ToolMessage lands.
+ *
+ * - **Last group of a thread loaded from history**
+ *   (``hasStreamedThisSession=false``): nothing is streaming and nothing
+ *   ever will for this group. A run that was stopped mid-subtask leaves
+ *   exactly this shape, so returning ``in_progress`` would spin forever.
+ *   Return ``failed``.
  *
  * - **Not the last group** (``isLastGroup=false``): the run has moved
  *   past this group without producing a ToolMessage, so the task is
@@ -161,12 +168,13 @@ export function derivePendingSubtaskStatus(
   toolCallId: string | undefined,
   messages: Message[],
   isCurrentTurnLoading: boolean,
-  isLastGroup: boolean = true,
+  isLastGroup = true,
+  hasStreamedThisSession = true,
 ): SubtaskStatus {
   if (isCurrentTurnLoading || hasSubtaskToolResult(toolCallId, messages)) {
     return "in_progress";
   }
-  if (isLastGroup) {
+  if (isLastGroup && hasStreamedThisSession) {
     return "in_progress";
   }
   return "failed";

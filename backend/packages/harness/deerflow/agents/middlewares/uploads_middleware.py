@@ -101,11 +101,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         # Point the model at view_image, the only tool that gets the pixels
         # into context.
         if Path(file.get("filename", "")).suffix.lower() in _IMAGE_EXTENSIONS:
-            lines.append(
-                f"  This is an image. Call `view_image(image_path='{file['path']}')` "
-                "to view it before answering. Do NOT use read_file/grep/glob on it "
-                "and do NOT claim you cannot see images."
-            )
+            lines.append(f"  This is an image. Call `view_image(image_path='{file['path']}')` to view it before answering. Do NOT use read_file/grep/glob on it and do NOT claim you cannot see images.")
             lines.append("")
             return
         outline = file.get("outline") or []

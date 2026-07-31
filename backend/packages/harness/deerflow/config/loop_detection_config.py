@@ -65,7 +65,12 @@ class LoopDetectionConfig(BaseModel):
     read_file_bucket_size_lines: int = Field(
         default=200,
         ge=1,
-        description=("[argus] Line-range bucket size used when hashing read_file calls for loop detection. read_file calls whose start/end lines fall in the same bucket are treated as the same call. Smaller values (e.g. 50) stop a model that surgically reads distinct sections of one long file from tripping the identical-call detector. Default 200 matches upstream."),
+        description=(
+            "[argus] Line-range bucket size used when hashing read_file calls for loop detection. "
+            "read_file calls whose start/end lines fall in the same bucket are treated as the same call. "
+            "Smaller values (e.g. 50) stop a model that surgically reads distinct sections of one long "
+            "file from tripping the identical-call detector. Default 200 matches upstream."
+        ),
     )
 
     @model_validator(mode="after")

@@ -42,7 +42,7 @@ from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddlew
 from deerflow.agents.middlewares.tool_error_handling_middleware import build_lead_runtime_middlewares
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from deerflow.agents.thread_state import ThreadState
-from deerflow.config.agents_config import load_agent_config, validate_agent_name
+from deerflow.config.agents_config import AgentConfig, load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.models import create_chat_model
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
@@ -78,9 +78,7 @@ def _resolve_model_name(requested_model_name: str | None = None, *, app_config: 
     return default_model_name
 
 
-def _create_summarization_middleware(
-    *, app_config: AppConfig | None = None, lead_model_name: str | None = None
-) -> DeerFlowSummarizationMiddleware | None:
+def _create_summarization_middleware(*, app_config: AppConfig | None = None, lead_model_name: str | None = None) -> DeerFlowSummarizationMiddleware | None:
     """Create and configure the summarization middleware from config.
 
     [argus] ``lead_model_name`` selects a per-model override from
@@ -155,7 +153,7 @@ def _create_summarization_middleware(
     )
 
 
-def _create_todo_list_middleware(is_plan_mode: bool, agent_name: str | None = "", agent_config: "AgentConfig | None" = None) -> TodoMiddleware | None:
+def _create_todo_list_middleware(is_plan_mode: bool, agent_name: str | None = "", agent_config: AgentConfig | None = None) -> TodoMiddleware | None:
     """Create and configure the TodoList middleware.
 
     Args:
@@ -346,9 +344,7 @@ def build_middlewares(
     # the trigger to this model's context window and pick a summarizer that can
     # actually read it. model_name is already in scope (it gates the vision
     # middleware below); None simply keeps the global settings.
-    summarization_middleware = _create_summarization_middleware(
-        app_config=resolved_app_config, lead_model_name=model_name
-    )
+    summarization_middleware = _create_summarization_middleware(app_config=resolved_app_config, lead_model_name=model_name)
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
@@ -407,14 +403,11 @@ def build_middlewares(
     # opt in. Leaving it unset no longer enables anything. The ring is a CEILING
     # enforced server-side in kb-api, never an escalation.
     _agent_ring = getattr(_agent_config, "pythia_ring", None)
-    _flag_raw = (os.environ.get("PYTHIA_ROUTER_INJECT")
-                 or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
+    _flag_raw = (os.environ.get("PYTHIA_ROUTER_INJECT") or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
     _stack_disabled = _flag_raw in ("0", "false", "no", "off")
     _ring = (_agent_ring or "none").strip().lower()
     if _stack_disabled and _ring not in ("none", ""):
-        logger.info(
-            "PythiaRetrievalMiddleware: agent %r requests ring %r but the stack "
-            "flag disables retrieval; not attaching.", agent_name, _ring)
+        logger.info("PythiaRetrievalMiddleware: agent %r requests ring %r but the stack flag disables retrieval; not attaching.", agent_name, _ring)
         _ring = "none"
     if _ring not in ("none", ""):
         from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
@@ -531,9 +524,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     # Forwarded from InboundMessage -> run_context -> runtime context. Merged
     # with skill allowed-tools by filter_tools_by_skill_allowed_tools.
     schedule_allowed = cfg.get("allowed_tools")
-    extra_allowed: set[str] | None = (
-        set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
-    )
+    extra_allowed: set[str] | None = set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
 
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)

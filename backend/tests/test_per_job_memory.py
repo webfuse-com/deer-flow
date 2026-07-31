@@ -32,10 +32,11 @@ def _run_after_agent(context: dict):
     mw = MemoryMiddleware(agent_name="atlas")
     state = _conversation_state()
     queue = mock.MagicMock()
-    with mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_queue", return_value=queue), \
-         mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_config",
-                    return_value=SimpleNamespace(enabled=True)), \
-         mock.patch("deerflow.agents.middlewares.memory_middleware.get_effective_user_id", return_value="default"):
+    with (
+        mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_queue", return_value=queue),
+        mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_config", return_value=SimpleNamespace(enabled=True)),
+        mock.patch("deerflow.agents.middlewares.memory_middleware.get_effective_user_id", return_value="default"),
+    ):
         mw.after_agent(state, _runtime({"thread_id": "t1", **context}))
     return queue
 
@@ -69,8 +70,7 @@ class TestMemoryInjectionGate:
     def _inject(self, context: dict) -> str:
         mw = DynamicContextMiddleware(agent_name="atlas")
         state = {"messages": [HumanMessage(content="Hello", id="msg-1")]}
-        with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value="<memory>secret fact</memory>"), \
-             mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
+        with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value="<memory>secret fact</memory>"), mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
             mock_dt.now.return_value.strftime.return_value = "2026-06-29, Monday"
             result = mw.before_agent(state, _runtime(context))
         return result["messages"][0].content if result else ""
@@ -107,9 +107,7 @@ class TestSummarizationFlushGate:
             runtime=_runtime(context),
         )
         queue = mock.MagicMock()
-        with mock.patch.object(sh, "get_memory_config", return_value=SimpleNamespace(enabled=True)), \
-             mock.patch.object(sh, "get_memory_queue", return_value=queue), \
-             mock.patch.object(sh, "resolve_runtime_user_id", return_value="default"):
+        with mock.patch.object(sh, "get_memory_config", return_value=SimpleNamespace(enabled=True)), mock.patch.object(sh, "get_memory_queue", return_value=queue), mock.patch.object(sh, "resolve_runtime_user_id", return_value="default"):
             sh.memory_flush_hook(event)
         return queue
 

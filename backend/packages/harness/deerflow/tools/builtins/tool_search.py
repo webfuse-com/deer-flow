@@ -183,8 +183,7 @@ def build_deferred_tool_setup(filtered_tools: list[BaseTool], *, enabled: bool, 
     if not enabled:
         # Deferral disabled: defer nothing; the model binds every tool as before.
         return DeferredToolSetup(None, frozenset(), None)
-    deferred = [t for t in filtered_tools
-                if is_mcp_tool(t) and not _is_excluded(t.name, exclude)]
+    deferred = [t for t in filtered_tools if is_mcp_tool(t) and not _is_excluded(t.name, exclude)]
     if not deferred:
         # Enabled, but no MCP tool to defer: same empty result, different reason.
         return DeferredToolSetup(None, frozenset(), None)
@@ -204,9 +203,7 @@ def assemble_deferred_tools(filtered_tools: list[BaseTool], *, enabled: bool, ex
     all get the same fail-closed guarantee from one place.
     """
     deferred_setup = build_deferred_tool_setup(filtered_tools, enabled=enabled, exclude=exclude)
-    if enabled and not deferred_setup.deferred_names and any(
-        is_mcp_tool(t) and not _is_excluded(t.name, exclude) for t in filtered_tools
-    ):
+    if enabled and not deferred_setup.deferred_names and any(is_mcp_tool(t) and not _is_excluded(t.name, exclude) for t in filtered_tools):
         raise RuntimeError("tool_search enabled and MCP tools survived policy filtering, but no deferred set was recovered - refusing to bind MCP schemas (fail-closed).")
     final_tools = list(filtered_tools)
     if deferred_setup.tool_search_tool:
