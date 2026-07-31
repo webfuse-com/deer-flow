@@ -180,6 +180,15 @@ export function MessageList({
 }) {
   const { t } = useI18n();
   const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
+  // [argus patch #42] Latches once this thread has actually streamed in this
+  // browser session. A transient isLoading=false during a live turn (SSE pause,
+  // reconnection) keeps this true, which is the case patch #42 protects. A
+  // thread merely loaded from history never sets it, so a run that was stopped
+  // mid-subtask resolves to "failed" instead of spinning forever.
+  const hasStreamedRef = useRef(false);
+  if (thread.isLoading) {
+    hasStreamedRef.current = true;
+  }
   const updateSubtask = useUpdateSubtask();
   const messages = thread.messages;
   const groupedMessages = getMessageGroups(messages);
@@ -374,6 +383,7 @@ export function MessageList({
                       group.messages,
                       groupIsLoading,
                       isLastGroup,
+                      hasStreamedRef.current,
                     );
                     const task: Subtask = {
                       id: taskId,
