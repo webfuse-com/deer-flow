@@ -577,6 +577,88 @@ class TestToolOutputSynopsis:
         assert preview.count("alpha") >= 50
 
 
+class TestBuildPreviewOmittedBlockIndex:
+    """Patch #49: a preview of LIST-shaped output indexes the dropped items."""
+
+    @staticmethod
+    def _block(header: str, body_chars: int) -> str:
+        return header + "\n" + "b" * body_chars
+
+    def _join(self, blocks: list[str]) -> str:
+        return "\n\n---\n\n".join(blocks)
+
+    def test_middle_items_are_indexed(self):
+        content = self._join(
+            [
+                self._block("ITEM-1 first", 3000),
+                self._block("ITEM-2 middle-a", 3000),
+                self._block("ITEM-3 middle-b", 3000),
+                self._block("ITEM-4 last", 3000),
+            ]
+        )
+        preview = _build_preview(content, tool_name="pythia_list_meetings", virtual_path="/mnt/test/f.txt", head_chars=2000, tail_chars=1000)
+        assert "ITEM-2 middle-a" in preview
+        assert "ITEM-3 middle-b" in preview
+        # ITEM-4's header offset also falls in the omitted span (the tail
+        # starts mid-body), so its header is indexed too.
+        assert "ITEM-4 last" in preview
+        # the head block is visible once, not re-indexed
+        assert preview.count("ITEM-1 first") == 1
+        # the pre-existing reference sentence survives untouched
+        assert "start_line and end_line" in preview
+        assert "chars omitted from this preview." in preview
+
+    def test_meeting_listing_incident_shape(self):
+        # Shape of the 2026-08-03 daily-review incident: a four-meeting day
+        # (~20K chars), both 1:1s in the middle of the listing. Pre-patch, the
+        # preview contained no trace of them and the review reported their
+        # minutes as not captured.
+        def meeting(title: str) -> str:
+            return f"2026-08-03 — {title}\n## Summary\n" + "detail " * 700
+
+        content = self._join(
+            [
+                meeting("Ashish / Nicholas Weekly Sync (2 ppl)"),
+                meeting("Yauhen / Nicholas (2 ppl)"),
+                meeting("Ion Sync (2 ppl)"),
+                meeting("Ashish / Nicholas Weekly Sync (internal)"),
+            ]
+        )
+        preview = _build_preview(
+            content,
+            tool_name="pythia_list_meetings",
+            virtual_path="/mnt/user-data/outputs/.tool-results/pythia_list_meetings-x.txt",
+            head_chars=2000,
+            tail_chars=1000,
+        )
+        assert "Yauhen / Nicholas" in preview
+        assert "Ion Sync" in preview
+
+    def test_non_list_content_keeps_plain_preview(self):
+        content = "x" * 8000
+        preview = _build_preview(content, tool_name="bash", virtual_path="/mnt/t.log", head_chars=100, tail_chars=50)
+        assert "list item" not in preview
+
+    def test_all_headers_visible_means_no_index(self):
+        # Three tiny blocks, fully covered by the head: nothing was dropped.
+        content = self._join([self._block("A", 40), self._block("B", 40), self._block("C", 40)])
+        preview = _build_preview(content, tool_name="t", virtual_path="/v", head_chars=1000, tail_chars=100)
+        assert "list item" not in preview
+
+    def test_index_is_capped_with_more_marker(self):
+        content = self._join([self._block(f"HDR-{i:03d}", 200) for i in range(60)])
+        preview = _build_preview(content, tool_name="t", virtual_path="/v", head_chars=100, tail_chars=100)
+        assert "HDR-001" in preview
+        assert "HDR-040" not in preview
+        assert "more)" in preview
+
+    def test_long_header_line_truncated(self):
+        content = self._join([self._block("first", 3000), self._block("H" * 400, 3000), self._block("last", 3000)])
+        preview = _build_preview(content, tool_name="t", virtual_path="/v", head_chars=1000, tail_chars=500)
+        assert "H" * 159 + "…" in preview
+        assert "H" * 200 not in preview
+
+
 class TestBuildFallback:
     def test_short_content_unchanged(self):
         assert _build_fallback("short", tool_name="t", max_chars=100, head_chars=50, tail_chars=50) == "short"
