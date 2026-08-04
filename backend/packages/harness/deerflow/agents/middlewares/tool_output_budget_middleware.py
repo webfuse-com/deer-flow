@@ -202,6 +202,55 @@ def _externalize_to_sandbox(
 # Preview / fallback builders
 # ---------------------------------------------------------------------------
 
+# Block separator that marks a tool result as LIST-shaped: MCP text tools join
+# list items with "\n\n---\n\n" (kb-api's meeting/search listings are the
+# motivating case). Scalar results never contain it, so its presence is the
+# discriminator for the omitted-item index below.
+_BLOCK_SEPARATOR = "\n\n---\n\n"
+# Bounds for that index: enough to name every item of a very long listing
+# without letting a pathological result (hundreds of separators) grow the
+# preview unbounded. 24 items x 160 chars caps the index under ~4K chars.
+_INDEX_MAX_ITEMS = 24
+_INDEX_ITEM_MAX_CHARS = 160
+
+
+def _omitted_block_headers(content: str, head_end: int, tail_start: int) -> tuple[list[str], int]:
+    """Index the list items whose first line a head+tail preview dropped.
+
+    A head+tail preview of a LIST-shaped result keeps the first and last items
+    and silently drops every middle one, yet still reads like a complete
+    listing, so a reader treats a dropped item as nonexistent. That is the
+    2026-08-03 daily-review incident: two 1:1 meetings sat in the omitted
+    middle of a meeting listing and were reported as having no minutes at all.
+
+    Returns (first lines of blocks starting inside [head_end, tail_start),
+    count of further such blocks beyond the cap). ([], 0) for non-list content,
+    so scalar output keeps the plain preview byte-identically.
+    """
+    if head_end >= tail_start or _BLOCK_SEPARATOR not in content:
+        return [], 0
+    starts = [0]
+    sep_at = content.find(_BLOCK_SEPARATOR)
+    while sep_at != -1:
+        starts.append(sep_at + len(_BLOCK_SEPARATOR))
+        sep_at = content.find(_BLOCK_SEPARATOR, sep_at + len(_BLOCK_SEPARATOR))
+    headers: list[str] = []
+    extra = 0
+    for start in starts:
+        if not head_end <= start < tail_start:
+            continue  # this block's first line is visible in the head or tail
+        line_end = content.find("\n", start)
+        first_line = (content[start:line_end] if line_end != -1 else content[start:]).strip()
+        if not first_line:
+            continue
+        if len(headers) >= _INDEX_MAX_ITEMS:
+            extra += 1
+            continue
+        if len(first_line) > _INDEX_ITEM_MAX_CHARS:
+            first_line = first_line[: _INDEX_ITEM_MAX_CHARS - 1] + "…"
+        headers.append(first_line)
+    return headers, extra
+
 
 def _build_preview(
     content: str,
@@ -223,7 +272,15 @@ def _build_preview(
     tail = content[tail_start:] if tail_start < total else ""
 
     omitted = total - len(head) - len(tail)
-    ref = f"\n\n[Full {tool_name} output saved to {virtual_path} ({total} chars, ~{total // 4} tokens). Use read_file with start_line and end_line to access specific sections. {omitted} chars omitted from this preview.]\n\n"
+    dropped, dropped_extra = _omitted_block_headers(content, head_end, tail_start)
+    index_note = ""
+    if dropped:
+        count = len(dropped) + dropped_extra
+        lines = "\n".join(f"- {h}" for h in dropped)
+        if dropped_extra:
+            lines += f"\n- (+{dropped_extra} more)"
+        index_note = f" The omitted span contains {count} list item(s) whose first lines are:\n{lines}\nTheir content is only in the saved file, not in this preview."
+    ref = f"\n\n[Full {tool_name} output saved to {virtual_path} ({total} chars, ~{total // 4} tokens). Use read_file with start_line and end_line to access specific sections. {omitted} chars omitted from this preview.{index_note}]\n\n"
 
     parts = [head, ref]
     if tail:

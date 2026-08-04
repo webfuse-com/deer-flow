@@ -72,6 +72,9 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#44](#patch-44) | unattended-silence: no blank-final retry, wider narration backstop, no token logging | argus-edit | this PR |
 | [#45](#patch-45) | delivery-report callback for scheduled playbook fires | argus-additive | this PR |
 | [#46](#patch-46) | tool_search.exclude: deferral opt-out for hot MCP tools | argus-edit | this PR |
+| [#47](#patch-47) | per-lead-model summarization overrides | argus-edit | f797b8b8, 81e59e14 |
+| [#48](#patch-48) | fail-closed Pythia retrieval ring (opt-in, not opt-out) | argus-edit | 6d6eda1c |
+| [#49](#patch-49) | omitted-item index in list-shaped tool-output previews | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1215,3 +1218,42 @@ ATTACHED AT ALL - the module docstring already claimed that coverage and did not
 have it, which is exactly where the bug lived. It includes the production path
 (the synthetic `default` agent with no config entry) and the opt-in paths. 13 of
 the 28 tests in the file fail against the pre-patch source.
+
+## Patch #49
+
+**Patch #49 - omitted-item index in list-shaped tool-output previews.**
+
+The tool-output budget middleware replaces an externalized result with a
+head+tail preview. For LIST-shaped results (blocks joined with `\n\n---\n\n`,
+the join every kb-api MCP listing tool uses) that shape is the worst case: the
+preview keeps the first and last item, silently drops every middle one, and
+still reads like a complete listing. The model has no cue that anything
+between head and tail existed, so "absent from the preview" becomes "absent
+from the source". That is the 2026-08-03 daily-review incident on
+atlas-nicholas: a 22,636-char `pythia_list_meetings` result held four
+meetings; the two 1:1s in the middle vanished from the preview and the review
+reported their minutes as not captured and "not recoverable" while both sat in
+Pythia with full summaries.
+
+`_omitted_block_headers(content, head_end, tail_start)` scans the block starts
+of a separator-joined result and returns the first line of every block whose
+header offset falls inside the omitted span (including a block whose body the
+tail shows but whose header was cut). `_build_preview` appends those lines to
+the existing file-reference marker as an index: "The omitted span contains N
+list item(s) whose first lines are: ...". Bounded by 24 items x 160 chars plus
+a "(+N more)" overflow marker, so a pathological result cannot grow the
+preview unbounded. Content without the separator returns ([], 0) and the
+preview stays byte-identical to pre-patch output; `_build_fallback` is
+deliberately untouched because its contract is a hard max_chars guarantee.
+
+Exit condition: upstream's budget middleware grows structure-aware previews
+(or per-item summarization) for list results. Then drop the helper and the
+index note.
+
+Tests: backend/tests/test_tool_output_budget_middleware.py
+`TestBuildPreviewOmittedBlockIndex` (6) - middle items indexed, the incident
+shape (a four-meeting listing must surface both middle 1:1 headers), non-list
+content byte-identical, all-headers-visible means no index, cap + "(+N more)"
+marker, long header truncation. 4 of the 6 fail against the pre-patch source
+(the two absence assertions pass both ways by design, locking no-regression).
+Full file: 101 passed; tests/test_tool_output_truncation.py: 36 passed.
