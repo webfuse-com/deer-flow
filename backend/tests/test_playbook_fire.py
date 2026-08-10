@@ -234,8 +234,10 @@ class TestFirePromptText:
     def test_inline_prompt_publishes_without_a_file(self, client, tmp_path):
         """No playbook file exists for the id; the inline text is delivered."""
         service = _make_service()
-        with patch.object(playbooks, "PLAYBOOK_DIR", tmp_path), \
-                patch("app.channels.service.get_channel_service", return_value=service):
+        with (
+            patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
+            patch("app.channels.service.get_channel_service", return_value=service),
+        ):
             resp = _post(client, schedule_id=self.HOOK_ID, body={
                 "prompt_text": "A new order arrived.\n[transformer-data]\n{\"order_id\": 7}\n[/transformer-data]",
                 "agent": "order-clerk",
@@ -265,8 +267,10 @@ class TestFirePromptText:
         from datetime import date
 
         service = _make_service()
-        with patch.object(playbooks, "PLAYBOOK_DIR", tmp_path), \
-                patch("app.channels.service.get_channel_service", return_value=service):
+        with (
+            patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
+            patch("app.channels.service.get_channel_service", return_value=service),
+        ):
             resp = _post(client, schedule_id=self.HOOK_ID,
                          body={"prompt_text": "Today is {{TODAY}}."})
         assert resp.status_code == 200
@@ -277,16 +281,20 @@ class TestFirePromptText:
     def test_whitespace_prompt_text_is_422(self, client, tmp_path):
         """Empty inline text is a caller bug, not a fall-through to the file."""
         service = _make_service()
-        with patch.object(playbooks, "PLAYBOOK_DIR", tmp_path), \
-                patch("app.channels.service.get_channel_service", return_value=service):
+        with (
+            patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
+            patch("app.channels.service.get_channel_service", return_value=service),
+        ):
             resp = _post(client, schedule_id=self.HOOK_ID, body={"prompt_text": "   \n"})
         assert resp.status_code == 422
         service.bus.publish_inbound.assert_not_called()
 
     def test_oversize_prompt_text_is_422(self, client, tmp_path):
         service = _make_service()
-        with patch.object(playbooks, "PLAYBOOK_DIR", tmp_path), \
-                patch("app.channels.service.get_channel_service", return_value=service):
+        with (
+            patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
+            patch("app.channels.service.get_channel_service", return_value=service),
+        ):
             resp = _post(client, schedule_id=self.HOOK_ID,
                          body={"prompt_text": "x" * (playbooks._MAX_PROMPT_TEXT_CHARS + 1)})
         assert resp.status_code == 422
@@ -303,8 +311,10 @@ class TestFirePromptText:
 
     def test_missing_file_and_no_prompt_text_is_404(self, client, tmp_path):
         service = _make_service()
-        with patch.object(playbooks, "PLAYBOOK_DIR", tmp_path), \
-                patch("app.channels.service.get_channel_service", return_value=service):
+        with (
+            patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
+            patch("app.channels.service.get_channel_service", return_value=service),
+        ):
             resp = _post(client, schedule_id=self.HOOK_ID)
         assert resp.status_code == 404
         service.bus.publish_inbound.assert_not_called()
