@@ -1257,3 +1257,27 @@ content byte-identical, all-headers-visible means no index, cap + "(+N more)"
 marker, long header truncation. 4 of the 6 fail against the pre-patch source
 (the two absence assertions pass both ways by design, locking no-regression).
 Full file: 101 passed; tests/test_tool_output_truncation.py: 36 passed.
+
+## Patch #51
+**Patch #51 - inline connector prompts on the playbook fire endpoint**
+
+- `POST /api/playbooks/{id}/fire` accepts an optional `prompt_text`. Chronos
+  assembles a connector's pinned PROMPTS text plus the gated
+  `[transformer-data]` frame and sends it inline, because connector hooks
+  (`ctx.run_agent`) have no `config/atlas-playbooks/<id>.md` file to read.
+  When set, the file lookup is skipped and the path id is used for
+  logging/attribution only; when absent, behavior is byte-identical to #30.
+- Guards: whitespace-only prompt_text is 422 (a caller bug, never a silent
+  fall-through to the file), and >64KB is 422 (Chronos's data gate caps the
+  machine-data frame at 32KB, so anything near this bound is a bug). Date
+  placeholders ({{TODAY}}, {{THIS_MONDAY}}) expand on both paths.
+- Trust boundary unchanged: the endpoint already requires the internal
+  service token, and the token holder that sends prompt_text (Chronos) is the
+  same component that pins the prompt at connector-deploy time and sanitizes
+  the data frame. No SSO-session caller can reach this route.
+- Files: backend/app/gateway/routers/playbooks.py,
+  backend/tests/test_playbook_fire.py
+- Tests: TestFirePromptText (7 tests; 5 fail against the pre-patch source,
+  2 lock no-regression of the file path by design).
+- Delete when: connector prompts are reconciled into the stack's playbook
+  dir like schedules are, or upstream grows an equivalent inline surface.
