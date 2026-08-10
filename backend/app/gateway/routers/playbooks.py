@@ -48,6 +48,10 @@ _VALID_MEMORY_MODES = {"off", "read-only", "read-write"}
 _DEFAULT_MEMORY_MODE = "read-only"
 # A job with no `agent:` runs as the citizen's personal agent (§3a).
 _DEFAULT_AGENT = "atlas"
+# [argus patch #51] Upper bound on an inline connector prompt. Chronos's data
+# gate caps the machine-data frame at 32KB; pinned prompt text on top of that
+# should never come near this. A larger body is a bug, not a use case.
+_MAX_PROMPT_TEXT_CHARS = 64 * 1024
 
 
 class PlaybookFireRequest(BaseModel):
@@ -71,6 +75,15 @@ class PlaybookFireRequest(BaseModel):
     # POSTs the outcome (delivered|silent|failed) there once the async turn
     # resolves. Optional: a fire without it behaves exactly as before.
     report_url: str | None = None
+    # [argus patch #51] Inline prompt for connector hooks (ctx.run_agent).
+    # A connector's pinned PROMPTS live in Chronos's registry, not in the
+    # stack's config/atlas-playbooks/ dir, so Chronos assembles the final
+    # prompt (pinned text + gated machine-data frame) and sends it here
+    # directly. When set, the file lookup is skipped and the path param is
+    # used for logging/attribution only. Same trust boundary as the file
+    # path: the endpoint already requires the internal token, and the token
+    # holder (Chronos) is the component that pins and gates the text.
+    prompt_text: str | None = None
 
 
 class PlaybookFireResponse(BaseModel):
@@ -117,14 +130,26 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
     if body.schedule_id and body.schedule_id != schedule_id:
         raise HTTPException(status_code=400, detail="schedule_id path/body mismatch")
 
-    # ---- source the assembled prompt -------------------------------------
-    prompt_path = PLAYBOOK_DIR / f"{schedule_id}.md"
-    try:
-        prompt = prompt_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"playbook {schedule_id} not found at {prompt_path}")
-    if not prompt:
-        raise HTTPException(status_code=422, detail=f"playbook {schedule_id} prompt is empty")
+    # ---- source the prompt: inline (connector hook) or assembled file -----
+    if body.prompt_text is not None:
+        # [argus patch #51] Chronos sends the assembled connector prompt
+        # inline; there is no playbook file to read.
+        prompt = body.prompt_text.strip()
+        if not prompt:
+            raise HTTPException(status_code=422, detail="prompt_text is empty")
+        if len(prompt) > _MAX_PROMPT_TEXT_CHARS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"prompt_text exceeds {_MAX_PROMPT_TEXT_CHARS} chars",
+            )
+    else:
+        prompt_path = PLAYBOOK_DIR / f"{schedule_id}.md"
+        try:
+            prompt = prompt_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"playbook {schedule_id} not found at {prompt_path}")
+        if not prompt:
+            raise HTTPException(status_code=422, detail=f"playbook {schedule_id} prompt is empty")
     prompt = _expand_dates(prompt)
 
     # ---- resolve per-job agent / memory ----------------------------------
