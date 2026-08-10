@@ -169,7 +169,15 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
     if service.get_channel(channel) is None:
         raise HTTPException(status_code=404, detail=f"Channel {channel} is not running")
 
-    chats = service.store.list_entries(channel)
+    # [argus patch #52] Root chat mappings only. list_entries returns every
+    # stored row, INCLUDING per-topic thread mappings (channel:chat:topic —
+    # e.g. the hook:<connector>:<prompt> threads that connector intents
+    # create, patch #51). Iterating those double-fired every scheduled
+    # playbook once any topic thread existed: N identical InboundMessages
+    # for one chat, coalesced into an N-fold prompt, and the silent-turn
+    # suppression lost — the citizen saw hourly "(No response from agent)".
+    # Root rows are unique per chat by key construction.
+    chats = [entry for entry in service.store.list_entries(channel) if not entry.get("topic_id")]
     if not chats:
         # The citizen must have messaged the bot once so a thread mapping exists.
         raise HTTPException(

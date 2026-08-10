@@ -1281,3 +1281,29 @@ Full file: 101 passed; tests/test_tool_output_truncation.py: 36 passed.
   2 lock no-regression of the file path by design).
 - Delete when: connector prompts are reconciled into the stack's playbook
   dir like schedules are, or upstream grows an equivalent inline surface.
+
+## Patch #52
+**Patch #52 - scheduled fires deliver to root chats only**
+
+- `fire_playbook` iterated `store.list_entries(channel)`, which returns EVERY
+  stored mapping — including per-topic thread rows (`channel:chat:topic`,
+  e.g. the `hook:<connector>:<prompt>` threads that connector intents create
+  under patch #51). One topic thread in the store made every scheduled
+  playbook fire N times into the same chat: the copies coalesced into an
+  N-fold prompt, the unattended silent-turn suppression was lost, and the
+  citizen saw hourly "(No response from agent)" for playbooks that are
+  silent by design (found live on atlas-nicholas within two hours of the
+  first hook thread existing).
+- Fix: filter to root rows (`not entry.get("topic_id")`); root rows are
+  unique per chat by key construction. A store holding ONLY topic threads is
+  the same as no mapping: 409.
+- Observed but not fixed here: the inbound coalesce path merged the two
+  unattended copies and the empty-final retry ran on the merged turn even
+  though patch #44 skips unattended retries — the unattended flag appears
+  not to survive coalescing. Unreachable for scheduled fires once this
+  patch is in (single message, nothing to coalesce); worth its own look if
+  coalescing ever applies to unattended traffic again.
+- Files: backend/app/gateway/routers/playbooks.py,
+  backend/tests/test_playbook_fire.py
+- Tests: TestFireTargetsRootChatsOnly (2; both fail pre-patch).
+- Delete when: the store separates chat mappings from topic thread mappings.
