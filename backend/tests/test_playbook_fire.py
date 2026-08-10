@@ -238,12 +238,16 @@ class TestFirePromptText:
             patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
             patch("app.channels.service.get_channel_service", return_value=service),
         ):
-            resp = _post(client, schedule_id=self.HOOK_ID, body={
-                "prompt_text": "A new order arrived.\n[transformer-data]\n{\"order_id\": 7}\n[/transformer-data]",
-                "agent": "order-clerk",
-                "memory": "read-write",
-                "topic_id": "hook:order-intake:new-order",
-            })
+            resp = _post(
+                client,
+                schedule_id=self.HOOK_ID,
+                body={
+                    "prompt_text": 'A new order arrived.\n[transformer-data]\n{"order_id": 7}\n[/transformer-data]',
+                    "agent": "order-clerk",
+                    "memory": "read-write",
+                    "topic_id": "hook:order-intake:new-order",
+                },
+            )
         assert resp.status_code == 200
         msg = service.bus.publish_inbound.await_args.args[0]
         assert msg.text.startswith("A new order arrived.")
@@ -271,8 +275,7 @@ class TestFirePromptText:
             patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
             patch("app.channels.service.get_channel_service", return_value=service),
         ):
-            resp = _post(client, schedule_id=self.HOOK_ID,
-                         body={"prompt_text": "Today is {{TODAY}}."})
+            resp = _post(client, schedule_id=self.HOOK_ID, body={"prompt_text": "Today is {{TODAY}}."})
         assert resp.status_code == 200
         msg = service.bus.publish_inbound.await_args.args[0]
         assert "{{TODAY}}" not in msg.text
@@ -295,8 +298,7 @@ class TestFirePromptText:
             patch.object(playbooks, "PLAYBOOK_DIR", tmp_path),
             patch("app.channels.service.get_channel_service", return_value=service),
         ):
-            resp = _post(client, schedule_id=self.HOOK_ID,
-                         body={"prompt_text": "x" * (playbooks._MAX_PROMPT_TEXT_CHARS + 1)})
+            resp = _post(client, schedule_id=self.HOOK_ID, body={"prompt_text": "x" * (playbooks._MAX_PROMPT_TEXT_CHARS + 1)})
         assert resp.status_code == 422
         service.bus.publish_inbound.assert_not_called()
 
