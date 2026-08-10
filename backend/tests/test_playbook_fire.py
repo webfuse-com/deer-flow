@@ -320,3 +320,47 @@ class TestFirePromptText:
             resp = _post(client, schedule_id=self.HOOK_ID)
         assert resp.status_code == 404
         service.bus.publish_inbound.assert_not_called()
+
+
+class TestFireTargetsRootChatsOnly:
+    """[argus patch #52] A per-topic thread mapping (e.g. a hook:<connector>
+    thread from patch #51) must not receive its own copy of a scheduled fire:
+    that double-delivered every playbook and broke silent-turn suppression."""
+
+    def test_topic_entries_are_skipped(self, client, playbook_dir):
+        service = _make_service(
+            chats=[
+                {"channel_name": "telegram", "chat_id": "8726302666", "user_id": "8726302666"},
+                {
+                    "channel_name": "telegram",
+                    "chat_id": "8726302666",
+                    "user_id": "8726302666",
+                    "topic_id": "hook:wake-probe:wake_check",
+                },
+            ]
+        )
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client)
+        assert resp.status_code == 200
+        assert resp.json()["chats"] == 1
+        service.bus.publish_inbound.assert_awaited_once()
+        msg = service.bus.publish_inbound.await_args.args[0]
+        assert msg.topic_id is None
+
+    def test_only_topic_entries_is_409(self, client, playbook_dir):
+        """A stack whose store holds nothing but topic threads has no root
+        chat to deliver to; that is the same state as no mapping at all."""
+        service = _make_service(
+            chats=[
+                {
+                    "channel_name": "telegram",
+                    "chat_id": "8726302666",
+                    "user_id": "8726302666",
+                    "topic_id": "hook:wake-probe:wake_check",
+                }
+            ]
+        )
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client)
+        assert resp.status_code == 409
+        service.bus.publish_inbound.assert_not_called()
