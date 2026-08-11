@@ -37,8 +37,8 @@ from app.gateway.routers import (
     suggestions,
     thread_runs,
     threads,
-    transformers_proxy,
     tools_proxy,
+    transformers_proxy,
     uploads,
 )
 from app.gateway.trace_middleware import TraceMiddleware, resolve_trace_enabled
