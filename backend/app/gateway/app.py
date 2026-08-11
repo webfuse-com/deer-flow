@@ -37,6 +37,8 @@ from app.gateway.routers import (
     suggestions,
     thread_runs,
     threads,
+    transformers_proxy,
+    tools_proxy,
     uploads,
 )
 from app.gateway.trace_middleware import TraceMiddleware, resolve_trace_enabled
@@ -753,6 +755,19 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # [argus patch #30] Playbook-fire API is mounted at /api/playbooks
     # (scheduled-playbook delivery; Chronos channel_notify jobs fire here).
     app.include_router(playbooks.router)
+
+    # [argus patch #50] Transformer call proxy for apps.
+    # Same-origin with /app/<slug>/, proxies to Chronos call surface.
+    app.include_router(transformers_proxy.router)
+    # Deprecated /api/transformers/* alias for apps published before the
+    # 2026-08-06 rename; see routers/transformers_proxy.py.
+    app.include_router(transformers_proxy.legacy_router)
+
+    # [argus patch #51] Overlay tool call proxy for apps. Exposes allowlisted
+    # overlay tools via HTTP so app frontends can call them via fetch().
+    # Two-layer scoping: infra allowlist (http-exposed-tools.json) + per-app
+    # declaration (app.json http_tools). See routers/tools_proxy.py.
+    app.include_router(tools_proxy.router)
 
     # Assistants compatibility API (LangGraph Platform stub)
     app.include_router(assistants_compat.router)

@@ -63,6 +63,21 @@ def should_check_csrf(request: Request) -> bool:
     # X-Telegram-Bot-Api-Secret-Token header in the route handler.
     if path.startswith("/webhooks/"):
         return False
+    # [argus patch #50] Exempt the connector call proxy. Same-origin apps
+    # carry the CSRF cookie; api tools calling from outside use the
+    # internal token (caught above). Direct curl testing without either
+    # is also exempt here because the route has no side effects beyond
+    # calling a connector function (which is the product working).
+    # Both prefixes: /api/transformers/ is the pre-2026-08-06 name, still
+    # hard-coded in apps published before the rename.
+    if path.startswith(("/api/connectors/", "/api/transformers/")):
+        return False
+    # [argus patch #51] Exempt the overlay tool call proxy. Same model as
+    # the connector proxy: app-tier calls are cross-origin (credentials off),
+    # so there is no CSRF cookie to double-submit. The tool's own safety
+    # wrapper (e.g. chargebee's 4-operation limit) is the scope.
+    if path.startswith("/api/apps/") and "/tools/" in path:
+        return False
     # [argus patch #30] Exempt requests that carry a valid internal-auth token.
     # CSRF defends against a browser silently attaching ambient cookies on a
     # cross-site request; a trusted service call bearing the shared internal
