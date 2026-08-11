@@ -1307,3 +1307,45 @@ Full file: 101 passed; tests/test_tool_output_truncation.py: 36 passed.
   backend/tests/test_playbook_fire.py
 - Tests: TestFireTargetsRootChatsOnly (2; both fail pre-patch).
 - Delete when: the store separates chat mappings from topic thread mappings.
+
+## Patch #50
+**Patch #50 - connector (was: transformer) call proxy for apps**
+
+- 2026-08-06: renamed to /api/connectors/* to match the browser vocabulary
+  (Agora + Console both say "connectors"). /api/transformers/* stays served
+  by `legacy_router` — apps published before the rename hard-code the old
+  path in their JavaScript and are static files that will not update
+  themselves. csrf_middleware exempts BOTH prefixes.
+- 2026-08-06 (app-origin isolation): the app tier moved to its own origin,
+  `apps-<citizen>.acro.surfly.com`, so an agent-authored page no longer
+  carries the citizen's session. Connector calls are therefore cross-origin,
+  and this route now answers its own CORS preflight and stamps
+  Access-Control-Allow-Origin for `apps-*` origins only.
+  **Access-Control-Allow-Credentials is deliberately never set** — the whole
+  point is that the app cannot get the session back. Identity still reaches
+  the connector: Caddy asserts X-Auth-Email server-side and it returns as
+  `called_by`. Deliberately NOT wired through GATEWAY_CORS_ORIGINS, whose
+  middleware sets allow_credentials=True and would undo the isolation.
+  Error paths raise through a helper that carries the CORS headers, or a
+  failing call reaches the browser as an opaque CORS error instead of its
+  real status.
+  Also required: `auth_middleware` now lets OPTIONS through. A browser sends
+  preflights with no cookie by specification, so gating them 401s every
+  cross-origin call before routing. OPTIONS changes no state and the route's
+  preflight handler only echoes origins it recognises.
+
+- Class: argus-additive (new router)
+- Intent: Apps deployed at /app/<slug>/ are same-origin with /api/*, so
+  JavaScript in an app can fetch a transformer function. This route proxies
+  to Chronos's call surface (server-to-server on argus-net). No
+  X-Transformer-Key header needed from JS; the gateway authenticates to
+  Chronos with SCHEDULER_API_KEY (same key every gateway already holds).
+- Multi-citizen: when citizen B opens citizen A's app and the JS calls
+  this route, it hits citizen A's gateway. The transformer runs on A's
+  stack with A's credentials. The caller's SSO email is logged for audit.
+- Files: backend/app/gateway/routers/transformers_proxy.py (NEW),
+  backend/app/gateway/app.py (EDITED: import + include_router)
+- Tests: TODO (integration test: deploy a ping transformer, call from
+  an app, verify result)
+- Delete-when: upstream DeerFlow grows its own app-backing API surface.
+- Upstream status: none.

@@ -88,6 +88,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _is_public(request.url.path):
             return await call_next(request)
 
+        # [argus] CORS preflight. A browser sends OPTIONS with no cookies and
+        # no auth header by specification, so gating it here 401s every
+        # cross-origin call before the route is ever reached — the browser
+        # then reports an opaque CORS failure rather than the real reason.
+        # Safe to let through: OPTIONS changes no state, and the route's own
+        # preflight handler returns Allow-Origin only for origins it
+        # recognises, so an unknown origin still gets nothing usable.
+        # Needed by the app tier (apps-<citizen>.acro.surfly.com), which is a
+        # deliberately separate origin — see routers/transformers_proxy.py.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         internal_user = None
         if is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):
             internal_user = get_internal_user()
