@@ -29,6 +29,7 @@ Same CORS model as transformers_proxy.py: credentials OFF, app origin only.
 Identity reaches the tool via X-Auth-Email (asserted by Caddy SSO), returned
 as called_by.
 """
+
 from __future__ import annotations
 
 import json
@@ -119,9 +120,7 @@ async def preflight_tool(app_slug: str, tool_name: str, request: Request) -> Res
 
 
 @router.post("/{app_slug}/tools/{tool_name}")
-async def call_overlay_tool(
-    app_slug: str, tool_name: str, request: Request, response: Response
-):
+async def call_overlay_tool(app_slug: str, tool_name: str, request: Request, response: Response):
     """Call an overlay tool from an app frontend.
 
     Two-layer scoping: the infra allowlist decides which tools are

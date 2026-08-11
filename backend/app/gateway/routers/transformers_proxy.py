@@ -19,6 +19,7 @@ Route: POST /api/connectors/{name}/fn/{function}
 Body: JSON (the function inputs)
 Returns: {"run_id": N, "result": ...} or {"run_id": N, "error": "..."}
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,8 +38,7 @@ router = APIRouter(prefix="/api/connectors", tags=["connectors"])
 # /api/transformers/<name>/fn/<function> in their JavaScript and are static
 # files on disk — they will not update themselves. Both prefixes stay served
 # until those apps are rewritten. Registered after the handler below.
-legacy_router = APIRouter(prefix="/api/transformers", tags=["connectors"],
-                          deprecated=True, include_in_schema=False)
+legacy_router = APIRouter(prefix="/api/transformers", tags=["connectors"], deprecated=True, include_in_schema=False)
 
 CHRONOS_URL = os.environ.get("CHRONOS_URL", "http://argus-scheduler:8000")
 SCHEDULER_API_KEY = os.environ.get("SCHEDULER_API_KEY", "")
@@ -160,10 +160,14 @@ async def call_connector(name: str, function: str, request: Request, response: R
 
 # Same handlers, old path. One implementation, two routes — see the note above.
 legacy_router.add_api_route(
-    "/{name}/fn/{function}", call_connector, methods=["POST"],
+    "/{name}/fn/{function}",
+    call_connector,
+    methods=["POST"],
     include_in_schema=False,
 )
 legacy_router.add_api_route(
-    "/{name}/fn/{function}", preflight_connector, methods=["OPTIONS"],
+    "/{name}/fn/{function}",
+    preflight_connector,
+    methods=["OPTIONS"],
     include_in_schema=False,
 )
