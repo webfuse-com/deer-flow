@@ -3446,3 +3446,94 @@ class TestSubagentGuardrailAttribution:
                 tools=[],
                 authz_attributes=["not", "a", "mapping"],
             )
+class TestAgentSourceToolPolicy:
+    """[argus patch #53] Subagents inherit the parent agent's allowed_tools
+    ceiling when tool_policy.source == "agent"; the skill union applies
+    otherwise (including on config objects that predate the tool_policy
+    field, which SimpleNamespace stubs here stand in for)."""
+
+    @staticmethod
+    def _skill(name: str, allowed_tools: list[str] | None):
+        from pathlib import Path
+
+        from deerflow.skills.types import Skill
+
+        return Skill(
+            name=name,
+            description=f"Description for {name}",
+            license="MIT",
+            skill_dir=Path(f"/tmp/{name}"),
+            skill_file=Path(f"/tmp/{name}/SKILL.md"),
+            relative_path=Path(name),
+            category="public",
+            allowed_tools=allowed_tools,
+            enabled=True,
+        )
+
+    @staticmethod
+    def _tools():
+        from langchain_core.tools import tool as as_tool
+
+        @as_tool
+        def bash(command: str) -> str:
+            "Run a command."
+            return command
+
+        @as_tool
+        def read_file(path: str) -> str:
+            "Read a file."
+            return path
+
+        return [bash, read_file]
+
+    def test_parent_ceiling_replaces_skill_union_under_agent_source(self, classes, monkeypatch):
+        from deerflow.config.tool_policy_config import ToolPolicyConfig
+        from deerflow.subagents import executor as executor_module
+
+        monkeypatch.setattr(
+            executor_module,
+            "get_app_config",
+            lambda: SimpleNamespace(tool_search=ToolSearchConfig(enabled=False), tool_policy=ToolPolicyConfig(source="agent")),
+        )
+        executor = classes["SubagentExecutor"](
+            config=classes["SubagentConfig"](name="probe", description="d", system_prompt="p"),
+            tools=self._tools(),
+            parent_agent_allowed_tools=["bash"],
+        )
+        filtered = executor._apply_skill_allowed_tools([self._skill("restricted", ["read_file"])])
+        assert [t.name for t in filtered] == ["bash"]
+
+    def test_unrestricted_parent_binds_everything_under_agent_source(self, classes, monkeypatch):
+        from deerflow.config.tool_policy_config import ToolPolicyConfig
+        from deerflow.subagents import executor as executor_module
+
+        monkeypatch.setattr(
+            executor_module,
+            "get_app_config",
+            lambda: SimpleNamespace(tool_search=ToolSearchConfig(enabled=False), tool_policy=ToolPolicyConfig(source="agent")),
+        )
+        executor = classes["SubagentExecutor"](
+            config=classes["SubagentConfig"](name="probe", description="d", system_prompt="p"),
+            tools=self._tools(),
+            parent_agent_allowed_tools=None,
+        )
+        filtered = executor._apply_skill_allowed_tools([self._skill("restricted", ["read_file"])])
+        assert [t.name for t in filtered] == ["bash", "read_file"]
+
+    def test_skill_union_applies_when_tool_policy_field_is_absent(self, classes, monkeypatch):
+        """A config object without the tool_policy field (older cached config,
+        SimpleNamespace test stubs) falls back to the upstream skill union."""
+        from deerflow.subagents import executor as executor_module
+
+        monkeypatch.setattr(
+            executor_module,
+            "get_app_config",
+            lambda: SimpleNamespace(tool_search=ToolSearchConfig(enabled=False)),
+        )
+        executor = classes["SubagentExecutor"](
+            config=classes["SubagentConfig"](name="probe", description="d", system_prompt="p"),
+            tools=self._tools(),
+            parent_agent_allowed_tools=["bash"],
+        )
+        filtered = executor._apply_skill_allowed_tools([self._skill("restricted", ["read_file"])])
+        assert [t.name for t in filtered] == ["read_file"]

@@ -78,3 +78,47 @@ def filter_tools_by_skill_allowed_tools[ToolT: NamedTool](
 
     allowed_with_framework_tools = allowed | set(always_allowed_tool_names)
     return [tool for tool in tools if tool.name in allowed_with_framework_tools]
+    return [tool for tool in tools if tool.name in allowed]
+
+
+def filter_tools_by_agent_allowed_tools[ToolT: NamedTool](
+    tools: list[ToolT],
+    agent_allowed: list[str] | None,
+    skills: list[Skill] | None = None,
+    extra_allowed: set[str] | None = None,
+) -> list[ToolT]:
+    """[argus patch #53] Agent-source tool policy (``tool_policy.source: agent``).
+
+    The agent config's ``allowed_tools`` field is the whitelist:
+    - None: no restriction — a whitelist nobody declared cannot restrict.
+    - []: no tools — an explicitly declared empty whitelist.
+    - [names]: exactly those, unioned with the firing schedule's
+      allowed-tools (``extra_allowed``, argus patch #43). When the agent
+      declares None and a schedule declares a list, the schedule's list is
+      the sole whitelist — that keeps unattended scheduled runs scopable
+      even on an otherwise unrestricted agent.
+
+    Skill allowed-tools declarations neither grant nor deny anything here;
+    they stay useful as documentation and as tool_search promotion hints.
+    When the effective ceiling is restrictive, each enabled skill declaring
+    names outside it is logged so the mismatch is visible at agent build
+    time instead of surfacing as a missing tool mid-run.
+    """
+    allowed = set(agent_allowed) if agent_allowed is not None else None
+    if extra_allowed:
+        allowed = extra_allowed if allowed is None else allowed | extra_allowed
+    if allowed is None:
+        return tools
+
+    for skill in skills or []:
+        if not skill.allowed_tools:
+            continue
+        outside = set(skill.allowed_tools) - allowed
+        if outside:
+            logger.warning(
+                "Skill %s declares tools outside the agent's allowed_tools ceiling (documentation only, not granted): %s",
+                skill.name,
+                sorted(outside),
+            )
+
+    return [tool for tool in tools if tool.name in allowed]

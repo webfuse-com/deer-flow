@@ -29,7 +29,7 @@ from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
 from deerflow.models import create_chat_model
 from deerflow.runtime.user_context import DEFAULT_USER_ID
-from deerflow.skills.types import Skill
+from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools, filter_tools_by_skill_allowed_toolsfrom deerflow.skills.types import Skill
 from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
 from deerflow.subagents.step_events import capture_new_step_messages
 from deerflow.subagents.token_collector import SubagentTokenCollector
@@ -458,7 +458,7 @@ class SubagentExecutor:
         authz_attributes: Mapping[str, Any] | None = None,
         deerflow_trace_id: str | None = None,
         extensions: Any | None = None,
-    ):
+        parent_agent_allowed_tools: list[str] | None = None,    ):
         """Initialize the executor.
 
         Args:
@@ -486,7 +486,9 @@ class SubagentExecutor:
                 captured at ``task_tool`` dispatch. When None (embedded client,
                 standalone LangGraph Server), ``_aexecute`` falls back to the
                 process-wide singleton.
-        """
+            parent_agent_allowed_tools: [argus patch #53] The parent agent's
+                AgentConfig.allowed_tools ceiling, applied in place of the
+                skill union when tool_policy.source == "agent".        """
         self.config = config
         self.app_config = app_config
         self.parent_model = parent_model
@@ -524,7 +526,9 @@ class SubagentExecutor:
         # the lead run's start and this subagent's execution must not swap the
         # generation underneath the delegated work.
         self.extensions = extensions
-
+        # [argus patch #53] The parent agent's allowed_tools ceiling, applied
+        # instead of the skill union when tool_policy.source == "agent".
+        self.parent_agent_allowed_tools = parent_agent_allowed_tools
         self._base_tools = _filter_tools(
             tools,
             config.tools,
@@ -663,6 +667,51 @@ class SubagentExecutor:
             return [s for s in all_skills if s.name in allowed]
         return all_skills
 
+<<<<<<< HEAD
+=======
+    def _apply_skill_allowed_tools(self, skills: list[Skill]) -> list[BaseTool]:
+        # [argus patch #53] Under tool_policy.source: agent the parent agent's
+        # allowed_tools ceiling replaces the skill union, mirroring the lead
+        # path. (Schedule-level extra_allowed never reached subagents under
+        # the skills source either; under the agent source an unrestricted
+        # agent makes that pre-existing asymmetry moot.)
+        _tool_policy = getattr(self.app_config or get_app_config(), "tool_policy", None)
+        if _tool_policy is not None and _tool_policy.source == "agent":
+            return filter_tools_by_agent_allowed_tools(self._base_tools, self.parent_agent_allowed_tools, skills=skills)
+        return filter_tools_by_skill_allowed_tools(self._base_tools, skills)
+
+    async def _load_skill_messages(self, skills: list[Skill]) -> list[SystemMessage]:
+        """Load skill content as conversation items based on config.skills.
+
+        Aligned with Codex's pattern: each subagent loads its own skills
+        per-session and injects them as conversation items (developer messages),
+        not as system prompt text. The config.skills whitelist controls which
+        skills are loaded:
+        - None: load all enabled skills
+        - []: no skills
+        - ["skill-a", "skill-b"]: only these skills
+
+        Returns:
+            List of SystemMessages containing skill content.
+        """
+        if not skills:
+            return []
+
+        # Read each skill's SKILL.md content and create conversation items
+        messages = []
+        for skill in skills:
+            try:
+                content = await asyncio.to_thread(skill.skill_file.read_text, encoding="utf-8")
+                content = content.strip()
+                if content:
+                    messages.append(SystemMessage(content=f'<skill name="{skill.name}">\n{content}\n</skill>'))
+                    logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} loaded skill: {skill.name}")
+            except Exception:
+                logger.debug(f"[trace={self.trace_id}] Failed to read skill {skill.name}", exc_info=True)
+
+        return messages
+
+>>>>>>> 033ec59c ([argus] patch #53: agent-level tool policy (tool_policy.source: agent))
     async def _build_initial_state(self, task: str) -> tuple[dict[str, Any], list[BaseTool], "DeferredToolSetup"]:
         """Build the initial state for agent execution.
 

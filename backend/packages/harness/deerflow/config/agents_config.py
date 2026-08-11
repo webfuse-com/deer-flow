@@ -197,7 +197,15 @@ class AgentConfig(BaseModel):
     tool_groups: list[str] | None = None
     # skills controls which skills are discoverable and may be activated by the
     # agent. It does not activate their allowed-tools policies at construction:
-    # - None (or omitted): load all enabled skills (default fallback behavior)
+    # [argus patch #53] Agent-level tool whitelist, honored when config.yaml
+    # sets tool_policy.source: agent. Tri-state, matching `skills` below:
+    # - None (or omitted): no restriction — every config/builtin/MCP tool binds.
+    # - [] (explicit empty list): no tools.
+    # - ["a", "b"]: exactly those, unioned with the firing schedule's
+    #   allowed-tools (argus patch #43) on scheduled runs.
+    # Under the default tool_policy.source: skills this field is ignored.
+    allowed_tools: list[str] | None = None
+    # skills controls which skills are loaded into the agent's prompt:    # - None (or omitted): load all enabled skills (default fallback behavior)
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None

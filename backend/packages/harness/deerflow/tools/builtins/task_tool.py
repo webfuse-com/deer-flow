@@ -394,7 +394,9 @@ async def task_tool(
         "is_internal": is_internal,
         "authz_attributes": authz_attributes,
         "deerflow_trace_id": deerflow_trace_id,
-    }
+        # [argus patch #53] Inherit the parent agent's tool ceiling, same
+        # channel as tool_groups above (stashed in run metadata by agent.py).
+        "parent_agent_allowed_tools": metadata.get("agent_allowed_tools"),    }
     if resolved_app_config is not None:
         executor_kwargs["app_config"] = resolved_app_config
     if run_extensions is not None:
