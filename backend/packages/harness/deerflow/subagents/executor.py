@@ -24,7 +24,7 @@ from deerflow.agents.thread_state import SandboxState, ThreadDataState, ThreadSt
 from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
 from deerflow.models import create_chat_model
-from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
+from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools, filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
 from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
 from deerflow.subagents.token_collector import SubagentTokenCollector
@@ -289,6 +289,7 @@ class SubagentExecutor:
         thread_id: str | None = None,
         trace_id: str | None = None,
         user_id: str | None = None,
+        parent_agent_allowed_tools: list[str] | None = None,
     ):
         """Initialize the executor.
 
@@ -305,6 +306,9 @@ class SubagentExecutor:
             trace_id: Trace ID from parent for distributed tracing.
             user_id: User ID captured from the parent tool's runtime context.
                 When None, the tracing layer falls back to DEFAULT_USER_ID.
+            parent_agent_allowed_tools: [argus patch #53] The parent agent's
+                AgentConfig.allowed_tools ceiling, applied in place of the
+                skill union when tool_policy.source == "agent".
         """
         self.config = config
         self.app_config = app_config
@@ -322,6 +326,9 @@ class SubagentExecutor:
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
         self.user_id = user_id
+        # [argus patch #53] The parent agent's allowed_tools ceiling, applied
+        # instead of the skill union when tool_policy.source == "agent".
+        self.parent_agent_allowed_tools = parent_agent_allowed_tools
 
         self._base_tools = _filter_tools(
             tools,
@@ -389,6 +396,14 @@ class SubagentExecutor:
         return all_skills
 
     def _apply_skill_allowed_tools(self, skills: list[Skill]) -> list[BaseTool]:
+        # [argus patch #53] Under tool_policy.source: agent the parent agent's
+        # allowed_tools ceiling replaces the skill union, mirroring the lead
+        # path. (Schedule-level extra_allowed never reached subagents under
+        # the skills source either; under the agent source an unrestricted
+        # agent makes that pre-existing asymmetry moot.)
+        _tool_policy = getattr(self.app_config or get_app_config(), "tool_policy", None)
+        if _tool_policy is not None and _tool_policy.source == "agent":
+            return filter_tools_by_agent_allowed_tools(self._base_tools, self.parent_agent_allowed_tools, skills=skills)
         return filter_tools_by_skill_allowed_tools(self._base_tools, skills)
 
     async def _load_skill_messages(self, skills: list[Skill]) -> list[SystemMessage]:

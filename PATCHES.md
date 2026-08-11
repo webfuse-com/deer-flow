@@ -1349,3 +1349,41 @@ Full file: 101 passed; tests/test_tool_output_truncation.py: 36 passed.
   an app, verify result)
 - Delete-when: upstream DeerFlow grows its own app-backing API surface.
 - Upstream status: none.
+
+## Patch #53
+**Patch #53 - agent-level tool policy (tool_policy.source: "agent")**
+
+- Class: argus-additive, config-gated (default byte-identical upstream)
+- Intent: upstream PR #2626 made skill frontmatter `allowed-tools` an
+  ENFORCED union whitelist - one declaring skill flips the whole run
+  fail-closed, so every new tool needs at least one skill to name it, and a
+  skill adopted from anywhere can widen the fleet whitelist. This patch adds
+  an alternative authorization source: the agent config. Under
+  `tool_policy.source: agent` in config.yaml, `AgentConfig.allowed_tools`
+  is the whitelist (tri-state like `skills`: None/omitted = no restriction,
+  [] = no tools, [names] = exactly those), the firing schedule's
+  allowed-tools (patch #43) still unions in (agent None + schedule list =
+  the schedule list is the SOLE whitelist, keeping unattended runs
+  scopable), and skill allowed-tools declarations demote to documentation +
+  tool_search promotion hints - a declaration outside a restrictive agent
+  ceiling is logged at agent build, never granted. Subagents inherit the
+  parent agent's ceiling through run metadata (`agent_allowed_tools`), the
+  same channel as tool_groups. Config objects without the tool_policy field
+  (older cached configs, test stubs) fall back to the upstream skill union.
+- Files: packages/harness/deerflow/config/tool_policy_config.py (NEW),
+  config/app_config.py (tool_policy field), config/agents_config.py
+  (AgentConfig.allowed_tools), skills/tool_policy.py
+  (filter_tools_by_agent_allowed_tools), agents/lead_agent/agent.py
+  (_apply_tool_policy dispatch + metadata stash),
+  tools/builtins/task_tool.py + subagents/executor.py (subagent
+  inheritance), config.example.yaml (commented example; config_version NOT
+  bumped - the field is optional with a behavior-preserving default).
+- Tests: tests/test_tool_policy_agent_source.py (14; collection error
+  pre-patch) + tests/test_subagent_executor.py::TestAgentSourceToolPolicy
+  (3; absent pre-patch). Neighbors green: test_lead_agent_skills,
+  test_deferred_tool_crosscontext, test_subagent_skills_config,
+  test_skills_parser (84 passed).
+- Delete-when: upstream grows an agent-level tool whitelist, or the argus
+  fleet returns to skill-frontmatter enforcement.
+- Upstream status: none (candidate: the tri-state agent field could be
+  proposed upstream; the source flag is argus-specific).

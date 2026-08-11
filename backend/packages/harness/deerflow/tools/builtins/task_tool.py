@@ -312,6 +312,9 @@ async def task_tool(
         "thread_id": thread_id,
         "trace_id": trace_id,
         "user_id": user_id,
+        # [argus patch #53] Inherit the parent agent's tool ceiling, same
+        # channel as tool_groups above (stashed in run metadata by agent.py).
+        "parent_agent_allowed_tools": metadata.get("agent_allowed_tools"),
     }
     if resolved_app_config is not None:
         executor_kwargs["app_config"] = resolved_app_config

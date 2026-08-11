@@ -694,6 +694,20 @@ tool_search:
   enabled: false
 
 # ============================================================================
+# Tool Authorization Policy [argus patch #53]
+# ============================================================================
+# Which allowed-tools declarations gate the run's toolset.
+# - "skills" (default, upstream): the union of enabled skills' allowed-tools
+#   frontmatter is the whitelist; falls open only when no enabled skill
+#   declares the field. The firing schedule's allowed-tools union in.
+# - "agent": AgentConfig.allowed_tools is the whitelist (None/omitted = no
+#   restriction, [] = no tools, [names] = exactly those + the schedule's).
+#   Skill allowed-tools become documentation; declarations outside a
+#   restrictive agent ceiling are logged at agent build, never granted.
+# tool_policy:
+#   source: skills
+
+# ============================================================================
 # Tool Output Budget Protection
 # ============================================================================
 # Prevents oversized tool results from blowing the model context window.

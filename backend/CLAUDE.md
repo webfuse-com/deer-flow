@@ -558,6 +558,7 @@ Returns `{}` when Langfuse is not in the enabled providers — LangSmith-only de
 - `tool_groups[]` - Logical groupings for tools
 - `sandbox.use` - Sandbox provider class path
 - `skills.path` / `skills.container_path` - Host and container paths to skills directory
+- `tool_policy.source` - *(argus patch #53)* which allowed-tools declarations gate tool binding: `skills` (default, upstream union of skill frontmatter) or `agent` (`AgentConfig.allowed_tools` tri-state ceiling; skill declarations demote to documentation and are logged when they exceed a restrictive ceiling)
 - `title` - Auto-title generation (enabled, max_words, max_chars, prompt_template)
 - `summarization` - Context summarization (enabled, trigger conditions, keep policy)
 - `subagents.enabled` - Master switch for subagent delegation
