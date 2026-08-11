@@ -28,8 +28,8 @@ from app.gateway.routers import (
     suggestions,
     thread_runs,
     threads,
-    transformers_proxy,
     tools_proxy,
+    transformers_proxy,
     uploads,
 )
 from deerflow.config import app_config as deerflow_app_config
