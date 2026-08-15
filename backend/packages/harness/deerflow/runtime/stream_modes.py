@@ -34,10 +34,12 @@ def normalize_stream_modes(raw: list[str] | str | None) -> list[str]:
     else:
         modes = raw or ["values"]
 
-    unsupported = [mode if isinstance(mode, str) else type(mode).__name__ for mode in modes if not isinstance(mode, str) or mode not in SUPPORTED_RUN_STREAM_MODES]
-    if unsupported:
+    # Filter out unsupported modes rather than failing if at least one valid mode is requested
+    valid = [mode for mode in modes if isinstance(mode, str) and mode in SUPPORTED_RUN_STREAM_MODES]
+    if not valid:
+        unsupported = [mode if isinstance(mode, str) else type(mode).__name__ for mode in modes]
         raise UnsupportedStreamModeError(unsupported)
-    return modes
+    return valid
 
 
 def to_langgraph_stream_modes(raw: list[str] | str | None) -> list[str]:

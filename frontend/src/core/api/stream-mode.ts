@@ -37,39 +37,21 @@ export function sanitizeRunStreamOptions<T>(options: T): T {
     return options;
   }
 
-  let sanitizedOptions: T = options;
-  if ("streamResumable" in options) {
-    const withoutStreamResumable = { ...options };
-    delete withoutStreamResumable.streamResumable;
-    sanitizedOptions = withoutStreamResumable as T;
+  const sanitizedOptions = { ...options } as Record<string, unknown>;
+  if ("streamResumable" in sanitizedOptions) {
+    delete sanitizedOptions.streamResumable;
+  }
 
-    if (!warnedUnsupportedStreamResumable) {
-      warnedUnsupportedStreamResumable = true;
-      console.warn(
-        "[deer-flow] Dropped unsupported LangGraph run option: streamResumable",
+  if ("streamMode" in sanitizedOptions) {
+    const streamMode = sanitizedOptions.streamMode;
+    if (streamMode != null) {
+      const requestedModes = Array.isArray(streamMode) ? streamMode : [streamMode];
+      const validModes = requestedModes.filter((mode) =>
+        SUPPORTED_RUN_STREAM_MODES.has(mode as any),
       );
+      sanitizedOptions.streamMode = validModes;
     }
   }
 
-  if (!("streamMode" in options)) {
-    return sanitizedOptions;
-  }
-
-  const streamMode = options.streamMode;
-  if (streamMode == null) {
-    return sanitizedOptions;
-  }
-
-  const requestedModes = Array.isArray(streamMode) ? streamMode : [streamMode];
-  const droppedModes = requestedModes.filter(
-    (mode) => !SUPPORTED_RUN_STREAM_MODES.has(mode),
-  );
-  if (droppedModes.length > 0) {
-    warnUnsupportedStreamModes(droppedModes);
-    throw new Error(
-      `[deer-flow] Unsupported LangGraph stream mode(s): ${droppedModes.join(", ")}`,
-    );
-  }
-
-  return sanitizedOptions;
+  return sanitizedOptions as T;
 }

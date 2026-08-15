@@ -27,9 +27,9 @@ class RunCreateRequest(BaseModel):
     checkpoint: dict[str, Any] | None = Field(default=None, description="Full checkpoint object")
     interrupt_before: list[str] | Literal["*"] | None = Field(default=None, description="Nodes to interrupt before")
     interrupt_after: list[str] | Literal["*"] | None = Field(default=None, description="Nodes to interrupt after")
-    stream_mode: list[RunStreamMode] | RunStreamMode | None = Field(default=None, description="Supported stream mode(s)")
+    stream_mode: list[str] | str | None = Field(default=None, description="Supported stream mode(s)")
     stream_subgraphs: bool = Field(default=False, description="Include subgraph events")
-    stream_resumable: Literal[False] | None = Field(default=None, description="Compatibility placeholder; only the SDK's non-resumable default (null/false) is accepted")
+    stream_resumable: bool | None = Field(default=None, description="Compatibility placeholder")
     on_disconnect: Literal["cancel", "continue"] = Field(default="cancel", description="Behaviour on SSE disconnect")
     on_completion: None = Field(default=None, description="Compatibility placeholder; completion behavior is not supported")
     multitask_strategy: Literal["reject", "rollback", "interrupt"] = Field(default="reject", description="Concurrency strategy")
@@ -88,16 +88,8 @@ class RunCreateRequest(BaseModel):
     @field_validator("stream_resumable", mode="before")
     @classmethod
     def reject_resumable_streams(cls, value: Any) -> Any:
-        # LangGraph SDK clients always send this field (its default is ``False``, which the
-        # payload's ``None`` filter keeps). ``False`` asks for the non-resumable stream
-        # DeerFlow already serves, so only an explicit ``True`` requests the unsupported feature.
-        if value is None or value is False:
-            return value
-        raise PydanticCustomError(
-            "unsupported_run_option",
-            "Run option '{option}' is not supported by DeerFlow",
-            {"option": "stream_resumable"},
-        )
+        # Compatibility: accept both boolean and None without hard-failing
+        return None
 
     @field_validator("stream_mode", mode="before")
     @classmethod
