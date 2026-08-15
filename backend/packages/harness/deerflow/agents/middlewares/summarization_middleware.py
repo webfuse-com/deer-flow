@@ -758,7 +758,7 @@ def create_summarization_middleware(
     (#3875 Phase 3 review).
     """
     resolved_app_config = app_config or get_app_config()
-    config = resolved_app_config.summarization
+    config = resolved_app_config.summarization.resolved_for(run_model_name)
 
     if not config.enabled:
         return None

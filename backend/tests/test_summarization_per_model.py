@@ -158,32 +158,40 @@ class TestMiddlewareWiring:
         # (`_llm_type`, token counting), so a bare stub is not enough. Record the
         # requested name and then stop before construction — the name is the
         # whole assertion.
-        class _Recorded(Exception):
-            pass
+        class _FakeModel:
+            _llm_type = "chat"
+            def with_config(self, *args, **kwargs):
+                return self
+            def get_num_tokens_from_messages(self, *args, **kwargs):
+                return 10
 
         def fake_create_chat_model(*, name=None, **kwargs):
             created["name"] = name
-            raise _Recorded
+            return _FakeModel()
 
+        import deerflow.agents.middlewares.summarization_middleware as summ_mod
         monkeypatch.setattr(agent_module, "create_chat_model", fake_create_chat_model)
+        monkeypatch.setattr(summ_mod, "create_chat_model", fake_create_chat_model)
 
         from deerflow.config.app_config import AppConfig
-        from deerflow.config.models_config import ModelConfig
+        from deerflow.config.model_config import ModelConfig
+        from deerflow.config.sandbox_config import SandboxConfig
         _Cfg = AppConfig(
             models=[
                 ModelConfig(name="local-qwen", use="langchain_openai:ChatOpenAI", model="local-qwen", api_key="k"),
                 ModelConfig(name="glm-nw", use="langchain_openai:ChatOpenAI", model="glm-nw", api_key="k"),
             ],
+            sandbox=SandboxConfig(use="deerflow.community.aio_sandbox.aio_sandbox_provider:AioSandboxProvider"),
             summarization=_base(),
         )
 
-        with pytest.raises(_Recorded):
-            agent_module._create_summarization_middleware(app_config=_Cfg(), lead_model_name="glm-nw")
+        mw = agent_module._create_summarization_middleware(app_config=_Cfg, lead_model_name="glm-nw")
+        assert mw is not None
         assert created["name"] == "glm-nw", "the glm-nw override must select the glm-nw summarizer"
 
         created.clear()
-        with pytest.raises(_Recorded):
-            agent_module._create_summarization_middleware(app_config=_Cfg(), lead_model_name="local-qwen")
+        mw2 = agent_module._create_summarization_middleware(app_config=_Cfg, lead_model_name="local-qwen")
+        assert mw2 is not None
         assert created["name"] == "local-qwen", "a model without an override keeps the global summarizer"
 
     def test_disabled_still_returns_none(self):
@@ -192,4 +200,4 @@ class TestMiddlewareWiring:
         class _Cfg:
             summarization = SummarizationConfig(enabled=False, per_model={})
 
-        assert agent_module._create_summarization_middleware(app_config=_Cfg(), lead_model_name="glm-nw") is None
+        assert agent_module._create_summarization_middleware(app_config=_Cfg, lead_model_name="glm-nw") is None
