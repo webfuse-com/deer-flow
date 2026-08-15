@@ -14,6 +14,8 @@ export interface Translations {
     edit: string;
     rename: string;
     renameFailed: string;
+    debugSandbox: string;
+    debugSandboxError: string;
     share: string;
     openInNewWindow: string;
     close: string;
@@ -61,8 +63,7 @@ export interface Translations {
     minutes: (value: number) => string;
     seconds: (value: number) => string;
     separator: string;
-    debugSandbox: string;
-    debugSandboxError: string;  };
+  };
 
   home: {
     docs: string;

@@ -56,7 +56,7 @@ export async function getServerSideUser(): Promise<AuthResult> {
     const ssoController = new AbortController();
     const ssoTimeout = setTimeout(
       () => ssoController.abort(),
-      SSR_AUTH_TIMEOUT_MS,
+      AUTH_REQUEST_TIMEOUT_MS,
     );
     try {
       const ssoRes = await fetch(`${internalGatewayUrl}/api/v1/auth/me`, {

@@ -25,6 +25,8 @@ export const enUS: Translations = {
     edit: "Edit",
     rename: "Rename",
     renameFailed: "Failed to rename thread.",
+    debugSandbox: "Debug Sandbox",
+    debugSandboxError: "Failed to open debug sandbox",
     share: "Share",
     openInNewWindow: "Open in new window",
     close: "Close",
@@ -74,8 +76,7 @@ export const enUS: Translations = {
     minutes: (value) => `${value}m`,
     seconds: (value) => `${value}s`,
     separator: " ",
-    debugSandbox: "Debug",
-    debugSandboxError: "Could not open the debug sandbox for this thread.",  },
+  },
 
   // Home
   home: {

@@ -25,6 +25,8 @@ export const zhCN: Translations = {
     edit: "编辑",
     rename: "重命名",
     renameFailed: "重命名会话失败。",
+    debugSandbox: "调试沙箱",
+    debugSandboxError: "打开调试沙箱失败",
     share: "分享",
     openInNewWindow: "在新窗口打开",
     close: "关闭",
@@ -73,8 +75,7 @@ export const zhCN: Translations = {
     minutes: (value) => `${value} 分`,
     seconds: (value) => `${value} 秒`,
     separator: " ",
-    debugSandbox: "调试",
-    debugSandboxError: "无法打开该会话的调试沙盒。",  },
+  },
 
   // Home
   home: {
