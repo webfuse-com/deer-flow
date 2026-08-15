@@ -342,7 +342,8 @@ class DeerFlowClient:
 
         effective_user_id = cfg.get("user_id") or get_effective_user_id()
 
-        final_tools, deferred_setup = assemble_deferred_tools(tools, enabled=self._app_config.tool_search.enabled, exclude=self._app_config.tool_search.exclude)        kwargs: dict[str, Any] = {
+        final_tools, deferred_setup = assemble_deferred_tools(tools, enabled=self._app_config.tool_search.enabled, exclude=self._app_config.tool_search.exclude)
+        kwargs: dict[str, Any] = {
             # attach_tracing=False because ``stream()`` injects tracing
             # callbacks at the graph invocation root so a single embedded run
             # produces one trace with correct session_id / user_id propagation.

@@ -56,7 +56,6 @@ def filter_tools_by_skill_allowed_tools[ToolT: NamedTool](
     skills: list[Skill],
     *,
     always_allowed_tool_names: set[str] | frozenset[str] = frozenset(),
-) -> list[ToolT]:
     extra_allowed: set[str] | None = None,
 ) -> list[ToolT]:
     """Filter tools by the union of skill allowed-tools declarations.
@@ -67,7 +66,8 @@ def filter_tools_by_skill_allowed_tools[ToolT: NamedTool](
     (legacy allow-all), the extra set becomes the sole whitelist; if skills do
     declare, the two sets are unioned so the schedule's tools are available
     regardless of skills.
-    """    allowed = allowed_tool_names_for_skills(skills)
+    """
+    allowed = allowed_tool_names_for_skills(skills)
     if extra_allowed:
         if allowed is None:
             allowed = extra_allowed

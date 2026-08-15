@@ -9402,7 +9402,6 @@ class TestSlackMarkdownConversion:
         result = _slack_md_converter.convert("# Title")
         assert "*Title*" in result
         assert "#" not in result
-<<<<<<< HEAD
 
     def test_converter_passes_reserved_characters_through_unchanged(self):
         # The library itself never escapes Slack's reserved characters -- this
@@ -10544,5 +10543,3 @@ def test_streaming_chat_never_publishes_hidden_memory_context(monkeypatch):
         assert [m.text for m in outbound_received] == ["All green. ▉", "All green."]
 
     _run(go())
-=======
->>>>>>> eb379ae8 ([argus] telegram streaming chain: stage-emoji + HTML + webhook + welcome)

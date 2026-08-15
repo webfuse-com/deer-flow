@@ -351,7 +351,6 @@ def _default_branch_display_name(source_title: Any, *, source_is_branch: bool = 
             display_name = display_name[len("branch:") :].strip()
 
     return display_name or None
-=======
 # A container-backed (AIO) sandbox id is the deterministic sha256(thread_id)[:8]
 # hex hash — the same string that names the container and that the nginx
 # /debug-sandbox/<hash>/ location matches with [a-f0-9]+. Filesystem-local
@@ -363,7 +362,6 @@ _CONTAINER_SANDBOX_ID_RE = re.compile(r"^[a-f0-9]{8}$")
 def _is_container_sandbox_id(sandbox_id: str) -> bool:
     """Return True if ``sandbox_id`` names a proxiable sandbox container."""
     return bool(_CONTAINER_SANDBOX_ID_RE.fullmatch(sandbox_id or ""))
->>>>>>> 1aad692a ([argus] patch #38a: per-thread debug-sandbox gateway endpoint)
 
 
 # ---------------------------------------------------------------------------

@@ -667,8 +667,6 @@ class SubagentExecutor:
             return [s for s in all_skills if s.name in allowed]
         return all_skills
 
-<<<<<<< HEAD
-=======
     def _apply_skill_allowed_tools(self, skills: list[Skill]) -> list[BaseTool]:
         # [argus patch #53] Under tool_policy.source: agent the parent agent's
         # allowed_tools ceiling replaces the skill union, mirroring the lead
@@ -711,7 +709,6 @@ class SubagentExecutor:
 
         return messages
 
->>>>>>> 033ec59c ([argus] patch #53: agent-level tool policy (tool_policy.source: agent))
     async def _build_initial_state(self, task: str) -> tuple[dict[str, Any], list[BaseTool], "DeferredToolSetup"]:
         """Build the initial state for agent execution.
 

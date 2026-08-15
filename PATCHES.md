@@ -827,8 +827,6 @@ carry budget ledger.
 
 ---
 
-<<<<<<< HEAD
-=======
 ## Patch #42
 
 **Patch #42 - subtask card false-"failed" on transient SSE loading gaps**
@@ -903,7 +901,6 @@ carry budget ledger.
 
 ---
 
->>>>>>> d3b2ed2c ([argus] patch #43: per-run allowed-tools from schedule frontmatter)
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
 **Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**

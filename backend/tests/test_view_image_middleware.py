@@ -480,7 +480,6 @@ class TestBeforeModel:
         assert await mw.abefore_model(state, _runtime()) is None
 
 
-
 class TestAfterModel:
     def test_graph_exposes_image_context_only_during_model_call(self, tmp_path):
         capture = _CaptureChatMessages()
@@ -616,72 +615,3 @@ class TestAfterModel:
         assert result is not None
         assert isinstance(result["messages"][0], RemoveMessage)
         assert result["messages"][0].id == injected.id
-
-
-
-class TestVisionDescribeForNonVisionLead:
-    """[argus] When constructed with vision_model_name (lead model is non-vision),
-    abefore_model injects a TEXT description produced by the vision model instead
-    of the raw image, so render-and-verify works on non-vision leads."""
-
-    def _completed_state(self):
-        assistant = AIMessage(content="", tool_calls=[_view_image_call("c1")])
-        return {
-            "messages": [assistant, ToolMessage(content="ok", tool_call_id="c1")],
-            "viewed_images": {"/img.png": {"base64": "AAA", "mime_type": "image/png"}},
-        }
-
-    def _patch_model(self, monkeypatch, description="a red circle on white"):
-        import deerflow.models as models_mod
-
-        class _FakeModel:
-            async def ainvoke(self, messages):
-                return SimpleNamespace(content=description)
-
-        monkeypatch.setattr(models_mod, "create_chat_model", lambda **kwargs: _FakeModel())
-
-    def test_sync_before_model_defers_for_non_vision_lead(self):
-        """The sync path must NOT inject (it cannot await the describe call)."""
-        mw = ViewImageMiddleware(vision_model_name="local-qwen")
-        assert mw.before_model(self._completed_state(), _runtime()) is None
-
-    @pytest.mark.anyio
-    async def test_async_injects_text_description(self, monkeypatch):
-        self._patch_model(monkeypatch)
-        mw = ViewImageMiddleware(vision_model_name="local-qwen")
-        result = await mw.abefore_model(self._completed_state(), _runtime())
-        assert result is not None
-        msg = result["messages"][0]
-        assert isinstance(msg, HumanMessage)
-        # Injected content is TEXT blocks describing the image, not image_url.
-        text = " ".join(b["text"] for b in msg.content if isinstance(b, dict) and b.get("type") == "text")
-        assert "a red circle on white" in text
-        assert not any(isinstance(b, dict) and b.get("type") == "image_url" for b in msg.content)
-        # Internal context: hidden from chat UI / IM channels.
-        assert msg.additional_kwargs.get("hide_from_ui") is True
-
-    @pytest.mark.anyio
-    async def test_describe_failure_is_best_effort(self, monkeypatch):
-        import deerflow.models as models_mod
-
-        class _BoomModel:
-            async def ainvoke(self, messages):
-                raise RuntimeError("vision endpoint down")
-
-        monkeypatch.setattr(models_mod, "create_chat_model", lambda **kwargs: _BoomModel())
-        mw = ViewImageMiddleware(vision_model_name="local-qwen")
-        result = await mw.abefore_model(self._completed_state(), _runtime())
-        # A describe failure must not abort the turn; it injects a placeholder.
-        assert result is not None
-        text = " ".join(b["text"] for b in result["messages"][0].content if isinstance(b, dict))
-        assert "vision description unavailable" in text
-
-    @pytest.mark.anyio
-    async def test_vision_capable_lead_injects_raw_image(self, monkeypatch):
-        """vision_model_name=None -> original behavior: inject the raw image."""
-        mw = ViewImageMiddleware()  # vision lead
-        result = await mw.abefore_model(self._completed_state(), _runtime())
-        assert result is not None
-        msg = result["messages"][0]
-        assert any(isinstance(b, dict) and b.get("type") == "image_url" for b in msg.content)
- ([argus] view_image: vision-describe for non-vision lead models)

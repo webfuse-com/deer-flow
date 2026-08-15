@@ -167,14 +167,15 @@ class TestMiddlewareWiring:
 
         monkeypatch.setattr(agent_module, "create_chat_model", fake_create_chat_model)
 
-        class _Cfg:
-            summarization = _base()
-
-            class memory:
-                enabled = False
-
-            class skills:
-                container_path = "/mnt/skills"
+        from deerflow.config.app_config import AppConfig
+        from deerflow.config.models_config import ModelConfig
+        _Cfg = AppConfig(
+            models=[
+                ModelConfig(name="local-qwen", use="langchain_openai:ChatOpenAI", model="local-qwen", api_key="k"),
+                ModelConfig(name="glm-nw", use="langchain_openai:ChatOpenAI", model="glm-nw", api_key="k"),
+            ],
+            summarization=_base(),
+        )
 
         with pytest.raises(_Recorded):
             agent_module._create_summarization_middleware(app_config=_Cfg(), lead_model_name="glm-nw")

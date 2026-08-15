@@ -21,7 +21,8 @@ from langgraph_sdk.errors import ConflictError
 
 from app.channels import buzz_run_policy as _buzz_run_policy  # noqa: F401
 from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
-from app.channels._delivery_report import report_deliveryfrom app.channels.commands import KNOWN_CHANNEL_COMMANDS
+from app.channels._delivery_report import report_delivery
+from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.dedupe_store import InboundDedupeStore, MemoryInboundDedupeStore
 from app.channels.message_bus import (
     INBOUND_FILE_CONTENT_KEY,
@@ -1708,7 +1709,6 @@ class ChannelManager:
         memory_mode = msg.memory_mode or ("read-only" if msg.unattended else None)
         if memory_mode:
             run_context["memory_mode"] = memory_mode
-=======
 
         # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
         # Forwarded to run_context -> runtime.context, read by _make_lead_agent
@@ -1716,7 +1716,6 @@ class ChannelManager:
         if msg.allowed_tools:
             run_context["allowed_tools"] = list(msg.allowed_tools)
 
->>>>>>> d3b2ed2c ([argus] patch #43: per-run allowed-tools from schedule frontmatter)
         return assistant_id, run_config, run_context
 
     async def _apply_channel_policy(self, msg: InboundMessage, run_context: dict[str, Any]) -> ChannelRunPolicy | None:
@@ -2347,7 +2346,6 @@ class ChannelManager:
             logger.info("[Manager] reusing thread: thread_id=%s for topic_id=%s", thread_id, msg.topic_id)
             await self._update_thread_channel_metadata(client, msg, thread_id)
 
-<<<<<<< HEAD
         serial_state, queued = self._begin_serialized_thread_run(
             channel_name=msg.channel_name,
             thread_id=thread_id,
@@ -2411,7 +2409,6 @@ class ChannelManager:
                         logger.info("[Manager] prepended thread context (%d chars) for new topic_id=%s", len(ctx), msg.topic_id)
             except Exception:  # noqa: BLE001 — context is best-effort
                 logger.exception("[Manager] thread-context fetch failed")
->>>>>>> 4aae74cd ([argus] patch #22: thread-context for replies under non-agent posts)
 
         assistant_id, run_config, run_context = self._resolve_run_params(msg, thread_id)
 
@@ -2794,18 +2791,12 @@ class ChannelManager:
                         metadata=_response_metadata(msg.metadata, pending_clarification=pending_clarification),
                     )
                 )
-<<<<<<< HEAD
-<<<<<<< HEAD
-            )
             if stream_error is not None:
                 # This path swallows its own errors, so _handle_message's generic
                 # handler never runs and never releases the key. Release only
                 # after publishing the final outbound so a provider redelivery
                 # cannot overtake this attempt's terminal reply.
                 await self._release_inbound_dedupe_key(msg)
-=======
->>>>>>> 488fe077 ([argus] patch #31/#32: stay silent on contentless unattended turns)
-=======
                 # [argus patch #45] a captured stream error was delivered to the
                 # chat as an error message; the run itself still failed.
                 if stream_error:

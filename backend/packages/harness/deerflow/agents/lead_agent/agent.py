@@ -36,7 +36,8 @@ from langchain_core.runnables import RunnableConfig
 from deerflow.agents.lead_agent.prompt import apply_prompt_template
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.configured_extensions import load_configured_extension_middlewares
-from deerflow.agents.middlewares.empty_final_retry_middleware import EmptyFinalRetryMiddlewarefrom deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
+from deerflow.agents.middlewares.empty_final_retry_middleware import EmptyFinalRetryMiddleware
+from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
 from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
@@ -65,7 +66,8 @@ from deerflow.runtime.checkpoint_mode import (
     frozen_checkpoint_channel_mode,
     inject_checkpoint_mode,
 )
-from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools, filter_tools_by_skill_allowed_toolsfrom deerflow.skills.types import Skill
+from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools, filter_tools_by_skill_allowed_tools
+from deerflow.skills.types import Skill
 from deerflow.tracing import build_tracing_callbacks
 
 logger = logging.getLogger(__name__)
@@ -147,21 +149,7 @@ def _authorize_model_name(
     app_config: AppConfig,
 ) -> str:
     """Enforce ``model:use`` authorization on the resolved model name.
-def _create_summarization_middleware(
-    *, app_config: AppConfig | None = None, lead_model_name: str | None = None
-) -> DeerFlowSummarizationMiddleware | None:
-    """Create and configure the summarization middleware from config.
 
-    [argus] ``lead_model_name`` selects a per-model override from
-    ``summarization.per_model`` (see SummarizationOverride). Both the trigger and
-    the summarizer depend on the lead model's context window: a single absolute
-    token trigger tuned for a 131k model fires at ~9% of a 1M-context model's
-    window, so most of the context the operator is paying for is discarded, and a
-    131k summarizer cannot read a 1M-context thread it is asked to compress.
-    Passing None preserves the previous global-only behavior exactly.
-    """
-    resolved_app_config = app_config or get_app_config()
-    config = resolved_app_config.summarization.resolved_for(lead_model_name)
     When ``authorization.enabled`` is false this is a no-op (returns
     *model_name* unchanged). When enabled, the resolved model is checked
     against the provider's policy via ``authorize("model", "use")`` so the
@@ -188,86 +176,35 @@ def _create_summarization_middleware(
     principal = build_principal_from_context(context, default_role=authz_config.default_role)
     all_names = [m.name for m in app_config.models]
 
-    # Check the resolved model against the action-scoped ``model:use`` policy.
-    # This aligns with the Gateway ``get_model`` route, which also checks
-    # ``authorize("model", "use")``. For the built-in RBAC provider (which
-    # ignores ``action``) this is equivalent to a membership check; for a
-    # custom provider that distinguishes ``list`` from ``use``, it prevents
-    # a model visible via ``filter_resources`` but denied for ``use`` from
-    # being silently selected at runtime.
-    try:
-        decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=model_name))
-        if not isinstance(decision, AuthzDecision):
-            raise TypeError("AuthorizationProvider.authorize must return AuthzDecision")
-        if decision.allow:
-            return model_name
-    except Exception:
-        logger.warning("Authorization provider failed while checking model:use for '%s'", model_name, exc_info=True)
+    if not provider.authorize(principal, "model", model_name, action="use"):
+        logger.warning(
+            "Principal %s denied from using model %s; attempting fallback",
+            principal.id,
+            model_name,
+        )
+        allowed = provider.filter_resources(principal, "model", all_names, action="use")
+        if allowed:
+            return allowed[0]
         if authz_config.fail_closed:
-            raise ValueError("No models are authorized for the current role (authorization provider error).")
+            raise ValueError(f"User {principal.id} is not authorized to use any model")
         return model_name
-
-    # Denied — graceful fallback: pick the first model that ``filter_resources``
-    # says is visible AND that also passes ``authorize("model", "use")``. For the
-    # built-in RBAC provider (which ignores ``action``) this is equivalent to
-    # picking the first visible name; for a custom provider that distinguishes
-    # ``list`` from ``use``, it ensures the fallback is actually usable.
-    try:
-        allowed_names = provider.filter_resources(principal, "model", all_names)
-        if not isinstance(allowed_names, list) or any(not isinstance(n, str) for n in allowed_names):
-            raise TypeError("AuthorizationProvider.filter_resources must return list[str]")
-    except Exception:
-        logger.warning("Authorization provider failed while resolving allowed models", exc_info=True)
-        if authz_config.fail_closed:
-            raise ValueError("No models are authorized for the current role (authorization provider error).")
-        return model_name
-
-    for candidate in allowed_names:
-        if candidate == model_name:
-            continue  # already denied above
-        try:
-            cb_decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=candidate))
-            if isinstance(cb_decision, AuthzDecision) and cb_decision.allow:
-                logger.warning(
-                    "Model '%s' is not authorized for the current role; fallback to '%s'.",
-                    model_name,
-                    candidate,
-                )
-                return candidate
-        except Exception:
-            logger.warning(
-                "Authorization provider failed while checking model:use fallback for '%s'",
-                candidate,
-                exc_info=True,
-            )
-            if authz_config.fail_closed:
-                raise ValueError("No models are authorized for the current role (authorization provider error).")
-            return model_name
-    if authz_config.fail_closed:
-        raise ValueError("No models are authorized for the current role.")
-    logger.warning("No models are authorized for the current role; fail_open allows '%s'.", model_name)
     return model_name
 
 
 def _create_summarization_middleware(
     *,
     app_config: AppConfig | None = None,
+    lead_model_name: str | None = None,
     run_model_name: str | None = None,
     extensions=None,
 ) -> DeerFlowSummarizationMiddleware | None:
-    """Create and configure the summarization middleware from config.
-
-    ``run_model_name`` is the resolved run model; it is the source of truth for
-    ``model_name: null`` summarization and the explicit-summary-model fallback, so a
-    custom agent's model is used instead of ``config.models[0]``.
-    """
+    """Create and configure the summarization middleware from config."""
+    model_name = lead_model_name or run_model_name
     return create_summarization_middleware(
         app_config=app_config,
-        run_model_name=run_model_name,
+        run_model_name=model_name,
         extensions=extensions,
     )
-
-
 def _create_todo_list_middleware(is_plan_mode: bool, agent_name: str | None = "", agent_config: "AgentConfig | None" = None) -> TodoMiddleware | None:
     """Create and configure the TodoList middleware.
 
@@ -511,16 +448,15 @@ def build_middlewares(
     )
 
     # Add summarization middleware if enabled
+    # [argus] Pass the resolved lead model so summarization.per_model can scale
+    # the trigger to this model's context window and pick a summarizer that can
+    # actually read it.
     summarization_middleware = _create_summarization_middleware(
         app_config=resolved_app_config,
         run_model_name=model_name,
+        lead_model_name=model_name,
         extensions=resolved_extensions,
-    # [argus] Pass the resolved lead model so summarization.per_model can scale
-    # the trigger to this model's context window and pick a summarizer that can
-    # actually read it. model_name is already in scope (it gates the vision
-    # middleware below); None simply keeps the global settings.
-    summarization_middleware = _create_summarization_middleware(
-        app_config=resolved_app_config, lead_model_name=model_name    )
+    )
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
@@ -828,7 +764,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
     )
 
-    agent_config = load_agent_config(agent_name) if not is_bootstrap else None    available_skills = _available_skill_names(agent_config, is_bootstrap)
+    agent_config = load_agent_config(agent_name) if not is_bootstrap else None
+    available_skills = _available_skill_names(agent_config, is_bootstrap)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
 
@@ -964,10 +901,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             setup,
             top_k=resolved_app_config.tool_search.auto_promote_top_k,
         )
-        filtered = filter_tools_by_skill_allowed_tools(raw_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
-        final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)        return create_agent(
-        filtered = _apply_tool_policy(raw_tools)        final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled, exclude=resolved_app_config.tool_search.exclude)
-        return create_agent(            model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
+        return create_agent(
+            model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
             tools=final_tools,
             middleware=normalize_middleware_state_schemas(
                 build_middlewares(
@@ -1047,12 +982,9 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         top_k=resolved_app_config.tool_search.auto_promote_top_k,
     )
     mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
-    filtered = filter_tools_by_skill_allowed_tools(raw_tools + extra_tools, skills_for_tool_policy, extra_allowed=extra_allowed)
-    final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)    return create_agent(
-        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides),
-    filtered = _apply_tool_policy(raw_tools + extra_tools)    final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled, exclude=resolved_app_config.tool_search.exclude)
     return create_agent(
-        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False),        tools=final_tools,
+        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides),
+        tools=final_tools,
         middleware=normalize_middleware_state_schemas(
             build_middlewares(
                 config,
