@@ -125,9 +125,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
             ]
             response = await model.ainvoke([HumanMessage(content=content)])
             text = response.content if isinstance(response.content, str) else str(response.content)
-            return f"**Visual description of `{path.name}`** (rendered by vision model `{self._vision_model_name}`):
-
-{text}"
+            return f"**Visual description of `{path.name}`** (rendered by vision model `{self._vision_model_name}`):\n\n{text}"
         except Exception as e:
             logger.warning("[view_image_middleware] vision description failed for %s: %s", path, e)
             return f"**Visual description of `{path.name}`**: (vision model description failed: {e})"
@@ -169,11 +167,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
                 text_blocks.append(await self._describe_image(item["_path"], item["_mime"], item["_b64"]))
             msg = HumanMessage(
                 id=f"{_IMAGE_CONTEXT_MESSAGE_ID_PREFIX}{uuid4()}",
-                content="
-
----
-
-".join(text_blocks),
+                content="\n\n---\n\n".join(text_blocks),
                 additional_kwargs={_IMAGE_CONTEXT_MESSAGE_MARKER_KEY: True},
             )
         else:
