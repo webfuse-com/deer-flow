@@ -43,7 +43,6 @@ import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 import { useArtifacts } from "../artifacts";
-import { useMaybeBrowserView } from "../browser-view";
 import { FlipDisplay } from "../flip-display";
 import { Tooltip } from "../tooltip";
 
@@ -599,7 +598,6 @@ function ToolCall({
   const { t } = useI18n();
   const { setOpen, autoOpen, autoSelect, selectedArtifact, select } =
     useArtifacts();
-  const browserViewPanel = useMaybeBrowserView();
   const tokenLabel = tokenDebugStep
     ? formatDebugToken(tokenDebugStep, t)
     : null;
@@ -662,17 +660,8 @@ function ToolCall({
               if (!shot) {
                 return;
               }
-              if (browserViewPanel) {
-                browserViewPanel.pushFrame({
-                  screenshot: shot,
-                  url: browserView?.url,
-                  title: browserView?.title,
-                });
-                browserViewPanel.openPanel();
-              } else {
-                select(shot);
-                setOpen(true);
-              }
+              select(shot);
+              setOpen(true);
             }}
           >
             <img

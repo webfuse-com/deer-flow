@@ -75,7 +75,6 @@ import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
 import { ArtifactFileList } from "../artifacts/artifact-file-list";
-import { useMaybeBrowserView } from "../browser-view";
 import { CopyButton } from "../copy-button";
 import { useMaybeSidecar } from "../sidecar/context";
 import { Tooltip } from "../tooltip";
@@ -322,8 +321,6 @@ export function MessageList({
     useState<SelectionToolbarState | null>(null);
   const messages = thread.messages;
   const groupedMessages = useStableMessageGroups(messages, thread.isLoading);
-  const browserView = useMaybeBrowserView();
-  const pushBrowserFrame = browserView?.pushFrame;
   const messageCount = messages.length;
   // The backend exposes no live start timestamp, so a mid-run mount measures
   // from mount until authoritative persisted turn_duration replaces it.
@@ -364,43 +361,6 @@ export function MessageList({
     prevIsLoading.current = thread.isLoading;
   }, [groupedMessages, thread.error, thread.isLoading, threadId]);
 
-  useEffect(() => {
-    // Only the primary chat surface drives the shared browser panel. The
-    // sidecar renders a different thread's messages against the same
-    // BrowserViewProvider; pushing its frames would make the panel resolve
-    // another thread's screenshot with the primary threadId (404 / wrong page).
-    if (sidecarSurface || !pushBrowserFrame) {
-      return;
-    }
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message?.type !== "tool") {
-        continue;
-      }
-      const meta = (
-        message.additional_kwargs as
-          | {
-              browser_view?: {
-                screenshot?: string;
-                url?: string;
-                title?: string;
-              };
-            }
-          | undefined
-      )?.browser_view;
-      if (meta && typeof meta.screenshot === "string") {
-        pushBrowserFrame({
-          screenshot: meta.screenshot,
-          url: meta.url,
-          title: meta.title,
-        });
-        return;
-      }
-    }
-    // messages is intentionally read (not a dep) so token updates do not
-    // repeatedly scan long history looking for the last browser frame.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messageCount, pushBrowserFrame, sidecarSurface]);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<
     string | null
   >(null);
