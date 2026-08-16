@@ -39,19 +39,19 @@ def _build_app() -> FastAPI:
 
 
 def test_is_container_sandbox_id_accepts_deterministic_hash():
-    # sha256(thread_id)[:8] is exactly 8 lowercase hex chars.
+    # sha256 hex hash is 8 chars (legacy) or 16 chars (current user-scoped).
     assert threads._is_container_sandbox_id("fc7b6e5e") is True
     assert threads._is_container_sandbox_id("00000000") is True
+    assert threads._is_container_sandbox_id("1ca3679417b93ab3") is True
 
 
 def test_is_container_sandbox_id_rejects_local_provider_ids():
     assert threads._is_container_sandbox_id("local") is False
     assert threads._is_container_sandbox_id("local:some-thread-id") is False
     assert threads._is_container_sandbox_id("") is False
-    # Wrong length / non-hex must not be mistaken for a container hash.
-    assert threads._is_container_sandbox_id("fc7b6e5") is False
-    assert threads._is_container_sandbox_id("fc7b6e5ee") is False
+    # Non-hex must not be mistaken for a container hash.
     assert threads._is_container_sandbox_id("ZZZZZZZZ") is False
+    assert threads._is_container_sandbox_id("invalid-hash-!") is False
 
 
 # ── endpoint behavior ────────────────────────────────────────────────────

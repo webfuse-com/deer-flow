@@ -19,7 +19,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from langchain.tools import InjectedToolCallId, tool
 from langchain_core.messages import ToolMessage
@@ -396,6 +396,41 @@ def _write_screenshot(outputs_path: Path, name: str, content: bytes) -> str:
     outputs_path.mkdir(parents=True, exist_ok=True)
     (outputs_path / name).write_bytes(content)
     return name
+
+
+@tool("browser_get_logs", parse_docstring=True)
+async def browser_get_logs_tool(
+    runtime: Runtime,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    severity: Literal["all", "error", "warning"] = "error",
+    limit: int = 20,
+    clear: bool = False,
+) -> Command:
+    """Retrieve browser console messages and uncaught runtime page errors.
+
+    Use this during web development or testing to verify that a page loaded without
+    JavaScript errors (ReferenceError, TypeError, network failures, etc.).
+
+    Args:
+        severity: Filter logs by minimum severity ("error", "warning", or "all"). Default is "error".
+        limit: Maximum number of recent log entries to return (default 20).
+        clear: If true, clears the log buffer after reading.
+    """
+    try:
+        with _resolve_session(runtime, "browser_get_logs") as session:
+            logs = await session.get_logs(severity=severity, limit=limit, clear=clear)
+            if not logs:
+                msg = f"No browser console logs found matching severity '{severity}'."
+            else:
+                formatted = []
+                for entry in logs:
+                    loc = f" ({entry['location']})" if entry.get("location") else ""
+                    formatted.append(f"[{entry['severity'].upper()}] {entry['message']}{loc}")
+                msg = f"Browser console logs ({len(logs)}):\n" + "\n".join(formatted)
+            return _tool_message(msg, tool_call_id)
+    except Exception as e:
+        logger.error(f"browser_get_logs failed: {e}")
+        return _tool_message(f"Error: could not retrieve browser logs: {e}", tool_call_id)
 
 
 @tool("browser_screenshot", parse_docstring=True)

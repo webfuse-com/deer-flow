@@ -120,12 +120,12 @@ def _strip_reserved_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in metadata.items() if k not in _SERVER_RESERVED_METADATA_KEYS}
 
 
-# A container-backed (AIO) sandbox id is the deterministic sha256(thread_id)[:8]
-# hex hash — the same string that names the container and that the nginx
+# A container-backed (AIO) sandbox id is the deterministic sha256 hex hash (8 or 16 chars)
+# — the same string that names the container and that the nginx
 # /debug-sandbox/<hash>/ location matches with [a-f0-9]+. Filesystem-local
 # providers return "local" or "local:<thread_id>" instead; those have no
 # container and cannot be reached over the debug proxy.
-_CONTAINER_SANDBOX_ID_RE = re.compile(r"^[a-f0-9]{8}$")
+_CONTAINER_SANDBOX_ID_RE = re.compile(r"^[a-f0-9]{8,16}$")
 
 
 def _is_container_sandbox_id(sandbox_id: str) -> bool:
@@ -351,12 +351,12 @@ def _default_branch_display_name(source_title: Any, *, source_is_branch: bool = 
             display_name = display_name[len("branch:") :].strip()
 
     return display_name or None
-# A container-backed (AIO) sandbox id is the deterministic sha256(thread_id)[:8]
-# hex hash — the same string that names the container and that the nginx
+# A container-backed (AIO) sandbox id is the deterministic sha256 hex hash (8 or 16 chars)
+# — the same string that names the container and that the nginx
 # /debug-sandbox/<hash>/ location matches with [a-f0-9]+. Filesystem-local
 # providers return "local" or "local:<thread_id>" instead; those have no
 # container and cannot be reached over the debug proxy.
-_CONTAINER_SANDBOX_ID_RE = re.compile(r"^[a-f0-9]{8}$")
+_CONTAINER_SANDBOX_ID_RE = re.compile(r"^[a-f0-9]{8,16}$")
 
 
 def _is_container_sandbox_id(sandbox_id: str) -> bool:

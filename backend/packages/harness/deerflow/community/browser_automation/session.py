@@ -15,6 +15,7 @@ private loop so the core harness installs without it.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import logging
 import os
@@ -315,6 +316,9 @@ class BrowserSession:
         self._input_live_frame_generation = 0
         self._input_live_frame_pending = False
         self._page_listener_bound = False
+        # Ring buffers for browser console logs and uncaught page errors
+        self._console_logs: collections.deque[dict[str, Any]] = collections.deque(maxlen=200)
+        self._page_errors: collections.deque[dict[str, Any]] = collections.deque(maxlen=100)
 
     @property
     def active_refs(self) -> int:
@@ -388,6 +392,26 @@ class BrowserSession:
             self._bind_new_page_listener()
             return self._page
 
+    def _bind_page_events(self, page: Page) -> None:
+        """Capture console messages and uncaught runtime page errors."""
+        def _on_console(msg: Any) -> None:
+            self._console_logs.append({
+                "type": getattr(msg, "type", "log"),
+                "text": getattr(msg, "text", str(msg)),
+                "location": getattr(msg, "location", None),
+                "time": time.time(),
+            })
+
+        def _on_pageerror(exc: Any) -> None:
+            self._page_errors.append({
+                "error": str(exc),
+                "time": time.time(),
+            })
+
+        with contextlib.suppress(Exception):
+            page.on("console", _on_console)
+            page.on("pageerror", _on_pageerror)
+
     def _set_active_page(self, page: Page) -> None:
         """Adopt *page* as the active page and keep the live screencast on it.
 
@@ -401,6 +425,7 @@ class BrowserSession:
         old page — address bar / snapshot moved on, frames did not).
         """
         self._page = page
+        self._bind_page_events(page)
         if self._on_frame is not None and not self._screencast_binding and page is not self._screencast_page:
             asyncio.ensure_future(self._rebind_screencast_safe())
 
@@ -416,6 +441,7 @@ class BrowserSession:
             return
 
         def _on_new_page(page: Page) -> None:
+            self._bind_page_events(page)
             self._set_active_page(page)
 
         self._context.on("page", _on_new_page)
@@ -781,6 +807,39 @@ class BrowserSession:
     async def type_text(self, ref: int, text: str, submit: bool = False) -> PageSnapshot:
         with self._activity():
             return await self._loop.run(self._type(ref, text, submit))
+
+    async def get_logs(self, severity: str = "error", limit: int = 20, clear: bool = False) -> list[dict[str, Any]]:
+        with self._activity():
+            logs = list(self._console_logs)
+            errors = list(self._page_errors)
+            if clear:
+                self._console_logs.clear()
+                self._page_errors.clear()
+
+        # Format combined records
+        records: list[dict[str, Any]] = []
+        if severity in ("all", "error", "warning"):
+            for e in errors:
+                records.append({
+                    "severity": "error",
+                    "type": "pageerror",
+                    "message": e["error"],
+                    "time": e["time"],
+                })
+        for entry in logs:
+            entry_type = entry.get("type", "log").lower()
+            entry_sev = "error" if entry_type == "error" else "warning" if entry_type in ("warning", "warn") else "info"
+            if severity == "all" or (severity == "error" and entry_sev == "error") or (severity == "warning" and entry_sev in ("error", "warning")):
+                records.append({
+                    "severity": entry_sev,
+                    "type": entry_type,
+                    "message": entry.get("text", ""),
+                    "location": entry.get("location"),
+                    "time": entry.get("time", 0.0),
+                })
+
+        records.sort(key=lambda r: r.get("time", 0.0))
+        return records[-limit:] if limit > 0 else records
 
     async def get_text(self, max_chars: int = 8000) -> str:
         with self._activity():
