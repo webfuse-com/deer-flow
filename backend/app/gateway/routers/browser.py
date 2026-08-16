@@ -303,13 +303,16 @@ async def browser_stream(websocket: WebSocket, thread_id: ThreadId) -> None:
 
     manager = get_browser_session_manager()
     try:
+        from deerflow.community.browser_automation.tools import _resolve_cdp_url
+        cdp_raw = _cfg_str("cdp_url")
+        resolved_cdp = _resolve_cdp_url(cdp_raw, thread_id)
         session_lease = manager.acquire_session(
             thread_id,
             headless=_cfg_bool("headless", True),
             timeout_ms=_cfg_int("timeout_ms", 30000),
             viewport={"width": _cfg_int("viewport_width", 1280), "height": _cfg_int("viewport_height", 720)},
-            cdp_url=_cfg_str("cdp_url"),
-            allow_unguarded_cdp=_cfg_bool("allow_unguarded_cdp", False),
+            cdp_url=resolved_cdp,
+            allow_unguarded_cdp=_cfg_bool("allow_unguarded_cdp", False) or bool(cdp_raw and cdp_raw.lower() in ("auto", "sandbox")),
             url_guard=validate_browser_url,
         )
         session = session_lease.__enter__()

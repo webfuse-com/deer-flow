@@ -102,6 +102,28 @@ class _SessionLease:
         self._manager.release_session(self._thread_id, self.session)
 
 
+def _resolve_cdp_url(cdp_raw: str | None, thread_id: str | None) -> str | None:
+    if not cdp_raw:
+        return None
+    val = cdp_raw.strip()
+    if val.lower() in ("auto", "sandbox"):
+        if not thread_id:
+            return None
+        try:
+            from deerflow.sandbox.sandbox_provider import get_sandbox_provider
+            provider = get_sandbox_provider()
+            info = getattr(provider, "_sandbox_infos", {}).get(thread_id)
+            if not info and hasattr(provider, "acquire"):
+                sid = provider.acquire(thread_id)
+                info = getattr(provider, "_sandbox_infos", {}).get(sid)
+            if info and getattr(info, "sandbox_url", None):
+                return info.sandbox_url
+        except Exception as exc:
+            logger.debug("Failed to auto-resolve sandbox CDP URL for thread %s: %s", thread_id, exc)
+            return None
+    return val
+
+
 def _resolve_session(runtime: Runtime, tool_name: str) -> _SessionLease:
     # Launch config (headless/viewport/timeout/cdp_url) is read from a single
     # canonical source — always ``browser_navigate`` — regardless of which tool
@@ -237,8 +259,8 @@ async def navigate_and_capture(*, thread_id: str | None, url: str, outputs_path:
         headless=_as_bool(cfg.get("headless"), True),
         timeout_ms=_as_int(cfg.get("timeout_ms"), 30000),
         viewport={"width": _as_int(cfg.get("viewport_width"), 1280), "height": _as_int(cfg.get("viewport_height"), 720)},
-        cdp_url=_as_str(cfg.get("cdp_url")),
-        allow_unguarded_cdp=_as_bool(cfg.get("allow_unguarded_cdp"), False),
+        cdp_url=_resolve_cdp_url(_as_str(cfg.get("cdp_url")), thread_id),
+        allow_unguarded_cdp=_as_bool(cfg.get("allow_unguarded_cdp"), False) or bool(_as_str(cfg.get("cdp_url")) and _as_str(cfg.get("cdp_url")).lower() in ("auto", "sandbox")),
         url_guard=validate_browser_url,
     ) as session:
         snapshot = await session.navigate(url)
