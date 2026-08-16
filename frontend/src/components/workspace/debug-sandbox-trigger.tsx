@@ -62,13 +62,15 @@ export function DebugSandboxTrigger({
   return (
     <Tooltip content={t.common.debugSandbox}>
       <Button
+        aria-label={t.common.debugSandbox}
         className="text-muted-foreground hover:text-foreground"
+        size="icon"
+        type="button"
         variant="ghost"
         disabled={loading}
         onClick={handleOpen}
       >
         <Bug />
-        <span className="hidden sm:inline">{t.common.debugSandbox}</span>
       </Button>
     </Tooltip>
   );

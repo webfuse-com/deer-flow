@@ -139,9 +139,9 @@ def _resolve_session(runtime: Runtime, tool_name: str) -> _SessionLease:
     timeout_ms = _as_int(cfg.get("timeout_ms"), 30000)
     width = _as_int(cfg.get("viewport_width"), 1280)
     height = _as_int(cfg.get("viewport_height"), 720)
-    cdp_url = _as_str(cfg.get("cdp_url"))
-    manager = get_browser_session_manager()
     thread_id = _thread_id(runtime)
+    cdp_url = _resolve_cdp_url(_as_str(cfg.get("cdp_url")), thread_id)
+    manager = get_browser_session_manager()
     session = manager.get_session(
         thread_id,
         headless=headless,
