@@ -194,7 +194,7 @@ def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool,
     if not enabled:
         # Deferral disabled: defer nothing; the model binds every tool as before.
         return DeferredToolSetup(None, frozenset(), None)
-    deferred = [t for t in candidate_tools if is_mcp_tool(t)]
+    deferred = [t for t in candidate_tools if is_mcp_tool(t) and not _is_excluded(t.name, exclude)]
     if not deferred:
         # Enabled, but no MCP tool to defer: same empty result, different reason.
         return DeferredToolSetup(None, frozenset(), None)
@@ -202,7 +202,7 @@ def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool,
     return DeferredToolSetup(build_tool_search_tool(catalog), catalog.names, catalog.hash)
 
 
-def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool) -> tuple[list[BaseTool], DeferredToolSetup]:
+def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, exclude=()) -> tuple[list[BaseTool], DeferredToolSetup]:
     """Build the final tool list and deferred setup from candidate tools.
 
     Fail closed on deferral assembly itself: if tool_search is enabled and MCP
@@ -214,8 +214,8 @@ def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool) -
     Shared by every agent-build path (lead, embedded client, subagent) so they
     all get the same fail-closed guarantee from one place.
     """
-    deferred_setup = build_deferred_tool_setup(candidate_tools, enabled=enabled)
-    if enabled and not deferred_setup.deferred_names and any(is_mcp_tool(t) for t in candidate_tools):
+    deferred_setup = build_deferred_tool_setup(candidate_tools, enabled=enabled, exclude=exclude)
+    if enabled and not deferred_setup.deferred_names and any(is_mcp_tool(t) and not _is_excluded(t.name, exclude) for t in candidate_tools):
         raise RuntimeError("tool_search enabled and MCP candidates exist, but no deferred set was recovered - refusing to bind MCP schemas (fail-closed).")
     final_tools = list(candidate_tools)
     if deferred_setup.tool_search_tool:
