@@ -6,3 +6,13 @@ export interface MCPServerConfig extends Record<string, unknown> {
 export interface MCPConfig {
   mcp_servers: Record<string, MCPServerConfig>;
 }
+
+export interface SystemTool {
+  name: string;
+  group: string;
+  description: string;
+}
+
+export interface SystemToolsResponse {
+  tools: SystemTool[];
+}

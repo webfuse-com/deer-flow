@@ -8,9 +8,18 @@ import { toast } from "sonner";
 
 import {
   loadMCPConfig,
+  loadSystemTools,
   MCPConfigRequestError,
   updateMCPServerState,
 } from "./api";
+
+export function useSystemTools() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["systemTools"],
+    queryFn: () => loadSystemTools(),
+  });
+  return { tools: data ?? [], isLoading, error };
+}
 
 export function useMCPConfig() {
   const { data, isLoading, error } = useQuery({

@@ -724,6 +724,10 @@ export interface Translations {
     tools: {
       title: string;
       description: string;
+      systemToolsTitle: string;
+      systemToolsDescription: string;
+      mcpServersTitle: string;
+      mcpServersDescription: string;
       adminRequired: string;
       empty: string;
     };

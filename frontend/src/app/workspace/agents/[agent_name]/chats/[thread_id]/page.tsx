@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
-import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ChatBox, useThreadChat } from "@/components/workspace/chats";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
 import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
@@ -307,7 +306,6 @@ export default function AgentChatPage() {
                   <ContextUsageBadge contextUsage={contextUsage} />
                 )}
                 <SidecarTrigger />
-                {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
                 <ArtifactTrigger />

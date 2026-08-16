@@ -1,7 +1,7 @@
 import { fetch } from "@/core/api/fetcher";
 import { getBackendBaseURL } from "@/core/config";
 
-import type { MCPConfig } from "./types";
+import type { MCPConfig, SystemTool } from "./types";
 
 export class MCPConfigRequestError extends Error {
   readonly status: number;
@@ -23,6 +23,15 @@ async function readErrorDetail(
     detail?: unknown;
   };
   return typeof error.detail === "string" ? error.detail : fallback;
+}
+
+export async function loadSystemTools(): Promise<SystemTool[]> {
+  const response = await fetch(`${getBackendBaseURL()}/api/mcp/system-tools`);
+  if (!response.ok) {
+    return [];
+  }
+  const data = (await response.json()) as { tools: SystemTool[] };
+  return data.tools ?? [];
 }
 
 export async function loadMCPConfig() {

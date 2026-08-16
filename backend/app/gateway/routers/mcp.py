@@ -6,10 +6,11 @@ import re
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.gateway.deps import require_admin_user
+from app.gateway.deps import get_config, require_admin_user
+from deerflow.config.app_config import AppConfig
 from deerflow.config.extensions_config import (
     ExtensionsConfig,
     McpRoutingConfig,
@@ -741,6 +742,62 @@ def _merge_preserving_secrets(
         if key not in (incoming.model_extra or {}):
             update[key] = value
     return incoming.model_copy(update=update)
+
+
+class SystemToolResponse(BaseModel):
+    """Response model for a configured system/built-in tool."""
+
+    name: str = Field(..., description="Tool name")
+    group: str = Field(..., description="Tool group (e.g. browser, bash, file, agora)")
+    description: str = Field(default="", description="Tool documentation / description")
+
+
+class SystemToolsResponse(BaseModel):
+    """Response model for configured system/built-in tools."""
+
+    tools: list[SystemToolResponse] = Field(
+        default_factory=list,
+        description="List of configured system and built-in tools",
+    )
+
+
+@router.get(
+    "/mcp/system-tools",
+    response_model=SystemToolsResponse,
+    summary="Get System and Built-in Tools",
+    description="Retrieve configured built-in and system tool definitions from the server configuration.",
+)
+async def get_system_tools(
+    request: Request,
+    app_config: AppConfig = Depends(get_config),
+) -> SystemToolsResponse:
+    """Get the current configured system/built-in tools.
+
+    Returns the tools declared in config.yaml with docstrings resolved from their providers.
+    """
+    from deerflow.reflection.resolvers import resolve_variable
+
+    tools_out: list[SystemToolResponse] = []
+    for tool_cfg in app_config.tools:
+        doc = ""
+        try:
+            resolved = resolve_variable(tool_cfg.use)
+            doc = (getattr(resolved, "description", None) or getattr(resolved, "__doc__", "") or "").strip()
+            # If doc is a multiline docstring, take the first sentence/paragraph
+            if doc:
+                doc = doc.split("\n\n")[0].replace("\n", " ").strip()
+        except Exception:
+            doc = f"Tool provider: {tool_cfg.use}"
+
+        tools_out.append(
+            SystemToolResponse(
+                name=tool_cfg.name,
+                group=tool_cfg.group,
+                description=doc,
+            )
+        )
+
+    return SystemToolsResponse(tools=tools_out)
 
 
 @router.get(
