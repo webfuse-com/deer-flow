@@ -684,4 +684,3 @@ class TestVisionDescribeForNonVisionLead:
         assert result is not None
         msg = result["messages"][0]
         assert any(isinstance(b, dict) and b.get("type") == "image_url" for b in msg.content)
- ([argus] view_image: vision-describe for non-vision lead models)
