@@ -21,6 +21,7 @@ ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES = frozenset(
         "read_file",
         "review_skill_package",
         "tool_search",
+        "view_image",
     }
 )
 
