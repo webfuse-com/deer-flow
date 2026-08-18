@@ -288,11 +288,13 @@ class SkillToolPolicyMiddleware(AgentMiddleware[AgentState]):
                     schemas = json.loads(content) if isinstance(content, str) else None
                 except json.JSONDecodeError:
                     schemas = None
-                if not isinstance(schemas, list):
-                    logger.warning("Active-policy tool_search returned schemas that could not be filtered")
-                    return self._tool_search_policy_error(request)
-                filtered_schemas = [schema for schema in schemas if isinstance(schema, dict) and (schema.get("name") in permitted_names or (isinstance(schema.get("function"), dict) and schema["function"].get("name") in permitted_names))]
-                content = json.dumps(filtered_schemas, indent=2, ensure_ascii=False) if filtered_schemas else "No tools found matching the active skill policy."
+                if isinstance(schemas, list):
+                    filtered_schemas = [schema for schema in schemas if isinstance(schema, dict) and (schema.get("name") in permitted_names or (isinstance(schema.get("function"), dict) and schema["function"].get("name") in permitted_names))]
+                    content = json.dumps(filtered_schemas, indent=2, ensure_ascii=False) if filtered_schemas else "No tools found matching the active skill policy."
+                elif permitted_names:
+                    content = f"Promoted {len(permitted_names)} tool(s): {', '.join(permitted_names)}. They are now available in your active tool list."
+                else:
+                    content = "No tools found matching the active skill policy."
             sanitized_messages.append(message.model_copy(update={"content": content}))
 
         sanitized_update = dict(result.update)
