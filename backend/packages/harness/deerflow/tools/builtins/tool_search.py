@@ -139,7 +139,7 @@ class DeferredToolSetup:
     catalog_hash: str | None
 
 
-def build_tool_search_tool(catalog: DeferredToolCatalog) -> BaseTool:
+def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: frozenset[str] = frozenset()) -> BaseTool:
     catalog_hash = catalog.hash
 
     @tool
@@ -158,7 +158,22 @@ def build_tool_search_tool(catalog: DeferredToolCatalog) -> BaseTool:
         """
         matched = catalog.search(query)
         if not matched:
-            content, names = f"No tools found matching: {query}", []
+            # Check if the requested tool is already directly bound in the agent's toolset
+            clean_query = query.strip()
+            if clean_query.startswith("select:"):
+                requested = {n.strip() for n in clean_query[7:].split(",") if n.strip()}
+            else:
+                requested = {clean_query}
+            already_active = requested.intersection(directly_bound_names)
+            if already_active:
+                active_list = ", ".join(sorted(already_active))
+                content = (
+                    f"Tool(s) '{active_list}' are already directly available and active in your toolset. "
+                    f"Do NOT call tool_search for them; call them directly."
+                )
+            else:
+                content = f"No tools found matching: {query}"
+            names = []
         else:
             content = json.dumps([convert_to_openai_function(t) for t in matched], indent=2, ensure_ascii=False)
             names = [t.name for t in matched]
@@ -199,7 +214,8 @@ def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool,
         # Enabled, but no MCP tool to defer: same empty result, different reason.
         return DeferredToolSetup(None, frozenset(), None)
     catalog = DeferredToolCatalog(tuple(deferred))
-    return DeferredToolSetup(build_tool_search_tool(catalog), catalog.names, catalog.hash)
+    directly_bound_names = frozenset(t.name for t in candidate_tools if t not in deferred)
+    return DeferredToolSetup(build_tool_search_tool(catalog, directly_bound_names), catalog.names, catalog.hash)
 
 
 def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, exclude=()) -> tuple[list[BaseTool], DeferredToolSetup]:
@@ -284,18 +300,12 @@ def build_mcp_routing_middleware(
 # Prompt rendering
 
 
-def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozenset()) -> str:
-    """Generate <available-deferred-tools> from an explicit deferred-name set.
+def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozenset(), directly_bound_names: frozenset[str] = frozenset()) -> str:
+    """Generate <available-deferred-tools> and direct-tools guidance.
 
-    Lists only names so the agent knows what exists and can use tool_search to
-    load them. Returns empty string when there are no deferred tools. The set is
-    computed at agent build time and passed in. Lead-agent sets contain the full
-    configured MCP catalog because active skill policy is applied at runtime;
-    subagent sets may already have been filtered by their startup skill policy.
-
-    Lives here, next to the assembly that produces ``deferred_names``, so every
-    agent-build path (lead, embedded client, subagent) renders the section the
-    same way without coupling back to ``lead_agent.prompt``.
+    Lists deferred names so the agent knows what exists and can use tool_search to
+    load them. If directly_bound_names are present, adds a reminder that those tools
+    are already active and should be called directly.
     """
     if not deferred_names:
         return ""
@@ -303,7 +313,16 @@ def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozen
     # name cannot close this block and forge a framework tag. Mirrors
     # get_skill_index_prompt_section.
     names = "\n".join(html.escape(name, quote=False) for name in sorted(deferred_names))
-    return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>"
+    direct_note = ""
+    if directly_bound_names:
+        hot_list = ", ".join(sorted(html.escape(name, quote=False) for name in directly_bound_names if not name.startswith("__") and name not in {"tool_search", "setup_agent", "update_agent"}))
+        if hot_list:
+            direct_note = (
+                "\n\n**Note on directly bound tools:** The following tools are ALREADY active in your active toolset "
+                f"and MUST be called directly without tool_search: {hot_list}.\n"
+                "Do NOT use tool_search for tools that are already active."
+            )
+    return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>{direct_note}"
 
 
 def _format_keyword_list(keywords: list[str]) -> str:

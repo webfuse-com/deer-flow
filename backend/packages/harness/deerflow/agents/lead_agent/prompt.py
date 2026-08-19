@@ -1018,6 +1018,7 @@ def apply_prompt_template(
     available_skills: set[str] | None = None,
     app_config: AppConfig | None = None,
     deferred_names: frozenset[str] = frozenset(),
+    directly_bound_names: frozenset[str] = frozenset(),
     mcp_routing_hints_section: str = "",
     user_id: str | None = None,
     skill_names: frozenset[str] | None = None,
@@ -1066,7 +1067,10 @@ def apply_prompt_template(
     )
 
     # Get deferred tools section (tool_search)
-    deferred_tools_section = get_deferred_tools_prompt_section(deferred_names=deferred_names)
+    deferred_tools_section = get_deferred_tools_prompt_section(
+        deferred_names=deferred_names,
+        directly_bound_names=directly_bound_names,
+    )
 
     # Build ACP agent section only if ACP agents are configured
     acp_section = _build_acp_section(app_config=app_config)
