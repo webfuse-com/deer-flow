@@ -268,10 +268,10 @@ export function getInputSubmitAction({
   if (parseCompactCommand(text) && fileCount === 0) {
     return { kind: "compact" };
   }
-  if (status === "streaming") {
-    return { kind: "stop" };
-  }
   if (!text.trim() && fileCount === 0) {
+    if (status === "streaming") {
+      return { kind: "stop" };
+    }
     return { kind: "empty" };
   }
   return { kind: "message" };

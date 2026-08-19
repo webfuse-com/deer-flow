@@ -20,6 +20,8 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { QueuedMessages } from "./queued-messages";
+import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import {
   SidecarProvider,
   SidecarTrigger,
@@ -73,6 +75,9 @@ export default function ChatPage() {
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
   const [localSettings, setLocalSettings] = useLocalSettings();
+  const { queue, enqueue: enqueueMessage, dequeue: dequeueMessage, remove: removeQueuedMessage, update: updateQueuedMessage } = useThreadQueue(
+    isNewThread || isMock ? undefined : threadId,
+  );
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
@@ -86,6 +91,7 @@ export default function ChatPage() {
   const branchThread = useBranchThread();
   const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
   const contextUsage = selectContextUsage(threadTokenUsage.data);
+  const { showNotification } = useNotification();
   const mountedRef = useRef(false);
   useSpecificChatMode();
 
@@ -100,8 +106,6 @@ export default function ChatPage() {
   useEffect(() => {
     setIsWelcomeMode(isNewThread);
   }, [isNewThread]);
-
-  const { showNotification } = useNotification();
 
   const {
     thread,
@@ -147,6 +151,26 @@ export default function ChatPage() {
       }
     },
   });
+
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+
+  const processQueueNext = useCallback(() => {
+    if (thread.isLoading || isUploading) return;
+    const nextItem = dequeueMessage();
+    if (nextItem) {
+      sendMessage(threadId, nextItem.message, undefined, nextItem.options);
+    }
+  }, [dequeueMessage, isUploading, sendMessage, thread.isLoading, threadId]);
+
+  useEffect(() => {
+    if (!thread.isLoading && !isUploading && queue.length > 0) {
+      const timer = setTimeout(() => {
+        processQueueNext();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isUploading, processQueueNext, queue.length, thread.isLoading]);
 
   const hasThreadMessages = thread.messages.length > 0;
 
@@ -402,41 +426,49 @@ export default function ChatPage() {
                     </div>
                   )}
                   {mountedRef.current ? (
-                    <InputBox
-                      className={cn(
-                        "bg-background/5 w-full",
-                        isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
-                      )}
-                      isWelcomeMode={isWelcomeMode}
-                      threadId={threadId}
-                      draftThreadId={isNewThread ? "new" : threadId}
-                      autoFocus={isWelcomeMode}
-                      status={
-                        thread.error
-                          ? "error"
-                          : thread.isLoading
-                            ? "streaming"
-                            : "ready"
-                      }
-                      context={settings.context}
-                      extraHeader={
-                        isWelcomeMode &&
-                        !hasGoal &&
-                        !hasTodos && <Welcome mode={settings.context.mode} />
-                      }
-                      disabled={
-                        isMock ||
-                        env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                        isUploading ||
-                        (!isNewThread && isHistoryLoading)
-                      }
-                      onContextChange={(context) =>
-                        setSettings("context", context)
-                      }
-                      onGoalChange={setLocalGoal}
-                      onSubmit={handleSubmit}
-                      onStop={handleStop}
-                    />
+                    <>
+                      <QueuedMessages
+                        queue={queue}
+                        onRemove={removeQueuedMessage}
+                        onUpdate={updateQueuedMessage}
+                      />
+                      <InputBox
+                        className={cn(
+                          "bg-background/5 w-full",
+                          isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
+                        )}
+                        isWelcomeMode={isWelcomeMode}
+                        threadId={threadId}
+                        draftThreadId={isNewThread ? "new" : threadId}
+                        autoFocus={isWelcomeMode}
+                        status={
+                          thread.error
+                            ? "error"
+                            : thread.isLoading
+                              ? "streaming"
+                              : "ready"
+                        }
+                        context={settings.context}
+                        extraHeader={
+                          isWelcomeMode &&
+                          !hasGoal &&
+                          !hasTodos && <Welcome mode={settings.context.mode} />
+                        }
+                        disabled={
+                          isMock ||
+                          env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+                          isUploading ||
+                          (!isNewThread && isHistoryLoading)
+                        }
+                        onContextChange={(context) =>
+                          setSettings("context", context)
+                        }
+                        onGoalChange={setLocalGoal}
+                        onSubmit={handleSubmit}
+                        onQueue={(msg, opts) => enqueueMessage(msg, opts)}
+                        onStop={handleStop}
+                      />
+                    </>
                   ) : (
                     <div
                       aria-hidden="true"

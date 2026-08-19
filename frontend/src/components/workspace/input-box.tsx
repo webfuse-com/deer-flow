@@ -298,6 +298,7 @@ export function InputBox({
   onFollowupsVisibilityChange,
   onGoalChange,
   onSubmit,
+  onQueue,
   onStop,
   ...props
 }: Omit<ComponentProps<typeof PromptInput>, "onSubmit"> & {
@@ -344,6 +345,10 @@ export function InputBox({
     message: PromptInputMessage,
     options?: InputBoxSubmitOptions,
   ) => void | Promise<void>;
+  onQueue?: (
+    message: PromptInputMessage,
+    options?: InputBoxSubmitOptions,
+  ) => void;
   onStop?: () => void;
 }) {
   const { locale, t } = useI18n();
@@ -1163,10 +1168,6 @@ export function InputBox({
 
   const handleSubmit = useCallback(
     async (message: PromptInputMessage) => {
-      if (status === "streaming") {
-        toast.info(t.inputBox.pleaseWaitStreaming);
-        return Promise.reject(new Error("streaming"));
-      }
       abortVoiceInput();
       const messageWithSlashSkill = selectedSlashSkill
         ? {
@@ -1174,6 +1175,43 @@ export function InputBox({
             text: `/${selectedSlashSkill.name} ${message.text}`,
           }
         : message;
+
+      if (status === "streaming") {
+        if (!messageWithSlashSkill.text.trim() && messageWithSlashSkill.files.length === 0) {
+          handleStopStreaming();
+          return;
+        }
+        if (onQueue) {
+          const quotes = sidecar?.conversationQuotes ?? [];
+          const quoteIds = quotes.map((quote) => quote.id);
+          const quoteContexts = quotes.map((quote) => quote.context);
+          const submitOptions: InputBoxSubmitOptions = {
+            ...(quotes.length
+              ? {
+                  additionalKwargs: buildReferenceMessageMetadata(quoteContexts),
+                  additionalInputMessages: [
+                    buildHiddenConversationQuoteMessage({
+                      contexts: quoteContexts,
+                    }),
+                  ],
+                }
+              : {}),
+            onSent: () => {
+              sidecar?.clearConversationQuotes(quoteIds);
+            },
+          };
+          onQueue(messageWithSlashSkill, submitOptions);
+          textInput.setInput("");
+          attachments.clear();
+          if (selectedSlashSkill) {
+            setSelectedSlashSkill(null);
+          }
+          toast.success("Message queued for next turn");
+          return;
+        }
+        toast.info(t.inputBox.pleaseWaitStreaming);
+        return Promise.reject(new Error("streaming"));
+      }
       const submitAction = getInputSubmitAction({
         text: messageWithSlashSkill.text,
         fileCount: messageWithSlashSkill.files.length,
@@ -1226,14 +1264,18 @@ export function InputBox({
     },
     [
       abortVoiceInput,
+      attachments,
       handleCompactCommand,
       handleGoalCommand,
       handleStopStreaming,
+      onQueue,
       selectedSlashSkill,
+      sidecar,
       status,
       submitThreadMessage,
       t.inputBox.goalTooLong,
       t.inputBox.pleaseWaitStreaming,
+      textInput,
     ],
   );
 
@@ -2723,15 +2765,6 @@ export function InputBox({
       {!isWelcomeMode && (
         <div className="bg-background absolute right-0 -bottom-[17px] left-0 z-0 h-4"></div>
       )}
-
-      {isWelcomeMode &&
-        searchParams.get("mode") !== "skill" &&
-        !selectedSlashSkill &&
-        !showSkillSuggestions && (
-          <div className="flex items-center justify-center pt-2">
-            <SuggestionList onSelectPlaceholder={onSelectPlaceholder} />
-          </div>
-        )}
 
       <p
         className={cn(

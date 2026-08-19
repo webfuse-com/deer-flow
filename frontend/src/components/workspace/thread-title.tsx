@@ -27,6 +27,8 @@ export function ThreadTitle({
     }
     if (thread.isThreadLoading) {
       document.title = `Loading... - ${t.pages.appName}`;
+    } else if (thread.isLoading) {
+      document.title = `⏳ [Running] ${_title} - ${t.pages.appName}`;
     } else {
       document.title = `${_title} - ${t.pages.appName}`;
     }
@@ -36,6 +38,7 @@ export function ThreadTitle({
     t.pages.untitled,
     t.pages.appName,
     thread.isThreadLoading,
+    thread.isLoading,
     thread.values,
   ]);
 

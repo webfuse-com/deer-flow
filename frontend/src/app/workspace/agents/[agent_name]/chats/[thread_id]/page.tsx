@@ -2,7 +2,7 @@
 
 import { BotIcon, PlusSquare } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,8 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { QueuedMessages } from "@/components/workspace/chats/queued-messages";
+import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import {
   SidecarProvider,
   SidecarTrigger,
@@ -76,6 +78,9 @@ export default function AgentChatPage() {
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
   const [localSettings, setLocalSettings] = useLocalSettings();
+  const { queue, enqueue: enqueueMessage, dequeue: dequeueMessage, remove: removeQueuedMessage, update: updateQueuedMessage } = useThreadQueue(
+    isNewThread || isMock ? undefined : threadId,
+  );
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
@@ -90,10 +95,6 @@ export default function AgentChatPage() {
   const contextUsage = selectContextUsage(threadTokenUsage.data);
 
   const { showNotification } = useNotification();
-
-  useEffect(() => {
-    setIsWelcomeMode(isNewThread);
-  }, [isNewThread]);
 
   const {
     thread,
@@ -140,6 +141,26 @@ export default function AgentChatPage() {
       }
     },
   });
+
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+
+  const processQueueNext = useCallback(() => {
+    if (thread.isLoading || isUploading) return;
+    const nextItem = dequeueMessage();
+    if (nextItem) {
+      sendMessage(threadId, nextItem.message, { agent_name }, nextItem.options);
+    }
+  }, [agent_name, dequeueMessage, isUploading, sendMessage, thread.isLoading, threadId]);
+
+  useEffect(() => {
+    if (!thread.isLoading && !isUploading && queue.length > 0) {
+      const timer = setTimeout(() => {
+        processQueueNext();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isUploading, processQueueNext, queue.length, thread.isLoading]);
 
   const hasThreadMessages = thread.messages.length > 0;
 
@@ -391,6 +412,11 @@ export default function AgentChatPage() {
                     </div>
                   )}
 
+                  <QueuedMessages
+                    queue={queue}
+                    onRemove={removeQueuedMessage}
+                    onUpdate={updateQueuedMessage}
+                  />
                   <InputBox
                     className={cn(
                       "bg-background/5 w-full",
@@ -427,6 +453,7 @@ export default function AgentChatPage() {
                     }
                     onGoalChange={setLocalGoal}
                     onSubmit={handleSubmit}
+                    onQueue={(msg, opts) => enqueueMessage(msg, opts)}
                     onStop={handleStop}
                   />
                   {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (

@@ -17,6 +17,7 @@ class NamedTool(Protocol):
 # by SkillToolPolicyMiddleware, and describe_skill only returns catalog metadata.
 ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES = frozenset(
     {
+        "ask_clarification",
         "describe_skill",
         "read_file",
         "review_skill_package",
