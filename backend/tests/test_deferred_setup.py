@@ -87,6 +87,18 @@ def test_tool_search_no_match_empty_names():
     ts = build_tool_search_tool(catalog)
     out = ts.invoke({"type": "tool_call", "name": "tool_search", "args": {"query": "select:nonexistent"}, "id": "tc2"})
     assert out.update["promoted"]["names"] == []
+    assert "No tools found matching" in out.update["messages"][0].content
+
+
+def test_tool_search_directly_bound_tool_returns_informative_message():
+    """Searching for a tool that is already directly active returns guidance, not a dead-end."""
+    catalog = DeferredToolCatalog((mcp_calc,))
+    ts = build_tool_search_tool(catalog, directly_bound_names=frozenset({"calendar_list_events", "pythia_query"}))
+    out = ts.invoke({"type": "tool_call", "name": "tool_search", "args": {"query": "select:calendar_list_events"}, "id": "tc4"})
+    assert out.update["promoted"]["names"] == []
+    msg = out.update["messages"][0]
+    assert "already directly available and active" in msg.content
+    assert "calendar_list_events" in msg.content
 
 
 def _named_mcp_tool(name: str):
