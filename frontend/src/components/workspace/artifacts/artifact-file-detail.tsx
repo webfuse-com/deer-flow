@@ -542,12 +542,10 @@ export function ArtifactFileDetail({
                 label={t.common.openInNewWindow}
                 tooltip={t.common.openInNewWindow}
                 onClick={() => {
-                  const w = window.open(
+                  window.open(
                     urlOfArtifact({ filepath, threadId, isMock }),
                     "_blank",
-                    "noopener,noreferrer",
                   );
-                  if (w) w.opener = null;
                 }}
               />
             )}
