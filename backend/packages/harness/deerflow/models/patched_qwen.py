@@ -63,9 +63,7 @@ def _with_reasoning_content(
     """
     additional_kwargs = dict(message.additional_kwargs)
     existing = additional_kwargs.get("reasoning_content")
-    additional_kwargs["reasoning_content"] = (
-        f"{existing}{reasoning}" if isinstance(existing, str) else reasoning
-    )
+    additional_kwargs["reasoning_content"] = f"{existing}{reasoning}" if isinstance(existing, str) else reasoning
     return message.model_copy(update={"additional_kwargs": additional_kwargs})
 
 
@@ -88,9 +86,7 @@ class PatchedChatQwen(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: dict | None,
     ) -> ChatGenerationChunk | None:
-        generation_chunk = super()._convert_chunk_to_generation_chunk(
-            chunk, default_chunk_class, base_generation_info
-        )
+        generation_chunk = super()._convert_chunk_to_generation_chunk(chunk, default_chunk_class, base_generation_info)
         if generation_chunk is None:
             return None
         choices = chunk.get("choices") or []
@@ -100,14 +96,8 @@ class PatchedChatQwen(ChatOpenAI):
         if not isinstance(delta, Mapping):
             return generation_chunk
         reasoning = delta.get("reasoning_content")
-        if (
-            isinstance(reasoning, str)
-            and reasoning
-            and isinstance(generation_chunk.message, AIMessageChunk)
-        ):
-            generation_chunk.message = _with_reasoning_content(
-                generation_chunk.message, reasoning
-            )
+        if isinstance(reasoning, str) and reasoning and isinstance(generation_chunk.message, AIMessageChunk):
+            generation_chunk.message = _with_reasoning_content(generation_chunk.message, reasoning)
         return generation_chunk
 
     def _create_chat_result(
@@ -160,11 +150,7 @@ class PatchedChatQwen(ChatOpenAI):
         if not isinstance(messages, list) or len(messages) != len(original_messages):
             return payload
         for original, wire in zip(original_messages, messages):
-            if (
-                isinstance(original, AIMessage)
-                and isinstance(wire, dict)
-                and wire.get("role") == "assistant"
-            ):
+            if isinstance(original, AIMessage) and isinstance(wire, dict) and wire.get("role") == "assistant":
                 reasoning = original.additional_kwargs.get("reasoning_content")
                 if isinstance(reasoning, str) and reasoning.strip():
                     wire["reasoning_content"] = reasoning

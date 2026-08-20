@@ -11,8 +11,6 @@ These tests pin the resolution semantics (inherit-by-default, no mutation, no
 recursion) and the wiring that passes the lead model into the middleware factory.
 """
 
-import pytest
-
 from deerflow.config.summarization_config import (
     ContextSize,
     SummarizationConfig,
@@ -160,8 +158,10 @@ class TestMiddlewareWiring:
         # whole assertion.
         class _FakeModel:
             _llm_type = "chat"
+
             def with_config(self, *args, **kwargs):
                 return self
+
             def get_num_tokens_from_messages(self, *args, **kwargs):
                 return 10
 
@@ -170,12 +170,14 @@ class TestMiddlewareWiring:
             return _FakeModel()
 
         import deerflow.agents.middlewares.summarization_middleware as summ_mod
+
         monkeypatch.setattr(agent_module, "create_chat_model", fake_create_chat_model)
         monkeypatch.setattr(summ_mod, "create_chat_model", fake_create_chat_model)
 
         from deerflow.config.app_config import AppConfig
         from deerflow.config.model_config import ModelConfig
         from deerflow.config.sandbox_config import SandboxConfig
+
         _Cfg = AppConfig(
             models=[
                 ModelConfig(name="local-qwen", use="langchain_openai:ChatOpenAI", model="local-qwen", api_key="k"),

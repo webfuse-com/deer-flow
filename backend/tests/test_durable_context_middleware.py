@@ -504,7 +504,7 @@ class TestMiddlewareRegistration:
 
         monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
         monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: summary_sentinel)
-        monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+        monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
         middlewares = lead_agent_module.build_middlewares(
             {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},

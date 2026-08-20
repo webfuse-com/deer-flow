@@ -32,6 +32,7 @@ class ToolSearchConfig(BaseModel):
     @classmethod
     def _clamp_auto_promote_top_k(cls, value: int) -> int:
         return clamp_auto_promote_top_k(value)
+
     exclude: list[str] = Field(
         default_factory=list,
         description=(
@@ -41,6 +42,7 @@ class ToolSearchConfig(BaseModel):
             "round-trip would cost more latency than their schemas cost context."
         ),
     )
+
 
 _tool_search_config: ToolSearchConfig | None = None
 

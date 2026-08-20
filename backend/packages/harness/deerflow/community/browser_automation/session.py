@@ -394,19 +394,24 @@ class BrowserSession:
 
     def _bind_page_events(self, page: Page) -> None:
         """Capture console messages and uncaught runtime page errors."""
+
         def _on_console(msg: Any) -> None:
-            self._console_logs.append({
-                "type": getattr(msg, "type", "log"),
-                "text": getattr(msg, "text", str(msg)),
-                "location": getattr(msg, "location", None),
-                "time": time.time(),
-            })
+            self._console_logs.append(
+                {
+                    "type": getattr(msg, "type", "log"),
+                    "text": getattr(msg, "text", str(msg)),
+                    "location": getattr(msg, "location", None),
+                    "time": time.time(),
+                }
+            )
 
         def _on_pageerror(exc: Any) -> None:
-            self._page_errors.append({
-                "error": str(exc),
-                "time": time.time(),
-            })
+            self._page_errors.append(
+                {
+                    "error": str(exc),
+                    "time": time.time(),
+                }
+            )
 
         with contextlib.suppress(Exception):
             page.on("console", _on_console)
@@ -820,23 +825,27 @@ class BrowserSession:
         records: list[dict[str, Any]] = []
         if severity in ("all", "error", "warning"):
             for e in errors:
-                records.append({
-                    "severity": "error",
-                    "type": "pageerror",
-                    "message": e["error"],
-                    "time": e["time"],
-                })
+                records.append(
+                    {
+                        "severity": "error",
+                        "type": "pageerror",
+                        "message": e["error"],
+                        "time": e["time"],
+                    }
+                )
         for entry in logs:
             entry_type = entry.get("type", "log").lower()
             entry_sev = "error" if entry_type == "error" else "warning" if entry_type in ("warning", "warn") else "info"
             if severity == "all" or (severity == "error" and entry_sev == "error") or (severity == "warning" and entry_sev in ("error", "warning")):
-                records.append({
-                    "severity": entry_sev,
-                    "type": entry_type,
-                    "message": entry.get("text", ""),
-                    "location": entry.get("location"),
-                    "time": entry.get("time", 0.0),
-                })
+                records.append(
+                    {
+                        "severity": entry_sev,
+                        "type": entry_type,
+                        "message": entry.get("text", ""),
+                        "location": entry.get("location"),
+                        "time": entry.get("time", 0.0),
+                    }
+                )
 
         records.sort(key=lambda r: r.get("time", 0.0))
         return records[-limit:] if limit > 0 else records

@@ -156,7 +156,8 @@ class ChannelService:
             require_bound_identity=require_bound_identity,
             inbound_dedupe_store=make_inbound_dedupe_store(app_config),
             get_stream_bridge=get_stream_bridge,
-                        coalesce_window=float(coalesce_window) if isinstance(coalesce_window, (int, float)) else None,        )
+            coalesce_window=float(coalesce_window) if isinstance(coalesce_window, (int, float)) else None,
+        )
         self._channels: dict[str, Any] = {}  # name -> Channel instance
         self._config = config
         self._running = False

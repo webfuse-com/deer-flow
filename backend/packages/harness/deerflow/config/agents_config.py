@@ -228,7 +228,7 @@ class AgentConfig(BaseModel):
     # - "none": NO retrieval (explicit form of the same thing).
     # - "external"/"internal": attach with that ring (a server-side CEILING in
     #   kb-api, never an escalation). personal/hierarchical are reserved.
-    pythia_ring: str | None = None    # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware    # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
+    pythia_ring: str | None = None  # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware    # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
     # on any agent that uses the planner/critic skill pipeline (qwen-local-coder,
     # glm-planner, etc).
     uses_planner_pipeline: bool = False

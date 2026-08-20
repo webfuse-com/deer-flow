@@ -304,6 +304,7 @@ async def browser_stream(websocket: WebSocket, thread_id: ThreadId) -> None:
     manager = get_browser_session_manager()
     try:
         from deerflow.community.browser_automation.tools import _resolve_cdp_url
+
         cdp_raw = _cfg_str("cdp_url")
         resolved_cdp = _resolve_cdp_url(cdp_raw, thread_id)
         session_lease = manager.acquire_session(

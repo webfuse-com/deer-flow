@@ -289,7 +289,9 @@ class SkillToolPolicyMiddleware(AgentMiddleware[AgentState]):
                 except json.JSONDecodeError:
                     schemas = None
                 if isinstance(schemas, list):
-                    filtered_schemas = [schema for schema in schemas if isinstance(schema, dict) and (schema.get("name") in permitted_names or (isinstance(schema.get("function"), dict) and schema["function"].get("name") in permitted_names))]
+                    filtered_schemas = [
+                        schema for schema in schemas if isinstance(schema, dict) and (schema.get("name") in permitted_names or (isinstance(schema.get("function"), dict) and schema["function"].get("name") in permitted_names))
+                    ]
                     content = json.dumps(filtered_schemas, indent=2, ensure_ascii=False) if filtered_schemas else "No tools found matching the active skill policy."
                 elif permitted_names:
                     content = f"Promoted {len(permitted_names)} tool(s): {', '.join(permitted_names)}. They are now available in your active tool list."

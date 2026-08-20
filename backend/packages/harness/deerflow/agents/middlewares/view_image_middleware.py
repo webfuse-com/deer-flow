@@ -172,6 +172,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
     async def _describe_image(self, path: Path, mime_type: str, b64_data: str) -> str:
         try:
             from deerflow.models import create_chat_model
+
             model = create_chat_model(name=self._vision_model_name, app_config=self._app_config)
             content = [
                 {"type": "text", "text": self._DESCRIBE_PROMPT},
@@ -259,4 +260,3 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
     @override
     async def aafter_model(self, state: ViewImageMiddlewareState, runtime: Runtime) -> dict | None:
         return self._remove_image_context_messages(state)
-

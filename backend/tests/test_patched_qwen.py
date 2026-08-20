@@ -72,11 +72,7 @@ def test_stream_chunks_extract_and_accumulate_reasoning():
     for chunk in chunks:
         generation_chunk = model._convert_chunk_to_generation_chunk(chunk, AIMessageChunk, None)
         assert generation_chunk is not None
-        accumulated = (
-            generation_chunk.message
-            if accumulated is None
-            else accumulated + generation_chunk.message
-        )
+        accumulated = generation_chunk.message if accumulated is None else accumulated + generation_chunk.message
 
     assert accumulated is not None
     assert accumulated.additional_kwargs.get("reasoning_content") == "Let me check factors."
@@ -87,9 +83,7 @@ def test_request_payload_reinjects_reasoning_when_preserve_requested():
     """Stock serialisation drops unknown additional_kwargs; with
     preserve_thinking in the request the field must be re-attached or the
     template has nothing to preserve."""
-    model = _make_model(
-        extra_body={"chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}}
-    )
+    model = _make_model(extra_body={"chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}})
 
     payload = model._get_request_payload(
         [
@@ -115,9 +109,7 @@ def test_request_payload_omits_reasoning_without_preserve():
     """Without preserve_thinking in the request the payload is byte-identical
     to stock ChatOpenAI: the server template strips history reasoning anyway,
     so sending it would only grow the wire payload."""
-    model = _make_model(
-        extra_body={"chat_template_kwargs": {"enable_thinking": True}}
-    )
+    model = _make_model(extra_body={"chat_template_kwargs": {"enable_thinking": True}})
 
     payload = model._get_request_payload(
         [
@@ -130,9 +122,7 @@ def test_request_payload_omits_reasoning_without_preserve():
         ]
     )
 
-    assert all(
-        "reasoning_content" not in m for m in payload["messages"]
-    )
+    assert all("reasoning_content" not in m for m in payload["messages"])
 
 
 def test_request_payload_reinjects_with_top_level_chat_template_kwargs():

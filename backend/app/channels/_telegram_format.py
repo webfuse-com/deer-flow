@@ -40,7 +40,7 @@ def _markdown_table_to_box(table_text: str) -> str:
     Telegram has no table primitive; a box-drawn table inside <pre> renders
     legibly in a fixed-width font.
     """
-    lines = [l.strip() for l in table_text.strip().splitlines() if l.strip()]
+    lines = [line.strip() for line in table_text.strip().splitlines() if line.strip()]
 
     rows = []
     separator_idx = -1

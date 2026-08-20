@@ -47,10 +47,7 @@ def strip_inlined_artifacts(text: str, attachments: list[ResolvedAttachment]) ->
     chars, and only when at least one web/text artifact is being linked."""
     if not text or not attachments:
         return text
-    has_textual = any(
-        a.mime_type in _WEB_VIEWABLE or a.mime_type.startswith("text/") or a.mime_type == "application/json"
-        for a in attachments
-    )
+    has_textual = any(a.mime_type in _WEB_VIEWABLE or a.mime_type.startswith("text/") or a.mime_type == "application/json" for a in attachments)
     if not has_textual:
         return text
 
@@ -62,6 +59,7 @@ def strip_inlined_artifacts(text: str, attachments: list[ResolvedAttachment]) ->
     # Collapse the blank lines a removed block leaves behind.
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text
+
 
 _OUTPUTS_VIRTUAL_PREFIX = "/mnt/user-data/outputs/"
 
@@ -98,7 +96,7 @@ def _relpath(virtual_path: str) -> str | None:
     """Map a /mnt/user-data/outputs/<rel> virtual path to its <rel> tail."""
     if not virtual_path.startswith(_OUTPUTS_VIRTUAL_PREFIX):
         return None
-    return virtual_path[len(_OUTPUTS_VIRTUAL_PREFIX):].lstrip("/")
+    return virtual_path[len(_OUTPUTS_VIRTUAL_PREFIX) :].lstrip("/")
 
 
 def _file_url(host: str, thread_id: str, relpath: str) -> str:

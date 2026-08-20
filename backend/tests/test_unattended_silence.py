@@ -133,19 +133,15 @@ class TestIsTrivialUnattendedText:
         [
             # [argus patch #44] Verbatim narrations that spammed Telegram
             # hourly on 2026-07-18/19 — all over the old 120-char cap:
-            "No meetings starting in the next 15-20 minutes. Calendar is clear "
-            "through the rest of Sunday. Per the hourly check rules, staying silent.",
-            "No meetings starting in the next 15-20 minutes. The earliest meeting "
-            "today is at 13:30, still over 9 hours away. Calendar is clear through "
-            "the early morning.",
+            "No meetings starting in the next 15-20 minutes. Calendar is clear through the rest of Sunday. Per the hourly check rules, staying silent.",
+            "No meetings starting in the next 15-20 minutes. The earliest meeting today is at 13:30, still over 9 hours away. Calendar is clear through the early morning.",
             # The longest observed (~250 chars, three sentences):
             "No meetings starting in the next 15-20 minutes. The earliest meeting "
             "today is at 13:30 (Kick off: new webtoppings), which is still over 12 "
             "hours away. Calendar is clear through the rest of the early morning. "
             "Per the hourly check rules, staying silent.",
             # The inbox-check flavor ("attention" phrasing):
-            "Nothing new needs my attention. One unsolicited job application in "
-            "the inbox, no reply required.",
+            "Nothing new needs my attention. One unsolicited job application in the inbox, no reply required.",
             "No meetings are scheduled to start in the immediate 15-20 minute window.",
             # Announcement that leads with the calendar rather than "no":
             "Calendar is clear through the rest of Sunday evening. Staying silent.",
@@ -173,8 +169,7 @@ class TestIsTrivialUnattendedText:
             # Announcement-shaped opener with real content behind it — the
             # contrast marker ("but") vetoes the match (patch #44; before
             # that the length cap carried this case):
-            "No meetings in the window, but here is the daily digest you asked for: "
-            "three PRs merged, two issues opened, and the Acme renewal call is confirmed for tomorrow at 10.",
+            "No meetings in the window, but here is the daily digest you asked for: three PRs merged, two issues opened, and the Acme renewal call is confirmed for tomorrow at 10.",
             # [argus patch #44] More veto cases: genuine alerts that open like
             # an announcement must never be suppressed, at any length.
             "No meetings in the window, but your 13:30 was moved to 13:00.",
