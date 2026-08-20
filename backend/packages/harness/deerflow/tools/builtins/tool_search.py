@@ -158,7 +158,7 @@ def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: f
         """
         matched = catalog.search(query)
         if not matched:
-            # Check if the requested tool is already directly bound in the agent's toolset
+            # Build-time binding does not guarantee runtime policy kept the schema visible.
             clean_query = query.strip()
             if clean_query.startswith("select:"):
                 requested = {n.strip() for n in clean_query[7:].split(",") if n.strip()}
@@ -168,8 +168,10 @@ def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: f
             if already_active:
                 active_list = ", ".join(sorted(already_active))
                 content = (
-                    f"Tool(s) '{active_list}' are already directly available and active in your toolset. "
-                    f"Do NOT call tool_search for them; call them directly."
+                    f"Tool(s) '{active_list}' are configured as directly bound, not deferred, so tool_search cannot promote them. "
+                    "Call a tool directly only if its schema is present in your current tool list. If its schema is absent, "
+                    "the current runtime policy does not allow it; use an allowed alternative or explain that limitation. "
+                    "Do NOT retry tool_search for it."
                 )
             else:
                 content = f"No tools found matching: {query}"
@@ -190,7 +192,9 @@ def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: f
 def _is_excluded(name: str, exclude) -> bool:
     """True when a tool name matches any tool_search.exclude pattern."""
     import fnmatch
+
     return any(fnmatch.fnmatchcase(name, pat) for pat in exclude or ())
+
 
 def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool, exclude=()) -> DeferredToolSetup:
     """Build deferred-tool setup from one agent build's candidate tools.
@@ -304,8 +308,8 @@ def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozen
     """Generate <available-deferred-tools> and direct-tools guidance.
 
     Lists deferred names so the agent knows what exists and can use tool_search to
-    load them. If directly_bound_names are present, adds a reminder that those tools
-    are already active and should be called directly.
+    load them. If directly bound tools exist, explains how to distinguish them
+    without claiming that runtime policy left every configured schema visible.
     """
     if not deferred_names:
         return ""
@@ -314,14 +318,15 @@ def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozen
     # get_skill_index_prompt_section.
     names = "\n".join(html.escape(name, quote=False) for name in sorted(deferred_names))
     direct_note = ""
-    if directly_bound_names:
-        hot_list = ", ".join(sorted(html.escape(name, quote=False) for name in directly_bound_names if not name.startswith("__") and name not in {"tool_search", "setup_agent", "update_agent"}))
-        if hot_list:
-            direct_note = (
-                "\n\n**Note on directly bound tools:** The following tools are ALREADY active in your active toolset "
-                f"and MUST be called directly without tool_search: {hot_list}.\n"
-                "Do NOT use tool_search for tools that are already active."
-            )
+    if any(name for name in directly_bound_names if not name.startswith("__") and name not in {"tool_search", "setup_agent", "update_agent"}):
+        direct_note = (
+            "\n\n<direct-tool-guidance>\n"
+            "`tool_search` can promote only names listed in `<available-deferred-tools>`. Other configured tools may be "
+            "directly bound, but runtime policy can hide their schemas. Call a non-deferred tool directly only when its "
+            "schema is present in your current tool list. If absent, it is unavailable under the current policy; "
+            "`tool_search` cannot activate it, so do not retry the search.\n"
+            "</direct-tool-guidance>"
+        )
     return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>{direct_note}"
 
 

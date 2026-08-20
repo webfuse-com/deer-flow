@@ -90,14 +90,18 @@ def test_tool_search_no_match_empty_names():
     assert "No tools found matching" in out.update["messages"][0].content
 
 
-def test_tool_search_directly_bound_tool_returns_informative_message():
-    """Searching for a tool that is already directly active returns guidance, not a dead-end."""
+def test_tool_search_directly_bound_tool_does_not_claim_runtime_visibility():
+    """Build-time binding does not imply that runtime skill policy kept the schema."""
     catalog = DeferredToolCatalog((mcp_calc,))
     ts = build_tool_search_tool(catalog, directly_bound_names=frozenset({"calendar_list_events", "pythia_query"}))
     out = ts.invoke({"type": "tool_call", "name": "tool_search", "args": {"query": "select:calendar_list_events"}, "id": "tc4"})
     assert out.update["promoted"]["names"] == []
     msg = out.update["messages"][0]
-    assert "already directly available and active" in msg.content
+    assert "configured as directly bound, not deferred" in msg.content
+    assert "only if its schema is present" in msg.content
+    assert "current runtime policy does not allow it" in msg.content
+    assert "Do NOT retry tool_search" in msg.content
+    assert "already directly available and active" not in msg.content
     assert "calendar_list_events" in msg.content
 
 

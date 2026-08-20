@@ -71,6 +71,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
 | [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
 | [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
+| [#57](#patch-57) | Policy-aware guidance for directly bound tools | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -450,6 +451,29 @@ carry budget ledger.
 - Files: `frontend/src/components/workspace/artifacts/artifact-file-detail.tsx` (EDITED)
 - Tests: `frontend/tests/unit/core/artifacts/` (Rstest suite passes)
 - Delete-when: upstream adopts standard new-tab opening for artifacts.
+- Upstream status: clean generic PR candidate.
+
+## Patch #57
+
+**Patch #57 - Policy-aware guidance for directly bound tools**
+
+- Class: generic-upstreamable
+- Intent: Build-time tool assembly knows which tools are configured as directly
+  bound, but `SkillToolPolicyMiddleware` can hide any of those schemas from one
+  model call. The previous prompt and `tool_search` no-match response called all
+  configured direct tools "ALREADY active" and told the model to call them
+  directly. That was false after policy filtering and made Kimi repeatedly search
+  for `bash`, then claim the runtime would not let it invoke Bash. Guidance now
+  uses the model's current tool list as the authority: direct-call a non-deferred
+  tool only when its schema is present; if absent, policy made it unavailable and
+  `tool_search` cannot restore it. The prompt no longer enumerates every configured
+  direct tool, reducing noise and avoiding claims about policy-hidden schemas.
+- Files: `backend/packages/harness/deerflow/tools/builtins/tool_search.py` (EDITED)
+- Tests: `backend/tests/test_deferred_setup.py`,
+  `backend/tests/test_tool_search.py` (EDITED)
+- Delete-when: upstream makes direct-tool guidance derive from the post-policy
+  model request, or otherwise distinguishes configured binding from current schema
+  visibility.
 - Upstream status: clean generic PR candidate.
 
 ## Patch #20
