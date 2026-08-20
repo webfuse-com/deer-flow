@@ -10,6 +10,7 @@ import {
   Loader2Icon,
   MicIcon,
   PaperclipIcon,
+  PlusIcon,
   RocketIcon,
   SparklesIcon,
   SquareIcon,
@@ -18,6 +19,7 @@ import {
   XIcon,
   ZapIcon,
 } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -52,6 +54,7 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
+import { ConfettiButton } from "@/components/ui/confetti-button";
 import {
   Dialog,
   DialogContent,
@@ -63,6 +66,7 @@ import {
 import {
   DropdownMenuGroup,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { fetch } from "@/core/api/fetcher";
 import { useAuth } from "@/core/auth/AuthProvider";
@@ -122,6 +126,12 @@ import {
   ModelSelectorTrigger,
 } from "../ai-elements/model-selector";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 
 import {
   abortGoalRequest,
@@ -343,6 +353,7 @@ export function InputBox({
 }) {
   const { locale, t } = useI18n();
   const queryClient = useQueryClient();
+  const searchParams = useSearchParams();
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const { models } = useModels();
   const { user } = useAuth();
@@ -2110,6 +2121,18 @@ export function InputBox({
     threadId,
   ]);
 
+  const onSelectPlaceholder = useCallback((newText: string) => {
+    const placeholder = findSuggestionTemplatePlaceholder(newText);
+    if (placeholder) {
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(placeholder.start, placeholder.end);
+      });
+    }
+  }, []);
+
   return (
     <div
       ref={promptRootRef}
@@ -2747,6 +2770,15 @@ export function InputBox({
         <div className="bg-background absolute right-0 -bottom-[17px] left-0 z-0 h-4"></div>
       )}
 
+      {isWelcomeMode &&
+        searchParams.get("mode") !== "skill" &&
+        !selectedSlashSkill &&
+        !showSkillSuggestions && (
+          <div className="flex items-center justify-center pt-2">
+            <SuggestionList onSelectPlaceholder={onSelectPlaceholder} />
+          </div>
+        )}
+
       <p
         className={cn(
           "text-muted-foreground/67 z-10 px-4 text-center text-xs leading-4",
@@ -2822,6 +2854,67 @@ function VoiceInputButton({
         )}
       </PromptInputButton>
     </Tooltip>
+  );
+}
+
+function SuggestionList({
+  onSelectPlaceholder,
+}: {
+  onSelectPlaceholder: (newText: string) => void;
+}) {
+  const { t } = useI18n();
+  const { textInput } = usePromptInputController();
+  const handleSuggestionClick = useCallback(
+    (prompt: string | undefined) => {
+      if (!prompt) return;
+      textInput.setInput(prompt);
+      onSelectPlaceholder(prompt);
+    },
+    [textInput, onSelectPlaceholder],
+  );
+  return (
+    <Suggestions className="min-h-16 w-full max-w-full justify-center px-4 sm:w-fit sm:px-0">
+      <ConfettiButton
+        className="text-muted-foreground cursor-pointer rounded-full px-4 text-xs font-normal"
+        variant="outline"
+        size="sm"
+        onClick={() => handleSuggestionClick(t.inputBox.surpriseMePrompt)}
+      >
+        <SparklesIcon className="size-4" /> {t.inputBox.surpriseMe}
+      </ConfettiButton>
+      {t.inputBox.suggestions.map((suggestion) => (
+        <Suggestion
+          key={suggestion.suggestion}
+          icon={suggestion.icon}
+          suggestion={suggestion.suggestion}
+          onClick={() => handleSuggestionClick(suggestion.prompt)}
+        />
+      ))}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Suggestion icon={PlusIcon} suggestion={t.common.create} />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuGroup>
+            {t.inputBox.suggestionsCreate.map((suggestion, index) =>
+              "type" in suggestion && suggestion.type === "separator" ? (
+                <DropdownMenuSeparator key={index} />
+              ) : (
+                !("type" in suggestion) && (
+                  <DropdownMenuItem
+                    key={suggestion.suggestion}
+                    onClick={() => handleSuggestionClick(suggestion.prompt)}
+                  >
+                    {suggestion.icon && <suggestion.icon className="size-4" />}
+                    {suggestion.suggestion}
+                  </DropdownMenuItem>
+                )
+              ),
+            )}
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </Suggestions>
   );
 }
 

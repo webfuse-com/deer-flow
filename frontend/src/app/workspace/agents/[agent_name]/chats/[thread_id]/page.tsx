@@ -2,13 +2,14 @@
 
 import { BotIcon, PlusSquare } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
+import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ChatBox, useThreadChat } from "@/components/workspace/chats";
 import { QueuedMessages } from "@/components/workspace/chats/queued-messages";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
@@ -34,6 +35,7 @@ import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicato
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { useAgent } from "@/core/agents";
+import { useBrowserControlEnabled } from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   buildHumanInputResponseText,
@@ -84,6 +86,7 @@ export default function AgentChatPage() {
     remove: removeQueuedMessage,
     update: updateQueuedMessage,
   } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
+  const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
@@ -143,6 +146,9 @@ export default function AgentChatPage() {
       }
     },
   });
+
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
 
   const processQueueNext = useCallback(() => {
     if (thread.isLoading || isUploading) return;
@@ -260,6 +266,11 @@ export default function AgentChatPage() {
     ? localSettings.tokenUsage.inlineMode
     : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
+  const agentBrowserEnabled =
+    agent !== null &&
+    (agent.tool_groups == null || agent.tool_groups.includes("browser"));
+  const browserEnabled =
+    !isNewThread && !isMock && browserControlEnabled && agentBrowserEnabled;
   const { activeGoal, hasGoal, setLocalGoal } = useActiveGoal(
     threadId,
     thread.values.goal,
@@ -280,7 +291,7 @@ export default function AgentChatPage() {
         context={{ ...settings.context, agent_name }}
         isMock={isMock}
       >
-        <ChatBox threadId={threadId}>
+        <ChatBox threadId={threadId} browserEnabled={browserEnabled}>
           <div className="relative flex size-full min-h-0 justify-between">
             <header
               className={cn(
@@ -333,6 +344,7 @@ export default function AgentChatPage() {
                   <ContextUsageBadge contextUsage={contextUsage} />
                 )}
                 <SidecarTrigger />
+                {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
                 <ArtifactTrigger />
