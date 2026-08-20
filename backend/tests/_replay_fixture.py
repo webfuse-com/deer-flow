@@ -89,6 +89,8 @@ memory:
   injection_enabled: false
 summarization:
   enabled: false
+suggestions:
+  enabled: true
 agents_api:
   enabled: true
 database:
