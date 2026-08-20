@@ -198,14 +198,14 @@ describe("getInputSubmitAction", () => {
     });
   });
 
-  it("keeps ordinary streaming submits as stop", () => {
+  it("keeps non-empty streaming submits as messages so they can be queued", () => {
     expect(
       getInputSubmitAction({
         text: "hello",
         fileCount: 0,
         status: "streaming",
       }),
-    ).toEqual({ kind: "stop" });
+    ).toEqual({ kind: "message" });
   });
 
   it("does not treat /goal text with attachments as a goal command", () => {

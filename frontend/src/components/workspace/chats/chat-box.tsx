@@ -68,8 +68,7 @@ type RightPanelKind = "sidecar" | "artifacts";
 const ChatBox: React.FC<{
   children: React.ReactNode;
   threadId: string;
-  browserEnabled?: boolean;
-}> = ({ children, threadId, browserEnabled = true }) => {
+}> = ({ children, threadId }) => {
   const { thread } = useThread();
   const isMobile = useIsMobile();
   const pathname = usePathname();

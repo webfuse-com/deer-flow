@@ -20,8 +20,6 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
-import { QueuedMessages } from "./queued-messages";
-import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import {
   SidecarProvider,
   SidecarTrigger,
@@ -32,7 +30,6 @@ import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { Welcome } from "@/components/workspace/welcome";
-import { useBrowserControlEnabled } from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   buildHumanInputResponseText,
@@ -54,11 +51,13 @@ import {
   selectContextUsage,
   threadTokenUsageToTokenUsage,
 } from "@/core/threads/token-usage";
+import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 import { ChatBox } from "./chat-box";
+import { QueuedMessages } from "./queued-messages";
 import { useSpecificChatMode } from "./use-chat-mode";
 import { useThreadChat } from "./use-thread-chat";
 
@@ -78,7 +77,6 @@ export default function ChatPage() {
   const { queue, enqueue: enqueueMessage, dequeue: dequeueMessage, remove: removeQueuedMessage, update: updateQueuedMessage } = useThreadQueue(
     isNewThread || isMock ? undefined : threadId,
   );
-  const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
@@ -152,14 +150,11 @@ export default function ChatPage() {
     },
   });
 
-  const queueRef = useRef(queue);
-  queueRef.current = queue;
-
   const processQueueNext = useCallback(() => {
     if (thread.isLoading || isUploading) return;
     const nextItem = dequeueMessage();
     if (nextItem) {
-      sendMessage(threadId, nextItem.message, undefined, nextItem.options);
+      void sendMessage(threadId, nextItem.message, undefined, nextItem.options);
     }
   }, [dequeueMessage, isUploading, sendMessage, thread.isLoading, threadId]);
 
@@ -277,7 +272,6 @@ export default function ChatPage() {
     ? localSettings.tokenUsage.inlineMode
     : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
-  const browserEnabled = !isNewThread && !isMock && browserControlEnabled;
   const { activeGoal, hasGoal, setLocalGoal } = useActiveGoal(
     threadId,
     thread.values.goal,
@@ -298,7 +292,7 @@ export default function ChatPage() {
         context={settings.context}
         isMock={isMock}
       >
-        <ChatBox threadId={threadId} browserEnabled={browserEnabled}>
+        <ChatBox threadId={threadId}>
           <div className="relative flex size-full min-h-0 justify-between">
             <header
               className={cn(

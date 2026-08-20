@@ -35,6 +35,6 @@ describe("interaction-only bundle boundaries", () => {
     expect(chatBox).not.toMatch(
       /import \{ (?:ArtifactFileDetail|ArtifactFileList|BrowserViewPanel|SidecarPanel)/,
     );
-    expect(chatBox.match(/dynamic\(/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(chatBox.match(/dynamic\(/g)).toHaveLength(3);
   });
 });

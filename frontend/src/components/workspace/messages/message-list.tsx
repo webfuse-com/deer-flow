@@ -321,7 +321,6 @@ export function MessageList({
     useState<SelectionToolbarState | null>(null);
   const messages = thread.messages;
   const groupedMessages = useStableMessageGroups(messages, thread.isLoading);
-  const messageCount = messages.length;
   // The backend exposes no live start timestamp, so a mid-run mount measures
   // from mount until authoritative persisted turn_duration replaces it.
   const [turnStartTime, setTurnStartTime] = useState<number | null>(() =>
