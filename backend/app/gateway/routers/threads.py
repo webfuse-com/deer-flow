@@ -351,6 +351,8 @@ def _default_branch_display_name(source_title: Any, *, source_is_branch: bool = 
             display_name = display_name[len("branch:") :].strip()
 
     return display_name or None
+
+
 # A container-backed (AIO) sandbox id is the deterministic sha256 hex hash (8 or 16 chars)
 # — the same string that names the container and that the nginx
 # /debug-sandbox/<hash>/ location matches with [a-f0-9]+. Filesystem-local
@@ -714,7 +716,7 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
 
 @router.post("/{thread_id}/debug-sandbox", response_model=DebugSandboxResponse)
 @require_permission("threads", "read", owner_check=True, require_existing=True)
-async def acquire_debug_sandbox(thread_id: str, request: Request) -> DebugSandboxResponse:
+async def acquire_debug_sandbox(thread_id: ThreadId, request: Request) -> DebugSandboxResponse:
     """Acquire (or re-acquire) this thread's sandbox and return its debug URL.
 
     Powers the "Debug" link in the thread UI. The thread's AIO sandbox

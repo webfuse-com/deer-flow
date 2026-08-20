@@ -543,6 +543,10 @@ carry budget ledger.
 
 **Patch #23 - Slack: clean up the progress ack on completion**
 
+- Carry-repair 2026-08-20: the 2026-08-15 rebase dropped the code half of this
+  patch from slack.py while its carried tests survived; re-ported onto the
+  current per-message web_client send path.
+
 - Class: generic-upstreamable
 - Intent: Upstream leaves the ":hourglass: Working on it..." reply and the
   :eyes: reaction in the thread forever, cluttering every turn. Record both in
@@ -587,6 +591,12 @@ carry budget ledger.
 ## Patch #30
 
 **Patch #30 - scheduled-playbook fire endpoint + per-job agent & memory policy**
+
+- Carry-repair 2026-08-20: the memory-injection half of the policy
+  (`memory: off` suppresses injection) was disconnected when
+  DynamicContextMiddleware grew the split reminder/memory message shape;
+  re-wired via `effective_memory_mode(runtime)` at the first-turn injection
+  site. Write-path gating had survived in write_policy.py.
 
 - Class: argus-additive (new router + policy module; small edits at named
   seams)
@@ -839,6 +849,15 @@ carry budget ledger.
 ## Patch #40
 
 **Patch #40 - Telegram send-path extraction to `_telegram_sender.py` (merge-tax reduction)**
+
+- Carry-repair 2026-08-20: the 2026-08-15 rebase applied this patch as a stale
+  file snapshot, silently reverting upstream telegram evolution the graft had
+  already absorbed (#4392 inbound attachments, #4387 rich messages, #4800
+  bounded intake, #4816 threadsafe shutdown drain). telegram.py was rebuilt as
+  upstream + the argus grafts with the three shims re-extracted on top; the
+  superseded upstream send/stream/rich helpers stay verbatim-but-unreachable,
+  and TestTelegramStreaming now pins those fenced copies explicitly (the live
+  argus path is locked by tests/test_telegram_send.py).
 
 - Class: argus-edit (refactor of #9-chain's telegram.py half; net NEGATIVE
   carry - telegram.py drops from 574 to 251 changed lines vs v2.0.0, and

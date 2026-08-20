@@ -428,7 +428,7 @@ def _github_msg(installation_id: int | None = 140594274) -> InboundMessage:
 def _new_manager() -> ChannelManager:
     bus = MessageBus()
     store = ChannelStore(path=Path("/tmp/nonexistent-store-test.json"))
-    return ChannelManager(bus=bus, store=store)
+    return ChannelManager(bus=bus, store=store, coalesce_window=0)
 
 
 @pytest.mark.asyncio

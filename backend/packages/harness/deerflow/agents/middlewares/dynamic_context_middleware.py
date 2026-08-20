@@ -40,6 +40,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.runtime import Runtime
 
+from deerflow.agents.memory.write_policy import effective_memory_mode
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
 from deerflow.runtime.user_context import resolve_runtime_user_id
 
@@ -320,7 +321,10 @@ class DynamicContextMiddleware(AgentMiddleware):
             first_idx = next((i for i, m in enumerate(messages) if _is_user_injection_target(m)), None)
             if first_idx is None:
                 return None
-            date_reminder, memory_block = self._build_full_reminder(runtime)
+            # [argus patch #30] ``memory: off`` on a job turn neither reads nor
+            # writes memory: suppress injection here (writes are gated in
+            # memory_middleware / summarization_hook via memory_write_allowed).
+            date_reminder, memory_block = self._build_full_reminder(runtime, inject_memory=effective_memory_mode(runtime) != "off")
             logger.info(
                 "DynamicContextMiddleware: injecting full reminder (has_memory=%s) into first HumanMessage id=%r",
                 memory_block is not None,

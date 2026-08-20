@@ -33,7 +33,6 @@ def client() -> TestClient:
     ("field", "value"),
     [
         ("webhook", "https://example.com/callback"),
-        ("stream_resumable", True),
         ("on_completion", "complete"),
         ("on_completion", "continue"),
         ("on_completion", "keep"),
@@ -66,12 +65,36 @@ def test_run_request_rejects_each_unsupported_option_with_exact_422(
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        # Accepted-and-coerced compatibility options: the SDK sends
+        # stream_resumable for its reconnect bookkeeping; the gateway ignores
+        # it instead of failing the run (see "filter unsupported stream modes
+        # gracefully"). Only reaching past request validation matters here —
+        # this harness has no runtime behind the router.
+        ("stream_resumable", True),
+        ("stream_resumable", False),
+        # A mix of supported and unsupported stream modes is filtered down to
+        # the supported subset rather than rejected.
+        ("stream_mode", ["values", "events"]),
+    ],
+)
+def test_run_request_accepts_and_coerces_compatibility_options(
+    client: TestClient,
+    field: str,
+    value: Any,
+) -> None:
+    response = client.post("/api/runs/stream", json={field: value})
+
+    assert response.status_code != 422
+
+
+@pytest.mark.parametrize(
     "stream_mode",
     [
         "messages",
         "events",
         "tools",
-        ["values", "events"],
         ["events", "tools"],
     ],
 )
@@ -254,10 +277,13 @@ def test_openapi_stream_mode_enum_matches_runtime_support() -> None:
                 collect_enums(child)
 
     collect_enums(stream_mode_schema)
-    collect_enums(schemas["RunStreamMode"])
 
-    assert set(enums) == SUPPORTED_STREAM_MODES
-    assert "events" not in enums
+    # The graceful-filter contract validates modes at runtime (unsupported
+    # entries are dropped when a supported one remains), so the schema
+    # publishes plain strings rather than an enum — and never advertises
+    # unsupported modes like "events".
+    assert "RunStreamMode" not in schemas
+    assert enums == []
 
 
 def test_openapi_run_option_schema_exposes_only_supported_values() -> None:
@@ -269,7 +295,7 @@ def test_openapi_run_option_schema_exposes_only_supported_values() -> None:
     assert schema["additionalProperties"] is False
     for field in ("webhook", "after_seconds", "feedback_keys"):
         assert properties[field]["type"] == "null"
-    assert properties["stream_resumable"]["anyOf"] == [{"const": False, "type": "boolean"}, {"type": "null"}]
+    assert properties["stream_resumable"]["anyOf"] == [{"type": "boolean"}, {"type": "null"}]
     assert properties["on_completion"]["type"] == "null"
     assert properties["if_not_exists"]["const"] == "create"
     assert properties["multitask_strategy"]["enum"] == ["reject", "rollback", "interrupt"]

@@ -25,10 +25,11 @@ while its standalone callers keep the default). Any new in-graph
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from collections.abc import Mapping
 from typing import Any
-import os
+
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
@@ -54,7 +55,7 @@ from deerflow.authz.principal import build_principal_from_context
 from deerflow.authz.provider import AuthzDecision, AuthzRequest
 from deerflow.authz.runtime import resolve_authorization_provider
 from deerflow.authz.tool_filter import apply_tool_authorization
-from deerflow.config.agents_config import load_agent_config, validate_agent_name
+from deerflow.config.agents_config import AgentConfig, load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.memory_config import should_use_memory_tools
 from deerflow.config.subagents_config import DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN
@@ -176,18 +177,64 @@ def _authorize_model_name(
     principal = build_principal_from_context(context, default_role=authz_config.default_role)
     all_names = [m.name for m in app_config.models]
 
-    if not provider.authorize(principal, "model", model_name, action="use"):
-        logger.warning(
-            "Principal %s denied from using model %s; attempting fallback",
-            principal.id,
-            model_name,
-        )
-        allowed = provider.filter_resources(principal, "model", all_names, action="use")
-        if allowed:
-            return allowed[0]
+    # Check the resolved model against the action-scoped ``model:use`` policy.
+    # This aligns with the Gateway ``get_model`` route, which also checks
+    # ``authorize("model", "use")``. For the built-in RBAC provider (which
+    # ignores ``action``) this is equivalent to a membership check; for a
+    # custom provider that distinguishes ``list`` from ``use``, it prevents
+    # a model visible via ``filter_resources`` but denied for ``use`` from
+    # being silently selected at runtime.
+    try:
+        decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=model_name))
+        if not isinstance(decision, AuthzDecision):
+            raise TypeError("AuthorizationProvider.authorize must return AuthzDecision")
+        if decision.allow:
+            return model_name
+    except Exception:
+        logger.warning("Authorization provider failed while checking model:use for '%s'", model_name, exc_info=True)
         if authz_config.fail_closed:
-            raise ValueError(f"User {principal.id} is not authorized to use any model")
+            raise ValueError("No models are authorized for the current role (authorization provider error).")
         return model_name
+
+    # Denied — graceful fallback: pick the first model that ``filter_resources``
+    # says is visible AND that also passes ``authorize("model", "use")``. For the
+    # built-in RBAC provider (which ignores ``action``) this is equivalent to
+    # picking the first visible name; for a custom provider that distinguishes
+    # ``list`` from ``use``, it ensures the fallback is actually usable.
+    try:
+        allowed_names = provider.filter_resources(principal, "model", all_names)
+        if not isinstance(allowed_names, list) or any(not isinstance(n, str) for n in allowed_names):
+            raise TypeError("AuthorizationProvider.filter_resources must return list[str]")
+    except Exception:
+        logger.warning("Authorization provider failed while resolving allowed models", exc_info=True)
+        if authz_config.fail_closed:
+            raise ValueError("No models are authorized for the current role (authorization provider error).")
+        return model_name
+
+    for candidate in allowed_names:
+        if candidate == model_name:
+            continue  # already denied above
+        try:
+            cb_decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=candidate))
+            if isinstance(cb_decision, AuthzDecision) and cb_decision.allow:
+                logger.warning(
+                    "Model '%s' is not authorized for the current role; fallback to '%s'.",
+                    model_name,
+                    candidate,
+                )
+                return candidate
+        except Exception:
+            logger.warning(
+                "Authorization provider failed while checking model:use fallback for '%s'",
+                candidate,
+                exc_info=True,
+            )
+            if authz_config.fail_closed:
+                raise ValueError("No models are authorized for the current role (authorization provider error).")
+            return model_name
+    if authz_config.fail_closed:
+        raise ValueError("No models are authorized for the current role.")
+    logger.warning("No models are authorized for the current role; fail_open allows '%s'.", model_name)
     return model_name
 
 
@@ -205,7 +252,9 @@ def _create_summarization_middleware(
         run_model_name=model_name,
         extensions=extensions,
     )
-def _create_todo_list_middleware(is_plan_mode: bool, agent_name: str | None = "", agent_config: "AgentConfig | None" = None) -> TodoMiddleware | None:
+
+
+def _create_todo_list_middleware(is_plan_mode: bool, agent_name: str | None = "", agent_config: AgentConfig | None = None) -> TodoMiddleware | None:
     """Create and configure the TodoList middleware.
 
     Args:
@@ -529,14 +578,11 @@ def build_middlewares(
     # opt in. Leaving it unset no longer enables anything. The ring is a CEILING
     # enforced server-side in kb-api, never an escalation.
     _agent_ring = getattr(_agent_config, "pythia_ring", None)
-    _flag_raw = (os.environ.get("PYTHIA_ROUTER_INJECT")
-                 or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
+    _flag_raw = (os.environ.get("PYTHIA_ROUTER_INJECT") or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
     _stack_disabled = _flag_raw in ("0", "false", "no", "off")
     _ring = (_agent_ring or "none").strip().lower()
     if _stack_disabled and _ring not in ("none", ""):
-        logger.info(
-            "PythiaRetrievalMiddleware: agent %r requests ring %r but the stack "
-            "flag disables retrieval; not attaching.", agent_name, _ring)
+        logger.info("PythiaRetrievalMiddleware: agent %r requests ring %r but the stack flag disables retrieval; not attaching.", agent_name, _ring)
         _ring = "none"
     if _ring not in ("none", ""):
         from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
@@ -760,11 +806,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     # Forwarded from InboundMessage -> run_context -> runtime context. Merged
     # with skill allowed-tools by filter_tools_by_skill_allowed_tools.
     schedule_allowed = cfg.get("allowed_tools")
-    extra_allowed: set[str] | None = (
-        set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
-    )
+    extra_allowed: set[str] | None = set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
 
-    agent_config = load_agent_config(agent_name) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
@@ -824,7 +867,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "tool_groups": agent_config.tool_groups if agent_config else None,
             # [argus patch #53] Subagents inherit the agent-level tool ceiling
             # the same way they inherit tool_groups (read in task_tool.py).
-            "agent_allowed_tools": agent_config.allowed_tools if agent_config else None,
+            "agent_allowed_tools": getattr(agent_config, "allowed_tools", None) if agent_config else None,
             "available_skills": sorted(available_skills) if available_skills is not None else None,
         }
     )
@@ -850,6 +893,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     skill_search_enabled = resolved_app_config.skills.deferred_discovery
     container_base_path = resolved_app_config.skills.container_path
+    skills_for_tool_policy = enabled_skills
 
     # [argus patch #53] Tool-policy dispatch. Under the default
     # tool_policy.source: skills this is byte-identical upstream behavior;
@@ -894,7 +938,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         )
         configured_tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
         late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
-        final_tools, setup = assemble_deferred_tools(configured_tools, enabled=resolved_app_config.tool_search.enabled, exclude=resolved_app_config.tool_search.exclude)
+        final_tools, setup = assemble_deferred_tools(configured_tools, enabled=resolved_app_config.tool_search.enabled, exclude=getattr(resolved_app_config.tool_search, "exclude", ()))
         final_tools.extend(late_tools)
         mcp_routing_middleware = build_mcp_routing_middleware(
             final_tools,
@@ -974,7 +1018,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     )
     configured_tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
-    final_tools, setup = assemble_deferred_tools(configured_tools, enabled=resolved_app_config.tool_search.enabled, exclude=resolved_app_config.tool_search.exclude)
+    final_tools, setup = assemble_deferred_tools(configured_tools, enabled=resolved_app_config.tool_search.enabled, exclude=getattr(resolved_app_config.tool_search, "exclude", ()))
     final_tools.extend(late_tools)
     directly_bound_names = frozenset(t.name for t in final_tools if t.name not in setup.deferred_names)
     mcp_routing_middleware = build_mcp_routing_middleware(

@@ -100,6 +100,10 @@ class SlackChannel(Channel):
         self._connection_web_clients: dict[str, tuple[str, Any]] = {}
         configured_bot_user_id = config.get("bot_user_id")
         self._bot_user_id = str(configured_bot_user_id).lstrip("@") if configured_bot_user_id else None
+        # [argus patch #23] progress acks to clean up when the answer lands, keyed
+        # by (chat_id, thread_ts): {"ack_ts": <Working-on-it msg>, "react_ts": <the
+        # message we put :eyes: on>}. Upstream leaves both behind on every turn.
+        self._acks: dict[tuple[str, str], dict[str, str]] = {}
 
     async def start(self) -> None:
         if self._running:
@@ -177,6 +181,9 @@ class SlackChannel(Channel):
                     msg.thread_ts,
                     "white_check_mark",
                 )
+                # [argus patch #23] clear the 'Working on it...' ack + :eyes:
+                # reaction now that the real answer has posted.
+                await asyncio.to_thread(self._clear_acks, web_client, msg.chat_id, msg.thread_ts)
 
         try:
             await self._send_with_retry(
@@ -312,19 +319,41 @@ class SlackChannel(Channel):
             return
         self._add_reaction_with_client(self._web_client, channel_id, timestamp, emoji)
 
-    def _send_running_reply(self, channel_id: str, thread_ts: str) -> None:
-        """Send a 'Working on it......' reply in the thread (called from SDK thread)."""
+    def _send_running_reply(self, channel_id: str, thread_ts: str, react_ts: str = "") -> None:
+        """Send a 'Working on it......' reply in the thread (called from SDK thread).
+
+        [argus patch #23] Records the ack message ts (and the message we reacted
+        to) so send() can clean both up once the real answer is posted."""
         if not self._web_client:
             return
         try:
-            self._web_client.chat_postMessage(
+            resp = self._web_client.chat_postMessage(
                 channel=channel_id,
                 text=":hourglass_flowing_sand: Working on it...",
                 thread_ts=thread_ts,
             )
+            self._acks[(channel_id, thread_ts)] = {"ack_ts": resp.get("ts", ""), "react_ts": react_ts}
             logger.info("[Slack] 'Working on it...' reply sent in channel=%s, thread_ts=%s", channel_id, thread_ts)
         except Exception:
             logger.exception("[Slack] failed to send running reply in channel=%s", channel_id)
+
+    def _clear_acks(self, web_client, channel_id: str, thread_ts: str) -> None:
+        """[argus patch #23] Delete the 'Working on it...' message and remove the
+        :eyes: reaction once the answer is posted. Best-effort; runs in a worker
+        thread (called via asyncio.to_thread from send())."""
+        info = self._acks.pop((channel_id, thread_ts), None)
+        if not info or web_client is None:
+            return
+        if info.get("ack_ts"):
+            try:
+                web_client.chat_delete(channel=channel_id, ts=info["ack_ts"])
+            except Exception as exc:  # noqa: BLE001
+                logger.info("[Slack] could not delete ack (%s)", exc)
+        if info.get("react_ts"):
+            try:
+                web_client.reactions_remove(channel=channel_id, timestamp=info["react_ts"], name="eyes")
+            except Exception as exc:  # noqa: BLE001
+                logger.info("[Slack] could not remove eyes reaction (%s)", exc)
 
     def _on_socket_event(self, client, req) -> None:
         """Called by slack-sdk for each Socket Mode event."""
@@ -429,10 +458,12 @@ class SlackChannel(Channel):
             reservation = self._reserve_inbound(inbound)
             if reservation is None:
                 return
-            # Acknowledge with an eyes reaction
-            self._add_reaction(channel_id, event.get("ts", thread_ts), "eyes")
-            # Send "running" reply first (fire-and-forget from SDK thread)
-            self._send_running_reply(channel_id, thread_ts)
+            # Acknowledge with an eyes reaction on the user's message.
+            react_ts = event.get("ts", thread_ts)
+            self._add_reaction(channel_id, react_ts, "eyes")
+            # Send "running" reply first (fire-and-forget from SDK thread).
+            # [argus patch #23] pass react_ts so both acks are cleaned up on answer.
+            self._send_running_reply(channel_id, thread_ts, react_ts)
             try:
                 if self._connection_repo is None:
                     # Reservation bounds callbacks scheduled from the SDK

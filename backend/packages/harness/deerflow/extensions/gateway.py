@@ -30,6 +30,10 @@ _HOST_PUBLIC_PATH_PREFIXES = (
     "/api/v1/auth/oauth/",
     "/api/v1/auth/callback/",
     "/api/webhooks/",
+    # [argus patch #28] Telegram webhook — server-to-server pushes verified by
+    # the X-Telegram-Bot-Api-Secret-Token header in the route handler; must
+    # mirror app.gateway.auth_middleware._PUBLIC_PATH_PREFIXES.
+    "/webhooks/",
 )
 _HOST_PUBLIC_EXACT_PATHS = frozenset(
     {

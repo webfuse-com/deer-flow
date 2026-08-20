@@ -107,8 +107,8 @@ async def test_manager_injects_shared_store_and_dedupes_cross_pod():
 
     sf = get_session_factory()
     shared_store = PostgresInboundDedupeStore(session_factory=sf)
-    manager_a = ChannelManager(bus=MessageBus(), store=ChannelStore(), inbound_dedupe_store=shared_store)
-    manager_b = ChannelManager(bus=MessageBus(), store=ChannelStore(), inbound_dedupe_store=shared_store)
+    manager_a = ChannelManager(bus=MessageBus(), store=ChannelStore(), inbound_dedupe_store=shared_store, coalesce_window=0)
+    manager_b = ChannelManager(bus=MessageBus(), store=ChannelStore(), inbound_dedupe_store=shared_store, coalesce_window=0)
 
     msg = InboundMessage(
         channel_name="github",

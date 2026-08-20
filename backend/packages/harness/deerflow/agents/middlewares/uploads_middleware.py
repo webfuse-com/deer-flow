@@ -99,11 +99,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         # Point the model at view_image, the only tool that gets the pixels
         # into context.
         if Path(file.get("filename", "")).suffix.lower() in _IMAGE_EXTENSIONS:
-            lines.append(
-                f"  This is an image. Call `view_image(image_path='{file['path']}')` "
-                "to view it before answering. Do NOT use read_file/grep/glob on it "
-                "and do NOT claim you cannot see images."
-            )
+            lines.append(f"  This is an image. Call `view_image(image_path='{file['path']}')` to view it before answering. Do NOT use read_file/grep/glob on it and do NOT claim you cannot see images.")
             lines.append("")
             return
         if file.get("selection_reason") == "query_match":
@@ -138,6 +134,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
     def _create_files_message(
         self,
         files: list[dict],
+        historical_files: list[dict] | None = None,
         *,
         omitted_files: list[dict] | None = None,
     ) -> str:
@@ -145,6 +142,10 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
 
         Args:
             files: Files uploaded in the current message.
+            historical_files: Files from previous turns, when the caller knows
+                them. [argus] Only their image-ness matters here: an image-only
+                current upload must still keep the doc-workflow block if an
+                earlier turn uploaded documents.
             omitted_files: Files omitted from the prompt context (over cap).
 
         Returns:
@@ -167,7 +168,8 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
             lines.append("(empty)")
             lines.append("")
 
-        has_non_image = any(Path(f.get("filename", "")).suffix.lower() not in _IMAGE_EXTENSIONS for f in files)
+        all_known_files = [*files, *(historical_files or [])]
+        has_non_image = any(Path(f.get("filename", "")).suffix.lower() not in _IMAGE_EXTENSIONS for f in all_known_files)
         if has_non_image:
             lines.append("To work with these files:")
             lines.append("- Read from the file first — use the outline line numbers and `read_file` to locate relevant sections.")

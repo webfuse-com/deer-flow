@@ -49,11 +49,12 @@ async def test_abefore_agent_does_not_block_event_loop() -> None:
     # event-loop blocking visible to the Blockbuster gate.
     original_build = mw._build_full_reminder
 
-    def slow_build_reminder(runtime=None):
+    def slow_build_reminder(runtime=None, *, inject_memory=True):
         import time
 
         time.sleep(0.05)  # 50ms sync sleep — blocks the thread it runs on
-        return original_build(runtime)
+        return original_build(runtime, inject_memory=inject_memory)
+
     with (
         mock.patch.object(mw, "_build_full_reminder", slow_build_reminder),
         mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value=""),
@@ -130,6 +131,7 @@ async def test_abefore_agent_returns_none_on_timeout() -> None:
             }
         finally:
             finished.set()
+
     with (
         mock.patch.object(mw, "_inject", blocking_inject),
         mock.patch(

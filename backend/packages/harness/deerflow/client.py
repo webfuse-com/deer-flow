@@ -331,7 +331,11 @@ class DeerFlowClient:
         )
         tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
         late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
-        final_tools, deferred_setup = assemble_deferred_tools(tools, enabled=self._app_config.tool_search.enabled)
+        final_tools, deferred_setup = assemble_deferred_tools(
+            tools,
+            enabled=self._app_config.tool_search.enabled,
+            exclude=getattr(self._app_config.tool_search, "exclude", ()),
+        )
         final_tools.extend(late_tools)
         mcp_routing_middleware = build_mcp_routing_middleware(
             final_tools,
@@ -342,7 +346,6 @@ class DeerFlowClient:
 
         effective_user_id = cfg.get("user_id") or get_effective_user_id()
 
-        final_tools, deferred_setup = assemble_deferred_tools(tools, enabled=self._app_config.tool_search.enabled, exclude=self._app_config.tool_search.exclude)
         kwargs: dict[str, Any] = {
             # attach_tracing=False because ``stream()`` injects tracing
             # callbacks at the graph invocation root so a single embedded run

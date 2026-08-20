@@ -459,7 +459,8 @@ class SubagentExecutor:
         authz_attributes: Mapping[str, Any] | None = None,
         deerflow_trace_id: str | None = None,
         extensions: Any | None = None,
-        parent_agent_allowed_tools: list[str] | None = None,    ):
+        parent_agent_allowed_tools: list[str] | None = None,
+    ):
         """Initialize the executor.
 
         Args:
@@ -489,7 +490,7 @@ class SubagentExecutor:
                 process-wide singleton.
             parent_agent_allowed_tools: [argus patch #53] The parent agent's
                 AgentConfig.allowed_tools ceiling, applied in place of the
-                skill union when tool_policy.source == "agent".        """
+                skill union when tool_policy.source == "agent"."""
         self.config = config
         self.app_config = app_config
         self.parent_model = parent_model
@@ -780,13 +781,9 @@ class SubagentExecutor:
         final_tools, deferred_setup = assemble_deferred_tools(
             configured_tools,
             enabled=resolved_app_config.tool_search.enabled,
+            exclude=getattr(resolved_app_config.tool_search, "exclude", None),
         )
         final_tools.extend(late_tools)
-        # its catalog is built from the already-filtered list, so it can never
-        # surface a tool the policy denied. This matches the lead agent.
-        _ts_config = (self.app_config or get_app_config()).tool_search
-        final_tools, deferred_setup = assemble_deferred_tools(filtered_tools, enabled=_ts_config.enabled, exclude=_ts_config.exclude)
-        skill_messages = await self._load_skill_messages(skills)
         # Combine the system prompt and skill discovery metadata into a single
         # SystemMessage. Full SKILL.md bodies are loaded only when activated.
         # Some LLM APIs reject multiple SystemMessages with
