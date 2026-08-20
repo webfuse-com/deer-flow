@@ -70,6 +70,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
 | [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
+| [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -435,6 +436,21 @@ carry budget ledger.
 - Upstream status: none. Arguably upstreamable as an opt-in
   `AuthConfig.sso_single_owner` field; not offered yet because the guest-path
   allowlist is Argus-shaped (it names our app-tier routes).
+
+## Patch #56
+
+**Patch #56 - Artifact "open in new window" button opens in new tab without forced download**
+
+- Class: generic-upstreamable
+- Intent: In the artifact detail view, the "open in new window" action previously called
+  `window.open(url, "_blank", "noopener,noreferrer")` followed by `if (w) w.opener = null;`.
+  Passing the windowFeatures argument string caused browsers to open the link in a popup/new window
+  or trigger download handling instead of opening a standard browser tab. Removing the features
+  argument lets `window.open(url, "_blank")` cleanly open the artifact inline in a new browser tab.
+- Files: `frontend/src/components/workspace/artifacts/artifact-file-detail.tsx` (EDITED)
+- Tests: `frontend/tests/unit/core/artifacts/` (Rstest suite passes)
+- Delete-when: upstream adopts standard new-tab opening for artifacts.
+- Upstream status: clean generic PR candidate.
 
 ## Patch #20
 
