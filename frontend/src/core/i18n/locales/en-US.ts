@@ -855,11 +855,14 @@ export const enUS: Translations = {
     },
     tools: {
       title: "Tools",
-      description: "Inspect built-in tools and manage external MCP tool servers.",
+      description:
+        "Inspect built-in tools and manage external MCP tool servers.",
       systemToolsTitle: "System & Built-in Tools",
-      systemToolsDescription: "Core tools provided by the environment and platform plugins.",
+      systemToolsDescription:
+        "Core tools provided by the environment and platform plugins.",
       mcpServersTitle: "MCP Tool Servers",
-      mcpServersDescription: "Model Context Protocol servers providing external integrations.",
+      mcpServersDescription:
+        "Model Context Protocol servers providing external integrations.",
       adminRequired: "Admin privileges are required to manage MCP tools.",
       empty: "No MCP tools configured.",
     },

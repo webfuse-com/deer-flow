@@ -55,7 +55,8 @@ export function Hero({ className }: { className?: string }) {
             twinkleIntensity={0.3}
             speed={0.5}
           />
-        )}      </div>
+        )}{" "}
+      </div>
       <FlickeringGrid
         className="absolute inset-0 z-0 mask-[url(/images/deer.svg)] mask-size-[100vw] mask-center mask-no-repeat md:mask-size-[72vh]"
         squareSize={4}

@@ -1166,7 +1166,10 @@ export function InputBox({
         : message;
 
       if (status === "streaming") {
-        if (!messageWithSlashSkill.text.trim() && messageWithSlashSkill.files.length === 0) {
+        if (
+          !messageWithSlashSkill.text.trim() &&
+          messageWithSlashSkill.files.length === 0
+        ) {
           handleStopStreaming();
           return;
         }
@@ -1177,7 +1180,8 @@ export function InputBox({
           const submitOptions: InputBoxSubmitOptions = {
             ...(quotes.length
               ? {
-                  additionalKwargs: buildReferenceMessageMetadata(quoteContexts),
+                  additionalKwargs:
+                    buildReferenceMessageMetadata(quoteContexts),
                   additionalInputMessages: [
                     buildHiddenConversationQuoteMessage({
                       contexts: quoteContexts,

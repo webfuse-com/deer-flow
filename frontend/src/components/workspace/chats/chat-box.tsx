@@ -347,9 +347,7 @@ const ChatBox: React.FC<{
           >
             <SheetHeader className="sr-only">
               <SheetTitle>
-                {renderedRightPanel === "sidecar"
-                  ? "Sidecar"
-                  : "Artifacts"}
+                {renderedRightPanel === "sidecar" ? "Sidecar" : "Artifacts"}
               </SheetTitle>
               <SheetDescription>
                 Browse the side panel for this conversation.

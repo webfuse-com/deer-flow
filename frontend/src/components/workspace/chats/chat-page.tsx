@@ -74,9 +74,13 @@ export default function ChatPage() {
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
   const [localSettings, setLocalSettings] = useLocalSettings();
-  const { queue, enqueue: enqueueMessage, dequeue: dequeueMessage, remove: removeQueuedMessage, update: updateQueuedMessage } = useThreadQueue(
-    isNewThread || isMock ? undefined : threadId,
-  );
+  const {
+    queue,
+    enqueue: enqueueMessage,
+    dequeue: dequeueMessage,
+    remove: removeQueuedMessage,
+    update: updateQueuedMessage,
+  } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,

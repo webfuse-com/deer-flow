@@ -121,7 +121,11 @@ export async function acquireDebugSandbox(
   );
 
   if (!response.ok) {
-    if (response.status === 409 || response.status === 404 || response.status === 403) {
+    if (
+      response.status === 409 ||
+      response.status === 404 ||
+      response.status === 403
+    ) {
       return null;
     }
     throw new Error(
