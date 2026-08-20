@@ -9,6 +9,7 @@ owner filtering works automatically via the sentinel pattern.
 Fine-grained permission checks remain in authz.py decorators.
 """
 
+import logging
 from collections.abc import Callable
 
 from fastapi import HTTPException, Request, Response
@@ -27,8 +28,10 @@ from app.gateway.auth_disabled import (
 from app.gateway.authz import AuthContext, resolve_route_permissions
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
 from app.gateway.request_path import get_request_route_path
-from app.gateway.sso_auth import trusted_sso_email
+from app.gateway.sso_auth import sso_email_allowed, trusted_sso_email
 from deerflow.runtime.user_context import reset_current_user, set_current_user
+
+logger = logging.getLogger(__name__)
 
 # Paths that never require authentication.
 _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
@@ -134,6 +137,35 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if internal_user is None and not access_token:
             _sso_email = trusted_sso_email(request.headers)
             if _sso_email:
+                # [argus patch #55] Authenticated is not authorized. On a
+                # single-citizen atlas-<name> stack the run executes AS the
+                # owner, so provisioning an account for a different citizen
+                # hands them the owner's credentials, knowledge ring and
+                # read-write mounts. Refuse BEFORE resolve_or_provision, so a
+                # rejected visitor leaves no user row behind either.
+                if not sso_email_allowed(_sso_email, request.url.path):
+                    logger.warning(
+                        "SSO identity %s rejected on %s (stack owner mismatch)",
+                        _sso_email,
+                        request.url.path,
+                    )
+                    # 403, not 401: the SPA keys its login redirect off the
+                    # HTTP status (core/api/fetcher.ts, AuthProvider.tsx), so a
+                    # 401 here would bounce a rejected citizen through Google
+                    # and straight back into the same refusal, forever. The
+                    # code string stays NOT_AUTHENTICATED because it is the
+                    # closest member of the frontend's AUTH_ERROR_CODES union
+                    # (core/auth/types.ts); the reason is carried in `message`.
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": AuthErrorResponse(
+                                code=AuthErrorCode.NOT_AUTHENTICATED,
+                                message=("This Atlas stack belongs to another citizen. Each stack runs as its owner, so it cannot be used on their behalf."),
+                            ).model_dump()
+                        },
+                    )
+
                 from app.gateway.deps import resolve_or_provision_sso_user
 
                 sso_user = await resolve_or_provision_sso_user(_sso_email)
