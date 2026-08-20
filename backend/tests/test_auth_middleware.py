@@ -493,3 +493,95 @@ def test_unknown_endpoint_with_junk_cookie_rejected(client):
     client.cookies.set("access_token", "tok")
     res = client.get("/api/future-endpoint")
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #55] Owner gate on the trusted-SSO path.
+#
+# The Caddy owner gate is the primary control; this covers the case Caddy is not
+# in: a direct argus-net/tailnet caller that holds the proxy secret, or a future
+# Caddyfile regression. The refusal must land BEFORE the user is provisioned, so
+# a rejected visitor leaves no account behind.
+# ---------------------------------------------------------------------------
+
+
+def _sso_app(monkeypatch, *, project, owner, secret="topsecret"):
+    import importlib
+
+    from fastapi import FastAPI
+
+    monkeypatch.setenv("DEER_FLOW_AUTH_DISABLED", "")
+    monkeypatch.setenv("DEER_FLOW_SSO_PROXY_SECRET", secret)
+    monkeypatch.setenv("ARGUS_PROJECT", project)
+    if owner is None:
+        monkeypatch.delenv("ATLAS_STACK_OWNER_EMAIL", raising=False)
+    else:
+        monkeypatch.setenv("ATLAS_STACK_OWNER_EMAIL", owner)
+    monkeypatch.delenv("PYTHIA_CALLER_EMAIL", raising=False)
+
+    import app.gateway.sso_auth as sso_auth
+
+    importlib.reload(sso_auth)
+    import app.gateway.auth_middleware as auth_middleware
+
+    importlib.reload(auth_middleware)
+
+    app_ = FastAPI()
+    app_.add_middleware(auth_middleware.AuthMiddleware)
+
+    @app_.get("/api/models")
+    async def models():
+        return {"ok": True}
+
+    @app_.get("/api/apps/forecast/data")
+    async def app_data():
+        return {"ok": True}
+
+    return TestClient(app_)
+
+
+def _sso_headers(email, secret="topsecret"):
+    return {"X-Auth-Email": email, "X-Auth-Proxy-Secret": secret}
+
+
+def test_sso_non_owner_is_refused_before_provisioning(monkeypatch):
+    client = _sso_app(monkeypatch, project="atlas-quinten", owner="quinten@surfly.com")
+    called = []
+
+    import app.gateway.deps as deps
+
+    async def _boom(email):  # pragma: no cover - must never run
+        called.append(email)
+        raise AssertionError("a rejected visitor must not be provisioned a user")
+
+    monkeypatch.setattr(deps, "resolve_or_provision_sso_user", _boom)
+
+    res = client.get("/api/models", headers=_sso_headers("nicholas@surfly.com"))
+    assert res.status_code == 403
+    assert called == []
+    # 401 would send the SPA back through Google and into the same refusal.
+    assert res.status_code != 401
+    assert "another citizen" in res.json()["detail"]["message"]
+
+
+def test_sso_non_owner_still_reaches_the_shared_app_api(monkeypatch):
+    # Apps are shareable between citizens, and Caddy proxies /api/apps/* from
+    # the apps-<owner> origin into the owner's gateway. Gating these would break
+    # every shared app on the box, so a non-owner must get through here -- and
+    # must still be resolved to a principal, because the tool proxy reports it
+    # back as `called_by`.
+    client = _sso_app(monkeypatch, project="atlas-quinten", owner="quinten@surfly.com")
+    provisioned = []
+
+    import app.gateway.deps as deps
+    from app.gateway.auth.models import User
+
+    async def _record(email):
+        provisioned.append(email)
+        return User(email=email, system_role="user")
+
+    monkeypatch.setattr(deps, "resolve_or_provision_sso_user", _record)
+
+    res = client.get("/api/apps/forecast/data", headers=_sso_headers("nicholas@surfly.com"))
+    assert res.status_code == 200
+    assert provisioned == ["nicholas@surfly.com"]

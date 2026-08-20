@@ -69,6 +69,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
 | [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
+| [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -392,6 +393,48 @@ carry budget ledger.
   for every SSO-fronted stack. Surface: the gateway auth ladder (rewritten
   once already in v2.0.0; expect to re-place the branch each major sync).
 - Upstream status: none.
+
+## Patch #55
+
+**Patch #55 - SSO owner gate: a verified identity is not an authorized one**
+
+- Class: argus-edit
+- Intent: patch #15 made the gateway trust the edge's `X-Auth-Email` and
+  auto-provision the user by email. That is right for authentication and wrong
+  for authorization on a **single-citizen** stack, where the run executes AS the
+  owner: `argus_caller_token` signs the knowledge-ring caller token with the
+  stack's `PYTHIA_CALLER_EMAIL`, the gateway env holds that citizen's
+  Gmail/GitHub/Asana credentials, and the sandbox mounts their personal
+  knowledge ring read-write. So a different citizen arriving with a perfectly
+  valid SSO header was silently given an account and, through the agent, the
+  owner's mail, notes and rings. `sso_email_allowed()` compares the verified
+  email against the stack owner and refuses **before**
+  `resolve_or_provision_sso_user`, so a rejected visitor leaves no user row.
+  Exempt by name: projects whose `ARGUS_PROJECT` is not `atlas-*` (e.g. `pythia`)
+  are legitimately multi-citizen and carry no owner. Exempt by path: the
+  shared-app API prefixes (`/api/apps/`, `/api/connectors/`, `/api/transformers/`)
+  stay open to any authenticated citizen, because apps are shareable by design
+  and the Argus edge proxies them from the `apps-<owner>` origin into the
+  owner's gateway. An `atlas-*` stack that declares no owner fails **closed**
+  (SSO trust off, local login remains as break-glass) rather than degrading to
+  "anyone authenticated". Returns 403, not 401: the SPA keys its login redirect
+  off the status, so 401 would bounce a rejected citizen through Google and back
+  into the same refusal forever.
+- Deployment note: this is the SECOND layer. The primary control is the Argus
+  edge, which 403s a non-owner before the request reaches this gateway. This
+  patch covers what the edge cannot: a direct `argus-net`/tailnet caller holding
+  the proxy secret, and any future edge misconfiguration.
+- Files: `backend/app/gateway/sso_auth.py` (EDITED),
+  `backend/app/gateway/auth_middleware.py` (EDITED)
+- Tests: `backend/tests/test_sso_auth.py` (11 new cases),
+  `backend/tests/test_auth_middleware.py` (2 new cases)
+- Delete-when: upstream grows a first-class tenancy model where a deployment can
+  declare "this instance belongs to exactly one principal" and the auth layer
+  enforces it. Falls together with #15, which it constrains. Surface: the same
+  auth ladder #15 edits, so expect to re-place both on a major sync.
+- Upstream status: none. Arguably upstreamable as an opt-in
+  `AuthConfig.sso_single_owner` field; not offered yet because the guest-path
+  allowlist is Argus-shaped (it names our app-tier routes).
 
 ## Patch #20
 
