@@ -67,7 +67,7 @@ from deerflow.runtime.checkpoint_mode import (
     frozen_checkpoint_channel_mode,
     inject_checkpoint_mode,
 )
-from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools, filter_tools_by_skill_allowed_tools
+from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools
 from deerflow.skills.types import Skill
 from deerflow.tracing import build_tracing_callbacks
 
@@ -471,18 +471,21 @@ def build_middlewares(
         )
     )
 
-    # Enabled skills are only discoverable metadata. Apply allowed-tools at
-    # runtime after explicit slash activation or an actual skill-file load.
-    from deerflow.agents.middlewares.skill_tool_policy_middleware import SkillToolPolicyMiddleware
+    # Under the upstream ``skills`` source, a loaded or slash-activated skill
+    # applies its allowed-tools policy dynamically. Under the Argus ``agent``
+    # source, skill declarations are documentation only; the agent/schedule
+    # ceiling was already applied before tool assembly.
+    if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "skills":
+        from deerflow.agents.middlewares.skill_tool_policy_middleware import SkillToolPolicyMiddleware
 
-    middlewares.append(
-        SkillToolPolicyMiddleware(
-            available_skills=available_skills,
-            app_config=resolved_app_config,
-            user_id=user_id,
-            slash_source_owner_token=slash_source_owner_token,
+        middlewares.append(
+            SkillToolPolicyMiddleware(
+                available_skills=available_skills,
+                app_config=resolved_app_config,
+                user_id=user_id,
+                slash_source_owner_token=slash_source_owner_token,
+            )
         )
-    )
 
     # Capture completed task delegations and loaded skill files before
     # summarization can compact them, then inject durable context channels
@@ -804,7 +807,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
     # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
     # Forwarded from InboundMessage -> run_context -> runtime context. Merged
-    # with skill allowed-tools by filter_tools_by_skill_allowed_tools.
+    # into the agent ceiling by filter_tools_by_agent_allowed_tools (source:
+    # agent) or by the skill-policy middleware (source: skills).
     schedule_allowed = cfg.get("allowed_tools")
     extra_allowed: set[str] | None = set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
 
@@ -893,23 +897,6 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     skill_search_enabled = resolved_app_config.skills.deferred_discovery
     container_base_path = resolved_app_config.skills.container_path
-    skills_for_tool_policy = enabled_skills
-
-    # [argus patch #53] Tool-policy dispatch. Under the default
-    # tool_policy.source: skills this is byte-identical upstream behavior;
-    # under source: agent the AgentConfig.allowed_tools ceiling replaces the
-    # skill union (bootstrap has no agent config yet -> unrestricted, matching
-    # the None tri-state).
-    def _apply_tool_policy(tools_list):
-        _tool_policy = getattr(resolved_app_config, "tool_policy", None)
-        if _tool_policy is not None and _tool_policy.source == "agent":
-            return filter_tools_by_agent_allowed_tools(
-                tools_list,
-                agent_config.allowed_tools if agent_config else None,
-                skills=skills_for_tool_policy,
-                extra_allowed=extra_allowed,
-            )
-        return filter_tools_by_skill_allowed_tools(tools_list, skills_for_tool_policy, extra_allowed=extra_allowed)
 
     if is_bootstrap:
         # Special bootstrap agent with minimal prompt for initial custom agent creation flow
@@ -923,6 +910,13 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         )
         raw_tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config) + [setup_agent]
         configured_tools = raw_tools
+        if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "agent":
+            configured_tools = filter_tools_by_agent_allowed_tools(
+                configured_tools,
+                None,
+                skills=bootstrap_skills,
+                extra_allowed=extra_allowed,
+            )
         if non_interactive:
             configured_tools = [tool for tool in configured_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
         authorization_candidates = [*configured_tools]
@@ -1003,6 +997,13 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     # Default lead agent (unchanged behavior)
     raw_tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
     configured_tools = raw_tools + extra_tools
+    if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "agent":
+        configured_tools = filter_tools_by_agent_allowed_tools(
+            configured_tools,
+            agent_config.allowed_tools if agent_config else None,
+            skills=enabled_skills,
+            extra_allowed=extra_allowed,
+        )
     if non_interactive:
         configured_tools = [tool for tool in configured_tools if tool.name not in _NON_INTERACTIVE_DISABLED_TOOL_NAMES]
     authorization_candidates = [*configured_tools]

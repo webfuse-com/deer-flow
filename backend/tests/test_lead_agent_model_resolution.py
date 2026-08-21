@@ -32,6 +32,7 @@ from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.subagents_config import SubagentsAppConfig
 from deerflow.config.summarization_config import SummarizationConfig
+from deerflow.config.tool_policy_config import ToolPolicyConfig
 from deerflow.runtime.checkpoint_mode import INTERNAL_CHECKPOINT_MODE_KEY
 from deerflow.runtime.secret_context import write_slash_skill_source_path
 from deerflow.skills.types import Skill, SkillCategory
@@ -722,6 +723,28 @@ def test_build_middlewares_orders_skill_activation_before_policy_and_durable_con
     assert policy_idx == activation_idx + 1
     assert durable_idx == policy_idx + 1
     assert middlewares[activation_idx]._slash_source_owner_token == middlewares[policy_idx]._slash_source_owner_token
+
+
+def test_agent_tool_policy_keeps_persisted_skill_context_from_hiding_bash(monkeypatch):
+    from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
+    from deerflow.agents.middlewares.skill_activation_middleware import SkillActivationMiddleware
+    from deerflow.agents.middlewares.skill_tool_policy_middleware import SkillToolPolicyMiddleware
+
+    app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
+    app_config.tool_policy = ToolPolicyConfig(source="agent")
+    monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
+    monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **_kwargs: None)
+
+    middlewares = lead_agent_module.build_middlewares(
+        {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
+        model_name="safe-model",
+        app_config=app_config,
+    )
+
+    assert any(isinstance(middleware, SkillActivationMiddleware) for middleware in middlewares)
+    assert any(isinstance(middleware, DurableContextMiddleware) for middleware in middlewares)
+    assert not any(isinstance(middleware, SkillToolPolicyMiddleware) for middleware in middlewares)
 
 
 @pytest.mark.parametrize("use_stale_path", [False, True], ids=["restrictive-skill", "stale-active-path"])

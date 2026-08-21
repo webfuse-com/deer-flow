@@ -72,6 +72,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
 | [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
 | [#57](#patch-57) | Policy-aware guidance for directly bound tools | generic-upstreamable | this PR |
+| [#58](#patch-58) | Honor agent-source tool policy at runtime | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -475,6 +476,28 @@ carry budget ledger.
   model request, or otherwise distinguishes configured binding from current schema
   visibility.
 - Upstream status: clean generic PR candidate.
+
+## Patch #58
+
+**Patch #58 - Honor agent-source tool policy at runtime**
+
+- Class: argus-edit
+- Intent: Patch #53 makes `tool_policy.source: agent` authoritative: agent
+  `allowed_tools` plus a schedule's run-scoped list gate tools, while skill
+  `allowed-tools` is documentation only. The upstream runtime
+  `SkillToolPolicyMiddleware` was still installed unconditionally, so a skill
+  loaded in an earlier turn persisted in `skill_context` and silently removed
+  tools from later model calls. In the production failure, loading
+  `ticket-management` removed `bash` from Kimi's schema despite Atlas having an
+  unrestricted agent policy. The lead now installs runtime skill filtering only
+  for the default `skills` source and applies the agent/schedule ceiling before
+  authorization and deferred-tool assembly under the `agent` source.
+- Files: `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED)
+- Tests: `backend/tests/test_lead_agent_model_resolution.py`,
+  `backend/tests/test_tool_policy_agent_source.py` (EDITED)
+- Delete-when: upstream supports an agent-level tool-policy source with the same
+  tri-state and run-scoped schedule semantics.
+- Upstream status: none; the policy source is Argus-specific configuration.
 
 ## Patch #20
 

@@ -107,6 +107,13 @@ class TestSkillDeclarationsAreDocumentation:
             filter_tools_by_agent_allowed_tools(TOOLS, ["bash", "read_file"], skills=skills)
         assert "fits" not in caplog.text
 
+    def test_persisted_restrictive_skill_cannot_remove_bash_from_unrestricted_agent(self):
+        persisted = [_make_skill("ticket-management", ["read_file"])]
+
+        result = filter_tools_by_agent_allowed_tools(TOOLS, None, skills=persisted)
+
+        assert [tool.name for tool in result] == [tool.name for tool in TOOLS]
+
 
 class TestConfigSurface:
     def test_tool_policy_defaults_to_upstream_skills_source(self):
