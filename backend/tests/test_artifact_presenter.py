@@ -29,9 +29,7 @@ def _host(monkeypatch):
 
 def test_telegram_html_is_link_only():
     vpath = "/mnt/user-data/outputs/report.html"
-    text, keep = present_artifacts(
-        "telegram", "thread-1", [vpath], [_att(vpath, "text/html")]
-    )
+    text, keep = present_artifacts("telegram", "thread-1", [vpath], [_att(vpath, "text/html")])
     assert "https://atlas-nicholas.acro.surfly.com/f/thread-1/report.html" in text
     assert "[report.html]" in text
     # HTML artifact is NOT re-attached — the link is the presentation.
@@ -74,9 +72,7 @@ def test_no_host_falls_back(monkeypatch):
 def test_host_derived_from_project(monkeypatch):
     monkeypatch.delenv("ATLAS_PUBLIC_HOST", raising=False)
     vpath = "/mnt/user-data/outputs/r.html"
-    text, _ = present_artifacts(
-        "telegram", "t6", [vpath], [_att(vpath, "text/html")], project="atlas-thomas"
-    )
+    text, _ = present_artifacts("telegram", "t6", [vpath], [_att(vpath, "text/html")], project="atlas-thomas")
     assert "https://atlas-thomas.acro.surfly.com/f/t6/r.html" in text
 
 
@@ -111,9 +107,7 @@ def test_strip_noop_without_textual_artifact():
 def test_multiple_files_header():
     v1 = "/mnt/user-data/outputs/a.html"
     v2 = "/mnt/user-data/outputs/b.pdf"
-    text, keep = present_artifacts(
-        "telegram", "t8", [v1, v2], [_att(v1, "text/html"), _att(v2, "application/pdf")]
-    )
+    text, keep = present_artifacts("telegram", "t8", [v1, v2], [_att(v1, "text/html"), _att(v2, "application/pdf")])
     assert text.startswith("Files ready:")
     assert "/f/t8/a.html" in text and "/f/t8/b.pdf" in text
     # Only the pdf is kept as an attachment.
@@ -133,9 +127,7 @@ def test_delivery_telegram_produces_remote_link(monkeypatch):
     vpath = "/mnt/user-data/outputs/report.html"
     monkeypatch.setattr(manager, "_resolve_attachments", lambda *a, **k: [_att(vpath, "text/html")])
 
-    text, keep = manager._prepare_artifact_delivery(
-        "thread-9", "Here is the report.", [vpath], "telegram", user_id="u1"
-    )
+    text, keep = manager._prepare_artifact_delivery("thread-9", "Here is the report.", [vpath], "telegram", user_id="u1")
     # A viewable /f/ link, and the raw HTML is NOT re-attached.
     assert "https://atlas-nicholas.acro.surfly.com/f/thread-9/report.html" in text
     assert keep == []
@@ -148,9 +140,7 @@ def test_delivery_non_telegram_keeps_filename_fallback(monkeypatch):
     att = _att(vpath, "text/html")
     monkeypatch.setattr(manager, "_resolve_attachments", lambda *a, **k: [att])
 
-    text, keep = manager._prepare_artifact_delivery(
-        "thread-10", "Here is the report.", [vpath], "slack", user_id="u1"
-    )
+    text, keep = manager._prepare_artifact_delivery("thread-10", "Here is the report.", [vpath], "slack", user_id="u1")
     # No /f/ link for non-telegram; the filename fallback + raw attachment stand.
     assert "/f/" not in text
     assert "report.html" in text

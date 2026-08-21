@@ -111,6 +111,7 @@ def _resolve_cdp_url(cdp_raw: str | None, thread_id: str | None) -> str | None:
             return None
         try:
             from deerflow.sandbox.sandbox_provider import get_sandbox_provider
+
             provider = get_sandbox_provider()
             info = getattr(provider, "_sandbox_infos", {}).get(thread_id)
             if not info and hasattr(provider, "acquire"):

@@ -348,6 +348,8 @@ def test_webhooks_path_is_csrf_exempt():
     req = SimpleNamespace(
         method="POST",
         url=SimpleNamespace(path="/webhooks/telegram"),
+        # get_request_route_path() projects the path from the ASGI scope.
+        scope={"type": "http", "path": "/webhooks/telegram", "root_path": ""},
         headers={},
         cookies={},
     )

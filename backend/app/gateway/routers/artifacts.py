@@ -35,6 +35,11 @@ ACTIVE_CONTENT_MIME_TYPES = {
     "image/svg+xml",
 }
 
+# ``mimetypes`` consults the platform MIME database; a minimal host without
+# mailcap has no ``.xhtml`` mapping, which would let active content slip
+# through as an inline preview. Pin the mapping this gate depends on.
+mimetypes.add_type("application/xhtml+xml", ".xhtml")
+
 MAX_SKILL_ARCHIVE_MEMBER_BYTES = 16 * 1024 * 1024
 _SKILL_ARCHIVE_READ_CHUNK_SIZE = 64 * 1024
 MAX_EDITABLE_ARTIFACT_BYTES = 2 * 1024 * 1024

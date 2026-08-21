@@ -1305,6 +1305,8 @@ def test_reconcile_adopts_unready_container_when_no_teardown_is_in_flight(tmp_pa
     provider._reconcile_orphans()
 
     assert "adoptable" in provider._warm_pool, "reconcile must still adopt a genuinely unowned container"
+
+
 # ── [argus] sandbox network-DNS config wiring (patch #26 fix) ─────────────────
 
 
@@ -1326,9 +1328,7 @@ def test_load_config_reads_network_key(tmp_path, monkeypatch):
         provisioner_url=None,
         network="argus-net",
     )
-    monkeypatch.setattr(
-        aio_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_config)
-    )
+    monkeypatch.setattr(aio_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_config))
 
     cfg = provider._load_config()
     assert cfg["network"] == "argus-net"

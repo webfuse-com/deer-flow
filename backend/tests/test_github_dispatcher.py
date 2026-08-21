@@ -77,6 +77,7 @@ async def test_fanout_redelivery_progresses_beyond_queue_sized_prefix(base_dir: 
         bus=bus,
         store=ChannelStore(path=base_dir / "fanout-store.json"),
         max_concurrency=1,
+        coalesce_window=0,  # pin the pre-coalescing direct-dispatch path
     )
     handled: list[str] = []
     first_started = asyncio.Event()
@@ -1242,7 +1243,7 @@ async def test_dedupe_identity_distinguishes_same_agent_name_across_users(base_d
     from app.channels.manager import ChannelManager
     from app.channels.store import ChannelStore
 
-    manager = ChannelManager(bus=MessageBus(), store=ChannelStore(path=base_dir / "dedupe-store.json"))
+    manager = ChannelManager(bus=MessageBus(), store=ChannelStore(path=base_dir / "dedupe-store.json"), coalesce_window=0)
     assert await manager._is_duplicate_inbound(by_owner["alice"]) is False
     assert await manager._is_duplicate_inbound(by_owner["bob"]) is False
 
@@ -1275,7 +1276,7 @@ async def test_missing_delivery_header_leaves_dedupe_open(base_dir: Path) -> Non
         "repository": {"full_name": "a/b"},
         "sender": {"login": "u"},
     }
-    manager = ChannelManager(bus=MessageBus(), store=ChannelStore(path=base_dir / "dedupe-store.json"))
+    manager = ChannelManager(bus=MessageBus(), store=ChannelStore(path=base_dir / "dedupe-store.json"), coalesce_window=0)
 
     await fanout_event(bus, "pull_request", "", payload)
     (first,) = await _drain(bus)

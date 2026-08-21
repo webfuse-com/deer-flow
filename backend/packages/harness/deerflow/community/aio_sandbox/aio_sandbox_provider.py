@@ -317,10 +317,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             # provisioner URL for dynamic pod management (e.g. http://provisioner:8002)
             "provisioner_url": getattr(sandbox_config, "provisioner_url", None) or "",
             "provisioner_api_key": getattr(sandbox_config, "provisioner_api_key", None) or "",
-                        # [argus] Container network for sandbox DNS mode (LocalContainerBackend
+            # [argus] Container network for sandbox DNS mode (LocalContainerBackend
             # only). When set, sandboxes join this network and are reached by container
             # DNS name on port 8080 with NO host port published (DeerFlow patch #26).
-            "network": getattr(sandbox_config, "network", None) or None,        }
+            "network": getattr(sandbox_config, "network", None) or None,
+        }
 
     @staticmethod
     def _resolve_env_vars(env_config: dict[str, str]) -> dict[str, str]:

@@ -144,8 +144,8 @@ def test_stage_throttled_within_interval():
         msg1 = ch._working_msg["1"]
         # A different stage arrives too soon → ignored (latest-wins, no re-send).
         await ch.send(OutboundMessage(channel_name="telegram", chat_id="1", thread_id="t", text="", is_final=False, progress_stage="working"))
-        assert ch._working_msg["1"] == msg1          # unchanged
-        assert ch._working_stage["1"] == "received"   # still the first stage
+        assert ch._working_msg["1"] == msg1  # unchanged
+        assert ch._working_stage["1"] == "received"  # still the first stage
 
     _run(go())
 
@@ -179,6 +179,7 @@ def test_telegram_reports_streaming_support():
     live channel's supports_streaming property; it MUST be True or telegram
     silently falls back to runs.wait and emits no stage signals."""
     from app.channels.message_bus import MessageBus
+
     ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "t"})
     assert ch.supports_streaming is True
 

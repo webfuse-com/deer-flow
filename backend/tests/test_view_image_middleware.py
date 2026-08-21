@@ -480,7 +480,6 @@ class TestBeforeModel:
         assert await mw.abefore_model(state, _runtime()) is None
 
 
-
 class TestAfterModel:
     def test_graph_exposes_image_context_only_during_model_call(self, tmp_path):
         capture = _CaptureChatMessages()
@@ -616,7 +615,6 @@ class TestAfterModel:
         assert result is not None
         assert isinstance(result["messages"][0], RemoveMessage)
         assert result["messages"][0].id == injected.id
-
 
 
 class TestVisionDescribeForNonVisionLead:

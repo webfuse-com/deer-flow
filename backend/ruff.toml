@@ -8,6 +8,10 @@ ignore = []
 [lint.isort]
 known-first-party = ["deerflow", "app"]
 
+[lint.per-file-ignores]
+# These are model-facing prompt strings; wrapping them changes runtime prompts.
+"packages/harness/deerflow/agents/lead_agent/prompt.py" = ["E501"]
+
 [format]
 quote-style = "double"
 indent-style = "space"

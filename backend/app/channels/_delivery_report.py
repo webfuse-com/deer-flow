@@ -85,20 +85,15 @@ async def report_delivery(
             async with httpx.AsyncClient(timeout=_REPORT_TIMEOUT_SECONDS) as client:
                 resp = await client.post(report_url, json=payload, headers=headers)
                 resp.raise_for_status()
-            logger.info(
-                "[DeliveryReport] reported %s to %s (attempt %d)", status, report_url, attempt
-            )
+            logger.info("[DeliveryReport] reported %s to %s (attempt %d)", status, report_url, attempt)
             return True
         except Exception as exc:  # noqa: BLE001 — a report failure must never propagate
             if attempt == 1:
-                logger.warning(
-                    "[DeliveryReport] report to %s failed (attempt 1, retrying): %r", report_url, exc
-                )
+                logger.warning("[DeliveryReport] report to %s failed (attempt 1, retrying): %r", report_url, exc)
                 await asyncio.sleep(_RETRY_DELAY_SECONDS)
             else:
                 logger.warning(
-                    "[DeliveryReport] report to %s failed (attempt 2, giving up; Chronos will "
-                    "close the run as unreported): %r",
+                    "[DeliveryReport] report to %s failed (attempt 2, giving up; Chronos will close the run as unreported): %r",
                     report_url,
                     exc,
                 )

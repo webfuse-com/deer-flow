@@ -28,52 +28,57 @@ def _conversation_state():
 
 
 def _run_after_agent(context: dict):
-    """Run MemoryMiddleware.after_agent with a patched queue; return the queue mock."""
+    """Run MemoryMiddleware.after_agent with a patched manager; return the manager mock."""
     mw = MemoryMiddleware(agent_name="atlas")
     state = _conversation_state()
-    queue = mock.MagicMock()
-    with mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_queue", return_value=queue), \
-         mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_config",
-                    return_value=SimpleNamespace(enabled=True)), \
-         mock.patch("deerflow.agents.middlewares.memory_middleware.get_effective_user_id", return_value="default"):
+    manager = mock.MagicMock()
+    with (
+        mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_manager", return_value=manager),
+        mock.patch("deerflow.agents.middlewares.memory_middleware.get_memory_config", return_value=SimpleNamespace(enabled=True)),
+        mock.patch("deerflow.agents.middlewares.memory_middleware.resolve_runtime_user_id", return_value="default"),
+    ):
         mw.after_agent(state, _runtime({"thread_id": "t1", **context}))
-    return queue
+    return manager
 
 
 class TestMemoryWriteGate:
     def test_interactive_turn_writes(self):
         """No memory_mode / not unattended → normal write (regression guard)."""
-        queue = _run_after_agent({})
-        queue.add.assert_called_once()
+        manager = _run_after_agent({})
+        manager.add.assert_called_once()
 
     def test_unattended_default_is_read_only(self):
         """unattended with no explicit mode → read-only → NO write."""
-        queue = _run_after_agent({"unattended": True})
-        queue.add.assert_not_called()
+        manager = _run_after_agent({"unattended": True})
+        manager.add.assert_not_called()
 
     def test_read_only_does_not_write(self):
-        queue = _run_after_agent({"unattended": True, "memory_mode": "read-only"})
-        queue.add.assert_not_called()
+        manager = _run_after_agent({"unattended": True, "memory_mode": "read-only"})
+        manager.add.assert_not_called()
 
     def test_off_does_not_write(self):
-        queue = _run_after_agent({"unattended": True, "memory_mode": "off"})
-        queue.add.assert_not_called()
+        manager = _run_after_agent({"unattended": True, "memory_mode": "off"})
+        manager.add.assert_not_called()
 
     def test_read_write_writes(self):
         """A job that explicitly opts into read-write DOES queue a write."""
-        queue = _run_after_agent({"unattended": True, "memory_mode": "read-write"})
-        queue.add.assert_called_once()
+        manager = _run_after_agent({"unattended": True, "memory_mode": "read-write"})
+        manager.add.assert_called_once()
 
 
 class TestMemoryInjectionGate:
     def _inject(self, context: dict) -> str:
         mw = DynamicContextMiddleware(agent_name="atlas")
         state = {"messages": [HumanMessage(content="Hello", id="msg-1")]}
-        with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value="<memory>secret fact</memory>"), \
-             mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
+        with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value="<memory>secret fact</memory>"), mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
             mock_dt.now.return_value.strftime.return_value = "2026-06-29, Monday"
             result = mw.before_agent(state, _runtime(context))
-        return result["messages"][0].content if result else ""
+        if not result:
+            return ""
+        # The reminder now spans separate messages (date SystemMessage, hidden
+        # memory HumanMessage, user turn); the policy is about what got
+        # injected anywhere in the update.
+        return "\n".join(m.content for m in result["messages"] if isinstance(m.content, str))
 
     def test_read_only_still_injects_memory(self):
         """read-only reads memory (injects) — it just doesn't write."""
@@ -106,25 +111,27 @@ class TestSummarizationFlushGate:
             messages_to_summarize=[HumanMessage(content="hi", id="m1"), AIMessage(content="hello", id="m2")],
             runtime=_runtime(context),
         )
-        queue = mock.MagicMock()
-        with mock.patch.object(sh, "get_memory_config", return_value=SimpleNamespace(enabled=True)), \
-             mock.patch.object(sh, "get_memory_queue", return_value=queue), \
-             mock.patch.object(sh, "resolve_runtime_user_id", return_value="default"):
+        manager = mock.MagicMock()
+        with (
+            mock.patch.object(sh, "get_memory_config", return_value=SimpleNamespace(enabled=True)),
+            mock.patch.object(sh, "get_memory_manager", return_value=manager),
+            mock.patch.object(sh, "resolve_runtime_user_id", return_value="default"),
+        ):
             sh.memory_flush_hook(event)
-        return queue
+        return manager
 
     def test_unattended_flush_does_not_write(self):
-        queue = self._flush({"unattended": True, "memory_mode": "read-only"})
-        queue.add_nowait.assert_not_called()
+        manager = self._flush({"unattended": True, "memory_mode": "read-only"})
+        manager.add_nowait.assert_not_called()
 
     def test_off_flush_does_not_write(self):
-        queue = self._flush({"unattended": True, "memory_mode": "off"})
-        queue.add_nowait.assert_not_called()
+        manager = self._flush({"unattended": True, "memory_mode": "off"})
+        manager.add_nowait.assert_not_called()
 
     def test_interactive_flush_writes(self):
-        queue = self._flush({})
-        queue.add_nowait.assert_called_once()
+        manager = self._flush({})
+        manager.add_nowait.assert_called_once()
 
     def test_read_write_flush_writes(self):
-        queue = self._flush({"unattended": True, "memory_mode": "read-write"})
-        queue.add_nowait.assert_called_once()
+        manager = self._flush({"unattended": True, "memory_mode": "read-write"})
+        manager.add_nowait.assert_called_once()

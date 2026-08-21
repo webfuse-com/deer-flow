@@ -281,40 +281,37 @@ def _build_preview(
     head_chars: int,
     tail_chars: int,
 ) -> str:
-    """Build a typed synopsis preview with a file reference for externalized output."""
-    return render_tool_output_preview(
+    """Build a typed synopsis preview with a file reference for externalized output.
+
+    [argus patch #49] For LIST-shaped output the synopsis's raw head+tail
+    sample still silently drops every middle item, so the index of omitted
+    item headers is appended after the synopsis — same incident rationale as
+    _omitted_block_headers.
+    """
+    preview = render_tool_output_preview(
         content,
         tool_name=tool_name,
         virtual_path=virtual_path,
         head_chars=head_chars,
         tail_chars=tail_chars,
     )
-    """Build a preview with a file reference for externalized output."""
+
     total = len(content)
     head_end = _snap_to_line_boundary(content, min(head_chars, total))
     tail_start = max(head_end, total - tail_chars)
     tail_start_snapped = _snap_to_line_boundary(content, tail_start)
     if tail_start_snapped > head_end:
         tail_start = tail_start_snapped
-
-    head = content[:head_end]
-    tail = content[tail_start:] if tail_start < total else ""
-
-    omitted = total - len(head) - len(tail)
     dropped, dropped_extra = _omitted_block_headers(content, head_end, tail_start)
-    index_note = ""
     if dropped:
+        omitted = total - head_end - (total - tail_start)
         count = len(dropped) + dropped_extra
         lines = "\n".join(f"- {h}" for h in dropped)
         if dropped_extra:
             lines += f"\n- (+{dropped_extra} more)"
-        index_note = f" The omitted span contains {count} list item(s) whose first lines are:\n{lines}\nTheir content is only in the saved file, not in this preview."
-    ref = f"\n\n[Full {tool_name} output saved to {virtual_path} ({total} chars, ~{total // 4} tokens). Use read_file with start_line and end_line to access specific sections. {omitted} chars omitted from this preview.{index_note}]\n\n"
+        preview += f"\n\n[{omitted} chars omitted from this preview. The omitted span contains {count} list item(s) whose first lines are:]\n{lines}\n[Their content is only in the saved file, not in this preview.]"
+    return preview
 
-    parts = [head, ref]
-    if tail:
-        parts.append(tail)
-    return "".join(parts)
 
 def _build_fallback(
     content: str,

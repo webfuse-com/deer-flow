@@ -374,6 +374,8 @@ def test_stop_container_propagates_a_timeout_instead_of_reporting_success(monkey
 
     with pytest.raises(subprocess.TimeoutExpired):
         backend._stop_container("sandbox-wedged")
+
+
 # ── [argus] Sandbox network-DNS mode (DeerFlow patch #26 fix) ────────────────
 # When `network` is set, sandboxes join that container network and are reached by
 # container DNS name on port 8080 with NO host port published — eliminating the

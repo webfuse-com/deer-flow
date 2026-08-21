@@ -49,7 +49,8 @@ from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.slash import parse_slash_skill_reference
 from deerflow.skills.storage import get_or_new_skill_storage
 from deerflow.skills.storage.skill_storage import SkillStorage
-from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, is_blank_text as _is_blank_text
+from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY
+from deerflow.utils.messages import is_blank_text as _is_blank_text
 
 logger = logging.getLogger(__name__)
 
@@ -1983,6 +1984,7 @@ class ChannelManager:
                         logger.exception("[Manager] failed to release inbound dedupe key after worker error")
             finally:
                 self.bus.inbound_task_done()
+
     @staticmethod
     def _inbound_dedupe_key(msg: InboundMessage) -> tuple[str, str, str, str] | None:
         metadata = msg.metadata or {}
@@ -2803,6 +2805,7 @@ class ChannelManager:
                     await self._report_unattended_outcome(msg, status="failed", error=repr(stream_error))
                 else:
                     await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
+
     # -- command handling --------------------------------------------------
 
     async def _handle_command(self, msg: InboundMessage) -> None:

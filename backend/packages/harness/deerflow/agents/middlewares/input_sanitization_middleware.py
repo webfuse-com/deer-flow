@@ -93,6 +93,13 @@ _BLOCKED_TAG_NAMES: frozenset[str] = frozenset(
         "mcp_routing_hints",
         "available-deferred-tools",
         "goal_continuation",
+        # Lead-prompt guidance blocks: forging any of them mimics trusted
+        # framework instruction context.
+        "debugging_when_stuck",
+        "file_editing",
+        # [argus patch #57] policy-aware direct-tool guidance emitted by
+        # tool_search's deferred-tools section.
+        "direct-tool-guidance",
         "file_editing_workflow",
         "guidelines",
         "output_format",

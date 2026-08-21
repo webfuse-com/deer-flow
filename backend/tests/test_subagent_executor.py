@@ -3446,6 +3446,8 @@ class TestSubagentGuardrailAttribution:
                 tools=[],
                 authz_attributes=["not", "a", "mapping"],
             )
+
+
 class TestAgentSourceToolPolicy:
     """[argus patch #53] Subagents inherit the parent agent's allowed_tools
     ceiling when tool_policy.source == "agent"; the skill union applies
@@ -3488,6 +3490,7 @@ class TestAgentSourceToolPolicy:
 
     def test_parent_ceiling_replaces_skill_union_under_agent_source(self, classes, monkeypatch):
         from deerflow.config.tool_policy_config import ToolPolicyConfig
+        from deerflow.config.tool_search_config import ToolSearchConfig
         from deerflow.subagents import executor as executor_module
 
         monkeypatch.setattr(
@@ -3505,6 +3508,7 @@ class TestAgentSourceToolPolicy:
 
     def test_unrestricted_parent_binds_everything_under_agent_source(self, classes, monkeypatch):
         from deerflow.config.tool_policy_config import ToolPolicyConfig
+        from deerflow.config.tool_search_config import ToolSearchConfig
         from deerflow.subagents import executor as executor_module
 
         monkeypatch.setattr(
@@ -3523,6 +3527,7 @@ class TestAgentSourceToolPolicy:
     def test_skill_union_applies_when_tool_policy_field_is_absent(self, classes, monkeypatch):
         """A config object without the tool_policy field (older cached config,
         SimpleNamespace test stubs) falls back to the upstream skill union."""
+        from deerflow.config.tool_search_config import ToolSearchConfig
         from deerflow.subagents import executor as executor_module
 
         monkeypatch.setattr(

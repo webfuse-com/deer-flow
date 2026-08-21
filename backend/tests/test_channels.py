@@ -1757,7 +1757,10 @@ class TestChannelManager:
             await manager.start()
 
             inbound = InboundMessage(
-                channel_name="slack", chat_id="chat1", user_id="user1", text="hi",
+                channel_name="slack",
+                chat_id="chat1",
+                user_id="user1",
+                text="hi",
                 agent_name="atlas",
             )
             await bus.publish_inbound(inbound)
@@ -1788,8 +1791,12 @@ class TestChannelManager:
             await manager.start()
 
             inbound = InboundMessage(
-                channel_name="slack", chat_id="chat1", user_id="user1", text="hi",
-                agent_name="atlas", unattended=True,
+                channel_name="slack",
+                chat_id="chat1",
+                user_id="user1",
+                text="hi",
+                agent_name="atlas",
+                unattended=True,
             )
             await bus.publish_inbound(inbound)
             await _wait_for(lambda: len(outbound_received) >= 1)
@@ -7990,21 +7997,25 @@ class TestSlackThreadContext:
         return ch, mock_web
 
     def test_formats_bot_and_user_messages(self):
-        ch, _ = self._channel([
-            {"ts": "1.0", "bot_id": "B1", "text": "Minutes: speaker 2 said hi"},
-            {"ts": "2.0", "user": "U9", "text": "assign Nicholas to speaker 2"},
-        ])
+        ch, _ = self._channel(
+            [
+                {"ts": "1.0", "bot_id": "B1", "text": "Minutes: speaker 2 said hi"},
+                {"ts": "2.0", "user": "U9", "text": "assign Nicholas to speaker 2"},
+            ]
+        )
         out = _run(ch.fetch_thread_context("C1", "1.0"))
         assert "Pythia: Minutes: speaker 2 said hi" in out
         assert "<@U9>: assign Nicholas to speaker 2" in out
         assert out.startswith("[thread context")
 
     def test_excludes_current_reply_and_acks(self):
-        ch, _ = self._channel([
-            {"ts": "1.0", "bot_id": "B1", "text": "the draft"},
-            {"ts": "2.0", "bot_id": "B1", "text": ":hourglass_flowing_sand: Working on it..."},
-            {"ts": "3.0", "user": "U9", "text": "this is the current reply"},
-        ])
+        ch, _ = self._channel(
+            [
+                {"ts": "1.0", "bot_id": "B1", "text": "the draft"},
+                {"ts": "2.0", "bot_id": "B1", "text": ":hourglass_flowing_sand: Working on it..."},
+                {"ts": "3.0", "user": "U9", "text": "this is the current reply"},
+            ]
+        )
         out = _run(ch.fetch_thread_context("C1", "1.0", exclude_ts="3.0"))
         assert "the draft" in out
         assert "Working on it" not in out
@@ -8071,7 +8082,7 @@ class TestSlackAllowedUsers:
             channel._handle_message_event(event)
 
         channel._add_reaction.assert_called_once_with("C123", "1710000000.000100", "eyes")
-        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100")
+        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100", "1710000000.000100")
         channel._loop.call_soon_threadsafe.assert_called_once()
         inbound = bus.get_inbound_nowait()
         assert inbound.user_id == "123456"
@@ -8105,7 +8116,7 @@ class TestSlackAllowedUsers:
             channel._handle_message_event(event)
 
         channel._add_reaction.assert_called_once_with("C123", "1710000000.000100", "eyes")
-        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100")
+        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100", "1710000000.000100")
         channel._loop.call_soon_threadsafe.assert_called_once()
         inbound = bus.get_inbound_nowait()
         assert inbound.user_id == "U123456"
@@ -9514,6 +9525,11 @@ class TestSlackTextEscaping:
 
 
 class TestTelegramStreaming:
+    """[argus patch #40] These upstream tests pin the SUPERSEDED upstream send
+    path, kept verbatim-but-unreachable in telegram.py so upstream churn merges
+    clean. The live send path (stage emoji + HTML chunking) is exercised by
+    tests/test_telegram_send.py."""
+
     @staticmethod
     def _make_channel_with_bot():
         from app.channels.telegram import TelegramChannel
@@ -9561,15 +9577,15 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
             placeholder_id = ch._stream_messages["12345:42"]["message_id"]
 
             update1 = OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hello", is_final=False, thread_ts="42")
-            await ch.send(update1)
+            await ch._upstream_send_superseded(update1)
 
             clock["now"] += 2.0
             update2 = OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hello world", is_final=False, thread_ts="42")
-            await ch.send(update2)
+            await ch._upstream_send_superseded(update2)
 
             assert len(bot.sent) == 1  # only the placeholder
             assert [e["message_id"] for e in bot.edited] == [placeholder_id, placeholder_id]
@@ -9584,13 +9600,13 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="a", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="a", is_final=False, thread_ts="42"))
             clock["now"] += 0.3  # within 1s window -> dropped
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="ab", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="ab", is_final=False, thread_ts="42"))
             clock["now"] += 1.0  # past window -> edited
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="abc", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="abc", is_final=False, thread_ts="42"))
 
             assert [e["text"] for e in bot.edited] == ["a", "abc"]
 
@@ -9606,13 +9622,13 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("-100123", 42)
+            await ch._upstream_send_running_reply_superseded("-100123", 42)
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="-100123", thread_id="t1", text="a", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="-100123", thread_id="t1", text="a", is_final=False, thread_ts="42"))
             clock["now"] += 1.2  # past the 1s private window, within the 3s group window -> dropped
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="-100123", thread_id="t1", text="ab", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="-100123", thread_id="t1", text="ab", is_final=False, thread_ts="42"))
             clock["now"] += 2.0  # 3.2s since last edit -> edited
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="-100123", thread_id="t1", text="abc", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="-100123", thread_id="t1", text="abc", is_final=False, thread_ts="42"))
 
             assert [e["text"] for e in bot.edited] == ["a", "abc"]
 
@@ -9622,7 +9638,7 @@ class TestTelegramStreaming:
         async def go():
             ch, bot = self._make_channel_with_bot()
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hi", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hi", is_final=False, thread_ts="42"))
 
             assert len(bot.sent) == 1
             assert bot.sent[0]["text"] == "Hi"
@@ -9639,13 +9655,13 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
 
             async def edit_gone(**kwargs):
                 raise Exception("Bad Request: message to edit not found")
 
             bot.edit_message_text = edit_gone
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hi", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hi", is_final=False, thread_ts="42"))
 
             # Fallback message threads under the user's message and becomes the new stream target
             assert bot.sent[1]["text"] == "Hi"
@@ -9676,9 +9692,9 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
             long_text = "x" * 5000
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=long_text, is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=long_text, is_final=False, thread_ts="42"))
 
             assert len(bot.edited) == 1
             assert len(bot.edited[0]["text"]) == 4096
@@ -9693,7 +9709,7 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
 
             async def edit_rate_limited(**kwargs):
                 exc = Exception("Flood control exceeded")
@@ -9702,7 +9718,7 @@ class TestTelegramStreaming:
 
             bot.edit_message_text = edit_rate_limited
             # Must not raise, must not send a new message
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hi", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Hi", is_final=False, thread_ts="42"))
             assert len(bot.sent) == 1  # placeholder only
 
         _run(go())
@@ -9731,7 +9747,7 @@ class TestTelegramStreaming:
             mock_app.bot = mock_bot
             ch._application = mock_app
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
 
             state = ch._stream_messages["12345:42"]
             assert state["message_id"] == 777
@@ -9752,11 +9768,11 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
             placeholder_id = ch._stream_messages["12345:42"]["message_id"]
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="partial", is_final=False, thread_ts="42"))
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="full answer", is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="partial", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="full answer", is_final=True, thread_ts="42"))
 
             assert [e["text"] for e in bot.edited] == ["partial", "full answer"]
             assert len(bot.sent) == 1  # placeholder only — final edited, not re-sent
@@ -9772,10 +9788,10 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
             long_text = "a" * 4096 + "b" * 100
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=long_text, is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=long_text, is_final=True, thread_ts="42"))
 
             assert len(bot.edited) == 1
             assert bot.edited[0]["text"] == "a" * 4096
@@ -9794,8 +9810,8 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="done", is_final=False, thread_ts="42"))
+            await ch._upstream_send_running_reply_superseded("12345", 42)
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="done", is_final=False, thread_ts="42"))
 
             async def edit_not_modified(**kwargs):
                 raise Exception("Bad Request: message is not modified")
@@ -9803,7 +9819,7 @@ class TestTelegramStreaming:
             bot.edit_message_text = edit_not_modified
             # Same text again as final — skipped via the equal-text guard:
             # must not raise, must not send a new message
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="done", is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="done", is_final=True, thread_ts="42"))
 
             assert len(bot.sent) == 1  # placeholder only
             assert "12345:42" not in ch._stream_messages
@@ -9817,7 +9833,7 @@ class TestTelegramStreaming:
             clock = {"now": 1000.0}
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: clock["now"])
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
             placeholder_id = ch._stream_messages["12345:42"]["message_id"]
 
             async def edit_not_modified(**kwargs):
@@ -9826,7 +9842,7 @@ class TestTelegramStreaming:
             bot.edit_message_text = edit_not_modified
             # Final text differs from last_text, so the edit IS attempted and
             # raises not-modified — must be swallowed, no fallback send.
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="done", is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="done", is_final=True, thread_ts="42"))
 
             assert len(bot.sent) == 1  # placeholder only
             assert "12345:42" not in ch._stream_messages
@@ -9838,7 +9854,7 @@ class TestTelegramStreaming:
         async def go():
             ch, bot = self._make_channel_with_bot()
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="direct", is_final=True, thread_ts=None))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="direct", is_final=True, thread_ts=None))
 
             assert len(bot.sent) == 1
             assert bot.sent[0]["text"] == "direct"
@@ -9852,7 +9868,7 @@ class TestTelegramStreaming:
             ch.config["rich_messages"] = True
             markdown = "# Result\n\n**Bold** and `code`"
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=markdown, is_final=True))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=markdown, is_final=True))
 
             assert bot.rich == [
                 (
@@ -9870,9 +9886,9 @@ class TestTelegramStreaming:
             ch.config["rich_messages"] = True
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: 1000.0)
 
-            await ch._send_running_reply("12345", 42)
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**partial", is_final=False, thread_ts="42"))
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**final**", is_final=True, thread_ts="42"))
+            await ch._upstream_send_running_reply_superseded("12345", 42)
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**partial", is_final=False, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**final**", is_final=True, thread_ts="42"))
 
             assert bot.rich == [
                 (
@@ -9899,7 +9915,7 @@ class TestTelegramStreaming:
                 raise BadRequest("Can't parse rich message")
 
             bot.do_api_request = reject_rich
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**answer**", is_final=True))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**answer**", is_final=True))
 
             assert [message["text"] for message in bot.sent] == ["**answer**"]
 
@@ -9914,7 +9930,7 @@ class TestTelegramStreaming:
                 raise RuntimeError("network failed")
 
             bot.do_api_request = fail_rich
-            await ch.send(
+            await ch._upstream_send_superseded(
                 OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**answer**", is_final=True),
                 _max_retries=1,
             )
@@ -9931,13 +9947,13 @@ class TestTelegramStreaming:
             ch.config["rich_messages"] = True
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: 1000.0)
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
 
             async def fail_rich(endpoint, api_kwargs):
                 raise BadRequest("Can't parse rich message")
 
             bot.do_api_request = fail_rich
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**answer**", is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="**answer**", is_final=True, thread_ts="42"))
 
             assert [message["text"] for message in bot.sent] == ["Working on it..."]
             assert bot.edited == [{"chat_id": 12345, "message_id": 100, "text": "**answer**"}]
@@ -9958,7 +9974,7 @@ class TestTelegramStreaming:
 
             monkeypatch.setattr("app.channels.telegram.asyncio.sleep", fake_sleep)
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
             placeholder_id = ch._stream_messages["12345:42"]["message_id"]
 
             real_edit = bot.edit_message_text
@@ -9973,7 +9989,7 @@ class TestTelegramStreaming:
                 return await real_edit(**kwargs)
 
             bot.edit_message_text = edit_flaky
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="final", is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="final", is_final=True, thread_ts="42"))
 
             assert sleeps == [3.0]
             assert [e["text"] for e in bot.edited] == ["final"]
@@ -9997,7 +10013,7 @@ class TestTelegramStreaming:
 
             monkeypatch.setattr("app.channels.telegram.asyncio.sleep", fake_sleep)
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
 
             async def edit_rate_limited(**kwargs):
                 exc = Exception("Flood control exceeded")
@@ -10005,7 +10021,7 @@ class TestTelegramStreaming:
                 raise exc
 
             bot.edit_message_text = edit_rate_limited
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="final", is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="final", is_final=True, thread_ts="42"))
 
             # Fallback delivered the final text as a new message (after the placeholder)
             assert [m["text"] for m in bot.sent] == ["Working on it...", "final"]
@@ -10028,7 +10044,7 @@ class TestTelegramStreaming:
 
             monkeypatch.setattr("app.channels.telegram.asyncio.sleep", fake_sleep)
 
-            await ch._send_running_reply("12345", 42)
+            await ch._upstream_send_running_reply_superseded("12345", 42)
 
             real_send = bot.send_message
             failures = {"left": 1}
@@ -10041,7 +10057,7 @@ class TestTelegramStreaming:
 
             bot.send_message = send_flaky
             long_text = "a" * 4096 + "b" * 10
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=long_text, is_final=True, thread_ts="42"))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=long_text, is_final=True, thread_ts="42"))
 
             assert bot.edited[0]["text"] == "a" * 4096
             assert [m["text"] for m in bot.sent] == ["Working on it...", "b" * 10]

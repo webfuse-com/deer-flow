@@ -176,13 +176,21 @@ def test_normalize_stream_modes_list():
     assert normalize_stream_modes(["values", "messages-tuple"]) == ["values", "messages-tuple"]
 
 
+def test_normalize_stream_modes_filters_mixed_supported_and_unsupported():
+    """Graceful contract: unsupported modes are dropped when at least one
+    supported mode remains (rejection is reserved for all-unsupported)."""
+    from app.gateway.services import normalize_stream_modes
+
+    assert normalize_stream_modes(["values", "events"]) == ["values"]
+
+
 def test_normalize_stream_modes_empty_list():
     from app.gateway.services import normalize_stream_modes
 
     assert normalize_stream_modes([]) == ["values"]
 
 
-@pytest.mark.parametrize("raw", ["messages", "events", "tools", ["values", "events"]])
+@pytest.mark.parametrize("raw", ["messages", "events", "tools"])
 def test_normalize_stream_modes_rejects_unsupported_modes(raw):
     from app.gateway.services import normalize_stream_modes
 

@@ -61,7 +61,6 @@ def _build_postgres_pool(conn_string: str, schema: str = ""):
     ``max_idle`` seconds. Overridable per deployment via
     DEERFLOW_CHECKPOINTER_POOL_MIN / _MAX / _MAX_IDLE.
     """
-    import os
     from psycopg.rows import dict_row
     from psycopg_pool import AsyncConnectionPool
 

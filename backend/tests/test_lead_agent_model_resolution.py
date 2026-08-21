@@ -687,7 +687,7 @@ def test_build_middlewares_passes_run_model_name_to_summarization(monkeypatch):
         "_create_summarization_middleware",
         lambda **kwargs: captured.update(kwargs) or None,
     )
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
     monkeypatch.setattr(lead_agent_module, "TitleMiddleware", lambda *, app_config, extensions: "title-middleware")
     monkeypatch.setattr(lead_agent_module, "MemoryMiddleware", lambda agent_name=None, *, memory_config: "memory-middleware")
 
@@ -708,7 +708,7 @@ def test_build_middlewares_orders_skill_activation_before_policy_and_durable_con
     app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
@@ -736,7 +736,7 @@ def test_compiled_skill_policy_chain_filters_schema_and_blocks_execution(monkeyp
     )
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
@@ -807,7 +807,7 @@ def test_build_middlewares_places_mcp_routing_before_deferred_filter(monkeypatch
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
@@ -889,7 +889,7 @@ def test_build_middlewares_injects_configured_extension_middlewares(monkeypatch)
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
@@ -920,7 +920,7 @@ def test_build_middlewares_passes_subagent_total_limit_from_app_config(monkeypat
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": True, "max_concurrent_subagents": 3}},
@@ -943,7 +943,7 @@ def test_build_middlewares_allows_runtime_subagent_total_limit_override(monkeypa
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {
@@ -972,7 +972,7 @@ def test_build_middlewares_rejects_invalid_configured_extension_middleware(monke
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     with pytest.raises(ValueError, match="not an instance of type"):
         lead_agent_module.build_middlewares(
@@ -992,7 +992,7 @@ def test_build_middlewares_rejects_configured_extension_class_with_wrong_base(mo
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     with pytest.raises(ValueError, match="is not a subclass of AgentMiddleware"):
         lead_agent_module.build_middlewares(
@@ -1012,7 +1012,7 @@ def test_build_middlewares_reraises_configured_extension_instantiation_failure(m
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="configured middleware init failed"):
         lead_agent_module.build_middlewares(
@@ -1032,7 +1032,7 @@ def test_build_middlewares_rejects_missing_configured_extension_module(monkeypat
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **_kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     with pytest.raises(ImportError, match="Could not import module definitely_missing_pkg.middlewares_typo"):
         lead_agent_module.build_middlewares(

@@ -247,15 +247,24 @@ def test_middleware_ordering_guard_moved_to_declarative_constraints(monkeypatch:
     from deerflow.config.tool_progress_config import ToolProgressConfig
 
     _stub_runtime_middleware_imports(monkeypatch)
+
     # Override the SandboxAuditMiddleware stub with a real ToolErrorHandlingMiddleware so it
     # becomes the FIRST ToolErrorHandlingMiddleware in the list, appearing before
     # ToolProgressMiddleware — the same wrong-order condition the deleted guard used to catch.
+    # [argus patch #2] the builder passes command_max_chars= to
+    # SandboxAuditMiddleware; the substitute must tolerate it while remaining
+    # a real ToolErrorHandlingMiddleware for the wrong-order condition.
+    class _WrongOrderToolErrorHandlingMiddleware(ToolErrorHandlingMiddleware):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop("command_max_chars", None)
+            super().__init__(*args, **kwargs)
+
     monkeypatch.setitem(
         sys.modules,
         "deerflow.agents.middlewares.sandbox_audit_middleware",
         _module(
             "deerflow.agents.middlewares.sandbox_audit_middleware",
-            SandboxAuditMiddleware=ToolErrorHandlingMiddleware,
+            SandboxAuditMiddleware=_WrongOrderToolErrorHandlingMiddleware,
         ),
     )
 
