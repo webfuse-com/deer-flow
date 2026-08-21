@@ -1,4 +1,4 @@
-"""Telegram channel — connects via long-polling (no public IP needed)."""
+"""Telegram channel — long-polling by default, webhook mode when configured."""
 
 from __future__ import annotations
 
@@ -53,16 +53,22 @@ def _load_telegram_input_file(path, filename: str):
 
 
 class TelegramChannel(Channel):
-    """Telegram bot channel using long-polling.
+    """Telegram bot channel using long-polling or webhook push.
 
     Configuration keys (in ``config.yaml`` under ``channels.telegram``):
         - ``bot_token``: Telegram Bot API token (from @BotFather).
         - ``allowed_users``: (optional) List of allowed Telegram user IDs. Empty = allow all.
+        - ``webhook`` / ``webhook_mode``: either key enables webhook push
+          (``POST /webhooks/telegram``) instead of long-polling. Atlas stacks
+          ship ``webhook: true``.
+        - ``webhook_secret``: optional ``X-Telegram-Bot-Api-Secret-Token``.
+        - ``webhook_url``: optional public HTTPS URL (informational; setWebhook
+          is provisioned out of band).
     """
 
     def __init__(self, bus: MessageBus, config: dict[str, Any]) -> None:
         super().__init__(name="telegram", bus=bus, config=config)
-        self._webhook_mode = bool(config.get("webhook_mode", False))
+        self._webhook_mode = bool(config.get("webhook") or config.get("webhook_mode", False))
         self._webhook_secret = config.get("webhook_secret")
         self._webhook_url = config.get("webhook_url")
         self._application = None
@@ -189,6 +195,12 @@ class TelegramChannel(Channel):
                 if worker_thread is not None and worker_thread.is_alive():
                     logger.warning("[Telegram] polling thread is still exiting after bounded shutdown")
                 self._thread = None
+                if self._webhook_mode and self._application is not None:
+                    try:
+                        await self._application.stop()
+                        await self._application.shutdown()
+                    except Exception:
+                        logger.exception("Error during Telegram webhook shutdown")
                 self._application = None
         logger.info("Telegram channel stopped")
 
@@ -827,6 +839,16 @@ class TelegramChannel(Channel):
         return normalized
 
     async def _register_webhook_route(self) -> None:
+        """Register POST /webhooks/telegram and start the PTB application.
+
+        Webhook mode has no polling thread, so initialize/start must happen
+        here. Skipping them leaves ``bot.get_file`` uninitialized and inbound
+        photo downloads fail with NetworkError while captions still arrive.
+        """
+        if self._application is not None:
+            await self._application.initialize()
+            await self._application.start()
+
         from app.gateway.app import app as gateway_app
 
         telegram_channel = self

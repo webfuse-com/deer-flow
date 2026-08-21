@@ -236,7 +236,11 @@ carry budget ledger.
   searching/working from the langgraph stream; suppressed on unattended
   turns); stage sends are fire-and-forget so Telegram API latency never stalls
   the stream loop (#26a/#27); webhook mode `POST /webhooks/telegram` kills the
-  0-10s polling delay (#28, config-gated, polling stays as fallback); grafts
+  0-10s polling delay (#28, config-gated, polling stays as fallback; honor both
+  `webhook:` and `webhook_mode:`, and `initialize()`/`start()` the PTB app in
+  `_register_webhook_route` — without those, Atlas `webhook: true` falls through
+  to polling and inbound `get_file` raises NetworkError while captions still
+  arrive); grafts
   upstream's orthogonal v2 features (user-owned connection binding,
   bot-username stripping, /bootstrap + unknown-slash routing) and drops
   upstream's superseded text-stream helpers. The follow-up commit 152a3d5e
@@ -260,7 +264,10 @@ carry budget ledger.
 - Tests: `backend/tests/test_telegram_format.py` (NEW),
   `backend/tests/test_telegram_send.py` (NEW),
   `backend/tests/test_channels.py` (EDITED),
-  `backend/tests/test_csrf_middleware.py` (EDITED, webhook-exemption regression tests)
+  `backend/tests/test_csrf_middleware.py` (EDITED, webhook-exemption regression tests).
+  Carry-repair: `test_channels.py` TestTelegramInboundMessages locks `webhook:`
+  vs `webhook_mode:`, initialize/start on the webhook route, no polling thread
+  in webhook start, and gateway-loop `receive_file` when `_tg_loop` is unset.
 - Delete-when: upstream's Telegram channel gains HTML/markdown rendering, a
   removable working-indicator/stage hook, and per-channel formatter extension
   points; realistically never as a whole. The exit path is FORK-REVIEW lever
