@@ -68,6 +68,9 @@ the user prompt, not the system internals.) Combined with pinning skills +
 extensions empty and disabling memory/summarization
 (`tests/_replay_fixture.py::build_config_yaml`), a fixture replays the same across
 machines, days, prompt edits, and CI. Replaying needs **no API key**.
+The hermetic config explicitly enables follow-up suggestions because Layer 2
+asserts the fixture's recorded `suggest_agent` turn; it must not inherit the
+application default for that feature.
 
 A swallowed hash-miss keeps the SSE *event shapes* identical (the gateway wraps it
 into a normal assistant error message), so the Layer-1 golden can't catch a miss
