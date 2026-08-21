@@ -782,6 +782,7 @@ class SubagentExecutor:
             configured_tools,
             enabled=resolved_app_config.tool_search.enabled,
             exclude=getattr(resolved_app_config.tool_search, "exclude", None),
+            defer=getattr(resolved_app_config.tool_search, "defer", None),
         )
         final_tools.extend(late_tools)
         # Combine the system prompt and skill discovery metadata into a single

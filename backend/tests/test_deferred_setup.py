@@ -154,3 +154,84 @@ class TestExclude:
         assert ToolSearchConfig().exclude == []
         cfg = ToolSearchConfig.model_validate({"enabled": True, "exclude": ["pythia_*"]})
         assert cfg.exclude == ["pythia_*"]
+
+
+def _named_builtin_tool(name: str):
+    """An UN-tagged (builtin/config-shaped) tool with an explicit name."""
+
+    def _fn(text: str) -> str:
+        """Echo."""
+        return text
+
+    from langchain_core.tools import StructuredTool
+
+    return StructuredTool.from_function(_fn, name=name, description=f"{name} tool")
+
+
+class TestDeferPatterns:
+    """[argus patch #59] tool_search.defer: cold builtins defer like MCP tools."""
+
+    def test_deferred_builtin_leaves_bound_set(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        browser = _named_builtin_tool("browser_navigate")
+        bash = _named_builtin_tool("bash")
+        final, setup = assemble_deferred_tools([browser, bash], enabled=True, defer=["browser_*"])
+        assert "browser_navigate" in setup.deferred_names
+        assert "bash" not in setup.deferred_names
+        # deferred tools stay graph-registered for execution
+        assert any(t.name == "browser_navigate" for t in final)
+        assert any(t.name == "tool_search" for t in final)
+
+    def test_always_bind_wins_over_defer(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        browser = _named_builtin_tool("browser_navigate")
+        other = _named_builtin_tool("browser_click")
+        final, setup = assemble_deferred_tools(
+            [browser, other],
+            enabled=True,
+            exclude=["browser_navigate"],
+            defer=["browser_*"],
+        )
+        assert "browser_navigate" not in setup.deferred_names
+        assert "browser_click" in setup.deferred_names
+
+    def test_defer_applies_without_any_mcp_tools(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        browser = _named_builtin_tool("browser_navigate")
+        final, setup = assemble_deferred_tools([browser], enabled=True, defer=["browser_*"])
+        assert setup.deferred_names == frozenset({"browser_navigate"})
+
+    def test_unmatched_defer_defaults_keep_upstream_behavior(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        builtin = _named_builtin_tool("bash")
+        final, setup = assemble_deferred_tools([builtin], enabled=True, defer=[])
+        assert setup.tool_search_tool is None
+        assert setup.deferred_names == frozenset()
+
+    def test_fail_closed_guard_uses_same_predicate(self, monkeypatch):
+        """A deferrable builtin candidate with a broken setup must raise, not bind."""
+        import deerflow.tools.builtins.tool_search as ts
+
+        browser = _named_builtin_tool("browser_navigate")
+        monkeypatch.setattr(ts, "build_deferred_tool_setup", lambda *a, **k: ts.DeferredToolSetup(None, frozenset(), None))
+        try:
+            ts.assemble_deferred_tools([browser], enabled=True, defer=["browser_*"])
+        except RuntimeError as exc:
+            assert "fail-closed" in str(exc)
+        else:
+            raise AssertionError("expected fail-closed RuntimeError")
+
+    def test_config_defer_and_always_bind_alias(self):
+        from deerflow.config.tool_search_config import ToolSearchConfig
+
+        assert ToolSearchConfig().defer == []
+        cfg = ToolSearchConfig.model_validate({"enabled": True, "defer": ["browser_*"], "always_bind": ["pythia_*"]})
+        assert cfg.defer == ["browser_*"]
+        assert cfg.exclude == ["pythia_*"]
+        # the historical spelling keeps working
+        legacy = ToolSearchConfig.model_validate({"exclude": ["kb_query"]})
+        assert legacy.exclude == ["kb_query"]

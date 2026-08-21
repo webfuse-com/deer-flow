@@ -360,6 +360,11 @@ other tools. When `tool_search.enabled=true` defers MCP schemas, matching
 routing metadata can auto-promote up to `tool_search.auto_promote_top_k`
 deferred schemas before the model call.
 
+`tool_search.always_bind` (alias: `exclude`) pins matching tool names
+always-bound instead of deferred. `tool_search.defer` extends deferral to
+matching non-MCP (builtin/config) tools; those promote via explicit
+`tool_search` calls only, since routing metadata exists only for MCP servers.
+
 ### Environment Variables
 
 - `DEER_FLOW_CONFIG_PATH` - Override config.yaml location

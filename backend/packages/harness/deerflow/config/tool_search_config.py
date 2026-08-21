@@ -1,6 +1,6 @@
 """Configuration for deferred tool loading via tool_search."""
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 AUTO_PROMOTE_TOP_K_MIN = 1
 AUTO_PROMOTE_TOP_K_MAX = 5
@@ -19,6 +19,8 @@ class ToolSearchConfig(BaseModel):
     via the tool_search tool at runtime.
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     enabled: bool = Field(
         default=False,
         description="Defer tools and enable tool_search",
@@ -35,11 +37,28 @@ class ToolSearchConfig(BaseModel):
 
     exclude: list[str] = Field(
         default_factory=list,
+        validation_alias=AliasChoices("always_bind", "exclude"),
         description=(
             "fnmatch patterns of FINAL (server-prefixed) tool names that stay "
             "always-bound instead of deferred, e.g. ['pythia_*', 'kb_query']. "
             "For hot tools used in most turns, where the tool_search promotion "
-            "round-trip would cost more latency than their schemas cost context."
+            "round-trip would cost more latency than their schemas cost context. "
+            "``always_bind`` is the preferred spelling in config; ``exclude`` "
+            "(read as: exclude FROM deferral) is the historical alias."
+        ),
+    )
+
+    defer: list[str] = Field(
+        default_factory=list,
+        description=(
+            "fnmatch patterns of NON-MCP (builtin/config) tool names to defer "
+            "like MCP tools: name-only in <available-deferred-tools> until "
+            "promoted via tool_search, e.g. ['browser_*']. For cold tools whose "
+            "intrinsic latency dwarfs one promotion round-trip. always_bind/"
+            "exclude wins when both match a name. Note: keyword auto-promotion "
+            "only covers MCP tools (routing metadata comes from MCP server "
+            "config), so deferred builtins are promoted via explicit "
+            "tool_search calls only."
         ),
     )
 

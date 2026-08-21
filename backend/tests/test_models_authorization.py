@@ -687,7 +687,7 @@ def _stub_client_assembly(monkeypatch) -> dict[str, str]:
     )
     monkeypatch.setattr(
         "deerflow.client.assemble_deferred_tools",
-        lambda tools, *, enabled, exclude=(): ([], SimpleNamespace(deferred_names=frozenset())),  # noqa: ARG005
+        lambda tools, *, enabled, exclude=(), defer=(): ([], SimpleNamespace(deferred_names=frozenset())),  # noqa: ARG005
     )
     monkeypatch.setattr("deerflow.client.build_mcp_routing_middleware", lambda *args, **kwargs: None)  # noqa: ARG005
     monkeypatch.setattr("deerflow.client.get_mcp_routing_hints_prompt_section", lambda *args, **kwargs: "")  # noqa: ARG005
