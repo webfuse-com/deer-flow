@@ -9,7 +9,9 @@ import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
+import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ChatBox, useThreadChat } from "@/components/workspace/chats";
+import { QueuedMessages } from "@/components/workspace/chats/queued-messages";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
 import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
@@ -23,8 +25,6 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
-import { QueuedMessages } from "@/components/workspace/chats/queued-messages";
-import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import {
   SidecarProvider,
   SidecarTrigger,
@@ -56,6 +56,7 @@ import {
   selectContextUsage,
   threadTokenUsageToTokenUsage,
 } from "@/core/threads/token-usage";
+import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
@@ -78,9 +79,13 @@ export default function AgentChatPage() {
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
   const [localSettings, setLocalSettings] = useLocalSettings();
-  const { queue, enqueue: enqueueMessage, dequeue: dequeueMessage, remove: removeQueuedMessage, update: updateQueuedMessage } = useThreadQueue(
-    isNewThread || isMock ? undefined : threadId,
-  );
+  const {
+    queue,
+    enqueue: enqueueMessage,
+    dequeue: dequeueMessage,
+    remove: removeQueuedMessage,
+    update: updateQueuedMessage,
+  } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
@@ -149,9 +154,21 @@ export default function AgentChatPage() {
     if (thread.isLoading || isUploading) return;
     const nextItem = dequeueMessage();
     if (nextItem) {
-      sendMessage(threadId, nextItem.message, { agent_name }, nextItem.options);
+      void sendMessage(
+        threadId,
+        nextItem.message,
+        { agent_name },
+        nextItem.options,
+      );
     }
-  }, [agent_name, dequeueMessage, isUploading, sendMessage, thread.isLoading, threadId]);
+  }, [
+    agent_name,
+    dequeueMessage,
+    isUploading,
+    sendMessage,
+    thread.isLoading,
+    threadId,
+  ]);
 
   useEffect(() => {
     if (!thread.isLoading && !isUploading && queue.length > 0) {
@@ -327,6 +344,7 @@ export default function AgentChatPage() {
                   <ContextUsageBadge contextUsage={contextUsage} />
                 )}
                 <SidecarTrigger />
+                {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
                 <ArtifactTrigger />

@@ -1,6 +1,12 @@
 "use client";
 
-import { CheckIcon, Clock3Icon, PencilIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  Clock3Icon,
+  PencilIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -115,14 +121,17 @@ export function QueuedMessages({
           return (
             <div
               key={item.id}
-              className="bg-muted/60 border-border/60 hover:bg-muted/80 flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs transition-colors backdrop-blur-sm"
+              className="bg-muted/60 border-border/60 hover:bg-muted/80 flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs backdrop-blur-sm transition-colors"
             >
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 <span className="text-muted-foreground font-mono text-[10px]">
                   #{index + 1}
                 </span>
-                <span className="truncate font-normal text-foreground">
-                  {text || (fileCount > 0 ? `Attached ${fileCount} file(s)` : "Empty message")}
+                <span className="text-foreground truncate font-normal">
+                  {text ||
+                    (fileCount > 0
+                      ? `Attached ${fileCount} file(s)`
+                      : "Empty message")}
                 </span>
                 {fileCount > 0 && text && (
                   <span className="text-muted-foreground shrink-0 text-[10px]">

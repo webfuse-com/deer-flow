@@ -11,7 +11,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/core/i18n/hooks";
 import { MCPConfigRequestError } from "@/core/mcp/api";
-import { useMCPConfig, useEnableMCPServer, useSystemTools } from "@/core/mcp/hooks";
+import {
+  useMCPConfig,
+  useEnableMCPServer,
+  useSystemTools,
+} from "@/core/mcp/hooks";
 import type { MCPServerConfig, SystemTool } from "@/core/mcp/types";
 import { env } from "@/env";
 
@@ -33,11 +37,17 @@ export function ToolSettingsPage() {
         {/* System & Built-in Tools */}
         <div className="flex flex-col gap-3">
           <div>
-            <h4 className="text-sm font-semibold">{t.settings.tools.systemToolsTitle}</h4>
-            <p className="text-muted-foreground text-xs">{t.settings.tools.systemToolsDescription}</p>
+            <h4 className="text-sm font-semibold">
+              {t.settings.tools.systemToolsTitle}
+            </h4>
+            <p className="text-muted-foreground text-xs">
+              {t.settings.tools.systemToolsDescription}
+            </p>
           </div>
           {isSystemLoading ? (
-            <div className="text-muted-foreground text-sm">{t.common.loading}</div>
+            <div className="text-muted-foreground text-sm">
+              {t.common.loading}
+            </div>
           ) : (
             <SystemToolsList tools={systemTools} />
           )}
@@ -46,11 +56,17 @@ export function ToolSettingsPage() {
         {/* MCP Tool Servers */}
         <div className="flex flex-col gap-3">
           <div>
-            <h4 className="text-sm font-semibold">{t.settings.tools.mcpServersTitle}</h4>
-            <p className="text-muted-foreground text-xs">{t.settings.tools.mcpServersDescription}</p>
+            <h4 className="text-sm font-semibold">
+              {t.settings.tools.mcpServersTitle}
+            </h4>
+            <p className="text-muted-foreground text-xs">
+              {t.settings.tools.mcpServersDescription}
+            </p>
           </div>
           {isLoading ? (
-            <div className="text-muted-foreground text-sm">{t.common.loading}</div>
+            <div className="text-muted-foreground text-sm">
+              {t.common.loading}
+            </div>
           ) : adminRequired ? (
             <div className="text-muted-foreground text-sm">
               {t.settings.tools.adminRequired}
@@ -79,7 +95,10 @@ function SystemToolsList({ tools }: { tools: SystemTool[] }) {
             <ItemTitle>
               <div className="flex items-center gap-2">
                 <span className="font-mono text-xs">{tool.name}</span>
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-normal">
+                <Badge
+                  variant="secondary"
+                  className="px-1.5 py-0 text-[10px] font-normal"
+                >
                   {tool.group}
                 </Badge>
               </div>

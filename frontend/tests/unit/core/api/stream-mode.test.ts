@@ -2,12 +2,12 @@ import { expect, test } from "@rstest/core";
 
 import { sanitizeRunStreamOptions } from "@/core/api/stream-mode";
 
-test("rejects mixed supported and unsupported stream modes", () => {
-  expect(() =>
+test("drops unsupported modes when at least one requested mode is supported", () => {
+  expect(
     sanitizeRunStreamOptions({
       streamMode: ["values", "events", "tools"],
     }),
-  ).toThrow("Unsupported LangGraph stream mode(s): events, tools");
+  ).toEqual({ streamMode: ["values"] });
 });
 
 test("rejects payloads when every requested stream mode is unsupported", () => {

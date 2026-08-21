@@ -1,4 +1,4 @@
-const SUPPORTED_RUN_STREAM_MODES = new Set([
+const SUPPORTED_RUN_STREAM_MODES: ReadonlySet<unknown> = new Set([
   "values",
   "messages-tuple",
   "updates",
@@ -9,7 +9,6 @@ const SUPPORTED_RUN_STREAM_MODES = new Set([
 ] as const);
 
 const warnedUnsupportedStreamModes = new Set<string>();
-let warnedUnsupportedStreamResumable = false;
 
 export function warnUnsupportedStreamModes(
   modes: string[],
@@ -28,7 +27,7 @@ export function warnUnsupportedStreamModes(
   }
 
   warn(
-    `[deer-flow] Rejected unsupported LangGraph stream mode(s): ${unseenModes.join(", ")}`,
+    `[deer-flow] Dropped unsupported LangGraph stream mode(s): ${unseenModes.join(", ")}`,
   );
 }
 
@@ -37,21 +36,36 @@ export function sanitizeRunStreamOptions<T>(options: T): T {
     return options;
   }
 
-  const sanitizedOptions = { ...options } as Record<string, unknown>;
-  if ("streamResumable" in sanitizedOptions) {
-    delete sanitizedOptions.streamResumable;
+  let sanitizedOptions: T = options;
+  if ("streamResumable" in options) {
+    const withoutStreamResumable = { ...options };
+    delete withoutStreamResumable.streamResumable;
+    sanitizedOptions = withoutStreamResumable as T;
   }
 
-  if ("streamMode" in sanitizedOptions) {
-    const streamMode = sanitizedOptions.streamMode;
-    if (streamMode != null) {
-      const requestedModes = Array.isArray(streamMode) ? streamMode : [streamMode];
-      const validModes = requestedModes.filter((mode) =>
-        SUPPORTED_RUN_STREAM_MODES.has(mode as any),
-      );
-      sanitizedOptions.streamMode = validModes;
-    }
+  if (!("streamMode" in options) || options.streamMode == null) {
+    return sanitizedOptions;
   }
 
-  return sanitizedOptions as T;
+  const requestedModes = Array.isArray(options.streamMode)
+    ? options.streamMode
+    : [options.streamMode];
+  const unsupportedModes = requestedModes.filter(
+    (mode) => !SUPPORTED_RUN_STREAM_MODES.has(mode),
+  );
+  if (unsupportedModes.length === 0) {
+    return sanitizedOptions;
+  }
+
+  const validModes = requestedModes.filter((mode) =>
+    SUPPORTED_RUN_STREAM_MODES.has(mode),
+  );
+  if (validModes.length === 0) {
+    throw new Error(
+      `[deer-flow] Unsupported LangGraph stream mode(s): ${unsupportedModes.join(", ")}`,
+    );
+  }
+
+  warnUnsupportedStreamModes(unsupportedModes.map(String));
+  return { ...sanitizedOptions, streamMode: validModes };
 }

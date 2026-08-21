@@ -16,6 +16,10 @@ rs.mock("@/core/i18n/hooks", () => ({
         tools: {
           title: "Tools",
           description: "Manage MCP tools",
+          systemToolsTitle: "System tools",
+          systemToolsDescription: "Built-in tools",
+          mcpServersTitle: "MCP servers",
+          mcpServersDescription: "External tools",
           adminRequired: "Admin required",
           empty: "No tools",
         },
@@ -25,6 +29,11 @@ rs.mock("@/core/i18n/hooks", () => ({
 }));
 
 rs.mock("@/core/mcp/hooks", () => ({
+  useSystemTools: () => ({
+    tools: [],
+    isLoading: false,
+    error: null,
+  }),
   useMCPConfig: () => ({
     config: {
       mcp_servers: {

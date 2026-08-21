@@ -46,7 +46,7 @@ function writeStoredQueue(key: string, queue: QueuedMessage[]): void {
 
 export function useThreadQueue(threadId: string | undefined) {
   const auth = useAuth();
-  const userId = auth.user?.id || "anonymous";
+  const userId = auth.user?.id ?? "anonymous";
   const storageKey = threadId ? buildQueueKey(userId, threadId) : null;
 
   const [queue, setQueue] = useState<QueuedMessage[]>(() => {

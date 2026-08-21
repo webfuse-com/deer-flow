@@ -1177,7 +1177,10 @@ export function InputBox({
         : message;
 
       if (status === "streaming") {
-        if (!messageWithSlashSkill.text.trim() && messageWithSlashSkill.files.length === 0) {
+        if (
+          !messageWithSlashSkill.text.trim() &&
+          messageWithSlashSkill.files.length === 0
+        ) {
           handleStopStreaming();
           return;
         }
@@ -1188,7 +1191,8 @@ export function InputBox({
           const submitOptions: InputBoxSubmitOptions = {
             ...(quotes.length
               ? {
-                  additionalKwargs: buildReferenceMessageMetadata(quoteContexts),
+                  additionalKwargs:
+                    buildReferenceMessageMetadata(quoteContexts),
                   additionalInputMessages: [
                     buildHiddenConversationQuoteMessage({
                       contexts: quoteContexts,
@@ -2765,6 +2769,15 @@ export function InputBox({
       {!isWelcomeMode && (
         <div className="bg-background absolute right-0 -bottom-[17px] left-0 z-0 h-4"></div>
       )}
+
+      {isWelcomeMode &&
+        searchParams.get("mode") !== "skill" &&
+        !selectedSlashSkill &&
+        !showSkillSuggestions && (
+          <div className="flex items-center justify-center pt-2">
+            <SuggestionList onSelectPlaceholder={onSelectPlaceholder} />
+          </div>
+        )}
 
       <p
         className={cn(

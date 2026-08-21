@@ -825,7 +825,8 @@ export const zhCN: Translations = {
       systemToolsTitle: "系统与内置工具",
       systemToolsDescription: "由运行环境和平台插件提供的核心工具能力。",
       mcpServersTitle: "MCP 工具服务",
-      mcpServersDescription: "提供外部生态集成的 Model Context Protocol 工具服务。",
+      mcpServersDescription:
+        "提供外部生态集成的 Model Context Protocol 工具服务。",
       adminRequired: "需要管理员权限才能管理 MCP 工具。",
       empty: "暂无 MCP 工具。",
     },

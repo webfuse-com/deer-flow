@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
+import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
 import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
@@ -20,8 +21,6 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
-import { QueuedMessages } from "./queued-messages";
-import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import {
   SidecarProvider,
   SidecarTrigger,
@@ -54,11 +53,13 @@ import {
   selectContextUsage,
   threadTokenUsageToTokenUsage,
 } from "@/core/threads/token-usage";
+import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 import { ChatBox } from "./chat-box";
+import { QueuedMessages } from "./queued-messages";
 import { useSpecificChatMode } from "./use-chat-mode";
 import { useThreadChat } from "./use-thread-chat";
 
@@ -75,9 +76,13 @@ export default function ChatPage() {
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
   const [localSettings, setLocalSettings] = useLocalSettings();
-  const { queue, enqueue: enqueueMessage, dequeue: dequeueMessage, remove: removeQueuedMessage, update: updateQueuedMessage } = useThreadQueue(
-    isNewThread || isMock ? undefined : threadId,
-  );
+  const {
+    queue,
+    enqueue: enqueueMessage,
+    dequeue: dequeueMessage,
+    remove: removeQueuedMessage,
+    update: updateQueuedMessage,
+  } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
@@ -159,7 +164,7 @@ export default function ChatPage() {
     if (thread.isLoading || isUploading) return;
     const nextItem = dequeueMessage();
     if (nextItem) {
-      sendMessage(threadId, nextItem.message, undefined, nextItem.options);
+      void sendMessage(threadId, nextItem.message, undefined, nextItem.options);
     }
   }, [dequeueMessage, isUploading, sendMessage, thread.isLoading, threadId]);
 
@@ -333,6 +338,7 @@ export default function ChatPage() {
                   <ContextUsageBadge contextUsage={contextUsage} />
                 )}
                 <SidecarTrigger />
+                {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
                 <ArtifactTrigger />
