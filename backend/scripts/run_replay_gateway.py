@@ -1,5 +1,6 @@
 """Start a hermetic *replay* gateway for the full-stack (Layer 2) e2e.
 
+
 Builds an ephemeral config that points the model at ``ReplayChatModel`` + a
 recorded fixture, then runs uvicorn — no API key, deterministic. Used as a
 Playwright ``webServer`` (see ``frontend/playwright.real-backend.config.ts``) and
