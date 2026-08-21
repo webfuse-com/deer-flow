@@ -529,11 +529,11 @@ def test_build_run_config_context_path_still_sets_configurable_thread_id(_stub_a
 
 
 def test_build_run_config_clamps_excessive_recursion_limit(_stub_app_config):
-    """A huge client recursion_limit is capped at the configured ceiling (default 1000)."""
+    """A huge client recursion_limit is capped at the configured ceiling (default 10000)."""
     from app.gateway.services import build_run_config
 
     config = build_run_config("thread-1", {"recursion_limit": 100_000_000}, None)
-    assert config["recursion_limit"] == 1000
+    assert config["recursion_limit"] == 10000
 
 
 def test_build_run_config_ceiling_is_configurable(_stub_app_config):
@@ -553,8 +553,8 @@ def test_build_run_config_allows_recursion_limit_at_ceiling(_stub_app_config):
     """A value at the configured ceiling is preserved unchanged."""
     from app.gateway.services import build_run_config
 
-    config = build_run_config("thread-1", {"recursion_limit": 1000}, None)
-    assert config["recursion_limit"] == 1000
+    config = build_run_config("thread-1", {"recursion_limit": 10000}, None)
+    assert config["recursion_limit"] == 10000
 
 
 def test_build_run_config_preserves_reasonable_recursion_limit(_stub_app_config):
@@ -583,7 +583,7 @@ def test_build_run_config_clamps_recursion_limit_with_context(_stub_app_config):
         {"context": {"thread_id": "thread-1"}, "recursion_limit": 999_999},
         None,
     )
-    assert config["recursion_limit"] == 1000
+    assert config["recursion_limit"] == 10000
 
 
 # ---------------------------------------------------------------------------

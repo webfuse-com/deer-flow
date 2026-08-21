@@ -220,7 +220,7 @@ class AppConfig(BaseModel):
         ),
     )
     max_recursion_limit: int = Field(
-        default=1000,
+        default=10000,
         ge=1,
         description="Hard server-side ceiling for a client-supplied run recursion_limit. Client values above this are clamped; prevents runaway LangGraph super-steps (LLM cost / DoS).",
     )

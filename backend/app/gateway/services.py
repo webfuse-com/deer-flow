@@ -521,7 +521,7 @@ def resolve_agent_factory(assistant_id: str | None):
 # server default when the client sends nothing; the hard ceiling any client
 # value is clamped to is configurable via ``AppConfig.max_recursion_limit``.
 _DEFAULT_RECURSION_LIMIT = 100
-_DEFAULT_MAX_RECURSION_LIMIT = 1000
+_DEFAULT_MAX_RECURSION_LIMIT = 10000
 
 
 def _resolve_max_recursion_limit() -> int:

@@ -2214,7 +2214,7 @@ export function useThreadStream({
             // subagent's values/messages into the thread view (#4399).
             ...WEB_THREAD_SUBMIT_STREAM_OPTIONS,
             config: {
-              recursion_limit: 1000,
+              recursion_limit: 10000,
             },
             context: {
               ...extraContext,
@@ -2336,7 +2336,7 @@ export function useThreadStream({
           // No streamSubgraphs — same contract as the main submit path (#4399).
           ...WEB_THREAD_SUBMIT_STREAM_OPTIONS,
           config: {
-            recursion_limit: 1000,
+            recursion_limit: 10000,
           },
           context: {
             ...context,

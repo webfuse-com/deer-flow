@@ -76,6 +76,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#58](#patch-58) | Honor agent-source tool policy at runtime | argus-edit | this PR |
 | [#59](#patch-59) | WebUI `onDisconnect: continue` | generic-upstreamable | this PR |
 | [#60](#patch-60) | `tool_search.defer` — latency-tiered deferral for builtin tools (+`always_bind` alias) | config-expressed | this PR |
+| [#61](#patch-61) | WebUI and server default `max_recursion_limit` bump to 10000 | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -569,6 +570,27 @@ carry budget ledger.
 - Upstream status: clean generic PR candidate (nothing argus-specific in the
   mechanism; the argus-specific part is the `browser_*` value in stack
   config).
+
+## Patch #61
+
+**Patch #61 - WebUI and server default `max_recursion_limit` bump to 10000**
+
+- Class: generic-upstreamable
+- Intent: LangGraph counts every middleware Pregel hop as a super-step (~17 hops
+  per model turn with lead middlewares attached). A normal coding turn with ~59
+  LLM calls hits the 1000 super-step ceiling and terminates with `GraphRecursionError`.
+  Bumps WebUI client `recursion_limit` from 1000 to 10000 (submit and regenerate)
+  and raises the Gateway clamp ceiling `max_recursion_limit` default from 1000 to 10000,
+  providing ~580 LLM turns of headroom while loop detection and token budgets continue
+  to catch real runaway loops.
+- Files: `frontend/src/core/threads/hooks.ts` (EDITED: 1000 -> 10000 x2),
+  `config.example.yaml` (EDITED: 1000 -> 10000),
+  `backend/packages/harness/deerflow/config/app_config.py` (EDITED: default 1000 -> 10000),
+  `backend/app/gateway/services.py` (EDITED: _DEFAULT_MAX_RECURSION_LIMIT 1000 -> 10000),
+  `backend/tests/test_gateway_services.py` (EDITED: test assertions updated).
+- Tests: `backend/tests/test_gateway_services.py` (run-config clamping tests updated).
+- Delete-when: upstream raises `max_recursion_limit` / frontend `recursion_limit` to 10000 or counts turns instead of graph nodes.
+- Upstream status: clean generic PR candidate.
 
 ## Patch #20
 

@@ -89,7 +89,7 @@ token_budget:
 # runaway API cost / DoS. Invalid or non-positive client values fall back to
 # the server default of 100. Raise this only if you legitimately run very
 # deeply nested subagent graphs.
-max_recursion_limit: 1000
+max_recursion_limit: 10000
 
 
 # ============================================================================
