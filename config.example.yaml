@@ -1031,6 +1031,18 @@ tool_search:
   # matching deferred MCP tool schemas before a model call. This is the maximum
   # number of matched schemas promoted per model call. Valid range: 1..5.
   auto_promote_top_k: 3
+  # fnmatch patterns of FINAL (server-prefixed) tool names pinned always-bound
+  # instead of deferred — hot tools whose promotion round-trip would cost more
+  # latency than their schemas cost context. `exclude` (read: exclude FROM
+  # deferral) is the historical alias for the same field.
+  # always_bind: ["pythia_*", "calendar_list_events"]
+  # [argus patch #59] fnmatch patterns of NON-MCP (builtin/config) tool names
+  # to defer like MCP tools: name-only in <available-deferred-tools> until
+  # promoted via an explicit tool_search call. For cold tools whose intrinsic
+  # latency dwarfs one promotion round-trip (e.g. spinning up a browser).
+  # always_bind/exclude wins when both match. Keyword auto-promotion does NOT
+  # cover deferred builtins (routing metadata exists only for MCP servers).
+  # defer: ["browser_*"]
 
 # ============================================================================
 # Tool Authorization Policy [argus patch #53]

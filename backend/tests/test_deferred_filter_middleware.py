@@ -85,3 +85,37 @@ def test_no_block_for_non_deferred_call():
         state = {}
 
     assert _mw()._blocked_tool_message(_TCReq()) is None
+
+
+class TestDeferredBuiltins:
+    """[argus patch #59] the filter is name-based: deferred BUILTINS (no MCP
+    tag) hide, promote, and block exactly like deferred MCP tools."""
+
+    @staticmethod
+    def _browser_tools():
+        @as_tool
+        def browser_navigate(url: str) -> str:
+            "navigate"
+            return url
+
+        @as_tool
+        def browser_click(selector: str) -> str:
+            "click"
+            return selector
+
+        return browser_navigate, browser_click
+
+    def test_deferred_builtin_schema_hidden_until_promoted(self):
+        nav, click = self._browser_tools()
+        mw = DeferredToolFilterMiddleware(frozenset({"browser_navigate", "browser_click"}), "h1")
+        req = _Req([nav, click, active_c], {})
+        out = mw._filter_tools(req)
+        assert [t.name for t in out.overridden] == ["active_c"]
+
+    def test_promoted_builtin_schema_restored(self):
+        nav, click = self._browser_tools()
+        mw = DeferredToolFilterMiddleware(frozenset({"browser_navigate", "browser_click"}), "h1")
+        state = {"promoted": {"catalog_hash": "h1", "names": ["browser_navigate"]}}
+        req = _Req([nav, click, active_c], state)
+        out = mw._filter_tools(req)
+        assert sorted(t.name for t in out.overridden) == ["active_c", "browser_navigate"]

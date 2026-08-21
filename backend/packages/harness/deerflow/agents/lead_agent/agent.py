@@ -932,7 +932,12 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         )
         configured_tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
         late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
-        final_tools, setup = assemble_deferred_tools(configured_tools, enabled=resolved_app_config.tool_search.enabled, exclude=getattr(resolved_app_config.tool_search, "exclude", ()))
+        final_tools, setup = assemble_deferred_tools(
+            configured_tools,
+            enabled=resolved_app_config.tool_search.enabled,
+            exclude=getattr(resolved_app_config.tool_search, "exclude", ()),
+            defer=getattr(resolved_app_config.tool_search, "defer", ()),
+        )
         final_tools.extend(late_tools)
         mcp_routing_middleware = build_mcp_routing_middleware(
             final_tools,
@@ -1019,7 +1024,12 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     )
     configured_tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
-    final_tools, setup = assemble_deferred_tools(configured_tools, enabled=resolved_app_config.tool_search.enabled, exclude=getattr(resolved_app_config.tool_search, "exclude", ()))
+    final_tools, setup = assemble_deferred_tools(
+        configured_tools,
+        enabled=resolved_app_config.tool_search.enabled,
+        exclude=getattr(resolved_app_config.tool_search, "exclude", ()),
+        defer=getattr(resolved_app_config.tool_search, "defer", ()),
+    )
     final_tools.extend(late_tools)
     directly_bound_names = frozenset(t.name for t in final_tools if t.name not in setup.deferred_names)
     mcp_routing_middleware = build_mcp_routing_middleware(

@@ -276,6 +276,16 @@ def test_acp_tool_without_mcp_metadata_is_not_indexed():
     assert build_mcp_routing_middleware(final_tools, setup, top_k=3) is None
 
 
+def test_deferred_builtin_is_not_auto_promoted():
+    """[argus patch #59] documents the limitation: a builtin deferred via
+    tool_search.defer carries no MCP routing metadata, so keyword auto-promotion
+    never covers it — promotion is via explicit tool_search calls only."""
+    final_tools, setup = assemble_deferred_tools([active_tool], enabled=True, defer=[active_tool.name])
+
+    assert setup.deferred_names == frozenset({active_tool.name})
+    assert build_mcp_routing_middleware(final_tools, setup, top_k=3) is None
+
+
 def test_privacy_no_trace_metadata_or_info_logs(caplog):
     caplog.set_level("INFO")
     middleware = McpRoutingMiddleware(

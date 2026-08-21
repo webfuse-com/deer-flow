@@ -69,11 +69,13 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
 | [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
+| [#46](#patch-46) | `tool_search.exclude` — deferral opt-out for hot MCP tools (record back-filled) | config-expressed | 9803a9e3 |
 | [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
 | [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
 | [#57](#patch-57) | Policy-aware guidance for directly bound tools | generic-upstreamable | this PR |
 | [#58](#patch-58) | Honor agent-source tool policy at runtime | argus-edit | this PR |
 | [#59](#patch-59) | WebUI `onDisconnect: continue` | generic-upstreamable | this PR |
+| [#60](#patch-60) | `tool_search.defer` — latency-tiered deferral for builtin tools (+`always_bind` alias) | config-expressed | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -529,6 +531,44 @@ carry budget ledger.
 - Delete-when: upstream WebUI sends `onDisconnect: continue` on every submit
   path, or Gateway defaults to continue for stream clients.
 - Upstream status: clean generic PR candidate.
+
+
+## Patch #60
+
+**Patch #60 - `tool_search.defer`: latency-tiered deferral for builtin tools (+ `always_bind` alias)**
+
+- Class: config-expressed (default `defer: []` keeps upstream behavior
+  byte-identical; `always_bind` is a pure alias for `exclude`).
+- Intent: Deferral eligibility was hardcoded to MCP-tagged tools, so builtin
+  suites whose intrinsic latency dwarfs one promotion round-trip (the 9
+  `browser_*` tools: ~1.1K tokens of schema on every model call vs a
+  seconds-long browser spin-up) could not be moved to the discoverable path.
+  `tool_search.defer` (fnmatch on final names) extends deferral to non-MCP
+  tools: name-only in `<available-deferred-tools>` until promoted, still
+  graph-registered so in-process execution is unchanged. `always_bind`/
+  `exclude` wins over `defer` for the same name. Tagging the builtin objects
+  was rejected: they are process-global singletons and metadata mutation
+  leaks across agent builds. Documented limitation (pinned by test): keyword
+  auto-promotion never covers deferred builtins — routing metadata exists
+  only for MCP servers — so they promote via explicit `tool_search` only.
+- Files: `backend/packages/harness/deerflow/config/tool_search_config.py`
+  (EDITED: `defer` field, `always_bind` alias),
+  `backend/packages/harness/deerflow/tools/builtins/tool_search.py` (EDITED:
+  shared `_is_deferrable()` used by setup AND the fail-closed guard so the
+  two predicates cannot drift), the four assemble call sites
+  (`agents/lead_agent/agent.py` x2, `client.py`, `subagents/executor.py`),
+  `config.example.yaml`, `backend/README.md`.
+- Tests: `backend/tests/test_deferred_setup.py` (+TestDeferPatterns: match,
+  always_bind-beats-defer, defer-without-MCP, guard parity, config alias),
+  `backend/tests/test_deferred_filter_middleware.py` (+deferred-builtin
+  hide/promote), `backend/tests/test_mcp_routing_auto_promote.py`
+  (+deferred-builtin-is-NOT-auto-promoted pin).
+- Delete-when: upstream ships a source-agnostic deferral eligibility config
+  (or defers builtins natively); then only the values in project config
+  remain.
+- Upstream status: clean generic PR candidate (nothing argus-specific in the
+  mechanism; the argus-specific part is the `browser_*` value in stack
+  config).
 
 ## Patch #20
 
@@ -1056,6 +1096,25 @@ carry budget ledger.
   default and is upstreamable as a generic extension).
 
 ---
+
+
+## Patch #46
+
+**Patch #46 - `tool_search.exclude`: deferral opt-out for hot MCP tools** (record back-filled 2026-08-21; landed 2026-07-23 as 9803a9e3 — the #44-#52/#54 records were never written, this one is restored because #60 documents itself against it)
+
+- Class: config-expressed (default `exclude: []` = upstream behavior).
+- Intent: MCP tools defer to name-only by default; for hot most-turns tools
+  the `tool_search` promotion round-trip costs more latency than their
+  schemas cost context (measured ~13s/conversation on local-qwen,
+  2026-07-23). `exclude` (read: exclude FROM deferral; preferred alias since
+  #60: `always_bind`) pins matching final tool names always-bound.
+- Files: `backend/packages/harness/deerflow/config/tool_search_config.py`,
+  `backend/packages/harness/deerflow/tools/builtins/tool_search.py`, the
+  assemble call sites.
+- Tests: `backend/tests/test_deferred_setup.py` (TestExclude).
+- Delete-when: with #60's `always_bind` alias, when upstream ships an
+  equivalent pin list.
+- Upstream status: none sent; generic candidate together with #60.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

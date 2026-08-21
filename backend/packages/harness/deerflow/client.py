@@ -335,6 +335,7 @@ class DeerFlowClient:
             tools,
             enabled=self._app_config.tool_search.enabled,
             exclude=getattr(self._app_config.tool_search, "exclude", ()),
+            defer=getattr(self._app_config.tool_search, "defer", ()),
         )
         final_tools.extend(late_tools)
         mcp_routing_middleware = build_mcp_routing_middleware(
