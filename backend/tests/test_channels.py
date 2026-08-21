@@ -9171,6 +9171,195 @@ class TestTelegramInboundMessages:
 
         _run(go())
 
+    def test_webhook_true_enables_webhook_mode(self):
+        from app.channels.telegram import TelegramChannel
+
+        ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "test-token", "webhook": True})
+        assert ch._webhook_mode is True
+
+    def test_webhook_mode_true_still_enables_webhook_mode(self):
+        from app.channels.telegram import TelegramChannel
+
+        ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "test-token", "webhook_mode": True})
+        assert ch._webhook_mode is True
+
+    def test_neither_webhook_key_stays_on_polling(self):
+        from app.channels.telegram import TelegramChannel
+
+        ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "test-token"})
+        assert ch._webhook_mode is False
+
+    def test_register_webhook_route_initializes_and_starts_application(self, monkeypatch):
+        from app.channels.telegram import TelegramChannel
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token", "webhook": True})
+            initialize = AsyncMock()
+            start = AsyncMock()
+            ch._application = SimpleNamespace(initialize=initialize, start=start, bot=SimpleNamespace())
+            routes: list[str] = []
+            fake_gateway = SimpleNamespace()
+
+            def post(path):
+                def decorator(fn):
+                    routes.append(path)
+                    return fn
+
+                return decorator
+
+            fake_gateway.post = post
+            import app.gateway.app as gateway_app_mod
+
+            monkeypatch.setattr(gateway_app_mod, "app", fake_gateway)
+
+            await ch._register_webhook_route()
+
+            initialize.assert_awaited_once()
+            start.assert_awaited_once()
+            assert routes == ["/webhooks/telegram"]
+
+        _run(go())
+
+    def test_webhook_start_does_not_spawn_polling_thread(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        from app.channels.telegram import TelegramChannel
+
+        class FakeFilter:
+            def __init__(self, expr: str):
+                self.expr = expr
+
+            def __and__(self, other):
+                return FakeFilter(f"{self.expr}&{other.expr}")
+
+            def __or__(self, other):
+                return FakeFilter(f"{self.expr}|{other.expr}")
+
+            def __invert__(self):
+                return FakeFilter(f"~{self.expr}")
+
+        class FakeApplication:
+            def __init__(self):
+                self.handlers = []
+                self.initialize = AsyncMock()
+                self.start = AsyncMock()
+                self.stop = AsyncMock()
+                self.shutdown = AsyncMock()
+                self.bot = SimpleNamespace()
+
+            def add_handler(self, handler):
+                self.handlers.append(handler)
+
+        fake_app = FakeApplication()
+
+        class FakeApplicationBuilder:
+            def token(self, token):
+                assert token == "test-token"
+                return self
+
+            def build(self):
+                return fake_app
+
+        def fake_command_handler(command, callback):
+            return SimpleNamespace(kind="command", command=command, callback=callback)
+
+        def fake_message_handler(filter_expr, callback):
+            return SimpleNamespace(kind="message", filter_expr=filter_expr, callback=callback)
+
+        telegram_mod = ModuleType("telegram")
+        telegram_ext_mod = ModuleType("telegram.ext")
+        telegram_ext_mod.ApplicationBuilder = FakeApplicationBuilder
+        telegram_ext_mod.CommandHandler = fake_command_handler
+        telegram_ext_mod.MessageHandler = fake_message_handler
+        telegram_ext_mod.filters = SimpleNamespace(
+            TEXT=FakeFilter("TEXT"),
+            COMMAND=FakeFilter("COMMAND"),
+            PHOTO=FakeFilter("PHOTO"),
+            Document=SimpleNamespace(ALL=FakeFilter("DOCUMENT")),
+        )
+        telegram_mod.ext = telegram_ext_mod
+        monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
+        monkeypatch.setitem(sys.modules, "telegram.ext", telegram_ext_mod)
+
+        thread_starts: list[bool] = []
+
+        class FakeThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                thread_starts.append(True)
+
+            def join(self, timeout=None):
+                return None
+
+            def is_alive(self):
+                return False
+
+        monkeypatch.setattr("app.channels.telegram.threading.Thread", FakeThread)
+        fake_gateway = SimpleNamespace(post=lambda path: lambda fn: fn)
+        import app.gateway.app as gateway_app_mod
+
+        monkeypatch.setattr(gateway_app_mod, "app", fake_gateway)
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token", "webhook": True})
+            await ch.start()
+            try:
+                assert ch._webhook_mode is True
+                assert thread_starts == []
+                fake_app.initialize.assert_awaited_once()
+                fake_app.start.assert_awaited_once()
+            finally:
+                await ch.stop()
+            fake_app.stop.assert_awaited_once()
+            fake_app.shutdown.assert_awaited_once()
+
+        _run(go())
+
+    def test_receive_file_downloads_on_gateway_loop_when_webhook_has_no_tg_loop(self):
+        from app.channels.telegram import TelegramChannel
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token", "webhook": True})
+            gateway_loop = asyncio.get_running_loop()
+            seen: dict[str, asyncio.AbstractEventLoop] = {}
+
+            class LoopBoundFile:
+                file_size = 4
+
+                async def download_as_bytearray(self):
+                    seen["download"] = asyncio.get_running_loop()
+                    return bytearray(b"data")
+
+            async def get_file(file_id):
+                seen["get_file"] = asyncio.get_running_loop()
+                assert file_id == "photo-id"
+                return LoopBoundFile()
+
+            ch._application = SimpleNamespace(bot=SimpleNamespace(get_file=get_file))
+            msg = InboundMessage(
+                channel_name="telegram",
+                chat_id="100",
+                user_id="42",
+                text="caption",
+                files=[{"type": "image", "file_id": "photo-id", "filename": "telegram-photo-1.jpg", "mime_type": "image/jpeg", "size": 4}],
+            )
+
+            result = await ch.receive_file(msg, "thread-1")
+
+            assert seen["get_file"] is gateway_loop
+            assert seen["download"] is gateway_loop
+            assert result.files[0]["_content"] == b"data"
+            assert result.text == "caption"
+
+        _run(go())
+
     def test_private_chat_slash_skill_text_routes_as_chat(self):
         from app.channels.telegram import TelegramChannel
 

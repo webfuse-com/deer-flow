@@ -151,3 +151,5 @@ src/
 ## License
 
 MIT License. See [LICENSE](../LICENSE) for details.
+
+<!-- Path-filter bump: argus branch protection requires e2e-tests. -->

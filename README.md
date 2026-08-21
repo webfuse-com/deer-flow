@@ -510,6 +510,11 @@ channels:
     bot_token: $TELEGRAM_BOT_TOKEN
     # Optional: render final Markdown replies as Telegram Rich Messages.
     rich_messages: false
+    # Optional: webhook push instead of long-polling. Either `webhook:` or
+    # `webhook_mode:` enables POST /webhooks/telegram (Atlas stacks use
+    # `webhook: true`). Polling remains the default / fallback.
+    # webhook: true
+    # webhook_secret: $TELEGRAM_WEBHOOK_SECRET
     allowed_users: []               # empty = allow all
 
   wechat:
