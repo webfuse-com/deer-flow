@@ -51,6 +51,19 @@ test("strips streamResumable before sending run options to the API", () => {
   });
 });
 
+test("preserves onDisconnect so the Gateway can keep the run after SSE drop", () => {
+  const sanitized = sanitizeRunStreamOptions({
+    streamResumable: true,
+    onDisconnect: "continue" as const,
+    streamSubgraphs: true,
+  });
+
+  expect(sanitized).toEqual({
+    onDisconnect: "continue",
+    streamSubgraphs: true,
+  });
+});
+
 test("sanitizes streamResumable while preserving valid stream modes", () => {
   const sanitized = sanitizeRunStreamOptions({
     streamResumable: true,

@@ -39,6 +39,7 @@ import {
   patchThreadMetadata,
   type ThreadMetadataPatch,
 } from "./api";
+import { WEB_THREAD_SUBMIT_STREAM_OPTIONS } from "./submit-stream-options";
 import {
   buildThreadsSearchQueryOptions,
   DEFAULT_THREAD_SEARCH_PARAMS,
@@ -2211,7 +2212,7 @@ export function useThreadStream({
             // No streamSubgraphs: subtask progress arrives via root-namespace
             // custom events, while subgraph frames would leak a delegated
             // subagent's values/messages into the thread view (#4399).
-            streamResumable: true,
+            ...WEB_THREAD_SUBMIT_STREAM_OPTIONS,
             config: {
               recursion_limit: 1000,
             },
@@ -2333,7 +2334,7 @@ export function useThreadStream({
           checkpoint: prepared.checkpoint,
           metadata: prepared.metadata,
           // No streamSubgraphs — same contract as the main submit path (#4399).
-          streamResumable: true,
+          ...WEB_THREAD_SUBMIT_STREAM_OPTIONS,
           config: {
             recursion_limit: 1000,
           },

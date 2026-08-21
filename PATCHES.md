@@ -73,6 +73,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
 | [#57](#patch-57) | Policy-aware guidance for directly bound tools | generic-upstreamable | this PR |
 | [#58](#patch-58) | Honor agent-source tool policy at runtime | argus-edit | this PR |
+| [#59](#patch-59) | WebUI `onDisconnect: continue` | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -505,6 +506,29 @@ carry budget ledger.
 - Delete-when: upstream supports an agent-level tool-policy source with the same
   tri-state and run-scoped schedule semantics.
 - Upstream status: none; the policy source is Argus-specific configuration.
+
+## Patch #59
+
+**Patch #59 - WebUI `onDisconnect: continue`**
+
+- Class: generic-upstreamable
+- Intent: Web `thread.submit` never sent `onDisconnect`, so Gateway used
+  `on_disconnect=cancel`. Unmounting `useStream` (thread switch, tab close)
+  dropped SSE and `sse_consumer` cancelled the worker. Both submit paths now
+  send `WEB_THREAD_SUBMIT_STREAM_OPTIONS` (`streamResumable: true`,
+  `onDisconnect: "continue"`). Stop still `thread.stop()` → cancel. Gateway
+  HTTP default stays `cancel`. Sandbox `idle_timeout` is independent.
+- Files: `frontend/src/core/threads/submit-stream-options.ts` (NEW),
+  `frontend/src/core/threads/hooks.ts` (EDITED),
+  `frontend/src/AGENTS.md` (EDITED),
+  `backend/app/gateway/AGENTS.md` (EDITED),
+  `backend/docs/STREAMING.md` (EDITED)
+- Tests: `frontend/tests/unit/core/threads/submit-stream-options.test.ts` (NEW),
+  `frontend/tests/unit/core/api/stream-mode.test.ts` (EDITED; sanitizer must
+  keep `onDisconnect` while still stripping `streamResumable`)
+- Delete-when: upstream WebUI sends `onDisconnect: continue` on every submit
+  path, or Gateway defaults to continue for stream clients.
+- Upstream status: clean generic PR candidate.
 
 ## Patch #20
 
