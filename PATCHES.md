@@ -77,6 +77,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#59](#patch-59) | WebUI `onDisconnect: continue` | generic-upstreamable | this PR |
 | [#60](#patch-60) | `tool_search.defer` — latency-tiered deferral for builtin tools (+`always_bind` alias) | config-expressed | this PR |
 | [#61](#patch-61) | WebUI and server default `max_recursion_limit` bump to 10000 | generic-upstreamable | this PR |
+| [#62](#patch-62) | Telegram voice-note inbound via overlay Deepgram STT | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -591,6 +592,26 @@ carry budget ledger.
 - Tests: `backend/tests/test_gateway_services.py` (run-config clamping tests updated).
 - Delete-when: upstream raises `max_recursion_limit` / frontend `recursion_limit` to 10000 or counts turns instead of graph nodes.
 - Upstream status: clean generic PR candidate.
+
+## Patch #62
+
+**Patch #62 - Telegram voice notes transcribed via overlay Deepgram STT**
+
+- Class: argus-additive
+- Intent: Telegram `message.voice` updates matched no handler, so the webhook
+  200'd and the note was dropped. Register `filters.VOICE`, download via the
+  existing `get_file` path, and soft-import `argus_telegram_stt.transcribe_voice`
+  (Argus overlay, Deepgram nova-3). Success publishes inbound **text only**
+  (`[Voice note transcript]\n…`); missing overlay, download failure, or STT
+  error replies in chat and does **not** start an agent turn. Not an overlay
+  `@tool` — tools never see Telegram updates.
+- Files: `backend/app/channels/telegram.py` (EDITED: VOICE handler +
+  `_publish_inbound_from_update` helper), `backend/app/channels/AGENTS.md`
+- Tests: `backend/tests/test_channels.py` (`TestTelegramInboundMessages`
+  voice cases)
+- Delete-when: upstream Telegram adapter accepts voice notes and exposes an
+  equivalent STT hook, or Argus stops using Telegram voice.
+- Upstream status: not upstreamable as-is (Argus overlay import).
 
 ## Patch #20
 

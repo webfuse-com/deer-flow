@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import tempfile
 import threading
 from concurrent.futures import Future
@@ -8491,6 +8492,7 @@ class TestTelegramSendRetry:
             COMMAND=FakeFilter("COMMAND"),
             PHOTO=FakeFilter("PHOTO"),
             Document=SimpleNamespace(ALL=FakeFilter("DOCUMENT")),
+            VOICE=FakeFilter("VOICE"),
         )
         telegram_mod.ext = telegram_ext_mod
         monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
@@ -8626,6 +8628,7 @@ def _make_telegram_update(
     caption: str | None = None,
     photo: list[SimpleNamespace] | None = None,
     document: SimpleNamespace | None = None,
+    voice: SimpleNamespace | None = None,
 ):
     """Build a minimal mock telegram Update for testing _on_text / _cmd_generic."""
     update = MagicMock()
@@ -8636,7 +8639,9 @@ def _make_telegram_update(
     update.message.caption = caption
     update.message.photo = photo or []
     update.message.document = document
+    update.message.voice = voice
     update.message.message_id = message_id
+    update.message.reply_text = AsyncMock()
     if reply_to_message_id is not None:
         reply_msg = MagicMock()
         reply_msg.message_id = reply_to_message_id
@@ -8794,6 +8799,129 @@ class TestTelegramInboundMessages:
         files = TelegramChannel._extract_inbound_files(update.message)
 
         assert files[0]["filename"] == "telegram-document-44.bin"
+
+    def test_voice_without_stt_hook_replies_and_does_not_publish(self, monkeypatch):
+        from app.channels.telegram import TelegramChannel
+
+        monkeypatch.setitem(sys.modules, "argus_telegram_stt", None)
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_running_loop()
+            voice = SimpleNamespace(file_id="voice-id", mime_type="audio/ogg", file_size=12)
+            update = _make_telegram_update("private", message_id=50, text=None, voice=voice)
+
+            await ch._on_voice(update, None)
+
+            update.message.reply_text.assert_awaited_once_with(TelegramChannel._VOICE_TRANSCRIBE_FAILED)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(bus.get_inbound(), timeout=0.05)
+
+        _run(go())
+
+    def test_voice_stt_success_publishes_prefixed_text_without_files(self, monkeypatch):
+        from app.channels.telegram import TelegramChannel
+
+        async def fake_transcribe(audio, content_type="audio/ogg"):
+            assert audio == b"ogg-bytes"
+            assert content_type == "audio/ogg"
+            return "  hello from the car  "
+
+        stt_mod = SimpleNamespace(transcribe_voice=fake_transcribe)
+        monkeypatch.setitem(sys.modules, "argus_telegram_stt", stt_mod)
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_running_loop()
+            ch._download_voice_bytes = AsyncMock(return_value=b"ogg-bytes")
+            voice = SimpleNamespace(file_id="voice-id", mime_type="audio/ogg", file_size=9)
+            update = _make_telegram_update("private", message_id=51, text=None, voice=voice)
+
+            await ch._on_voice(update, None)
+
+            msg = await asyncio.wait_for(bus.get_inbound(), timeout=2)
+            assert msg.text == "[Voice note transcript]\nhello from the car"
+            assert msg.files == []
+            assert msg.topic_id is None
+            update.message.reply_text.assert_not_awaited()
+
+        _run(go())
+
+    def test_voice_stt_error_replies_and_does_not_publish(self, monkeypatch):
+        from app.channels.telegram import TelegramChannel
+
+        async def boom(audio, content_type="audio/ogg"):
+            raise RuntimeError("deepgram down")
+
+        monkeypatch.setitem(sys.modules, "argus_telegram_stt", SimpleNamespace(transcribe_voice=boom))
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_running_loop()
+            ch._download_voice_bytes = AsyncMock(return_value=b"ogg-bytes")
+            voice = SimpleNamespace(file_id="voice-id", mime_type="audio/ogg", file_size=9)
+            update = _make_telegram_update("private", message_id=52, text=None, voice=voice)
+
+            await ch._on_voice(update, None)
+
+            update.message.reply_text.assert_awaited_once_with(TelegramChannel._VOICE_TRANSCRIBE_FAILED)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(bus.get_inbound(), timeout=0.05)
+
+        _run(go())
+
+    def test_voice_empty_transcript_replies_and_does_not_publish(self, monkeypatch):
+        from app.channels.telegram import TelegramChannel
+
+        async def empty(audio, content_type="audio/ogg"):
+            return "   "
+
+        monkeypatch.setitem(sys.modules, "argus_telegram_stt", SimpleNamespace(transcribe_voice=empty))
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_running_loop()
+            ch._download_voice_bytes = AsyncMock(return_value=b"ogg-bytes")
+            voice = SimpleNamespace(file_id="voice-id", mime_type="audio/ogg", file_size=9)
+            update = _make_telegram_update("private", message_id=53, text=None, voice=voice)
+
+            await ch._on_voice(update, None)
+
+            update.message.reply_text.assert_awaited_once_with(TelegramChannel._VOICE_TRANSCRIBE_FAILED)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(bus.get_inbound(), timeout=0.05)
+
+        _run(go())
+
+    def test_voice_caption_is_prepended_to_transcript(self, monkeypatch):
+        from app.channels.telegram import TelegramChannel
+
+        async def fake_transcribe(audio, content_type="audio/ogg"):
+            return "the transcript"
+
+        monkeypatch.setitem(sys.modules, "argus_telegram_stt", SimpleNamespace(transcribe_voice=fake_transcribe))
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_running_loop()
+            ch._download_voice_bytes = AsyncMock(return_value=b"ogg-bytes")
+            voice = SimpleNamespace(file_id="voice-id", mime_type="audio/ogg", file_size=9)
+            update = _make_telegram_update(
+                "private", message_id=54, text=None, caption="  please file this  ", voice=voice
+            )
+
+            await ch._on_voice(update, None)
+
+            msg = await asyncio.wait_for(bus.get_inbound(), timeout=2)
+            assert msg.text == "please file this\n\n[Voice note transcript]\nthe transcript"
+            assert msg.files == []
+
+        _run(go())
 
     def test_receive_file_downloads_bytes_without_retaining_telegram_file_id(self):
         from app.channels.telegram import TelegramChannel
@@ -9278,6 +9406,7 @@ class TestTelegramInboundMessages:
             COMMAND=FakeFilter("COMMAND"),
             PHOTO=FakeFilter("PHOTO"),
             Document=SimpleNamespace(ALL=FakeFilter("DOCUMENT")),
+            VOICE=FakeFilter("VOICE"),
         )
         telegram_mod.ext = telegram_ext_mod
         monkeypatch.setitem(sys.modules, "telegram", telegram_mod)

@@ -141,6 +141,11 @@ class TelegramChannel(Channel):
         # photo/document updates do not match filters.TEXT.
         app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, self._on_text))
 
+        # Voice notes do not match TEXT/PHOTO/Document. Soft-imported overlay
+        # STT turns them into inbound text; missing hook or STT failure replies
+        # in chat and never starts an agent turn.
+        app.add_handler(MessageHandler(filters.VOICE, self._on_voice))
+
         self._application = app
 
         if self._webhook_mode:
@@ -1018,7 +1023,10 @@ class TelegramChannel(Channel):
             metadata={"message_id": msg_id},
         )
         inbound.topic_id = topic_id
+        await self._publish_inbound_from_update(update, inbound)
 
+    async def _publish_inbound_from_update(self, update, inbound: InboundMessage) -> None:
+        chat_id = str(update.effective_chat.id)
         if self._main_loop and self._main_loop.is_running():
             reservation = self._reserve_inbound(inbound)
             if reservation is None:
@@ -1044,3 +1052,100 @@ class TelegramChannel(Channel):
                 raise
         else:
             logger.warning("[Telegram] Main loop not running. Cannot publish inbound message.")
+
+    _VOICE_TRANSCRIBE_FAILED = "I couldn't transcribe that voice note. Please type it instead."
+
+    async def _reply_voice_error(self, update) -> None:
+        message = getattr(update, "message", None)
+        reply = getattr(message, "reply_text", None)
+        if not callable(reply):
+            logger.warning("[Telegram] cannot send voice-note error reply")
+            return
+        try:
+            await reply(self._VOICE_TRANSCRIBE_FAILED)
+        except Exception:
+            logger.exception("[Telegram] voice-note error reply failed")
+
+    async def _download_voice_bytes(self, file_id: str) -> bytes | None:
+        bot = self._application.bot if self._application is not None else None
+        if bot is None or not file_id:
+            return None
+        try:
+            resolved_size, content = await self._run_on_telegram_loop(self._download_inbound_file(bot, file_id))
+        except Exception as exc:
+            logger.error("[Telegram] failed to download voice note: %s", type(exc).__name__)
+            return None
+        if content is None:
+            return None
+        if len(content) > TELEGRAM_MAX_INBOUND_FILE_BYTES:
+            logger.warning("[Telegram] voice note exceeds 20 MB download limit")
+            return None
+        return bytes(content)
+
+    async def _on_voice(self, update, context) -> None:
+        """Transcribe a Telegram voice note and publish it as inbound text."""
+        del context
+        if not self._check_user(update.effective_user.id):
+            return
+
+        message = update.message
+        voice = getattr(message, "voice", None)
+        file_id = getattr(voice, "file_id", None) if voice is not None else None
+        if not isinstance(file_id, str) or not file_id:
+            await self._reply_voice_error(update)
+            return
+
+        declared_size = self._file_size(getattr(voice, "file_size", None))
+        if declared_size is not None and declared_size > TELEGRAM_MAX_INBOUND_FILE_BYTES:
+            logger.warning("[Telegram] voice note exceeds 20 MB download limit")
+            await self._reply_voice_error(update)
+            return
+
+        try:
+            from argus_telegram_stt import transcribe_voice
+        except ImportError:
+            logger.warning("[Telegram] voice STT overlay is not installed")
+            await self._reply_voice_error(update)
+            return
+
+        audio = await self._download_voice_bytes(file_id)
+        if not audio:
+            await self._reply_voice_error(update)
+            return
+
+        mime_type = getattr(voice, "mime_type", None)
+        content_type = mime_type if isinstance(mime_type, str) and mime_type else "audio/ogg"
+        try:
+            transcript = (await transcribe_voice(audio, content_type)).strip()
+        except Exception:
+            logger.exception("[Telegram] voice transcription failed")
+            await self._reply_voice_error(update)
+            return
+        if not transcript:
+            await self._reply_voice_error(update)
+            return
+
+        caption = getattr(message, "caption", None)
+        caption_text = caption.strip() if isinstance(caption, str) else ""
+        text = f"{caption_text}\n\n[Voice note transcript]\n{transcript}" if caption_text else f"[Voice note transcript]\n{transcript}"
+
+        chat_id = str(update.effective_chat.id)
+        user_id = str(update.effective_user.id)
+        msg_id = str(update.message.message_id)
+        if update.effective_chat.type == "private":
+            topic_id = None
+        else:
+            reply_to = update.message.reply_to_message
+            topic_id = str(reply_to.message_id) if reply_to else msg_id
+
+        inbound = self._make_inbound(
+            chat_id=chat_id,
+            user_id=user_id,
+            text=text,
+            msg_type=InboundMessageType.CHAT,
+            thread_ts=msg_id,
+            files=[],
+            metadata={"message_id": msg_id, "source": "telegram-voice"},
+        )
+        inbound.topic_id = topic_id
+        await self._publish_inbound_from_update(update, inbound)
