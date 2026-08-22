@@ -593,7 +593,7 @@ DINGTALK_CLIENT_SECRET=your_client_secret
 
 1. Chat with [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the HTTP API token.
 2. Set `TELEGRAM_BOT_TOKEN` in `.env` and enable the channel in `config.yaml`.
-3. The bot accepts inbound text, photos, and documents (with or without captions). Hosted Bot API downloads are limited to 20 MB per attachment.
+3. The bot accepts inbound text, photos, documents, and voice notes (with or without captions). Voice notes are transcribed by an optional overlay STT hook and injected as text; if that hook is missing or fails, the bot replies that it could not transcribe and does not start a turn. Hosted Bot API downloads are limited to 20 MB per attachment.
 
 **Slack Setup**
 
