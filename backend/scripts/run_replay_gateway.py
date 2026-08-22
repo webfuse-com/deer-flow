@@ -1,6 +1,5 @@
 """Start a hermetic *replay* gateway for the full-stack (Layer 2) e2e.
 
-
 Builds an ephemeral config that points the model at ``ReplayChatModel`` + a
 recorded fixture, then runs uvicorn — no API key, deterministic. Used as a
 Playwright ``webServer`` (see ``frontend/playwright.real-backend.config.ts``) and
@@ -10,6 +9,8 @@ runnable standalone for debugging::
 
 ``tests/`` is put on the path so the config ``use: replay_provider:ReplayChatModel``
 resolves; ``GATEWAY_CORS_ORIGINS`` is set so the frontend on :3000 can talk to it.
+
+Path-filter bump: argus branch protection requires Layer 1/2 replay checks.
 """
 
 from __future__ import annotations
