@@ -78,6 +78,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#60](#patch-60) | `tool_search.defer` — latency-tiered deferral for builtin tools (+`always_bind` alias) | config-expressed | this PR |
 | [#61](#patch-61) | WebUI and server default `max_recursion_limit` bump to 10000 | generic-upstreamable | this PR |
 | [#62](#patch-62) | Telegram voice-note inbound via overlay Deepgram STT | argus-additive | this PR |
+| [#63](#patch-63) | Summarization must not resurrect answered user turns (upstream backport) | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -612,6 +613,28 @@ carry budget ledger.
 - Delete-when: upstream Telegram adapter accepts voice notes and exposes an
   equivalent STT hook, or Argus stops using Telegram voice.
 - Upstream status: not upstreamable as-is (Argus overlay import).
+
+## Patch #63
+
+**Patch #63 - Summarization must not resurrect answered user turns**
+
+- Class: generic-upstreamable (already merged upstream — this is a backport)
+- Intent: `_preserve_dynamic_context_reminders` rescued the dynamic-context
+  ID-swap `__user` peer (the thread's FIRST user message) from every
+  compaction with no staleness check, so an old, long-answered question kept
+  masquerading as the live request while its answer was summarized away
+  (atlas-nicholas thread `bacbf501`, 2026-08-22: the lead agent broke off
+  mid-task and re-answered a 20-minutes-stale question twice). Now only
+  tagged reminders plus the LATEST real user message (locked by exact id in
+  `_prepare_compaction`) are rescued; stale `__user` peers compress like any
+  other history.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/summarization_middleware.py`,
+  `backend/tests/test_summarization_middleware.py`
+- Tests: `test_stale_user_peer_is_compressed_not_rescued`,
+  `test_latest_user_message_is_rescued` (from the upstream commit)
+- Delete-when: the fork base includes upstream `0a3c04eb` (bytedance PR
+  #4882, merged 2026-08-22) — drop this patch at the next base sync.
+- Upstream status: ALREADY UPSTREAM — verbatim cherry-pick of `0a3c04eb`.
 
 ## Patch #20
 
