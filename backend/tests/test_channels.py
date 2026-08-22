@@ -8911,9 +8911,7 @@ class TestTelegramInboundMessages:
             ch._main_loop = asyncio.get_running_loop()
             ch._download_voice_bytes = AsyncMock(return_value=b"ogg-bytes")
             voice = SimpleNamespace(file_id="voice-id", mime_type="audio/ogg", file_size=9)
-            update = _make_telegram_update(
-                "private", message_id=54, text=None, caption="  please file this  ", voice=voice
-            )
+            update = _make_telegram_update("private", message_id=54, text=None, caption="  please file this  ", voice=voice)
 
             await ch._on_voice(update, None)
 
