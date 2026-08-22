@@ -631,7 +631,9 @@ carry budget ledger.
 - Files: `backend/packages/harness/deerflow/agents/middlewares/summarization_middleware.py`,
   `backend/tests/test_summarization_middleware.py`
 - Tests: `test_stale_user_peer_is_compressed_not_rescued`,
-  `test_latest_user_message_is_rescued` (from the upstream commit)
+  `test_stale_user_peer_compressed_without_memory`,
+  `test_non_reminder_messages_with_double_underscore_id_not_rescued`,
+  `test_current_request_survives_and_stale_peer_compresses` (upstream commit)
 - Delete-when: the fork base includes upstream `0a3c04eb` (bytedance PR
   #4882, merged 2026-08-22) — drop this patch at the next base sync.
 - Upstream status: ALREADY UPSTREAM — verbatim cherry-pick of `0a3c04eb`.
