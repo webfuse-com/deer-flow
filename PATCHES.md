@@ -684,7 +684,9 @@ carry budget ledger.
   token dropdown, Browser trigger, and per-thread schedule shortcut, makes
   Export icon-only, and uses the brain marker for a running document title.
   Per-message and subtask token totals are no longer rendered, while all
-  telemetry collection/folding stays intact. Separately, Telegram stage emoji
+  telemetry collection/folding stays intact. The context badge stays hidden
+  until a real percentage is available instead of showing an inert icon-only
+  placeholder beside the other header actions. Separately, Telegram stage emoji
   operations for one chat now share an async lock covering send, tracked-state
   replacement, prior-message deletion, and final cleanup. MessageBus dispatch
   stays fire-and-forget, but simultaneous thinking/tool/writing tasks can no
