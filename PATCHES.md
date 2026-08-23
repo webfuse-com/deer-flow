@@ -588,28 +588,36 @@ carry budget ledger.
   three parallel audit dispatches firing correctly, ALL three still used
   `general-purpose` (which is `model: inherit`), so the entire "fleet" ran on
   the lead's local model instead of the configured per-role cloud models.
-  `refresh_task_tool_description()` now rewrites the description at
-  tool-assembly time (called from `get_available_tools` when subagent tools
-  are bound) to list the ACTUAL available types from the registry — built-ins
-  with compact notes, customs with their sanitized first-line description
-  and explicit model ("Runs on model glm-5.3." / "Uses your model." for
-  inherit). Custom descriptions are agent-editable, so they are reduced to
-  a single whitespace-collapsed line with angle brackets neutralized and a
-  240-char cap (same injection class as the `<subagent_system>` render site).
-  The delegation policy text, When-to-use / When-NOT-to-use / Costs sections,
-  and Args guidance are preserved verbatim; the `subagent_type` arg guidance
-  now says "Pick the specialist that matches the work". Idempotent per
-  app_config; string assignment is atomic under the GIL so concurrent
-  assemblies need no lock. Delegation-posture framing (patch #64) is
+  `task_tool_with_dynamic_types(app_config)` now returns an assembly-time
+  COPY of the task tool whose description lists the ACTUAL available types
+  from the registry — built-ins with compact notes, customs with their
+  sanitized first-line description and explicit model ("Runs on model
+  glm-5.3." / "Uses your model." for inherit). Called from
+  `get_available_tools` when subagent tools are bound: each SUBAGENT_TOOLS
+  entry that IS the task tool is swapped for the dynamic copy (other entries
+  pass through, preserving the SUBAGENT_TOOLS membership contract pinned by
+  test_tool_deduplication). The shared singleton and its static docstring
+  (pinned by the routing-policy contract tests) are never mutated — the
+  first cut mutated `task_tool.description` in place and CI caught
+  cross-test pollution. Custom descriptions are agent-editable, so they are
+  reduced to a single whitespace-collapsed line with angle brackets
+  neutralized and a 240-char cap (same injection class as the
+  `<subagent_system>` render site). The delegation policy text, When-to-use
+  / When-NOT-to-use / Costs sections, and Args guidance are preserved
+  verbatim; the `subagent_type` arg guidance now says "Pick the specialist
+  that matches the work". Delegation-posture framing (patch #64) is
   unchanged — this patch fixes TYPE routing, not the dispatch posture.
 - Files: `backend/packages/harness/deerflow/tools/builtins/task_tool.py`,
   `backend/packages/harness/deerflow/tools/tools.py`,
   `backend/tests/test_subagent_routing_prompt.py`
-- Tests: `test_refresh_lists_custom_types_with_models`,
-  `test_refresh_preserves_pinned_guidance_and_args`,
-  `test_refresh_without_types_leaves_description_untouched` (plus the
-  pre-existing `test_general_purpose_and_task_descriptions_match_routing_policy`,
-  which pins the preserved guidance phrases)
+- Tests: `test_dynamic_types_list_customs_with_models`,
+  `test_dynamic_types_preserve_pinned_guidance_and_args`,
+  `test_dynamic_types_without_registry_entries_returns_shared_tool` (plus
+  the pre-existing
+  `test_general_purpose_and_task_descriptions_match_routing_policy`, which
+  pins the static docstring, and
+  `test_tool_deduplication.py::test_subagent_async_only_tool_gets_sync_wrapper`,
+  which pins the SUBAGENT_TOOLS membership contract)
 - Delete-when: never (additive; upstreaming encouraged — natural completion
   of the dynamic agent_type_description pattern the system prompt already
   uses).

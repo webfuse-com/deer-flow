@@ -641,10 +641,11 @@ async def task_tool(
 # the most proximate guidance at call time (measured: atlas-nicholas thread
 # 446ee9ea, 2026-08-23 — three audit dispatches, all general-purpose, all
 # inheriting the lead's local model instead of the configured fleet). The
-# refresh function below rewrites the description at tool-assembly time to
-# list the ACTUAL available types from the registry, mirroring Codex's
+# factory below returns an assembly-time COPY of the tool whose description
+# lists the ACTUAL available types from the registry, mirroring Codex's
 # agent_type_description pattern that _build_available_subagents_description
-# already applies to the system prompt.
+# already applies to the system prompt. The shared singleton is never
+# mutated.
 
 _TASK_TOOL_DESCRIPTION_TEMPLATE = """Delegate a bounded task to a specialized subagent in its own context.
 
@@ -709,31 +710,29 @@ def _build_available_subagent_types_section(app_config: "AppConfig | None" = Non
         config = get_subagent_config(name, app_config=app_config)
         if config is None:
             continue
-        if name == "general-purpose":
-            note = "A capable agent for bounded exploration and action; uses your model and full toolset."
-        elif name == "bash":
-            note = "Command execution specialist for bounded shell workflows."
-        else:
-            note = _sanitize_type_description(config.description)
         model = getattr(config, "model", "inherit")
-        if model and model != "inherit":
-            note += f" Runs on model {model}."
+        model_note = f" Runs on model {model}." if (model and model != "inherit") else " Uses your model."
+        if name == "general-purpose":
+            note = "A capable agent for bounded exploration and action." + model_note
+        elif name == "bash":
+            note = "Command execution specialist for bounded shell workflows. Routine git, build, test, or deploy operations are not sufficient reason to delegate." + model_note
         else:
-            note += " Uses your model."
+            note = _sanitize_type_description(config.description) + model_note
         lines.append(f"- **{name}**: {note}")
     return "\n".join(lines)
 
 
-def refresh_task_tool_description(app_config: "AppConfig | None" = None) -> None:
-    """Rewrite the task tool description to list the actual available types.
+def task_tool_with_dynamic_types(app_config: "AppConfig | None" = None):
+    """Return a task tool whose description lists the actual available types.
 
-    Called at tool-assembly time when subagent tools are bound. Idempotent for
-    a given app_config; concurrent assemblies write the same string, and
-    Python string assignment is atomic under the GIL, so no locking is needed.
-    When the registry yields nothing (should not happen on a subagent-enabled
-    path) the static docstring is left untouched.
+    Returns a COPY of the shared task tool with the refreshed description;
+    the module-level singleton (and its static docstring, pinned by the
+    routing-policy contract tests) is never mutated, so concurrent
+    assemblies and test suites cannot observe each other's registry state.
+    When the registry yields nothing (should not happen on a
+    subagent-enabled path) the shared tool is returned unchanged.
     """
     section = _build_available_subagent_types_section(app_config)
     if not section:
-        return
-    task_tool.description = _TASK_TOOL_DESCRIPTION_TEMPLATE.format(available_types=section)
+        return task_tool
+    return task_tool.model_copy(update={"description": _TASK_TOOL_DESCRIPTION_TEMPLATE.format(available_types=section)})

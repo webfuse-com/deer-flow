@@ -216,15 +216,12 @@ def _make_fleet_config():
     return SimpleNamespace(subagents=SubagentsAppConfig(custom_agents=customs))
 
 
-def test_refresh_lists_custom_types_with_models(monkeypatch) -> None:
-    from deerflow.tools.builtins.task_tool import refresh_task_tool_description, task_tool
-
-    # Register the current description with monkeypatch so teardown restores
-    # it after refresh_task_tool_description mutates the singleton.
-    monkeypatch.setattr(task_tool, "description", task_tool.description)
-    cfg = _make_fleet_config()
+def test_dynamic_types_list_customs_with_models(monkeypatch) -> None:
     import sys
 
+    from deerflow.tools.builtins.task_tool import task_tool, task_tool_with_dynamic_types
+
+    cfg = _make_fleet_config()
     tt_module = sys.modules["deerflow.tools.builtins.task_tool"]
 
     monkeypatch.setattr(tt_module, "get_available_subagent_names", lambda **kwargs: ["general-purpose", "architect", "researcher"])
@@ -238,40 +235,37 @@ def test_refresh_lists_custom_types_with_models(monkeypatch) -> None:
         }[name],
     )
 
-    refresh_task_tool_description(cfg)
+    dynamic = task_tool_with_dynamic_types(cfg)
 
-    desc = task_tool.description
+    desc = dynamic.description
     assert "Available subagent types (pass the exact name as `subagent_type`)" in desc
-    assert "- **general-purpose**:" in desc
-    assert "- **architect**: Frontier-model read-only explorer (GLM-5.3):" in desc
-    assert "Runs on model glm-5.3." in desc
-    assert "- **researcher**: Parallel web research on GLM-5.2 (with angle brackets)" in desc
-    assert "Runs on model glm-nw." in desc
-    # The static hardcoded built-in-only framing must be gone.
+    assert "- **general-purpose**: A capable agent for bounded exploration and action. Uses your model." in desc
+    assert "- **architect**: Frontier-model read-only explorer (GLM-5.3): Runs on model glm-5.3." in desc
+    assert "- **researcher**: Parallel web research on GLM-5.2 (with angle brackets) Runs on model glm-nw." in desc
+    # The static hardcoded built-in-only framing must be gone from the copy.
     assert "Built-in subagent types:" not in desc
     assert "Additional custom subagent types may be defined" not in desc
     # Sanitization: only the first line of a multi-line custom description.
     assert "second line never shown" not in desc
+    # The shared singleton is never mutated.
+    assert task_tool.description != desc
+    assert "Built-in subagent types:" in task_tool.description
 
 
-def test_refresh_preserves_pinned_guidance_and_args(monkeypatch) -> None:
-    from deerflow.tools.builtins.task_tool import refresh_task_tool_description, task_tool
-
-    # Register the current description with monkeypatch so teardown restores
-    # it after refresh_task_tool_description mutates the singleton.
-    monkeypatch.setattr(task_tool, "description", task_tool.description)
-    cfg = _make_fleet_config()
+def test_dynamic_types_preserve_pinned_guidance_and_args(monkeypatch) -> None:
     import sys
 
+    from deerflow.tools.builtins.task_tool import task_tool_with_dynamic_types
+
+    cfg = _make_fleet_config()
     tt_module = sys.modules["deerflow.tools.builtins.task_tool"]
 
     monkeypatch.setattr(tt_module, "get_available_subagent_names", lambda **kwargs: ["general-purpose"])
     monkeypatch.setattr(tt_module, "get_subagent_config", lambda name, **kwargs: GENERAL_PURPOSE_CONFIG)
 
-    refresh_task_tool_description(cfg)
-
-    desc = task_tool.description
-    # Phrases pinned by the routing-policy contract test.
+    desc = task_tool_with_dynamic_types(cfg).description
+    # Phrases pinned by the routing-policy contract test (on the static
+    # docstring) must survive into the dynamic variant.
     assert "expected benefit" in desc
     assert "Splitting dependent steps across parallel subagents" in desc
     # Args guidance survives for the schema reader.
@@ -280,17 +274,13 @@ def test_refresh_preserves_pinned_guidance_and_args(monkeypatch) -> None:
     assert "Pick the specialist that matches the work" in desc
 
 
-def test_refresh_without_types_leaves_description_untouched(monkeypatch) -> None:
+def test_dynamic_types_without_registry_entries_returns_shared_tool(monkeypatch) -> None:
     import sys
 
-    from deerflow.tools.builtins.task_tool import refresh_task_tool_description, task_tool
+    from deerflow.tools.builtins.task_tool import task_tool, task_tool_with_dynamic_types
 
-    original = task_tool.description
     tt_module = sys.modules["deerflow.tools.builtins.task_tool"]
-
     monkeypatch.setattr(tt_module, "get_available_subagent_names", lambda **kwargs: [])
     monkeypatch.setattr(tt_module, "get_subagent_config", lambda name, **kwargs: None)
 
-    refresh_task_tool_description(None)
-
-    assert task_tool.description == original
+    assert task_tool_with_dynamic_types(None) is task_tool

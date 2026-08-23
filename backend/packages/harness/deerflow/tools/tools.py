@@ -104,14 +104,18 @@ def get_available_tools(
 
     # Add subagent tools only if enabled via runtime parameter
     if subagent_enabled:
-        # Patch #65: refresh the task tool description so the schema lists the
-        # ACTUAL available subagent types (built-ins + config-defined customs)
-        # instead of the static built-in-only list, which mis-routed dispatches
-        # to general-purpose on deployments with a specialist fleet.
-        from deerflow.tools.builtins.task_tool import refresh_task_tool_description
+        # Patch #65: bind a task tool whose description lists the ACTUAL
+        # available subagent types (built-ins + config-defined customs)
+        # instead of the static built-in-only list, which mis-routed
+        # dispatches to general-purpose on deployments with a specialist
+        # fleet. Returns a copy; the shared singleton is never mutated.
+        from deerflow.tools.builtins.task_tool import task_tool_with_dynamic_types
 
-        refresh_task_tool_description(config)
-        builtin_tools.extend(SUBAGENT_TOOLS)
+        for t in SUBAGENT_TOOLS:
+            if t is task_tool:
+                builtin_tools.append(task_tool_with_dynamic_types(config))
+            else:
+                builtin_tools.append(t)
         logger.info("Including subagent tools (task)")
 
     # If no model_name specified, use the first model (default)
