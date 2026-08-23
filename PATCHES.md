@@ -573,13 +573,53 @@ carry budget ledger.
   mechanism; the argus-specific part is the `browser_*` value in stack
   config).
 
+## Patch #65
+
+**Patch #65 - Dynamic subagent-type listing in the `task` tool description**
+
+- Class: generic-upstreamable (completes the Codex-style dynamic
+  agent_type_description pattern for the tool schema)
+- Intent: the `task` tool docstring hardcoded only the built-in types
+  (`general-purpose`, `bash`) and mentioned custom types only as "may be
+  defined in config.yaml". The tool schema is the most proximate guidance at
+  call time, so on deployments with `subagents.custom_agents` the lead called
+  `general-purpose` even when a specialist matched the work better — measured
+  on atlas-nicholas thread 446ee9ea (2026-08-23): with patch #64 active and
+  three parallel audit dispatches firing correctly, ALL three still used
+  `general-purpose` (which is `model: inherit`), so the entire "fleet" ran on
+  the lead's local model instead of the configured per-role cloud models.
+  `refresh_task_tool_description()` now rewrites the description at
+  tool-assembly time (called from `get_available_tools` when subagent tools
+  are bound) to list the ACTUAL available types from the registry — built-ins
+  with compact notes, customs with their sanitized first-line description
+  and explicit model ("Runs on model glm-5.3." / "Uses your model." for
+  inherit). Custom descriptions are agent-editable, so they are reduced to
+  a single whitespace-collapsed line with angle brackets neutralized and a
+  240-char cap (same injection class as the `<subagent_system>` render site).
+  The delegation policy text, When-to-use / When-NOT-to-use / Costs sections,
+  and Args guidance are preserved verbatim; the `subagent_type` arg guidance
+  now says "Pick the specialist that matches the work". Idempotent per
+  app_config; string assignment is atomic under the GIL so concurrent
+  assemblies need no lock. Delegation-posture framing (patch #64) is
+  unchanged — this patch fixes TYPE routing, not the dispatch posture.
+- Files: `backend/packages/harness/deerflow/tools/builtins/task_tool.py`,
+  `backend/packages/harness/deerflow/tools/tools.py`,
+  `backend/tests/test_subagent_routing_prompt.py`
+- Tests: `test_refresh_lists_custom_types_with_models`,
+  `test_refresh_preserves_pinned_guidance_and_args`,
+  `test_refresh_without_types_leaves_description_untouched` (plus the
+  pre-existing `test_general_purpose_and_task_descriptions_match_routing_policy`,
+  which pins the preserved guidance phrases)
+- Delete-when: never (additive; upstreaming encouraged — natural completion
+  of the dynamic agent_type_description pattern the system prompt already
+  uses).
+
 ## Patch #64
 
 **Patch #64 - Config-gated `subagents.delegation_posture` prompt framing
 (conservative / parallel_first)**
 
-- Class: fork-local (argus deployment shaping; upstream has no fleet concept)
-- Intent: the upstream routing guidance tells the lead "Subagents are
+- Class: fork-local (argus deployment shaping; upstream has no fleet concept)- Intent: the upstream routing guidance tells the lead "Subagents are
   optional. **Default to direct execution.**" in FOUR rendered surfaces
   (`<subagent_system>`, the `<critical_reminders>` delegation line, the
   `<thinking_style>` DELEGATION CHECK, and the `task` tool docstring). That

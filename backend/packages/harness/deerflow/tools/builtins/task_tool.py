@@ -629,3 +629,111 @@ async def task_tool(
         else:
             _schedule_deferred_subagent_cleanup(execution_id, trace_id, max_poll_count)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Patch #65: dynamic subagent-type listing in the task tool description.
+# ---------------------------------------------------------------------------
+
+# The static docstring below hardcodes only the built-in types; deployments
+# that define `subagents.custom_agents` saw the lead call `general-purpose`
+# even when a specialist matched the work better, because the tool schema is
+# the most proximate guidance at call time (measured: atlas-nicholas thread
+# 446ee9ea, 2026-08-23 — three audit dispatches, all general-purpose, all
+# inheriting the lead's local model instead of the configured fleet). The
+# refresh function below rewrites the description at tool-assembly time to
+# list the ACTUAL available types from the registry, mirroring Codex's
+# agent_type_description pattern that _build_available_subagents_description
+# already applies to the system prompt.
+
+_TASK_TOOL_DESCRIPTION_TEMPLATE = """Delegate a bounded task to a specialized subagent in its own context.
+
+Delegate only when expected benefit clearly exceeds delegation overhead.
+Useful benefits are:
+- Material wall-clock savings from independent parallel work
+- Specialist tools, skills, models, or domain instructions
+- Context isolation for a bounded, unusually context-heavy investigation
+
+Available subagent types (pass the exact name as `subagent_type`):
+{available_types}
+
+If an unknown subagent_type is provided, the error message will list all available types.
+
+When to use this tool:
+- Independent tasks that materially reduce wall-clock time when run in parallel
+- A specialist subagent provides capability unavailable on the direct path
+- Bounded exploration that would otherwise displace important parent context
+
+When NOT to use this tool:
+- Merely because a task is complex, multi-step, verbose, or touches a large repo
+- Splitting dependent steps across parallel subagents; keep the chain together
+  and delegate it as one bounded task only when specialist or context-isolation
+  benefit clearly wins
+- Parallel work with overlapping files, shared mutable state, or external side effects
+- Tasks requiring user interaction or clarification
+
+Costs to include in the delegation decision:
+- Repeating the same repository discovery in multiple contexts
+- Coordination, verification, and synthesis of returned results
+- Any task the parent can complete more cheaply with direct tools
+
+Args:
+    description: A short (3-5 word) description of the task for logging/display. ALWAYS PROVIDE THIS PARAMETER FIRST.
+    prompt: The task description for the subagent. Be specific and clear about what needs to be done. ALWAYS PROVIDE THIS PARAMETER SECOND.
+    subagent_type: The type of subagent to use. Pick the specialist that matches the work from the available types above. ALWAYS PROVIDE THIS PARAMETER THIRD.
+"""
+
+_MAX_TYPE_DESCRIPTION_CHARS = 240
+
+
+def _sanitize_type_description(description: str, *, max_chars: int = _MAX_TYPE_DESCRIPTION_CHARS) -> str:
+    """Reduce an agent-editable description to a safe single line.
+
+    First line only, whitespace-collapsed, angle brackets neutralized (custom
+    descriptions are agent-editable; the same injection class as the
+    <subagent_system> render site), length-capped.
+    """
+    line = description.strip().split("\n")[0]
+    line = " ".join(line.split())
+    line = line.replace("<", "(").replace(">", ")")
+    if len(line) > max_chars:
+        line = line[: max_chars - 1].rstrip() + "..."
+    return line
+
+
+def _build_available_subagent_types_section(app_config: "AppConfig | None" = None) -> str:
+    """Render the registry's available subagent types for the tool description."""
+    names = get_available_subagent_names(app_config=app_config)
+    lines = []
+    for name in names:
+        config = get_subagent_config(name, app_config=app_config)
+        if config is None:
+            continue
+        if name == "general-purpose":
+            note = "A capable agent for bounded exploration and action; uses your model and full toolset."
+        elif name == "bash":
+            note = "Command execution specialist for bounded shell workflows."
+        else:
+            note = _sanitize_type_description(config.description)
+        model = getattr(config, "model", "inherit")
+        if model and model != "inherit":
+            note += f" Runs on model {model}."
+        else:
+            note += " Uses your model."
+        lines.append(f"- **{name}**: {note}")
+    return "\n".join(lines)
+
+
+def refresh_task_tool_description(app_config: "AppConfig | None" = None) -> None:
+    """Rewrite the task tool description to list the actual available types.
+
+    Called at tool-assembly time when subagent tools are bound. Idempotent for
+    a given app_config; concurrent assemblies write the same string, and
+    Python string assignment is atomic under the GIL, so no locking is needed.
+    When the registry yields nothing (should not happen on a subagent-enabled
+    path) the static docstring is left untouched.
+    """
+    section = _build_available_subagent_types_section(app_config)
+    if not section:
+        return
+    task_tool.description = _TASK_TOOL_DESCRIPTION_TEMPLATE.format(available_types=section)
