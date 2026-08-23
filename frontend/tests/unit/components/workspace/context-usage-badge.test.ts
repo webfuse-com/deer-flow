@@ -17,13 +17,12 @@ rs.mock("@/core/i18n/hooks", () => ({
   }),
 }));
 
-test("keeps a gauge placeholder visible while context usage is unavailable", () => {
+test("stays hidden while context usage is unavailable", () => {
   const html = renderToStaticMarkup(
     createElement(ContextUsageBadge, { contextUsage: null }),
   );
 
-  expect(html).toContain('data-context-usage-placeholder="true"');
-  expect(html).toContain('aria-label="Context window"');
+  expect(html).toBe("");
 });
 
 test("renders the current percentage when context usage is available", () => {

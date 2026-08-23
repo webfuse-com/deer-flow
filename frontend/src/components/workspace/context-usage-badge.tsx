@@ -21,20 +21,7 @@ export function ContextUsageBadge({
 
   const formatted = formatContextUsagePercentage(contextUsage?.percentage);
   if (formatted == null) {
-    return (
-      <div
-        role="status"
-        data-context-usage-placeholder="true"
-        aria-label={t.contextUsage.title}
-        title={t.contextUsage.title}
-        className={cn(
-          "text-muted-foreground bg-background/70 flex size-7 items-center justify-center rounded-full border",
-          className,
-        )}
-      >
-        <GaugeIcon size={14} />
-      </div>
-    );
+    return null;
   }
 
   return (
