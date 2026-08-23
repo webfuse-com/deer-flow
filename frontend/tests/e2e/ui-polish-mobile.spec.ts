@@ -14,7 +14,8 @@ test.describe("UI polish mobile regressions", () => {
     await page.getByRole("button", { name: /toggle sidebar/i }).click();
 
     await expect(page.getByRole("link", { name: /new chat/i })).toBeVisible();
-    await expect(page.getByRole("link", { name: /agents/i })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Chronos" })).toBeVisible();
+    await expect(page.getByRole("link", { name: /agents/i })).toHaveCount(0);
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
       .toBeLessThanOrEqual(375);
