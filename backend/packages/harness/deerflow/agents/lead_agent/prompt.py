@@ -26,6 +26,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_delegation_posture(app_config: AppConfig | None) -> str:
+    """Resolve the delegation-guidance posture for prompt rendering.
+
+    Reads ``subagents.delegation_posture`` from the explicit app_config when
+    given, otherwise from the process-global subagents config singleton.
+    Anything unrecognized falls back to "conservative" (the upstream framing),
+    so an older config object (or a unit-test stub) can never flip the
+    fleet-wide default by accident.
+    """
+    subagents_cfg = getattr(app_config, "subagents", None) if app_config is not None else None
+    if subagents_cfg is None:
+        from deerflow.config.subagents_config import get_subagents_app_config
+
+        subagents_cfg = get_subagents_app_config()
+    posture = getattr(subagents_cfg, "delegation_posture", "conservative")
+    return posture if posture in ("conservative", "parallel_first") else "conservative"
+
+
 # LRU cap on the per-(app_config, user_id) enabled-skills cache.
 # Without this, a long-running multi-user process leaks one entry per
 # distinct user (and per app_config injection), bounded only by the
@@ -355,6 +374,11 @@ def _build_subagent_section(
     """
     n = clamp_subagent_concurrency(max_concurrent)
     total = clamp_total_subagents_per_run(max_total)
+    posture = _resolve_delegation_posture(app_config)
+    # parallel_first only re-frames the guidance when parallel dispatch is
+    # actually possible; with a per-response limit of 1 the conservative
+    # framing stays (there is nothing to parallelize).
+    parallel_first = posture == "parallel_first" and n > 1
     available_names = get_available_subagent_names(app_config=app_config) if app_config is not None else get_available_subagent_names()
     bash_available = "bash" in available_names
 
@@ -421,6 +445,69 @@ A single subagent is justified only by material specialist or context-isolation 
 - **Batch 2** may launch the next scopes if it still wins; otherwise continue directly.
 - **Synthesize all retained results** at the end.
 """
+    if parallel_first:
+        return f"""<subagent_system>
+## Subagent Team: Parallelize Independent Scopes
+
+You lead a specialist team. Each subagent runs in its own context with its own
+model and tools, in parallel, while you hold the thread. **Default to
+dispatching independent scopes to the team; execute directly only for
+tightly-coupled work or trivial lookups.**
+
+**SCOPE SCAN (required before starting exploratory work yourself):**
+
+1. Split the task into independent scopes: research, audits, codebase or
+   document exploration, review passes, mechanical implementation.
+2. Dispatch each independent scope to its matching subagent in the same
+   response, up to {n} calls.
+3. Keep on the direct path: tightly-coupled multi-file edits, decisions,
+   synthesis, and anything a single direct tool call answers.
+
+{parallel_dispatch_guidance}
+
+**Costs that justify keeping work on the direct path - include these in the scan:**
+- **Duplicate discovery**: Each subagent would need to read the same repository area or reconstruct context the lead agent already has.
+- **Cheap direct path**: The lead agent can finish with a small number of tool calls or less work than delegation plus synthesis.
+- **Coordination burden**: The lead agent would spend substantial work reconciling or verifying subagent results.
+
+**Clarify first**: Requirements that need user input must be resolved before direct execution or delegation.
+
+**Valid sources of delegation benefit:**
+{valid_benefits}
+
+**HARD LIMITS - NON-NEGOTIABLE:**
+- **MAXIMUM {n} `task` CALLS PER RESPONSE - NEVER emit more. VIOLATION IS A HARD ERROR.** Excess calls are discarded and their work is lost.
+- **MAXIMUM {total} `task` CALLS PER RUN - NEVER exceed it. VIOLATION IS A HARD ERROR.** Count only delegations for the current user request/run; older thread history does not consume this run's allowance.
+{limit_action_guidance}
+{followup_guidance}
+
+**Available Subagents:**
+{available_subagents}
+
+**Delegation workflow:**
+1. Scan the task for independent scopes before doing exploratory work yourself.
+2. Apply the parallel-dispatch hard vetoes; keep dependent or overlapping work together.
+3. Give each dispatched subagent a bounded, non-overlapping scope, relevant known context and paths, an expected output, and explicit side-effect ownership.
+4. Launch up to {n} calls in the same response and stay within the remaining run allowance.
+5. While the batch runs, prepare synthesis; verify and integrate returned results against primary evidence.
+6. Re-evaluate the remaining work after every batch.
+
+**Examples:**
+- Documentation audit plus competitor research: dispatch the read-only explorer and the web researcher in parallel while you prepare the synthesis; do not grep and fetch serially yourself.
+- Compare independent providers: parallel read-only research with every subagent owning one provider and returning the same bounded schema.
+- Multi-file refactor where analysis, edits, and test feedback depend on one another: execute directly. Tight coupling does not become parallelizable by dispatching it.
+- Run a routine test, build, or git command directly.
+
+{multi_batch_example}
+
+For work you keep on the direct path, execute directly using available tools ({direct_tool_examples}):
+
+```python
+{direct_execution_example}
+```
+
+The `task` tool waits for the subagent and returns its result directly; no polling is needed.
+</subagent_system>"""
     return f"""<subagent_system>
 ## Subagent Routing: Delegate Only for Clear Net Benefit
 
@@ -1009,6 +1096,71 @@ Memory is running in tool mode. When present, the injected <memory> block contai
 </memory_tool_system>"""
 
 
+def _build_subagent_reminder(
+    n: int,
+    total: int,
+    *,
+    enabled: bool,
+    app_config: AppConfig | None = None,
+) -> str:
+    """Critical-reminder line about delegation posture.
+
+    Conservative (default) keeps the upstream benefit-based wording verbatim;
+    parallel_first re-frames it as team dispatch. Limits text is identical in
+    both postures so enforcement and prompt never disagree.
+    """
+    if not enabled:
+        return ""
+    if _resolve_delegation_posture(app_config) == "parallel_first" and n > 1:
+        return (
+            "- **Parallel Team Dispatch**: You lead a specialist subagent team. Default to dispatching independent scopes "
+            "(research, audits, exploration, review passes, mechanical implementation) in parallel via `task`; keep decisions, "
+            "synthesis, and tightly-coupled edits on the direct path. HARD LIMITS ARE NON-NEGOTIABLE: max "
+            f"{n} `task` calls per response, max {total} per run; excess calls are discarded and their work is lost.\n"
+        )
+    reminder_benefits = "specialist capability or context isolation" if n == 1 else "real parallel latency, specialist capability, or context isolation"
+    return (
+        f"- **Benefit-Based Delegation**: Default to direct execution. Use `task` only when expected benefit from {reminder_benefits} "
+        "clearly exceeds delegation, duplicate-discovery, synthesis, conflict, and side-effect costs. "
+        f"Use the fewest subagents needed. HARD LIMITS ARE NON-NEGOTIABLE: max {n} `task` calls per response, max {total} per run; excess calls are discarded and their work is lost.\n"
+    )
+
+
+def _build_subagent_thinking(
+    n: int,
+    total: int,
+    *,
+    enabled: bool,
+    app_config: AppConfig | None = None,
+) -> str:
+    """Thinking-style line about the delegation decision.
+
+    Conservative (default) keeps the upstream DELEGATION CHECK wording
+    verbatim; parallel_first re-frames it as a scope scan that runs before the
+    lead starts exploratory work itself. Limits text is identical in both
+    postures.
+    """
+    if not enabled:
+        return ""
+    if _resolve_delegation_posture(app_config) == "parallel_first" and n > 1:
+        return (
+            "- **TEAM SCAN: Before starting exploratory work yourself, split the task into independent scopes and dispatch them "
+            f"in parallel via `task` (up to {n} per response, {total} per run). A long serial investigation by you is the "
+            "anti-pattern; keep only tightly-coupled or trivial work on the direct path, and never exceed the limits.**\n"
+        )
+    if n == 1:
+        return (
+            "- **DELEGATION CHECK: Default to direct execution; complexity alone is not a reason to delegate. Before each `task` call, "
+            "require clear positive net benefit from specialist capability or context isolation. "
+            f"Never exceed {n} `task` call in one response or {total} total in this run.**\n"
+        )
+    return (
+        "- **DELEGATION CHECK: Default to direct execution; complexity alone is not a reason to delegate. Before each `task` call, "
+        "require clear positive net benefit; before parallel calls, rule out inter-agent dependencies and overlapping state or side effects. "
+        f"If delegating, use the fewest agents needed and never exceed {n} `task` calls in one response or {total} total in this run.**\n"
+    )
+
+
 def apply_prompt_template(
     subagent_enabled: bool = False,
     max_concurrent_subagents: int = 3,
@@ -1033,30 +1185,10 @@ def apply_prompt_template(
     subagent_section = _build_subagent_section(n, total, app_config=app_config) if subagent_enabled else ""
 
     # Add subagent reminder to critical_reminders if enabled
-    reminder_benefits = "specialist capability or context isolation" if n == 1 else "real parallel latency, specialist capability, or context isolation"
-    subagent_reminder = (
-        f"- **Benefit-Based Delegation**: Default to direct execution. Use `task` only when expected benefit from {reminder_benefits} "
-        "clearly exceeds delegation, duplicate-discovery, synthesis, conflict, and side-effect costs. "
-        f"Use the fewest subagents needed. HARD LIMITS ARE NON-NEGOTIABLE: max {n} `task` calls per response, max {total} per run; excess calls are discarded and their work is lost.\n"
-        if subagent_enabled
-        else ""
-    )
+    subagent_reminder = _build_subagent_reminder(n, total, enabled=subagent_enabled, app_config=app_config)
 
     # Add subagent thinking guidance if enabled
-    if subagent_enabled and n == 1:
-        subagent_thinking = (
-            "- **DELEGATION CHECK: Default to direct execution; complexity alone is not a reason to delegate. Before each `task` call, "
-            "require clear positive net benefit from specialist capability or context isolation. "
-            f"Never exceed {n} `task` call in one response or {total} total in this run.**\n"
-        )
-    elif subagent_enabled:
-        subagent_thinking = (
-            "- **DELEGATION CHECK: Default to direct execution; complexity alone is not a reason to delegate. Before each `task` call, "
-            "require clear positive net benefit; before parallel calls, rule out inter-agent dependencies and overlapping state or side effects. "
-            f"If delegating, use the fewest agents needed and never exceed {n} `task` calls in one response or {total} total in this run.**\n"
-        )
-    else:
-        subagent_thinking = ""
+    subagent_thinking = _build_subagent_thinking(n, total, enabled=subagent_enabled, app_config=app_config)
 
     # Get skills section (deferred discovery when skill_names is provided)
     skills_section = get_skills_prompt_section(

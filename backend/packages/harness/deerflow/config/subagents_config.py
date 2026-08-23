@@ -1,6 +1,7 @@
 """Configuration for the subagent system loaded from config.yaml."""
 
 import logging
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -147,6 +148,18 @@ class SubagentsAppConfig(BaseModel):
         default_factory=dict,
         description="Per-agent configuration overrides keyed by agent name",
     )
+    delegation_posture: Literal["conservative", "parallel_first"] = Field(
+        default="conservative",
+        description=(
+            "Framing of the lead-agent delegation guidance. 'conservative' (default) keeps the "
+            "upstream benefit-based policy verbatim: default to direct execution, delegate only on "
+            "clear net benefit. 'parallel_first' re-frames the routing prompt for deployments with a "
+            "specialist subagent fleet (e.g. stronger per-role cloud models): the lead is told it "
+            "leads a team and should default to dispatching independent scopes in parallel, keeping "
+            "tightly-coupled edits and decisions on the direct path. Hard limits, parallel-dispatch "
+            "vetoes, and per-run totals are identical in both postures."
+        ),
+    )
     custom_agents: dict[str, CustomSubagentConfig] = Field(
         default_factory=dict,
         description="User-defined subagent types keyed by agent name",
@@ -291,9 +304,10 @@ def load_subagents_config_from_dict(config_dict: dict) -> None:
 
     if overrides_summary or custom_agents_names:
         logger.info(
-            "Subagents config loaded: default timeout=%ss, default max_turns=%s, per-agent overrides=%s, custom_agents=%s",
+            "Subagents config loaded: default timeout=%ss, default max_turns=%s, posture=%s, per-agent overrides=%s, custom_agents=%s",
             _subagents_config.timeout_seconds,
             _subagents_config.max_turns,
+            _subagents_config.delegation_posture,
             overrides_summary or "none",
             custom_agents_names or "none",
         )

@@ -573,6 +573,53 @@ carry budget ledger.
   mechanism; the argus-specific part is the `browser_*` value in stack
   config).
 
+## Patch #64
+
+**Patch #64 - Config-gated `subagents.delegation_posture` prompt framing
+(conservative / parallel_first)**
+
+- Class: fork-local (argus deployment shaping; upstream has no fleet concept)
+- Intent: the upstream routing guidance tells the lead "Subagents are
+  optional. **Default to direct execution.**" in FOUR rendered surfaces
+  (`<subagent_system>`, the `<critical_reminders>` delegation line, the
+  `<thinking_style>` DELEGATION CHECK, and the `task` tool docstring). That
+  framing is right when subagents run the same model as the lead, but on
+  deployments with a specialist subagent fleet (per-role stronger cloud
+  models — argus "Ultra" mode) it is actively wrong: the measured result was
+  zero delegations on a 9m23s docs-audit run where the lead serially grepped
+  and fetched what an architect+researcher pair would have done in parallel
+  (atlas-nicholas threads c4948cb6 / 1e24d614, 2026-08-23). A SOUL.md team
+  briefing could not outvote four prompt surfaces. This patch adds
+  `subagents.delegation_posture: conservative | parallel_first` (default
+  `conservative` = byte-identical upstream wording) and, when set to
+  `parallel_first` with a per-response limit > 1, re-frames the three
+  prompt-rendered surfaces to team dispatch: the section becomes "Subagent
+  Team: Parallelize Independent Scopes" with a SCOPE SCAN replacing the
+  DELEGATION CHECK, the critical reminder becomes "Parallel Team Dispatch",
+  and the thinking-style line becomes a "TEAM SCAN". HARD LIMITS,
+  parallel-dispatch hard vetoes, available-subagent rendering, and
+  per-run totals are identical in both postures so prompt and enforcement
+  never disagree. The `task` tool docstring stays conservative (static
+  module-level docstring; a dynamic variant would need tool rebuild wiring —
+  revisit only if parallel_first still under-delegates with the three
+  prompt surfaces flipped).
+- Files: `backend/packages/harness/deerflow/config/subagents_config.py`,
+  `backend/packages/harness/deerflow/agents/lead_agent/prompt.py`,
+  `backend/tests/test_subagent_routing_prompt.py`,
+  `backend/tests/test_subagent_timeout_config.py`
+- Tests: `test_parallel_first_posture_flips_default_to_team_dispatch`,
+  `test_parallel_first_posture_keeps_limits_and_vetoes`,
+  `test_parallel_first_posture_keeps_conservative_framing_at_limit_one`,
+  `test_conservative_posture_is_the_untouched_upstream_text`,
+  `test_parallel_first_reminder_and_thinking_flip`,
+  `test_delegation_posture_defaults_to_conservative`,
+  `test_delegation_posture_accepts_valid_values`,
+  `test_delegation_posture_rejects_unknown_values` (plus the pre-existing
+  routing contract tests, which pin the conservative default verbatim)
+- Delete-when: never (config knob; the conservative default IS upstream
+  behavior). Drop only if upstream grows its own posture/mode-aware
+  delegation framing worth switching to.
+
 ## Patch #61
 
 **Patch #61 - WebUI and server default `max_recursion_limit` bump to 10000**
