@@ -653,3 +653,24 @@ class TestPollingTimeoutCalculation:
             max_poll_count = (dummy_config.timeout_seconds + 60) // 5
             polling_window_seconds = max_poll_count * 5
             assert polling_window_seconds > timeout_seconds
+
+
+# ---------------------------------------------------------------------------
+# Patch #64: delegation_posture validation
+# ---------------------------------------------------------------------------
+
+
+def test_delegation_posture_defaults_to_conservative() -> None:
+    assert SubagentsAppConfig().delegation_posture == "conservative"
+
+
+@pytest.mark.parametrize("posture", ["conservative", "parallel_first"])
+def test_delegation_posture_accepts_valid_values(posture: str) -> None:
+    assert SubagentsAppConfig(delegation_posture=posture).delegation_posture == posture
+
+
+def test_delegation_posture_rejects_unknown_values() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SubagentsAppConfig(delegation_posture="always_delegate")
