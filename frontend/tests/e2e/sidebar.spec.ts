@@ -3,75 +3,43 @@ import { expect, test } from "@playwright/test";
 import { mockLangGraphAPI } from "./utils/mock-api";
 
 test.describe("Sidebar navigation", () => {
-  test("sidebar contains Chats and Agents nav links", async ({ page }) => {
-    mockLangGraphAPI(page);
-
-    await page.goto("/workspace/chats/new");
-
-    // Sidebar uses data-sidebar="menu-button" with asChild rendering on <Link>
-    const sidebar = page.locator("[data-sidebar='sidebar']");
-    await expect(sidebar.locator("a[href='/workspace/chats']")).toBeVisible({
-      timeout: 15_000,
-    });
-    await expect(sidebar.locator("a[href='/workspace/agents']")).toBeVisible();
-  });
-
-  test("Agents link navigates to agents page", async ({ page }) => {
-    mockLangGraphAPI(page);
-
-    await page.goto("/workspace/chats/new");
-
-    const sidebar = page.locator("[data-sidebar='sidebar']");
-    const agentsLink = sidebar.locator("a[href='/workspace/agents']");
-    await expect(agentsLink).toBeVisible({ timeout: 15_000 });
-    await agentsLink.click();
-
-    await page.waitForURL("**/workspace/agents");
-    await expect(page).toHaveURL(/\/workspace\/agents/);
-  });
-
-  test("Agents button is disabled with a hover tooltip when agents_api is off", async ({
+  test("sidebar contains Chats and the external Akropolis links", async ({
     page,
   }) => {
     mockLangGraphAPI(page);
-    await page.route("**/api/features", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ agents_api: { enabled: false } }),
-      }),
-    );
 
     await page.goto("/workspace/chats/new");
 
     const sidebar = page.locator("[data-sidebar='sidebar']");
-    // Chats remains a real link; Agents is no longer a navigable link.
     await expect(sidebar.locator("a[href='/workspace/chats']")).toBeVisible({
       timeout: 15_000,
     });
+
+    for (const { label, href } of [
+      {
+        label: "Chronos",
+        href: "https://chronos.acro.surfly.com/jobs",
+      },
+      {
+        label: "Handbook",
+        href: "https://apps-nicholas.acro.surfly.com/akropolis-handbook/",
+      },
+      {
+        label: "Feature Requests",
+        href: "https://apps-nicholas.acro.surfly.com/acropolis-feature-requests/",
+      },
+    ]) {
+      const link = sidebar.getByRole("link", { name: label, exact: true });
+      await expect(link).toHaveAttribute("href", href);
+      await expect(link).toHaveAttribute("target", "_blank");
+      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(link.locator("svg")).toHaveClass(/text-muted-foreground/);
+    }
+
     await expect(sidebar.locator("a[href='/workspace/agents']")).toHaveCount(0);
-
-    // The disabled Agents button is rendered and announces its disabled state.
-    const agentsButton = sidebar.getByRole("button", { name: "Agents" });
-    await expect(agentsButton).toHaveAttribute("aria-disabled", "true");
-
-    // The button itself has pointer-events suppressed; force the hover so the
-    // event reaches the wrapping tooltip-trigger span that surfaces the tooltip.
-    await agentsButton.hover({ force: true });
-    await expect(page.getByText("Feature not enabled").first()).toBeVisible({
-      timeout: 5_000,
-    });
-
-    // Keyboard/screen-reader users get the reason too: the disabled entry
-    // stays in the tab order (focusable) and is wired to a visually-hidden
-    // description rather than relying on the hover-only tooltip.
-    const describedById = await agentsButton.getAttribute("aria-describedby");
-    expect(describedById).toBeTruthy();
-    await expect(page.locator(`#${describedById}`)).toHaveText(
-      "Feature not enabled",
-    );
-    await agentsButton.focus();
-    await expect(agentsButton).toBeFocused();
+    await expect(
+      sidebar.locator("a[href='/workspace/scheduled-tasks']"),
+    ).toHaveCount(0);
   });
 
   test("mobile welcome layout stays within viewport and opens sidebar", async ({
@@ -111,7 +79,10 @@ test.describe("Sidebar navigation", () => {
       mobileSidebar.locator("a[href='/workspace/chats']"),
     ).toBeVisible();
     await expect(
-      mobileSidebar.locator("a[href='/workspace/agents']"),
+      mobileSidebar.getByRole("link", { name: "Chronos" }),
     ).toBeVisible();
+    await expect(
+      mobileSidebar.locator("a[href='/workspace/agents']"),
+    ).toHaveCount(0);
   });
 });

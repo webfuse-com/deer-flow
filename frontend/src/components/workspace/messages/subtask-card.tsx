@@ -30,10 +30,7 @@ import {
 } from "@/core/streamdown/components";
 import { fetchSubtaskSteps } from "@/core/tasks/api";
 import { useSubtask, useUpdateSubtask } from "@/core/tasks/context";
-import {
-  formatSubtaskTokenUsage,
-  resolveSubtaskModelLabel,
-} from "@/core/tasks/presentation";
+import { resolveSubtaskModelLabel } from "@/core/tasks/presentation";
 import { stepsForDisplay } from "@/core/tasks/steps";
 import { explainLastToolCall } from "@/core/tools/utils";
 import { cn } from "@/lib/utils";
@@ -59,19 +56,9 @@ export function SubtaskCard({
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const task = useSubtask(taskId)!;
-  const { models, tokenUsageEnabled } = useModels();
+  const { models } = useModels();
   const updateSubtask = useUpdateSubtask();
   const modelLabel = resolveSubtaskModelLabel(task.modelName, models);
-  const tokenLabel = tokenUsageEnabled
-    ? formatSubtaskTokenUsage(task.usage)
-    : undefined;
-  const runtimeUsageLabel = tokenUsageEnabled
-    ? tokenLabel
-      ? `${tokenLabel} ${t.tokenUsage.label}`
-      : task.status === "in_progress"
-        ? t.tokenUsage.collecting
-        : t.tokenUsage.unavailableShort
-    : undefined;
 
   // The card shows the subagent's step timeline (#3779): its reasoning turns
   // (AI text) interleaved with the tools it ran (by name). See stepsForDisplay
@@ -161,14 +148,6 @@ export function SubtaskCard({
                     {modelLabel && (
                       <span className="max-w-32 truncate" title={modelLabel}>
                         {modelLabel}
-                      </span>
-                    )}
-                    {runtimeUsageLabel && (
-                      <span
-                        className="max-w-28 truncate"
-                        title={runtimeUsageLabel}
-                      >
-                        {runtimeUsageLabel}
                       </span>
                     )}
                     {icon}

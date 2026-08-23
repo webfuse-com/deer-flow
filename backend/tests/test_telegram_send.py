@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+from app.channels import _telegram_sender
 from app.channels.message_bus import MessageBus, OutboundMessage
 from app.channels.telegram import TelegramChannel
 
@@ -130,6 +131,58 @@ def test_stage_change_resends_and_deletes_old():
         assert ch._working_msg["1"] != first
         # The previous emoji message was deleted on the swap.
         assert bot.delete_message.await_count == 1
+
+    _run(go())
+
+
+def test_concurrent_stage_changes_are_serialized_and_final_cleans_latest():
+    async def go():
+        ch, bot = _channel_with_bot()
+        ch._stage_min_interval = 999
+
+        next_message_id = 0
+        transition_started = asyncio.Event()
+        release_transition = asyncio.Event()
+        active_stage_sends = 0
+        max_active_stage_sends = 0
+
+        async def send_message(**kwargs):
+            nonlocal next_message_id, active_stage_sends, max_active_stage_sends
+            next_message_id += 1
+            if kwargs["text"] != "👀":
+                active_stage_sends += 1
+                max_active_stage_sends = max(max_active_stage_sends, active_stage_sends)
+                transition_started.set()
+                await release_transition.wait()
+                active_stage_sends -= 1
+            sent = MagicMock()
+            sent.message_id = next_message_id
+            return sent
+
+        bot.send_message = send_message
+
+        await _telegram_sender.show_stage(ch, 1, "1", "received", force=True)
+        transitions = [asyncio.create_task(_telegram_sender.show_stage(ch, 1, "1", stage, force=True)) for stage in ("thinking", "working", "writing")]
+        await transition_started.wait()
+        final_cleanup = asyncio.create_task(
+            ch.send(
+                OutboundMessage(
+                    channel_name="telegram",
+                    chat_id="1",
+                    thread_id="t",
+                    text="",
+                    is_final=True,
+                )
+            )
+        )
+        release_transition.set()
+        await asyncio.gather(*transitions, final_cleanup)
+
+        assert max_active_stage_sends == 1
+        assert [call.kwargs["message_id"] for call in bot.delete_message.await_args_list] == [1, 2, 3, 4]
+        assert "1" not in ch._working_msg
+        assert "1" not in ch._working_stage
+        assert "1" not in ch._working_at
 
     _run(go())
 
