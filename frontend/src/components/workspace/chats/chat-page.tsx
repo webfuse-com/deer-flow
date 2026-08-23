@@ -7,7 +7,6 @@ import { toast } from "sonner";
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
-import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
 import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
@@ -25,10 +24,8 @@ import {
   SidecarProvider,
   SidecarTrigger,
 } from "@/components/workspace/sidecar";
-import { ThreadScheduledTasksLink } from "@/components/workspace/thread-scheduled-tasks-link";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
-import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { Welcome } from "@/components/workspace/welcome";
 import { useBrowserControlEnabled } from "@/core/features";
@@ -40,19 +37,15 @@ import {
   type HumanInputResponse,
 } from "@/core/messages/human-input";
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
-import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
-import { useLocalSettings, useThreadSettings } from "@/core/settings";
+import { useThreadSettings } from "@/core/settings";
 import {
   useBranchThread,
   useThreadMetadata,
   useThreadStream,
   useThreadTokenUsage,
 } from "@/core/threads/hooks";
-import {
-  selectContextUsage,
-  threadTokenUsageToTokenUsage,
-} from "@/core/threads/token-usage";
+import { selectContextUsage } from "@/core/threads/token-usage";
 import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
@@ -75,7 +68,6 @@ export default function ChatPage() {
   // `isNewThread` stays true until the backend actually creates the thread.
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
-  const [localSettings, setLocalSettings] = useLocalSettings();
   const {
     queue,
     enqueue: enqueueMessage,
@@ -84,7 +76,6 @@ export default function ChatPage() {
     update: updateQueuedMessage,
   } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
-  const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
     { enabled: !isMock },
@@ -94,7 +85,6 @@ export default function ChatPage() {
     isMock,
   });
   const branchThread = useBranchThread();
-  const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
   const contextUsage = selectContextUsage(threadTokenUsage.data);
   const { showNotification } = useNotification();
   const mountedRef = useRef(false);
@@ -114,7 +104,6 @@ export default function ChatPage() {
 
   const {
     thread,
-    pendingUsageMessages,
     sendMessage,
     regenerateMessage,
     editAndRegenerateMessage,
@@ -278,9 +267,6 @@ export default function ChatPage() {
     [branchThread, isMock, isNewThread, router, t, threadId],
   );
 
-  const tokenUsageInlineMode = tokenUsageEnabled
-    ? localSettings.tokenUsage.inlineMode
-    : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
   const browserEnabled = !isNewThread && !isMock && browserControlEnabled;
   const { activeGoal, hasGoal, setLocalGoal } = useActiveGoal(
@@ -318,27 +304,8 @@ export default function ChatPage() {
                 <ThreadTitle threadId={threadId} thread={thread} />
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {!isNewThread && !isMock && (
-                  <ThreadScheduledTasksLink threadId={threadId} />
-                )}
-                {tokenUsageEnabled ? (
-                  <TokenUsageIndicator
-                    threadId={isNewThread ? undefined : threadId}
-                    backendUsage={backendTokenUsage}
-                    contextUsage={contextUsage}
-                    enabled={tokenUsageEnabled}
-                    messages={thread.messages}
-                    pendingMessages={pendingUsageMessages}
-                    preferences={localSettings.tokenUsage}
-                    onPreferencesChange={(preferences) =>
-                      setLocalSettings("tokenUsage", preferences)
-                    }
-                  />
-                ) : (
-                  <ContextUsageBadge contextUsage={contextUsage} />
-                )}
+                <ContextUsageBadge contextUsage={contextUsage} />
                 <SidecarTrigger />
-                {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
                 <ArtifactTrigger />
@@ -355,7 +322,6 @@ export default function ChatPage() {
                   hasMoreHistory={hasMoreHistory}
                   loadMoreHistory={loadMoreHistory}
                   isHistoryLoading={isHistoryLoading}
-                  tokenUsageInlineMode={tokenUsageInlineMode}
                   canRegenerate={
                     !isNewThread &&
                     !isMock &&

@@ -7,6 +7,26 @@ import type { AgentThreadState } from "@/core/threads";
 import { useThreadChat } from "./chats";
 import { FlipDisplay } from "./flip-display";
 
+export function formatThreadDocumentTitle({
+  appName,
+  isLoading,
+  isThreadLoading,
+  title,
+}: {
+  appName: string;
+  isLoading: boolean;
+  isThreadLoading: boolean;
+  title: string;
+}) {
+  if (isThreadLoading) {
+    return `Loading... - ${appName}`;
+  }
+  if (isLoading) {
+    return `🧠 [Running] ${title} - ${appName}`;
+  }
+  return `${title} - ${appName}`;
+}
+
 export function ThreadTitle({
   threadId,
   thread,
@@ -25,13 +45,12 @@ export function ThreadTitle({
     } else if (isNewThread) {
       _title = t.pages.newChat;
     }
-    if (thread.isThreadLoading) {
-      document.title = `Loading... - ${t.pages.appName}`;
-    } else if (thread.isLoading) {
-      document.title = `⏳ [Running] ${_title} - ${t.pages.appName}`;
-    } else {
-      document.title = `${_title} - ${t.pages.appName}`;
-    }
+    document.title = formatThreadDocumentTitle({
+      appName: t.pages.appName,
+      isLoading: thread.isLoading,
+      isThreadLoading: thread.isThreadLoading,
+      title: _title,
+    });
   }, [
     isNewThread,
     t.pages.newChat,

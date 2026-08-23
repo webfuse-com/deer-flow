@@ -9,6 +9,8 @@ Behavior (ledgered as patch #9-chain):
   * a progress_stage OutboundMessage renders as an animated lone-emoji message,
     deleted + re-sent on stage change (Telegram animates only on first send),
     throttled to stage_min_interval, with a received->thinking auto-promote;
+    per-chat locks serialize replacement and final cleanup so concurrent
+    fire-and-forget stages cannot leave orphaned emoji messages;
   * chat text converts markdown -> Telegram HTML (_telegram_format) and chunks
     at 4096, with retry + a plain-text fallback when Telegram rejects the HTML;
   * only the final message clears the indicator.
@@ -70,6 +72,11 @@ def init_state(channel: TelegramChannel, config: dict[str, Any]) -> None:
     channel._working_msg = {}
     channel._working_stage = {}
     channel._working_at = {}
+    # chat -> lock serializing send, tracking replacement, deletion of the
+    # superseded emoji, and final cleanup. Stage dispatch remains
+    # fire-and-forget at the MessageBus boundary; only Telegram work for the
+    # same chat waits here.
+    channel._stage_locks = {}
     # chat -> task that auto-promotes 👀 received → 🧠 thinking after
     # stage_min_interval if no real stage signal has arrived. Guarantees the
     # indicator always advances even when the agent reports no tool stage.
@@ -213,6 +220,20 @@ async def show_stage(channel: TelegramChannel, chat_id: int, chat_key: str, stag
     the 👀→🧠 auto-promote timer, which already waited the interval).
     Returns True if an emoji is now showing.
     """
+    async with _stage_lock(channel, chat_key):
+        return await _show_stage_locked(channel, chat_id, chat_key, stage, force=force)
+
+
+def _stage_lock(channel: TelegramChannel, chat_key: str) -> asyncio.Lock:
+    lock = channel._stage_locks.get(chat_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        channel._stage_locks[chat_key] = lock
+    return lock
+
+
+async def _show_stage_locked(channel: TelegramChannel, chat_id: int, chat_key: str, stage: str, *, force: bool = False) -> bool:
+    """Render one stage while the caller holds this chat's stage lock."""
     if not channel._application:
         return False
     emoji = channel._stage_emoji.get(stage)
@@ -282,13 +303,14 @@ async def auto_promote(channel: TelegramChannel, chat_id: int, chat_key: str) ->
 async def clear_working(channel: TelegramChannel, chat_id: int, chat_key: str) -> None:
     """[argus patch #10] Delete the current stage emoji once the final
     answer has been sent. Best-effort — the message may already be gone."""
-    cancel_promote(channel, chat_key)
-    channel._working_stage.pop(chat_key, None)
-    channel._working_at.pop(chat_key, None)
-    msg_id = channel._working_msg.pop(chat_key, None)
-    if msg_id is None:
-        return
-    try:
-        await channel._application.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-    except Exception as exc:
-        logger.debug("[Telegram] could not delete stage emoji in chat=%s: %s", chat_key, exc)
+    async with _stage_lock(channel, chat_key):
+        cancel_promote(channel, chat_key)
+        channel._working_stage.pop(chat_key, None)
+        channel._working_at.pop(chat_key, None)
+        msg_id = channel._working_msg.pop(chat_key, None)
+        if msg_id is None:
+            return
+        try:
+            await channel._application.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception as exc:
+            logger.debug("[Telegram] could not delete stage emoji in chat=%s: %s", chat_key, exc)

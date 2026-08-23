@@ -4,7 +4,9 @@ import { MOCK_THREAD_ID, mockLangGraphAPI } from "./utils/mock-api";
 
 test.describe.configure({ mode: "serial" });
 
-test("scheduled tasks page is reachable from sidebar", async ({ page }) => {
+test("scheduled tasks page remains directly reachable without a sidebar link", async ({
+  page,
+}) => {
   mockLangGraphAPI(page, {
     threads: [],
     scheduledTasks: [
@@ -28,9 +30,7 @@ test("scheduled tasks page is reachable from sidebar", async ({ page }) => {
     ],
   });
 
-  await page.goto("/workspace/chats/new");
-  await page.getByRole("link", { name: /scheduled tasks/i }).click();
-  await page.waitForURL("**/workspace/scheduled-tasks");
+  await page.goto("/workspace/scheduled-tasks");
   await expect(page).toHaveURL(/workspace\/scheduled-tasks/);
   await expect(
     page.getByRole("button", { name: /Daily summary/i }),
@@ -38,7 +38,7 @@ test("scheduled tasks page is reachable from sidebar", async ({ page }) => {
   await expect(page.getByTestId("scheduled-task-runs")).toContainText("0 runs");
 });
 
-test("thread page links to filtered scheduled tasks", async ({ page }) => {
+test("thread page omits the scheduled tasks shortcut", async ({ page }) => {
   mockLangGraphAPI(page, {
     threads: [
       {
@@ -69,11 +69,9 @@ test("thread page links to filtered scheduled tasks", async ({ page }) => {
   });
 
   await page.goto(`/workspace/chats/${MOCK_THREAD_ID}`);
-  await page
-    .locator("header")
-    .getByRole("link", { name: /scheduled tasks/i })
-    .click();
-  await page.waitForURL(new RegExp(`thread_id=${MOCK_THREAD_ID}`));
+  await expect(
+    page.locator("header").getByRole("link", { name: /scheduled tasks/i }),
+  ).toHaveCount(0);
 });
 
 test("user can create a scheduled task from the page", async ({ page }) => {

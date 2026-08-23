@@ -79,6 +79,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#61](#patch-61) | WebUI and server default `max_recursion_limit` bump to 10000 | generic-upstreamable | this PR |
 | [#62](#patch-62) | Telegram voice-note inbound via overlay Deepgram STT | argus-additive | this PR |
 | [#63](#patch-63) | Summarization must not resurrect answered user turns (upstream backport) | generic-upstreamable | this PR |
+| [#64](#patch-64) | Config-gated subagent delegation posture | config-expressed | 09af0482 |
+| [#65](#patch-65) | Simplified shared UI + serialized Telegram stage cleanup | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -619,6 +621,40 @@ carry budget ledger.
 - Delete-when: never (config knob; the conservative default IS upstream
   behavior). Drop only if upstream grows its own posture/mode-aware
   delegation framing worth switching to.
+
+## Patch #65
+
+**Patch #65 - Simplified shared workspace UI and serialized Telegram stage cleanup**
+
+- Class: argus-edit (deployment-specific navigation/UI plus a generic channel
+  race fix)
+- Intent: keep Atlas and Pythia's shared chat surface focused on conversation.
+  The sidebar exposes Chats plus direct new-tab links to Chronos, the
+  Akropolis Handbook, and Feature Requests; Agents and Scheduled Tasks remain
+  reachable by direct route and their APIs are unchanged. The chat header
+  keeps the compact context-window gauge and debug sandbox action, removes the
+  token dropdown, Browser trigger, and per-thread schedule shortcut, makes
+  Export icon-only, and uses the brain marker for a running document title.
+  Per-message and subtask token totals are no longer rendered, while all
+  telemetry collection/folding stays intact. Separately, Telegram stage emoji
+  operations for one chat now share an async lock covering send, tracked-state
+  replacement, prior-message deletion, and final cleanup. MessageBus dispatch
+  stays fire-and-forget, but simultaneous thinking/tool/writing tasks can no
+  longer observe the same predecessor, delete it more than once, and orphan
+  their own replacement.
+- Files: `frontend/src/components/workspace/` chat/sidebar/export/title,
+  `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`,
+  `backend/app/channels/_telegram_sender.py`, plus frontend/channel docs.
+- Tests: `frontend/tests/e2e/sidebar.spec.ts`,
+  `frontend/tests/e2e/workspace-simplification.spec.ts`, direct Agents and
+  Scheduled Tasks route coverage, `thread-title.test.ts`, and
+  `backend/tests/test_telegram_send.py::test_concurrent_stage_changes_are_serialized_and_final_cleans_latest`.
+- Delete-when: split the UI half into deployment-owned frontend composition
+  if DeerFlow gains supported nav/header slots. Drop the lock only if upstream
+  replaces stage emojis with an atomic per-chat progress primitive or tracks
+  and joins fire-and-forget stage tasks before final delivery.
+- Upstream status: Telegram serialization is a generic bug-fix candidate; the
+  navigation/header choices are Argus-specific.
 
 ## Patch #61
 

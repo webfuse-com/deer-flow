@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
-import { BrowserTrigger } from "@/components/workspace/browser-view";
 import { ChatBox, useThreadChat } from "@/components/workspace/chats";
 import { QueuedMessages } from "@/components/workspace/chats/queued-messages";
 import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
@@ -31,7 +30,6 @@ import {
 } from "@/components/workspace/sidecar";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
-import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { useAgent } from "@/core/agents";
@@ -44,18 +42,14 @@ import {
   type HumanInputResponse,
 } from "@/core/messages/human-input";
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
-import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
-import { useLocalSettings, useThreadSettings } from "@/core/settings";
+import { useThreadSettings } from "@/core/settings";
 import {
   useThreadMetadata,
   useThreadStream,
   useThreadTokenUsage,
 } from "@/core/threads/hooks";
-import {
-  selectContextUsage,
-  threadTokenUsageToTokenUsage,
-} from "@/core/threads/token-usage";
+import { selectContextUsage } from "@/core/threads/token-usage";
 import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
@@ -78,7 +72,6 @@ export default function AgentChatPage() {
   // it can flip immediately on submit without triggering eager history loads.
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
-  const [localSettings, setLocalSettings] = useLocalSettings();
   const {
     queue,
     enqueue: enqueueMessage,
@@ -87,7 +80,6 @@ export default function AgentChatPage() {
     update: updateQueuedMessage,
   } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
-  const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
     { enabled: !isMock },
@@ -96,14 +88,12 @@ export default function AgentChatPage() {
     enabled: !isNewThread && !isMock,
     isMock,
   });
-  const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
   const contextUsage = selectContextUsage(threadTokenUsage.data);
 
   const { showNotification } = useNotification();
 
   const {
     thread,
-    pendingUsageMessages,
     sendMessage,
     regenerateMessage,
     editAndRegenerateMessage,
@@ -262,9 +252,6 @@ export default function AgentChatPage() {
     [editAndRegenerateMessage, threadId],
   );
 
-  const tokenUsageInlineMode = tokenUsageEnabled
-    ? localSettings.tokenUsage.inlineMode
-    : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
   const agentBrowserEnabled =
     agent !== null &&
@@ -327,24 +314,8 @@ export default function AgentChatPage() {
                     <span className="hidden sm:inline">{t.agents.newChat}</span>
                   </Button>
                 </Tooltip>
-                {tokenUsageEnabled ? (
-                  <TokenUsageIndicator
-                    threadId={isNewThread ? undefined : threadId}
-                    backendUsage={backendTokenUsage}
-                    contextUsage={contextUsage}
-                    enabled={tokenUsageEnabled}
-                    messages={thread.messages}
-                    pendingMessages={pendingUsageMessages}
-                    preferences={localSettings.tokenUsage}
-                    onPreferencesChange={(preferences) =>
-                      setLocalSettings("tokenUsage", preferences)
-                    }
-                  />
-                ) : (
-                  <ContextUsageBadge contextUsage={contextUsage} />
-                )}
+                <ContextUsageBadge contextUsage={contextUsage} />
                 <SidecarTrigger />
-                {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
                 <ArtifactTrigger />
@@ -362,7 +333,6 @@ export default function AgentChatPage() {
                   hasMoreHistory={hasMoreHistory}
                   loadMoreHistory={loadMoreHistory}
                   isHistoryLoading={isHistoryLoading}
-                  tokenUsageInlineMode={tokenUsageInlineMode}
                   canRegenerate={
                     !isNewThread &&
                     !isMock &&
