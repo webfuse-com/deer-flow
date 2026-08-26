@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "description": "Cross-language contract fixture for the structured subagent status field. Task result text is display content only and is not part of this wire contract. The optional subagent_stop_reason field (v2, #3875 Phase 2) carries why a guardrail cap ended a run early; it is ignored by older consumers that only read subagent_status.",
+  "version": 3,
+  "description": "Cross-language contract fixture for the structured subagent status field. Task result text is display content only and is not part of this wire contract. The optional subagent_stop_reason field (v2, #3875 Phase 2) carries why a guardrail cap ended a run early; it is ignored by older consumers that only read subagent_status. v3 adds time_capped: a subagent that hit its timeout_seconds but had produced usable partial work now surfaces as completed + time_capped instead of discarding everything.",
   "valid_status_values": ["completed", "failed", "cancelled", "timed_out", "polling_timed_out"],
-  "valid_stop_reason_values": ["token_capped", "turn_capped", "loop_capped"]
+  "valid_stop_reason_values": ["token_capped", "turn_capped", "loop_capped", "time_capped"]
 }

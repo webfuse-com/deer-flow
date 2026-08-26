@@ -81,6 +81,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#63](#patch-63) | Summarization must not resurrect answered user turns (upstream backport) | generic-upstreamable | this PR |
 | [#64](#patch-64) | Config-gated subagent delegation posture | config-expressed | 09af0482 |
 | [#65](#patch-65) | Simplified shared UI + serialized Telegram stage cleanup | argus-edit | this PR |
+| [#66](#patch-66) | Salvage partial subagent work on timeout + per-run wall-clock deadline | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -574,6 +575,79 @@ carry budget ledger.
 - Upstream status: clean generic PR candidate (nothing argus-specific in the
   mechanism; the argus-specific part is the `browser_*` value in stack
   config).
+
+## Patch #66
+
+**Patch #66 - Salvage partial subagent work on timeout, and bound a run by wall clock**
+
+- Class: generic-upstreamable (nothing argus-specific; both halves are gaps in
+  upstream's own guard model).
+- Why: atlas-nicholas thread `5a3be3f1` (2026-08-26) spent **60 minutes,
+  36.6M tokens and 115 LLM calls** on one user turn and delivered nothing.
+  Two independent defects, both upstream:
+
+  1. **Timeout discarded all work.** Six `architect` subagents were dispatched;
+     three hit `timeout_seconds` at 600s. `executor.py`'s `FuturesTimeoutError`
+     branch stamped `TIMED_OUT` and cancelled without ever reading
+     `result.ai_messages`, which was in scope and held ~140 captured messages.
+     The lead received the string `"Task timed out. Error: Execution timed out
+     after 600 seconds"` and nothing else, then `cleanup_background_task()`
+     freed the buffer. Roughly 28M subagent tokens bought zero information.
+     The salvage precedent already existed 200 lines above in the same file:
+     `GraphRecursionError` recovers the trailing partial and reports
+     `COMPLETED` + `stop_reason="turn_capped"`.
+  2. **Nothing watched the clock.** `recursion_limit: 10000` was 20% consumed.
+     `TokenBudgetMiddleware` was disabled on that stack for a sound reason
+     (cumulative token counting grows ~quadratically with turns, so a cap tight
+     enough to catch a runaway truncates legitimate deep work mid-artifact).
+     `LoopDetectionMiddleware` is call-shaped: Layer 1 hashes tool *arguments*,
+     so re-researching the same question with varied commands never repeats a
+     hash, and Layer 2 is a per-tool volume cap. Nothing measured elapsed time.
+
+- What it does:
+  - **Timeout salvage.** `_last_assistant_text_from_captured()` scans
+    `result.ai_messages` backwards for the last assistant turn with real text.
+    Found -> `COMPLETED` + `stop_reason="time_capped"` carrying the partial;
+    not found -> `TIMED_OUT` exactly as before. Unlike the recursion salvage,
+    which inspects only the final `AIMessage`, this skips trailing
+    tool-call-only turns, because a wall-clock kill lands mid-tool-call almost
+    every time. `content: None` is skipped explicitly:
+    `message_content_to_text` falls through to `str(content)` and would
+    otherwise salvage the literal `"None"`.
+  - **`time_capped` stop reason.** Added to `SubagentStopReasonValue`,
+    `SUBAGENT_STOP_REASON_VALUES` and `_STOP_REASON_LABELS`
+    ("wall-clock timeout"); contract fixture bumped to **v3**. No change to
+    `_RESULT_BEARING_STATUSES` is needed: a capped-but-usable run is already
+    modelled as `completed` + a stop reason, so `format_subagent_result_message`
+    renders `"Task Succeeded (capped: wall-clock timeout). Result: ..."` with no
+    consumer changes.
+  - **`RunDeadlineMiddleware`** (`run_limits:` config, disabled by default) is
+    `TokenBudgetMiddleware` with a clock instead of a counter, installed
+    immediately after it in the lead chain. Warns once at `warn_at_seconds`
+    via the deferred `wrap_model_call` injection (so
+    `AIMessage(tool_calls)` -> `ToolMessage` pairing survives), then at
+    `wall_clock_seconds` strips `tool_calls`, appends a stop notice and stamps
+    `stop_reason="time_capped"` on both `consume_stop_reason` and
+    `runtime.context`. It never raises: the agent produces a final answer from
+    work already done, so the user gets a partial deliverable rather than a
+    dead thread.
+  - Run start is stamped with `setdefault` and deliberately **not** cleared by
+    `after_agent`. The worker's goal-continuation loop invokes the graph more
+    than once per run; clearing it would restart the clock each time and the
+    deadline could never be reached. There is a test for exactly this.
+  - `delegation_ledger` names `timeout_seconds` as the knob to raise for a
+    `time_capped` run instead of `max_turns / token_budget`.
+
+- Known limit (documented, not fixed here): the middleware only runs between
+  model calls, so a run wedged inside one very long tool call sails past the
+  deadline until that call returns. Bounding that needs a check outside the
+  graph, e.g. in `RunManager.update_run_progress`, which is the only place that
+  sees live cumulative totals during a run.
+
+- Delete-when: upstream adds a wall-clock run budget and a partial-result
+  contract for timed-out subagents.
+- Upstream status: clean PR candidate for both halves. The salvage in
+  particular is a strict improvement with an in-repo precedent to cite.
 
 ## Patch #65
 

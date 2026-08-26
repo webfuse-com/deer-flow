@@ -2621,8 +2621,14 @@ class TestCooperativeCancellation:
         assert result.error == "Cancelled by user"
         assert result.completed_at is not None
 
-    def test_late_completion_after_timeout_does_not_overwrite_timed_out(self, executor_module, classes, msg):
-        """Late completion from the execution worker must not overwrite TIMED_OUT."""
+    def test_late_completion_after_timeout_does_not_overwrite_terminal(self, executor_module, classes, msg):
+        """Late completion from the execution worker must not overwrite the timeout's terminal state.
+
+        The stream yielded a usable assistant turn before the wall clock fired,
+        so the timeout handler salvages it as COMPLETED + ``time_capped``
+        rather than discarding the work. The race this test guards is
+        unchanged: whatever the timeout stamped must survive a late completion.
+        """
         SubagentExecutor = classes["SubagentExecutor"]
         SubagentStatus = classes["SubagentStatus"]
 
@@ -2670,19 +2676,75 @@ class TestCooperativeCancellation:
 
             result = executor_module._background_tasks[task_id]
             assert result.cancel_event.wait(timeout=3), "timeout handler did not request cancellation"
-            assert result.status.value == SubagentStatus.TIMED_OUT.value
-            timed_out_error = result.error
-            timed_out_completed_at = result.completed_at
+            # Salvaged: the stream produced "late completion" before the cut-off.
+            assert result.status.value == SubagentStatus.COMPLETED.value
+            assert result.result == "late completion"
+            assert result.stop_reason == "time_capped"
+            stamped_result = result.result
+            stamped_completed_at = result.completed_at
 
             finish_stream.set()
             assert execution_done.wait(timeout=3), "execution worker did not finish"
 
         result = executor_module._background_tasks.get(task_id)
         assert result is not None
-        assert result.status.value == SubagentStatus.TIMED_OUT.value
-        assert result.result is None
-        assert result.error == timed_out_error
-        assert result.completed_at == timed_out_completed_at
+        assert result.status.value == SubagentStatus.COMPLETED.value
+        assert result.stop_reason == "time_capped"
+        assert result.result == stamped_result
+        assert result.completed_at == stamped_completed_at
+
+    def test_timeout_without_usable_output_still_times_out(self, executor_module, classes, msg):
+        """With nothing salvageable, the timeout path keeps its original TIMED_OUT contract.
+
+        Only assistant turns are captured, so a stream that produced no
+        AIMessage leaves ``ai_messages`` empty and there is no partial to
+        recover. The lead must still be told the subagent timed out rather
+        than receiving a bogus success.
+        """
+        SubagentExecutor = classes["SubagentExecutor"]
+        SubagentStatus = classes["SubagentStatus"]
+
+        short_config = classes["SubagentConfig"](
+            name="test-agent",
+            description="Test agent",
+            system_prompt="You are a test agent.",
+            max_turns=10,
+            timeout_seconds=0.05,
+        )
+
+        first_chunk_seen = threading.Event()
+        finish_stream = threading.Event()
+
+        async def mock_astream(*args, **kwargs):
+            # No AIMessage anywhere: nothing for the salvage to find.
+            yield {"messages": [msg.human("Task")]}
+            first_chunk_seen.set()
+            deadline = asyncio.get_running_loop().time() + 5
+            while not finish_stream.is_set():
+                if asyncio.get_running_loop().time() >= deadline:
+                    break
+                await asyncio.sleep(0.001)
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+
+        executor = SubagentExecutor(
+            config=short_config,
+            tools=[],
+            thread_id="test-thread",
+            trace_id="test-trace",
+        )
+
+        with patch.object(executor, "_create_agent", return_value=mock_agent):
+            task_id = executor.execute_async("Task")
+            assert first_chunk_seen.wait(timeout=3), "stream did not yield initial chunk"
+            result = executor_module._background_tasks[task_id]
+            assert result.cancel_event.wait(timeout=3), "timeout handler did not request cancellation"
+            assert result.status.value == SubagentStatus.TIMED_OUT.value
+            assert result.result is None
+            assert result.stop_reason is None
+            assert "timed out" in (result.error or "").lower()
+            finish_stream.set()
 
     def test_cleanup_removes_cancelled_task(self, executor_module, classes):
         """Test that cleanup removes a CANCELLED task (terminal state)."""
