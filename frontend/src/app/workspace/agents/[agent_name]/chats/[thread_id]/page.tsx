@@ -94,6 +94,7 @@ export default function AgentChatPage() {
 
   const {
     thread,
+    activeRunId,
     sendMessage,
     regenerateMessage,
     editAndRegenerateMessage,
@@ -329,6 +330,7 @@ export default function AgentChatPage() {
                   testId="main-message-list"
                   threadId={threadId}
                   thread={thread}
+                  activeRunId={activeRunId}
                   paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
                   hasMoreHistory={hasMoreHistory}
                   loadMoreHistory={loadMoreHistory}

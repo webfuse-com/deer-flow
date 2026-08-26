@@ -33,6 +33,7 @@ import { messageToStep } from "../tasks/steps";
 import type { UploadedFileInfo } from "../uploads";
 import { promptInputFilePartToFile, uploadFiles } from "../uploads";
 
+import { useActiveRunRejoin } from "./active-run-rejoin";
 import {
   branchThreadFromTurn,
   fetchThreadTokenUsage,
@@ -1871,6 +1872,17 @@ export function useThreadStream({
     },
   });
 
+  // Reattach an in-flight run when the SDK's same-tab reconnect key is absent
+  // (new tab, closed browser, shared link) so a reopened thread resumes its
+  // live stream instead of rendering stale history with phantom-failed
+  // subtasks. Returns the rejoined run id for the pending-subtask fallback.
+  const activeRunId = useActiveRunRejoin({
+    threadId: onStreamThreadId,
+    joinStream: thread.joinStream,
+    isLoading: thread.isLoading,
+    isMock,
+  });
+
   const stopThread = useCallback(async () => {
     const stoppedThreadId =
       threadIdRef.current ?? displayThreadId ?? threadId ?? null;
@@ -2590,6 +2602,7 @@ export function useThreadStream({
 
   return {
     thread: mergedThread,
+    activeRunId,
     pendingUsageMessages,
     sendMessage,
     regenerateMessage,

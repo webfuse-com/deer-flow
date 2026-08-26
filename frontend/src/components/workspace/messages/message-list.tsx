@@ -265,6 +265,7 @@ export function MessageList({
   testId,
   threadId,
   thread,
+  activeRunId = null,
   paddingBottom = MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
   tokenUsageInlineMode = "off",
   hasMoreHistory,
@@ -286,6 +287,8 @@ export function MessageList({
   testId?: string;
   threadId: string;
   thread: BaseStream<AgentThreadState>;
+  /** Rejoined in-flight run id, used to keep dangling subtask calls in_progress. */
+  activeRunId?: string | null;
   paddingBottom?: number;
   tokenUsageInlineMode?: TokenUsageInlineMode;
   hasMoreHistory?: boolean;
@@ -1161,6 +1164,8 @@ export function MessageList({
                           taskId,
                           group.messages,
                           groupIsLoading,
+                          (message as { run_id?: string }).run_id ===
+                            activeRunId,
                         );
                         const task: Subtask = {
                           id: taskId,

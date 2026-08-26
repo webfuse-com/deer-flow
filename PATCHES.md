@@ -82,6 +82,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#64](#patch-64) | Config-gated subagent delegation posture | config-expressed | 09af0482 |
 | [#65](#patch-65) | Simplified shared UI + serialized Telegram stage cleanup | argus-edit | this PR |
 | [#66](#patch-66) | Salvage partial subagent work on timeout + per-run wall-clock deadline | generic-upstreamable | this PR |
+| [#67](#patch-67) | Rejoin in-flight run on WebUI reload + disconnect-safe viewer joins | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1390,6 +1391,58 @@ carry budget ledger.
 - Delete-when: with #60's `always_bind` alias, when upstream ships an
   equivalent pin list.
 - Upstream status: none sent; generic candidate together with #60.
+
+## Patch #67
+
+**Patch #67 - Rejoin an in-flight run on WebUI reload + disconnect-safe viewer joins**
+
+- Class: generic-upstreamable (frontend-new-file + edits to upstream
+  `hooks.ts`/`message-list.tsx`/`subtask-result.ts`/`api-client.ts` +
+  `0`-default backend param on existing join endpoints).
+- Intent: #59 made WebUI runs survive navigation (`onDisconnect: continue`),
+  but the only reload-rejoin path was the SDK's `reconnectOnMount`, which reads
+  a `sessionStorage` key written only by the submitting tab. A new tab, closed
+  browser, or shared link has no key, so reopening a thread whose run is still
+  active server-side renders stale history: `isLoading` stays false, the last
+  turn looks settled ("Completed in …"), and dangling `task` tool calls surface
+  as "Subtask failed" — even though the subagents are still running.
+  This adds `useActiveRunRejoin`: on mount, when no stream is live and the SDK
+  same-tab key is absent, it lists the thread's runs, rejoins the newest
+  active one via the SDK `joinStream` (writing the reconnect key so Stop/cancel
+  keep working), and exposes its id. Existing machinery owns every race:
+  terminal-before-join (api-client preflight skips), evicted buffer
+  (`stream_replay_gap` recovery), other-worker 409 (inactive).
+  Backend safety: channel/scheduled runs are created with `on_disconnect=cancel`
+  (SDK default when `stream_resumable` is unset), so a viewer that joined such a
+  run and navigated away would have cancelled it. The join/stream endpoints now
+  honor a tristate `cancel_on_disconnect` query param (None = run's own policy,
+  false = never, true = cancel); the SDK always sends `cancel_on_disconnect=0`
+  on `joinStream`, so viewer rejoins never abort work they did not start.
+  Frontend fallback: `derivePendingSubtaskStatus` gains `owningRunIsActive`;
+  a dangling call whose owning run is the rejoined active run renders
+  `in_progress` instead of `failed`, covering the pre-`isLoading`-flip window
+  and join-failure degradation.
+- Files: `frontend/src/core/threads/active-run-rejoin.ts` (NEW),
+  `frontend/src/core/threads/hooks.ts` (+hook call, +`activeRunId` return),
+  `frontend/src/core/api/api-client.ts` (export `rememberReconnectRun`),
+  `frontend/src/components/workspace/messages/message-list.tsx` (+prop,
+  pass `owningRunIsActive`), `frontend/src/components/workspace/{chats/chat-page,
+  sidecar/sidecar-panel}.tsx` +
+  `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`
+  (thread `activeRunId`), `frontend/src/core/tasks/subtask-result.ts`
+  (+param), `backend/app/gateway/services.py` (`_should_cancel_on_disconnect`
+  + `sse_consumer` override), `backend/app/gateway/routers/thread_runs.py`
+  (`join_run`/`stream_existing_run` +tristate param).
+- Tests: `backend/tests/test_gateway_services.py` (resolver + 4-case
+  parametrized override), `frontend/tests/unit/core/threads/active-run-rejoin.test.ts`
+  (`pickActiveRun`), `...active-run-rejoin.dom.test.tsx` (5 rejoin-hook cases),
+  `frontend/tests/unit/core/tasks/subtask-result.test.ts` (+4 fallback cases).
+- Delete-when: upstream `@langchain/langgraph-sdk` `useStream` reconnects to an
+  active run discovered at runtime (not just a same-tab sessionStorage key),
+  and the join endpoints honor `cancel_on_disconnect` upstream.
+- Upstream status: none sent. Supersedes the unmerged #42 `isLastGroup`
+  approach by fixing the root cause (rejoin) plus a scoped fallback; #42's
+  commit is not in argus history.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
