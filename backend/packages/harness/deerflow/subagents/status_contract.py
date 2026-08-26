@@ -69,12 +69,13 @@ SUBAGENT_STATUS_VALUES: tuple[SubagentStatusValue, ...] = (
 
 #: Why a guardrail cap ended a run early. Carried on the additive
 #: ``subagent_stop_reason`` field, never as a status enum value.
-SubagentStopReasonValue = Literal["token_capped", "turn_capped", "loop_capped"]
+SubagentStopReasonValue = Literal["token_capped", "turn_capped", "loop_capped", "time_capped"]
 
 SUBAGENT_STOP_REASON_VALUES: tuple[SubagentStopReasonValue, ...] = (
     "token_capped",
     "turn_capped",
     "loop_capped",
+    "time_capped",
 )
 
 #: Human-readable label folded into the model-visible result text when a cap
@@ -83,6 +84,7 @@ _STOP_REASON_LABELS: dict[SubagentStopReasonValue, str] = {
     "token_capped": "token budget",
     "turn_capped": "turn budget",
     "loop_capped": "repeated tool-call loop",
+    "time_capped": "wall-clock timeout",
 }
 
 #: Statuses that carry a recoverable result in ``subagent_result_brief`` /

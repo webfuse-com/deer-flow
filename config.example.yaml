@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 34
+config_version: 35
 
 # ============================================================================
 # Logging
@@ -1160,6 +1160,28 @@ loop_detection:
 #     - write_todos
 #     - present_files
 #     - task
+
+# ============================================================================
+# Per-Run Wall-Clock Deadline
+# ============================================================================
+# Bounds how long a single run may take, on the one axis a person actually
+# feels. Complements rather than replaces token_budget: cumulative token
+# counting grows roughly quadratically with turn count, so a cap tight enough
+# to catch a runaway also truncates a legitimate deep exploration mid-artifact.
+# Wall clock is flat.
+#
+# The stop is graceful, not a kill. At warn_at_seconds one wrap-up message is
+# injected; at wall_clock_seconds the agent's tool calls are stripped so it
+# produces a final answer from work already done, and the run is stamped
+# stop_reason=time_capped. A partial deliverable beats a dead thread.
+#
+# Caveat: this is evaluated between model calls, so a run wedged inside one
+# very long tool call will overrun the deadline until that call returns.
+
+# run_limits:
+#   enabled: false
+#   wall_clock_seconds: 1800   # hard deadline for one run
+#   warn_at_seconds: 1200      # must be < wall_clock_seconds
 
 # ============================================================================
 # Read-Before-Write File Gate (issue #3857)

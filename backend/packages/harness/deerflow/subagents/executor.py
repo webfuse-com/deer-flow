@@ -1294,10 +1294,30 @@ class SubagentExecutor:
                     logger.error(f"[trace={self.trace_id}] Subagent {self.config.name} execution timed out after {self.config.timeout_seconds}s")
                     # Signal cooperative cancellation and cancel the future
                     result.cancel_event.set()
-                    result.try_set_terminal(
-                        SubagentStatus.TIMED_OUT,
-                        error=f"Execution timed out after {self.config.timeout_seconds} seconds",
-                    )
+                    # Salvage whatever the subagent managed to say before the
+                    # wall clock cut it off, exactly as the GraphRecursionError
+                    # path salvages a turn-capped run. Without this the lead
+                    # receives only "Task timed out." and every message the
+                    # subagent produced is dropped when cleanup_background_task
+                    # frees the buffer -- on thread 5a3be3f1 that discarded
+                    # three ~10-minute research runs and ~28M tokens of work.
+                    # A capped run with usable output is `completed` +
+                    # `stop_reason`, which is how the status contract already
+                    # models token/turn/loop caps, so no consumer needs to
+                    # change to benefit.
+                    usable_partial = _last_assistant_text_from_captured(result.ai_messages)
+                    if usable_partial is not None:
+                        logger.warning(f"[trace={self.trace_id}] Subagent {self.config.name} timed out; recovering partial result ({len(usable_partial)} chars)")
+                        result.try_set_terminal(
+                            SubagentStatus.COMPLETED,
+                            result=usable_partial,
+                            stop_reason="time_capped",
+                        )
+                    else:
+                        result.try_set_terminal(
+                            SubagentStatus.TIMED_OUT,
+                            error=f"Execution timed out after {self.config.timeout_seconds} seconds",
+                        )
                     execution_future.cancel()
             except Exception as e:
                 logger.exception(f"[trace={self.trace_id}] Subagent {self.config.name} async execution failed")
@@ -1305,6 +1325,38 @@ class SubagentExecutor:
 
         _scheduler_pool.submit(run_task)
         return execution_id
+
+
+def _last_assistant_text_from_captured(captured: list[dict[str, Any]] | None) -> str | None:
+    """Return the most recent non-empty assistant text from captured step messages.
+
+    ``result.ai_messages`` holds ``model_dump()`` dicts appended by
+    :func:`~deerflow.subagents.step_events.capture_step_message` as the subagent
+    streams, so it is populated even when the run never reaches a terminal
+    state. On the timeout path it is the only surviving record of the work.
+
+    Unlike the ``GraphRecursionError`` salvage, which inspects only the final
+    ``AIMessage``, this scans backwards for the last assistant turn that
+    actually said something. A subagent killed by the wall clock is almost
+    always mid-tool-call, so its trailing assistant message carries tool_calls
+    and empty text; the useful partial is the narration before it.
+    """
+    if not captured:
+        return None
+    for message in reversed(captured):
+        if not isinstance(message, dict) or message.get("type") != "ai":
+            continue
+        content = message.get("content")
+        # message_content_to_text falls through to str(content), so a None
+        # content would come back as the literal "None" and be salvaged as if
+        # it were real output. An assistant turn that is pure tool_calls has
+        # exactly that shape.
+        if content is None:
+            continue
+        text = message_content_to_text(content).strip()
+        if text:
+            return text
+    return None
 
 
 MAX_CONCURRENT_SUBAGENTS = 3

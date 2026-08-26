@@ -57,9 +57,13 @@ def _status_guidance(status: str, stop_reason: str | None = None) -> str:
         # (token_capped / turn_capped / loop_capped). The old contract surfaced
         # this as a separate ``max_turns_reached`` status; the additive
         # ``stop_reason`` field replaced it so v1 consumers keep working.
+        #
+        # Name the knob that actually binds: suggesting max_turns for a run the
+        # wall clock ended sends the reader to the wrong config field.
+        budget = "timeout_seconds" if stop_reason == "time_capped" else "max_turns / token_budget"
         if status == "completed":
-            return "hit a guardrail cap with a partial result; reuse the partial result, retry with a tighter scope, or raise the per-agent budget (max_turns / token_budget)"
-        return "hit a guardrail cap with no usable result; retry with a tighter scope or raise the per-agent budget (max_turns / token_budget)"
+            return f"hit a guardrail cap with a partial result; reuse the partial result, retry with a tighter scope, or raise the per-agent budget ({budget})"
+        return f"hit a guardrail cap with no usable result; retry with a tighter scope or raise the per-agent budget ({budget})"
     if status == "in_progress":
         return "already delegated; do NOT delegate again; wait for or build on the result"
     if status == "completed":

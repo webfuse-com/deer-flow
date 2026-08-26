@@ -652,6 +652,17 @@ def build_middlewares(
     if loop_detection_config.enabled:
         middlewares.append(LoopDetectionMiddleware.from_config(loop_detection_config))
 
+    # RunDeadlineMiddleware - enforce a per-run wall-clock deadline. Sits next
+    # to the token budget because it is the same shape of guard (warn, then a
+    # graceful tool-call-stripping stop) on a different axis: wall clock rather
+    # than cumulative tokens. Stacks that disable the token budget because
+    # cumulative counting truncates legitimate deep work still get a ceiling.
+    run_limits_config = resolved_app_config.run_limits
+    if run_limits_config.enabled:
+        from deerflow.agents.middlewares.run_deadline_middleware import RunDeadlineMiddleware
+
+        middlewares.append(RunDeadlineMiddleware.from_config(run_limits_config))
+
     # TokenBudgetMiddleware - enforce per-run token limits
     token_budget_config = resolved_app_config.token_budget
     if token_budget_config.enabled:
