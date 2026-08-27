@@ -220,7 +220,7 @@ export function clearReconnectRun(
   }
 }
 
-function rememberReconnectRun(
+export function rememberReconnectRun(
   threadId: string | null | undefined,
   runId: string,
 ): void {

@@ -982,7 +982,20 @@ async def cancel_run(
 
 @router.get("/{thread_id}/runs/{run_id}/join")
 @require_permission("runs", "read", owner_check=True)
-async def join_run(thread_id: ThreadId, run_id: str, request: Request) -> StreamingResponse:
+async def join_run(
+    thread_id: ThreadId,
+    run_id: str,
+    request: Request,
+    cancel_on_disconnect: bool | None = Query(
+        default=None,
+        description=(
+            "Override the run's on_disconnect policy for this joined viewer. "
+            "None (absent) keeps the run's own policy; false never cancels on "
+            "this consumer's disconnect; true cancels. The LangGraph SDK always "
+            "sends cancel_on_disconnect=0 (false) on joinStream."
+        ),
+    ),
+) -> StreamingResponse:
     """Join an existing run's SSE stream."""
     run_mgr = get_run_manager(request)
     record = await run_mgr.get(run_id)
@@ -993,7 +1006,7 @@ async def join_run(thread_id: ThreadId, run_id: str, request: Request) -> Stream
         raise HTTPException(status_code=409, detail=f"Run {run_id} is not active on this worker and cannot be streamed")
 
     return StreamingResponse(
-        sse_consumer(bridge, record, request, run_mgr),
+        sse_consumer(bridge, record, request, run_mgr, cancel_on_disconnect=cancel_on_disconnect),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1016,6 +1029,15 @@ async def stream_existing_run(
     request: Request,
     action: Literal["interrupt", "rollback"] | None = Query(default=None, description="Cancel action"),
     wait: int = Query(default=0, description="Block until cancelled (1) or return immediately (0)"),
+    cancel_on_disconnect: bool | None = Query(
+        default=None,
+        description=(
+            "Override the run's on_disconnect policy for this joined viewer. "
+            "None (absent) keeps the run's own policy; false never cancels on "
+            "this consumer's disconnect; true cancels. The LangGraph SDK always "
+            "sends cancel_on_disconnect=0 (false) on joinStream."
+        ),
+    ),
 ):
     """Join an existing run's SSE stream (GET), or cancel-then-stream (POST).
 
@@ -1066,7 +1088,7 @@ async def stream_existing_run(
             return Response(status_code=204 if completed else 202)
 
     return StreamingResponse(
-        sse_consumer(bridge, record, request, run_mgr),
+        sse_consumer(bridge, record, request, run_mgr, cancel_on_disconnect=cancel_on_disconnect),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

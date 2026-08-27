@@ -201,8 +201,20 @@ export function derivePendingSubtaskStatus(
   toolCallId: string | undefined,
   messages: Message[],
   isCurrentTurnLoading: boolean,
+  /**
+   * True when the `task` tool call's owning run is known to still be active
+   * server-side (e.g. a rejoined in-flight run discovered on reload). A
+   * dangling call — no ToolMessage result yet — then renders `in_progress`
+   * instead of `failed`, covering the window before the joined stream flips
+   * `isLoading` and the join-failure degradation. False/unknown keeps the
+   * legacy default so a run that crashed with no result still surfaces failed.
+   */
+  owningRunIsActive = false,
 ): SubtaskStatus {
   if (isCurrentTurnLoading || hasSubtaskToolResult(toolCallId, messages)) {
+    return "in_progress";
+  }
+  if (owningRunIsActive) {
     return "in_progress";
   }
   return "failed";

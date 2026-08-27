@@ -152,6 +152,92 @@ async def test_sse_consumer_emits_gap_without_cancelling_run():
             await record.task
 
 
+def test_should_cancel_on_disconnect_resolver():
+    """Override wins over the run's own policy; None keeps the policy."""
+    from app.gateway.services import _should_cancel_on_disconnect
+    from deerflow.runtime import DisconnectMode
+
+    cancel_rec = SimpleNamespace(on_disconnect=DisconnectMode.cancel)
+    continue_rec = SimpleNamespace(on_disconnect=DisconnectMode.continue_)
+
+    # Absent override: the run's own on_disconnect mode decides.
+    assert _should_cancel_on_disconnect(cancel_rec, None) is True
+    assert _should_cancel_on_disconnect(continue_rec, None) is False
+    # Explicit override always wins, regardless of the run's mode.
+    assert _should_cancel_on_disconnect(cancel_rec, False) is False
+    assert _should_cancel_on_disconnect(continue_rec, True) is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("on_disconnect", "override", "expect_cancelled"),
+    [
+        # Absent override honour's the run's own policy: cancel-mode cancels,
+        # continue-mode does not.
+        ("cancel", None, True),
+        ("continue", None, False),
+        # A joined viewer opts out explicitly -> a cancel-mode run survives the
+        # viewer's disconnect. This is the core safety fix: the LangGraph SDK
+        # always sends cancel_on_disconnect=0 (False) on joinStream.
+        ("cancel", False, False),
+        # An explicit True forces cancel even for a continue-mode run.
+        ("continue", True, True),
+    ],
+)
+async def test_sse_consumer_cancel_on_disconnect_override(
+    on_disconnect,
+    override,
+    expect_cancelled,
+):
+    """A per-request override gates whether a disconnect cancels the run."""
+    from app.gateway.services import sse_consumer
+    from deerflow.runtime import DisconnectMode, MemoryStreamBridge, RunManager, RunStatus
+
+    bridge = MemoryStreamBridge(queue_maxsize=4)
+    run_manager = RunManager()
+    record = await run_manager.create("thread-disc", on_disconnect=DisconnectMode(on_disconnect))
+    await run_manager.set_status(record.run_id, RunStatus.running)
+    await bridge.publish(record.run_id, "event-1", {"step": 1})
+
+    worker_started = asyncio.Event()
+
+    async def _pending_worker() -> None:
+        worker_started.set()
+        await asyncio.Event().wait()
+
+    record.task = asyncio.create_task(_pending_worker())
+    await worker_started.wait()
+
+    class _DisconnectedRequest:
+        headers = {}
+
+        async def is_disconnected(self) -> bool:
+            return True
+
+    try:
+        # The consumer receives the published event, then breaks on the
+        # disconnect probe; the finally block applies the resolved policy.
+        async for _ in sse_consumer(
+            bridge,
+            record,
+            _DisconnectedRequest(),
+            run_manager,
+            cancel_on_disconnect=override,
+        ):
+            pass
+    finally:
+        record.task.cancel()
+        with suppress(asyncio.CancelledError):
+            await record.task
+
+    if expect_cancelled:
+        assert record.status == RunStatus.interrupted
+        assert record.abort_event.is_set()
+    else:
+        assert record.status == RunStatus.running
+        assert not record.abort_event.is_set()
+
+
 def test_sanitize_log_param_strips_control_characters():
     from app.gateway.utils import sanitize_log_param
 

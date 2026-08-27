@@ -132,6 +132,30 @@ describe("derivePendingSubtaskStatus", () => {
       "in_progress",
     );
   });
+
+  it("keeps a dangling call in progress when its owning run is still active", () => {
+    const messages = [{ type: "ai" }] as Message[];
+
+    expect(
+      derivePendingSubtaskStatus("call_task_1", messages, false, true),
+    ).toBe("in_progress");
+  });
+
+  it("still fails a dangling call whose owning run is not known active", () => {
+    const messages = [{ type: "ai" }] as Message[];
+
+    expect(
+      derivePendingSubtaskStatus("call_task_1", messages, false, false),
+    ).toBe("failed");
+  });
+
+  it("loading takes precedence over the owning-run signal", () => {
+    const messages = [{ type: "ai" }] as Message[];
+
+    expect(
+      derivePendingSubtaskStatus("call_task_1", messages, true, false),
+    ).toBe("in_progress");
+  });
 });
 
 /**

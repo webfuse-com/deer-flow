@@ -1338,17 +1338,42 @@ async def launch_scheduled_thread_run(
     return {"run_id": record.run_id, "thread_id": record.thread_id}
 
 
+def _should_cancel_on_disconnect(
+    record: RunRecord,
+    override: bool | None,
+) -> bool:
+    """Resolve whether this consumer's disconnect cancels the run.
+
+    An explicit ``cancel_on_disconnect`` request parameter wins over the run's
+    own ``on_disconnect`` mode. The creating request's policy is the default
+    (``override is None``), but a viewer that *joined* an existing run opts in
+    or out explicitly. The LangGraph SDK's ``joinStream`` always sends
+    ``cancel_on_disconnect=0`` (parsec: ``False``), so reattaching viewers —
+    including the WebUI reloading a thread mid-run — never aborts work they did
+    not start, even for ``cancel``-mode channel/scheduled runs.
+    """
+    if override is not None:
+        return override
+    return record.on_disconnect == DisconnectMode.cancel
+
+
 async def sse_consumer(
     bridge: StreamBridge,
     record: RunRecord,
     request: Request,
     run_mgr: RunManager,
+    cancel_on_disconnect: bool | None = None,
 ):
     """Async generator that yields SSE frames from the bridge.
 
     The ``finally`` block implements ``on_disconnect`` semantics:
     - ``cancel``: abort the background task on client disconnect.
     - ``continue``: let the task run; events are discarded.
+
+    ``cancel_on_disconnect`` is a per-request override of the run'sown
+    ``on_disconnect`` mode for *joined* consumers (viewers). ``None`` keeps the
+    record's policy (the creating request's choice); an explicit bool forces it
+    so a viewer reattach can opt out of aborting a run it did not start.
     """
     last_event_id = request.headers.get("Last-Event-ID")
     if await _terminal_record_stream_missing(bridge, record):
@@ -1395,7 +1420,7 @@ async def sse_consumer(
         # subscribing; a plain join disconnect must not invent a new
         # cancellation request. Only apply on_disconnect to locally-owned runs.
         if not gap_emitted and not record.store_only and record.status in (RunStatus.pending, RunStatus.running):
-            if record.on_disconnect == DisconnectMode.cancel:
+            if _should_cancel_on_disconnect(record, cancel_on_disconnect):
                 await run_mgr.cancel(record.run_id)
 
 
