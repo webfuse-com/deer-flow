@@ -1,5 +1,9 @@
+import logging
+
 from deerflow.runtime.events.store.base import RunEventStore
 from deerflow.runtime.events.store.memory import MemoryRunEventStore
+
+logger = logging.getLogger(__name__)
 
 
 def make_run_event_store(config=None) -> RunEventStore:
@@ -11,7 +15,10 @@ def make_run_event_store(config=None) -> RunEventStore:
 
         sf = get_session_factory()
         if sf is None:
-            # database.backend=memory but run_events.backend=db -> fallback
+            # database.backend=memory but run_events.backend=db -> fallback.
+            # Keep the compatibility fallback, but make the loss of durable
+            # run history impossible to miss in gateway logs.
+            logger.error("run_events.backend=db but no SQL session factory is configured; falling back to in-memory run events, which are lost on restart")
             return MemoryRunEventStore()
         from deerflow.runtime.events.store.db import DbRunEventStore
 

@@ -294,6 +294,7 @@ def _reflect_state(sync_conn: Any) -> dict[str, bool]:
     return {
         "has_alembic_version": "alembic_version" in reflected,
         "has_deerflow_tables": bool(reflected & metadata_tables),
+        "has_run_events": "run_events" in reflected,
     }
 
 
@@ -533,6 +534,13 @@ async def bootstrap_schema(engine: AsyncEngine, *, backend: str, postgres_schema
         elif decision == "versioned":
             logger.info("bootstrap: branch=versioned -> upgrade head (%s)", head)
             await asyncio.to_thread(_upgrade, cfg, "head")
+            # A version stamp can survive an incomplete/manual migration. In
+            # that state Alembic considers the database current and performs
+            # no DDL, while the DB run-event store fails later at first write.
+            # Do not silently fall back or auto-create a table here: schema
+            # repair must be deliberate. Surface the drift at startup.
+            if backend == "postgres" and not state["has_run_events"]:
+                logger.error("bootstrap: versioned PostgreSQL schema is missing run_events; run_events.backend=db will fail until the schema is repaired (run the approved migration/backfill)")
 
         else:  # pragma: no cover -- defensive
             raise RuntimeError(f"bootstrap: unhandled decision {decision!r}")
