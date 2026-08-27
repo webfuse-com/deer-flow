@@ -72,6 +72,28 @@ class LoopDetectionConfig(BaseModel):
             "one long file from tripping the identical-call detector. Default 200 matches upstream."
         ),
     )
+    no_hard_stop_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "[argus] Tools exempt from loop-detection hard stops (both Layer 1 identical-hash and "
+            "Layer 2 frequency). Warnings are still injected, but the run is never force-stopped by "
+            "repeated calls to these tools. Use for cheap idempotent query tools where a hard stop "
+            "destroys more value than the loop wastes; token_budget and run_deadline remain the cost "
+            "backstops. The exemption applies only when EVERY tool in a repeated call set is listed."
+        ),
+    )
+    recoverable_retry_limit: int = Field(
+        default=24,
+        ge=1,
+        description=(
+            "[argus] Cap on identical-call repetitions that are downgraded to warnings because the "
+            "tool's most recent result was a model-recoverable soft failure (no_results, not_found, "
+            "permission, near-duplicate). At this count the loop detector hard-stops regardless. "
+            "Bounds the quadratic context cost of an identical retry loop that ignores escalating "
+            "warnings; roughly 3x a typical hard_limit. Tools in no_hard_stop_tools are exempt from "
+            "this limit too."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":

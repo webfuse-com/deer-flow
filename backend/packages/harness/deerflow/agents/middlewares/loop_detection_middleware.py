@@ -47,6 +47,39 @@ Stop-reason surfacing (#3875 Phase 2):
   the token-budget guard's so a loop-capped run surfaces as
   ``completed + loop_capped`` and the lead/ledger can tell it was capped
   without parsing result text.
+
+Result-aware hard-stop gating ([argus] patch #68):
+  A Layer-1 hard stop on identical calls is *downgraded to an escalating
+  warning* when every repeated tool's most recent result meta says the
+  failure is model-recoverable (``partial_success`` no-results bodies, or
+  ``error`` results with ``recoverable_by_model=True`` — not_found,
+  permission, unknown). Rationale: ToolProgressMiddleware deliberately keeps
+  such tools WARNED-not-BLOCKED ("the model can fix this by changing
+  strategy"), but this middleware killed the run on the identical retry
+  anyway, destroying accumulated research work mid-investigation (observed:
+  atlas-nicholas 2026-08, 8 identical ``code_search_logs`` calls answered by
+  "No log entries" ended the run with an empty final answer).
+
+  The hard stop still fires unchanged when the latest result meta is:
+  - ``success`` — an identical *successful* call is the classic runaway
+    re-read; or
+  - an unrecoverable error (auth/config/internal/rate_limited) — the retry
+    is futile; or
+  - stamped ``source=progress_middleware`` — the tool is BLOCKED by
+    ToolProgressMiddleware, so hammering it is a genuine loop; or
+  - missing entirely (pre-normalization history) — conservative default.
+
+  Downgrades are bounded: after ``recoverable_retry_limit`` identical calls
+  (default 24, ~3x a typical hard_limit) the detector stops downgrading and
+  hard-stops anyway, bounding the quadratic context cost of a loop that
+  ignores escalating warnings. ``no_hard_stop_tools`` is an absolute operator
+  opt-out (never hard-stopped, not even at the retry limit; cost is bounded
+  by token_budget and run_deadline instead).
+
+  Layer 2 (per-tool frequency) is a volume cap, not an identical-repeat
+  detector, so the meta gate does not apply to it — only
+  ``no_hard_stop_tools`` exempts there (``tool_freq_overrides`` exists for
+  legitimately high-volume tools).
 """
 
 from __future__ import annotations
@@ -67,6 +100,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
+from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
 
 if TYPE_CHECKING:
     from deerflow.config.loop_detection_config import LoopDetectionConfig
@@ -81,6 +115,7 @@ _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
 _DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
 _DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
 _DEFAULT_READ_FILE_BUCKET_SIZE = 200  # [argus] read_file line-range bucket (upstream default)
+_DEFAULT_RECOVERABLE_RETRY_LIMIT = 24  # [argus patch #68] identical recoverable retries before terminal stop
 _MAX_PENDING_WARNINGS_PER_RUN = 4
 
 
@@ -184,6 +219,22 @@ def _hash_tool_calls(tool_calls: list[dict], read_file_bucket_size: int = 200) -
 
 _WARNING_MSG = "[LOOP DETECTED] You are repeating the same tool calls. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
 
+# [argus patch #68] Actionable variants: name the tools and the repeat count
+# so the model can tell WHICH call is looping and how far it has gone.
+_TOOL_LOOP_WARNING_MSG = (
+    "[LOOP DETECTED] The same tool call(s) to {tools} have now been repeated {count} times. An identical call will not produce a different result. Vary the arguments meaningfully, or stop calling tools and produce your final answer."
+)
+
+_RECOVERABLE_RETRY_MSG = (
+    "[LOOP DETECTED] {tools} keeps returning {outcome}, and you have now repeated the identical "
+    "call {count} times.{action} Repeating the exact same arguments will not change the outcome. "
+    "Change the approach or conclude with the results collected so far."
+)
+
+_TOOL_EXEMPT_RETRY_MSG = (
+    "[LOOP DETECTED] {tools} has been called with identical arguments {count} times. This tool is exempt from the loop hard stop, but an identical call cannot produce a different result: vary the arguments or conclude with what you have."
+)
+
 _TOOL_FREQ_WARNING_MSG = (
     "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
 )
@@ -191,6 +242,40 @@ _TOOL_FREQ_WARNING_MSG = (
 _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."
 
 _TOOL_FREQ_HARD_STOP_MSG = "[FORCED STOP] Tool {tool_name} called {count} times — exceeded the per-tool safety limit. Producing final answer with results collected so far."
+
+_TOOL_FREQ_EXEMPT_MSG = (
+    "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. "
+    "This tool is exempt from the hard stop, but this volume usually means no new progress is being "
+    "made: conclude, or switch to a different approach."
+)
+
+# [argus patch #68] Flavor helpers for the downgrade warning: the outcome
+# phrase and the concrete advice derive from the tool's own stamped meta.
+_OUTCOME_PHRASES: dict[str, str] = {
+    "no_results": "no results",
+    "not_found": "not-found errors",
+    "permission": "permission errors",
+}
+
+_ACTION_HINTS: dict[str, str] = {
+    "rewrite_query": " Rewrite the query: change the search terms, filters, or scope.",
+    "try_alternative": " Try a different tool or a different approach.",
+    "summarize": " Summarize what you have gathered and conclude.",
+}
+
+
+def _tool_list(names) -> str:
+    return ", ".join(sorted(names))
+
+
+def _outcome_phrase(meta: dict) -> str:
+    if meta.get("status") == "partial_success":
+        return "no usable results"
+    return _OUTCOME_PHRASES.get(meta.get("error_type") or "", "recoverable errors")
+
+
+def _action_hint(meta: dict) -> str:
+    return _ACTION_HINTS.get(meta.get("recommended_next_action") or "", " Change the arguments or the approach.")
 
 
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
@@ -224,6 +309,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             high-frequency tools (e.g. ``bash`` in batch pipelines) without
             weakening protection on all other tools. Default: ``None``
             (no overrides).
+        no_hard_stop_tools: Tools exempt from hard stops on both layers
+            ([argus] patch #68). Warnings still fire, but repeated calls to
+            these tools never force-stop the run — cost stays bounded by the
+            token budget and run deadline. Default: ``None`` (no exemptions).
+        recoverable_retry_limit: Identical-call repetitions tolerated when the
+            latest tool result is a model-recoverable soft failure
+            ([argus] patch #68); at this count the hard stop fires anyway.
+            Default: 24.
     """
 
     def __init__(
@@ -236,6 +329,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         tool_freq_hard_limit: int = _DEFAULT_TOOL_FREQ_HARD_LIMIT,
         tool_freq_overrides: dict[str, tuple[int, int]] | None = None,
         read_file_bucket_size_lines: int = _DEFAULT_READ_FILE_BUCKET_SIZE,
+        no_hard_stop_tools: list[str] | None = None,
+        recoverable_retry_limit: int = _DEFAULT_RECOVERABLE_RETRY_LIMIT,
     ):
         super().__init__()
         self.warn_threshold = warn_threshold
@@ -245,6 +340,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self.tool_freq_warn = tool_freq_warn
         self.tool_freq_hard_limit = tool_freq_hard_limit
         self.read_file_bucket_size_lines = read_file_bucket_size_lines
+        self.recoverable_retry_limit = recoverable_retry_limit
+        self._no_hard_stop_tools: frozenset[str] = frozenset(no_hard_stop_tools or ())
         self._tool_freq_overrides: dict[str, tuple[int, int]] = tool_freq_overrides or {}
         # Layer 2's windowed frequency count can never exceed the deque length,
         # so the deque MUST be at least as long as the largest hard limit it is
@@ -307,6 +404,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             tool_freq_hard_limit=config.tool_freq_hard_limit,
             tool_freq_overrides={name: (o.warn, o.hard_limit) for name, o in config.tool_freq_overrides.items()},
             read_file_bucket_size_lines=config.read_file_bucket_size_lines,
+            no_hard_stop_tools=list(config.no_hard_stop_tools),
+            recoverable_retry_limit=config.recoverable_retry_limit,
         )
 
     def _get_thread_id(self, runtime: Runtime) -> str:
@@ -468,6 +567,24 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
             # --- Layer 1: hash-based (identical call sets) ---
             if count >= self.hard_limit:
+                # [argus patch #68] Result-aware gating: when every repeated
+                # tool's latest result is a model-recoverable soft failure (or
+                # the tool is exempt via no_hard_stop_tools), downgrade the
+                # hard stop to an escalating warning instead of killing the
+                # run mid-investigation. See the module docstring for the
+                # full rationale and the conservative fallbacks.
+                downgrade_msg = self._hard_stop_downgrade_message(messages, tool_calls, count)
+                if downgrade_msg is not None:
+                    logger.warning(
+                        "Loop hard limit reached — downgraded to warning (recoverable retry or exempt tool)",
+                        extra={
+                            "thread_id": thread_id,
+                            "call_hash": call_hash,
+                            "count": count,
+                            "tools": tool_names,
+                        },
+                    )
+                    return downgrade_msg, False
                 logger.error(
                     "Loop hard limit reached — forcing stop",
                     extra={
@@ -492,7 +609,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                             "tools": tool_names,
                         },
                     )
-                    return _WARNING_MSG, False
+                    # [argus patch #68] Name the tools and the count so the
+                    # model can tell WHICH call is looping.
+                    return (
+                        _TOOL_LOOP_WARNING_MSG.format(tools=_tool_list(set(tool_names)), count=count),
+                        False,
+                    )
 
             # --- Layer 2: per-tool-type frequency (windowed) ---
             tool_name_history = self._tool_name_history[thread_id]
@@ -523,6 +645,22 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     eff_warn, eff_hard = self.tool_freq_warn, self.tool_freq_hard_limit
 
                 if freq_count >= eff_hard:
+                    # [argus patch #68] no_hard_stop_tools exempts from the
+                    # Layer-2 volume cap too: warn, never stop. (The result
+                    # meta gate deliberately does NOT apply here — Layer 2
+                    # fires on varied arguments, so there is no single
+                    # "previous identical result" to consult; per-tool
+                    # tool_freq_overrides exist for legitimately chatty tools.)
+                    if name in self._no_hard_stop_tools:
+                        logger.warning(
+                            "Tool frequency hard limit reached — tool exempt via no_hard_stop_tools, downgrading to warning",
+                            extra={
+                                "thread_id": thread_id,
+                                "tool_name": name,
+                                "count": freq_count,
+                            },
+                        )
+                        return _TOOL_FREQ_EXEMPT_MSG.format(tool_name=name, count=freq_count), False
                     logger.error(
                         "Tool frequency hard limit reached — forcing stop",
                         extra={
@@ -552,6 +690,111 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     self._tool_freq_warned[thread_id].discard(name)
 
         return None, False
+
+    # ------------------------------------------------------------------
+    # [argus patch #68] Result-aware hard-stop gating
+
+    def _hard_stop_downgrade_message(self, messages: list, tool_calls: list[dict], count: int) -> str | None:
+        """Return an escalating warning when the Layer-1 hard stop should be
+        downgraded instead of killing the run, or ``None`` to keep the stop.
+
+        Downgrade applies when EVERY tool in the repeated call set either:
+
+        - is listed in ``no_hard_stop_tools`` (absolute operator opt-out —
+          warns forever, immune even to ``recoverable_retry_limit``), or
+        - has a most-recent result whose stamped ``deerflow_tool_meta`` says
+          the failure is model-recoverable (``partial_success`` no-results
+          bodies, or ``error`` with ``recoverable_by_model=True``), AND the
+          repeat count is still below ``recoverable_retry_limit``.
+
+        Conservative by construction: missing meta, meta stamped by the
+        progress middleware (tool BLOCKED), successful results, unknown
+        statuses, and partial-exemption call sets all return ``None`` so the
+        hard stop proceeds exactly as before.
+        """
+        names = {tc.get("name", "") for tc in tool_calls if tc.get("name")}
+        if not names:
+            return None
+
+        if names <= self._no_hard_stop_tools:
+            return _TOOL_EXEMPT_RETRY_MSG.format(tools=_tool_list(names), count=count)
+
+        if count < self.recoverable_retry_limit:
+            metas = self._latest_result_meta_per_tool(messages, names)
+            if metas is not None and all(self._meta_is_recoverable_retry(meta) for meta in metas.values()):
+                # Any representative meta flavors the message; sets that got
+                # here agree on recoverability, and the action hint is most
+                # useful when taken from the (shared) first result.
+                representative = next(iter(metas.values()))
+                return _RECOVERABLE_RETRY_MSG.format(
+                    tools=_tool_list(names),
+                    outcome=_outcome_phrase(representative),
+                    count=count,
+                    action=_action_hint(representative),
+                )
+
+        return None
+
+    @staticmethod
+    def _latest_result_meta_per_tool(messages: list, names: set[str]) -> dict[str, dict] | None:
+        """Most recent ``deerflow_tool_meta`` per tool name.
+
+        Scans backward through the visible message history and keeps, for
+        each name, the meta of its most recent ToolMessage. Returns ``None``
+        when any tool has no meta-bearing ToolMessage in the history (e.g.
+        history compacted away, or a result that skipped normalization) so
+        callers fall back to the conservative hard stop.
+
+        ``messages`` is the state channel (ending with the just-emitted
+        AIMessage); the most recent ToolMessage per name is the answer to the
+        previous identical call, which is exactly the retry the gate is
+        judging.
+        """
+        metas: dict[str, dict] = {}
+        for msg in reversed(messages):
+            if len(metas) == len(names):
+                break
+            if getattr(msg, "type", None) != "tool":
+                continue
+            name = getattr(msg, "name", None)
+            if name in names and name not in metas:
+                kwargs = getattr(msg, "additional_kwargs", None) or {}
+                meta = kwargs.get(TOOL_META_KEY)
+                if not isinstance(meta, dict):
+                    # Most recent result for this tool carries no meta —
+                    # treat as "cannot judge" rather than guessing.
+                    return None
+                metas[name] = meta
+        if len(metas) != len(names):
+            return None
+        return metas
+
+    @staticmethod
+    def _meta_is_recoverable_retry(meta: dict) -> bool:
+        """True when the stamped result says the model could fix the failure
+        by changing strategy — a nudge case, not a kill case.
+
+        Mirrors ToolProgressMiddleware's own recoverability contract
+        (recoverable_by_model=True categories never BLOCK there) so the two
+        guards stop disagreeing about the same retry.
+        """
+        if meta.get("source") == "progress_middleware":
+            # The tool is BLOCKED by ToolProgressMiddleware. That meta is
+            # stamped recoverable=True ("summarize") but hammering a blocked
+            # tool is a genuine loop — the block IS the signal to stop.
+            return False
+        status = meta.get("status")
+        if status == "partial_success":
+            # no_results-style empty bodies (patch #68 marker set).
+            return True
+        if status == "success":
+            # An identical *successful* call is the classic runaway re-read;
+            # nothing failed that the model could fix by retrying.
+            return False
+        if status == "error":
+            return bool(meta.get("recoverable_by_model", False))
+        # Unknown status — conservative.
+        return False
 
     @staticmethod
     def _append_text(content: str | list | None, text: str) -> str | list:

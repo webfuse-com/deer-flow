@@ -28,6 +28,23 @@ _PARTIAL_MARKERS = (
     "no results found",
     "no content found",
     "no images found",
+    # [argus patch #68] Real empty-result phrasings from Argus fleet tools.
+    # Same intent as the three above: status="success" bodies that carry an
+    # empty-result meaning must classify as partial_success/rewrite_query so
+    # ToolProgressMiddleware stagnation AND the loop-detection result gate
+    # (patch #68) both treat identical retries as recoverable soft failures.
+    # Grounded in observed tool output: codesearch MCP ("No log entries for
+    # ...", "No code matches for ..."), github tools ("No matching issues
+    # in ..."), SQL-ish tools ("Query returned no rows.").
+    "no results",
+    "no log entries",
+    "no code matches",
+    "no matches found",
+    "no matching",
+    "no entries",
+    "no events",
+    "no rows",
+    "nothing found",
 )
 
 
@@ -62,7 +79,9 @@ _ERROR_RULES: list[tuple[list[str], dict[str, object]]] = [
         {"error_type": "permission", "recoverable_by_model": True, "recommended_next_action": "try_alternative"},
     ),
     (
-        ["no results found", "no content found", "no images found", "no results"],
+        # [argus patch #68] Keywords mirror the _PARTIAL_MARKERS additions so
+        # error-path and success-path classify the same phrasings as no_results.
+        ["no results found", "no content found", "no images found", "no results", "no log entries", "no code matches", "no matches found", "no matching", "no entries", "no events", "no rows", "nothing found"],
         {"error_type": "no_results", "recoverable_by_model": True, "recommended_next_action": "rewrite_query"},
     ),
     (
