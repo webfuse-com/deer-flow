@@ -83,6 +83,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#65](#patch-65) | Simplified shared UI + serialized Telegram stage cleanup | argus-edit | this PR |
 | [#66](#patch-66) | Salvage partial subagent work on timeout + per-run wall-clock deadline | generic-upstreamable | this PR |
 | [#67](#patch-67) | Rejoin in-flight run on WebUI reload + disconnect-safe viewer joins | generic-upstreamable | this PR |
+| [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1443,6 +1444,70 @@ carry budget ledger.
 - Upstream status: none sent. Supersedes the unmerged #42 `isLastGroup`
   approach by fixing the root cause (rejoin) plus a scoped fallback; #42's
   commit is not in argus history.
+
+## Patch #68
+
+**Patch #68 - Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools`**
+
+- Class: argus-edit (behavioral edits to upstream middleware + config; the
+  `no_hard_stop_tools`/`recoverable_retry_limit` halves are config-expressed,
+  and the whole patch is a generic-upstreamable candidate).
+- Intent: Layer 1 hard-stops on identical `(tool, args)` hashes without
+  looking at WHY the model is retrying. When the tool's own stamped
+  `deerflow_tool_meta` says the failure is model-recoverable (`no_results`,
+  `not_found`, `permission`), ToolProgressMiddleware deliberately keeps the
+  tool WARNED-not-BLOCKED ("the model can fix this by changing strategy") —
+  but loop detection killed the run on the identical retry anyway. Observed:
+  atlas-nicholas 2026-08 (thread b8a3dcd1), 8 identical `code_search_logs`
+  calls each answered "No log entries for '...'" ended the whole run with an
+  empty forced final answer, destroying accumulated investigation work. As
+  the stacks operate more and more as coding harnesses, this class of
+  false-positive kill became the top source of frustration.
+  Changes:
+  1. **Result-aware gate**: a Layer-1 hard stop downgrades to an escalating
+     warning when EVERY repeated tool's most recent result meta is a
+     model-recoverable soft failure. The stop still fires unchanged for
+     `success` results (classic identical re-read runaway), unrecoverable
+     errors (auth/config/internal/rate_limited), metas stamped
+     `source=progress_middleware` (tool BLOCKED — hammering it is a real
+     loop), and missing meta (conservative).
+  2. **`recoverable_retry_limit`** (default 24, ~3x a typical hard_limit):
+     downgrades are bounded — past this many identical calls the detector
+     stops coddling and hard-stops anyway, bounding the quadratic context
+     cost of a loop that ignores escalating warnings.
+  3. **`no_hard_stop_tools`** (default `[]`): absolute per-tool opt-out from
+     hard stops on both layers (warn-only forever); cost backstops are
+     token_budget + run_deadline. Applies only when the whole repeated call
+     set is exempt.
+  4. **Layer 2 stays meta-blind** (volume cap, not identical-repeat
+     detection) — only `no_hard_stop_tools` exempts there;
+     `tool_freq_overrides` already exist for legitimately chatty tools.
+  5. **Actionable warnings**: warn/downgrade messages now name the tools and
+     the repeat count, and the downgrade message carries the meta's
+     `recommended_next_action` as concrete advice ("rewrite the query:
+     change the search terms, filters, or scope") instead of a bare
+     "wrap up".
+  6. **Empty-result markers** in `tool_result_meta.py`: `_PARTIAL_MARKERS`
+     and the `no_results` error rule grow the real fleet phrasings
+     ("no log entries", "no code matches", "no matches found", "no matching",
+     "no entries", "no events", "no rows", "nothing found", bare "no
+     results") so those bodies stamp `partial_success/rewrite_query` —
+     without this, "No log entries for ..." classified as plain `success`
+     and neither tool_progress stagnation nor the new gate could see it.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/loop_detection_middleware.py` (EDITED),
+  `backend/packages/harness/deerflow/config/loop_detection_config.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/middlewares/tool_result_meta.py` (EDITED),
+  `config.example.yaml` (EDITED, loop_detection section docs)
+- Tests: `backend/tests/test_loop_detection_middleware.py` (EDITED,
+  +`TestResultAwareHardStopGating` with 15 cases),
+  `backend/tests/test_loop_detection_config.py` (EDITED, +5),
+  `backend/tests/test_tool_result_meta.py` (EDITED, +14 parametrized)
+- Delete-when: upstream ships an equivalent result-aware hard-stop gate
+  (consulting `deerflow_tool_meta` recoverability before stripping
+  tool_calls), or upstream adopts `no_hard_stop_tools`. The marker list is
+  independently upstreamable and may land separately.
+- Upstream status: none sent (strong PR candidate; the gate rationale cites
+  Gemini CLI's loop-recovery design, which soft-recovers before killing).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

@@ -109,6 +109,62 @@ def test_no_results_suggests_rewrite_query():
 
 
 # ---------------------------------------------------------------------------
+# [argus] Patch #68: empty-result phrasings from real Argus tools
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # The exact string from the 2026-08 atlas-nicholas incident thread
+        # (codesearch MCP code_search_logs).
+        'No log entries for \'{service_name=~"^stag/.*"} |= "signup"\'.',
+        # codesearch MCP code_search_code.
+        "No code matches for 'TODO' (type symbol).",
+        # Generic empty-result phrasings across the fleet.
+        "No matches found for pattern 'foo'",
+        "No matching issues in surfly/argus.",
+        "The journal has no entries for Monday.",
+        "No events in the audit log for this window.",
+        "Query returned no rows.",
+        "Nothing found for 's20NRfZuPahDSAuL876c88YTkA'.",
+        "There are no results for the selected filters.",
+    ],
+)
+def test_empty_result_phrasings_are_partial_success(content):
+    """Tools that return status='success' with an empty-result body must be
+    stamped partial_success/rewrite_query so ToolProgressMiddleware stagnation
+    detection and the loop-detection result gate (patch #68) both see them as
+    recoverable soft failures rather than plain successes."""
+    msg = _make_msg(content, status="success")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+    assert m["status"] == "partial_success", f"expected partial_success for: {content!r}"
+    assert m["recommended_next_action"] == "rewrite_query"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'No log entries for "q".',
+        "No code matches for 'TODO'.",
+        "no matches found",
+        "no rows returned",
+        "nothing found",
+    ],
+)
+def test_empty_result_phrasings_classify_as_no_results_on_error_path(content):
+    """Error-path symmetry: the same phrasings inside an Error: message
+    classify as no_results (recoverable) rather than unknown."""
+    msg = _make_msg(f"Error: {content}", status="error")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+    assert m["status"] == "error"
+    assert m["error_type"] == "no_results"
+    assert m["recoverable_by_model"] is True
+    assert m["recommended_next_action"] == "rewrite_query"
+
+
+# ---------------------------------------------------------------------------
 # Non-standard error path (status="error", no "Error:" prefix)
 
 

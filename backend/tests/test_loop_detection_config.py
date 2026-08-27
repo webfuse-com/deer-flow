@@ -81,3 +81,24 @@ class TestLoopDetectionConfig:
     def test_read_file_bucket_size_rejects_zero(self):
         with pytest.raises(ValueError):
             LoopDetectionConfig(read_file_bucket_size_lines=0)
+
+    def test_no_hard_stop_tools_defaults_to_empty(self):
+        """[argus] Patch #68: empty default keeps upstream behavior unless a
+        deployment explicitly opts tools out of hard stops."""
+        assert LoopDetectionConfig().no_hard_stop_tools == []
+
+    def test_no_hard_stop_tools_accepts_tool_names(self):
+        config = LoopDetectionConfig(no_hard_stop_tools=["code_search_logs", "web_search"])
+        assert config.no_hard_stop_tools == ["code_search_logs", "web_search"]
+
+    def test_recoverable_retry_limit_defaults_to_24(self):
+        """[argus] Patch #68: 3x a typical hard_limit (8) of downgraded identical
+        retries before the loop detector stops coddling and hard-stops anyway."""
+        assert LoopDetectionConfig().recoverable_retry_limit == 24
+
+    def test_recoverable_retry_limit_accepts_custom_value(self):
+        assert LoopDetectionConfig(recoverable_retry_limit=40).recoverable_retry_limit == 40
+
+    def test_recoverable_retry_limit_rejects_zero(self):
+        with pytest.raises(ValueError):
+            LoopDetectionConfig(recoverable_retry_limit=0)

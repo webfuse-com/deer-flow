@@ -1135,6 +1135,22 @@ loop_detection:
   #   bash:
   #     warn: 150
   #     hard_limit: 300
+  # [argus patch #68] Identical-call hard stops are downgraded to escalating
+  # warnings when the tool's most recent result says the failure is
+  # model-recoverable (no_results / not_found / permission): the model is
+  # retrying because the tool said the query was fixable, and killing the run
+  # mid-investigation destroys accumulated work. Downgrades are bounded by
+  # recoverable_retry_limit; identical SUCCESSFUL calls, unrecoverable errors,
+  # and progress-blocked tools still hard-stop.
+  # recoverable_retry_limit: 24
+  # Tools exempt from hard stops on BOTH layers (identical-hash and frequency).
+  # Warnings still fire; the run is never force-stopped by repeated calls to
+  # these tools. Use for cheap idempotent query tools where a hard stop
+  # destroys more value than the loop wastes — token_budget and run_deadline
+  # remain the cost backstops.
+  # no_hard_stop_tools:
+  #   - code_search_logs
+  #   - web_search
 
 # ============================================================================
 # Tool Progress State Machine Configuration (RFC #3177)

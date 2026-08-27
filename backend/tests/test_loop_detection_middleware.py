@@ -20,6 +20,7 @@ from deerflow.agents.middlewares.loop_detection_middleware import (
     LoopDetectionMiddleware,
     _hash_tool_calls,
 )
+from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
 
 
 def _make_runtime(thread_id="test-thread", run_id="test-run"):
@@ -103,6 +104,47 @@ def _make_state(tool_calls=None, content=""):
 
 def _bash_call(cmd="ls"):
     return {"name": "bash", "id": f"call_{cmd}", "args": {"command": cmd}}
+
+
+def _logs_call(query='{service_name=~"^stag/.*"} |= "signup"'):
+    """A read-only log query tool call — the shape of the 2026-08 atlas-nicholas
+    incident thread (identical code_search_logs retries against 'No log entries')."""
+    return {"name": "code_search_logs", "id": "call_logs", "args": {"query": query}}
+
+
+def _result_meta(
+    status="partial_success",
+    *,
+    error_type=None,
+    recoverable=True,
+    action="rewrite_query",
+    source="content_analysis",
+):
+    """A deerflow_tool_meta payload as stamped by normalize_tool_message /
+    ToolErrorHandlingMiddleware on real tool results."""
+    return {
+        "status": status,
+        "error_type": error_type,
+        "recoverable_by_model": recoverable,
+        "recommended_next_action": action,
+        "source": source,
+    }
+
+
+def _gated_state(tool_calls, prior):
+    """State shaped like a real identical-retry loop.
+
+    ``prior`` is a list of ``(tool_name, meta_dict_or_None, result_content)``
+    tuples — the ToolMessages that answered the *previous* identical calls.
+    The state ends with the just-emitted AIMessage(tool_calls) that
+    ``after_model`` observes, so meta inspection sees the prior results.
+    """
+    msgs = [AIMessage(content="", tool_calls=tool_calls)]
+    for name, meta, content in prior:
+        kwargs = {TOOL_META_KEY: meta} if meta is not None else {}
+        msgs.append(ToolMessage(content=content, tool_call_id=f"call_{name}", name=name, additional_kwargs=kwargs))
+    msgs.append(AIMessage(content="", tool_calls=tool_calls))
+    return {"messages": msgs}
 
 
 class TestHashToolCalls:
@@ -1246,6 +1288,314 @@ class TestToolFrequencyDetection:
         assert _HARD_STOP_MSG in msg.content
 
 
+class TestResultAwareHardStopGating:
+    """[argus] Patch #68: Layer-1 hard stops consult the stamped tool-result meta.
+
+    A hard stop on identical calls is downgraded to an escalating warning when
+    every repeated tool's most recent result is a model-recoverable soft failure
+    (no_results / not_found / permission / near-duplicate) — the model is
+    retrying because the tool told it the result was fixable, and killing the
+    run mid-investigation destroys accumulated work. Unrecoverable results,
+    progress-blocked tools, identical *successful* calls, and missing meta keep
+    the hard stop (conservative default). Downgrades are bounded by
+    ``recoverable_retry_limit``; ``no_hard_stop_tools`` is an absolute opt-out.
+    """
+
+    def _drive(self, mw, runtime, state, n):
+        """Apply the same state n times; return the last result."""
+        result = None
+        for _ in range(n):
+            result = mw._apply(state, runtime)
+        return result
+
+    # -- Downgrades: recoverable soft failures ------------------------------
+
+    def test_no_results_retry_downgrades_hard_stop(self):
+        """The atlas-nicholas incident shape: identical code_search_logs calls
+        answered by 'No log entries' (partial_success / no_results). At the
+        hard limit the run must NOT be killed; an escalating warning that
+        names the tool and the repeat count is queued instead."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=4, recoverable_retry_limit=10)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        state = _gated_state(call, [("code_search_logs", _result_meta(), "No log entries for 'q'.")])
+
+        result = self._drive(mw, runtime, state, 4)  # 4th crosses hard_limit=4
+        assert result is None, "recoverable no-results retry must not hard-stop"
+        queued = mw._pending_warnings[_pending_key()]
+        assert queued, "downgrade must queue a warning"
+        last = queued[-1]
+        assert "LOOP DETECTED" in last
+        assert "code_search_logs" in last
+        assert "4 times" in last  # repeat count surfaces in the warning
+        # The run continues: no loop_capped stop reason.
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_recoverable_error_retry_downgrades_hard_stop(self):
+        """error-path metas with recoverable_by_model=True (not_found,
+        permission, unknown) also downgrade — the model can fix these by
+        changing strategy, which is exactly what the warning asks for."""
+        for meta in (
+            _result_meta(status="error", error_type="not_found", recoverable=True, action="rewrite_query", source="tool_return"),
+            _result_meta(status="error", error_type="permission", recoverable=True, action="try_alternative", source="tool_return"),
+            _result_meta(status="error", error_type="unknown", recoverable=True, action="try_alternative", source="tool_return"),
+        ):
+            mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=10)
+            runtime = _make_runtime()
+            call = [_logs_call()]
+            state = _gated_state(call, [("code_search_logs", meta, "Error: ...")])
+            result = self._drive(mw, runtime, state, 3)
+            assert result is None, f"recoverable error retry must not hard-stop: {meta}"
+            assert mw._pending_warnings[_pending_key()]
+            assert mw.consume_stop_reason("test-run") is None
+
+    def test_downgrade_warning_includes_recommended_action(self):
+        """The downgrade message carries the meta's recommended_next_action as
+        concrete advice, not a generic 'wrap up'."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=10)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        state = _gated_state(call, [("code_search_logs", _result_meta(action="rewrite_query"), "No log entries for 'q'.")])
+
+        self._drive(mw, runtime, state, 3)
+        last = mw._pending_warnings[_pending_key()][-1]
+        assert "rewrite the query" in last.lower() or "query" in last.lower()
+
+    def test_downgrade_warning_delivered_at_next_model_call(self):
+        """A downgraded (queued) warning reaches the model exactly like a
+        normal loop warning: appended after all messages via wrap_model_call,
+        keeping tool-call pairing intact."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=10)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        state = _gated_state(call, [("code_search_logs", _result_meta(), "No log entries for 'q'.")])
+        self._drive(mw, runtime, state, 3)
+
+        request = _make_request([AIMessage(content="hi")], runtime)
+        captured, handler = _capture_handler()
+        mw.wrap_model_call(request, handler)
+        sent = captured[0].messages
+        assert any(isinstance(m, HumanMessage) and "LOOP DETECTED" in m.content for m in sent)
+
+    # -- No downgrade: hard stop stays (P0 protection) ----------------------
+
+    def test_unrecoverable_error_keeps_hard_stop(self):
+        """auth/config/internal/rate_limited (recoverable_by_model=False): the
+        retry is futile — hard stop fires as before."""
+        for error_type in ("auth", "config", "internal", "rate_limited"):
+            mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+            runtime = _make_runtime()
+            call = [_logs_call()]
+            meta = _result_meta(status="error", error_type=error_type, recoverable=False, action="stop", source="tool_return")
+            state = _gated_state(call, [("code_search_logs", meta, "Error: 401 unauthorized")])
+
+            result = self._drive(mw, runtime, state, 3)
+            assert result is not None, f"unrecoverable error ({error_type}) must hard-stop"
+            assert result["messages"][0].tool_calls == []
+            assert _HARD_STOP_MSG in result["messages"][0].content
+            assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_blocked_by_progress_meta_keeps_hard_stop(self):
+        """A tool BLOCKED by ToolProgressMiddleware returns a meta stamped
+        source=progress_middleware. Hammering a blocked tool is a genuine
+        loop — the downgrade gate must NOT treat it as recoverable."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        meta = _result_meta(status="error", error_type="blocked_by_progress_guard", recoverable=True, action="summarize", source="progress_middleware")
+        state = _gated_state(call, [("code_search_logs", meta, "[TOOL_BLOCKED] ...")])
+
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_success_result_keeps_hard_stop(self):
+        """Identical call + identical SUCCESSFUL result is the classic runaway
+        (re-reading the same thing). Meta gate must not soften it."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        state = _gated_state(call, [("code_search_logs", _result_meta(status="success", action="continue"), "42 rows of logs...")])
+
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_missing_meta_keeps_hard_stop(self):
+        """ToolMessage without deerflow_tool_meta (pre-normalization history,
+        exotic result shapes): conservative — keep the hard stop."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        state = _gated_state(call, [("code_search_logs", None, "No log entries for 'q'.")])
+
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_no_toolmessage_history_keeps_hard_stop(self):
+        """State without any prior ToolMessage (the classic shape every
+        pre-existing hard-stop test uses) — conservative hard stop."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        result = self._drive(mw, runtime, _make_state(tool_calls=call), 3)
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_mixed_set_requires_all_recoverable(self):
+        """The hard-stop unit is the call SET. A set downgrades only when every
+        tool in it qualifies: one success (or missing meta) keeps the stop."""
+        recoverable = _result_meta()
+        success = _result_meta(status="success", action="continue")
+
+        # Mixed: logs is recoverable, bash succeeded identically -> hard stop.
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        mixed_calls = [_logs_call(), _bash_call()]
+        state = _gated_state(
+            mixed_calls,
+            [
+                ("code_search_logs", recoverable, "No log entries for 'q'."),
+                ("bash", success, "ok"),
+            ],
+        )
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None, "mixed set with a success result must hard-stop"
+
+        # All recoverable -> downgrade.
+        mw2 = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=10)
+        state2 = _gated_state(
+            mixed_calls,
+            [
+                ("code_search_logs", recoverable, "No log entries for 'q'."),
+                ("bash", _result_meta(status="error", error_type="not_found", recoverable=True), "Error: not found"),
+            ],
+        )
+        result2 = self._drive(mw2, runtime, state2, 3)
+        assert result2 is None, "all-recoverable set must downgrade"
+
+    def test_gate_tracks_latest_result_only(self):
+        """The gate reads the MOST RECENT result per tool: if the tool starts
+        failing unrecoverably mid-loop, the hard stop kicks back in."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=10)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+
+        # First: recoverable -> downgrade.
+        soft = _gated_state(call, [("code_search_logs", _result_meta(), "No log entries for 'q'.")])
+        assert self._drive(mw, runtime, soft, 3) is None
+
+        # Then the tool starts 401ing: latest meta is unrecoverable -> stop.
+        hard = _gated_state(
+            call,
+            [("code_search_logs", _result_meta(status="error", error_type="auth", recoverable=False, action="stop", source="tool_return"), "Error: 401")],
+        )
+        result = self._drive(mw, runtime, hard, 2)  # count 4,5 — already past hard_limit
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    # -- Terminal bound on downgrades ----------------------------------------
+
+    def test_recoverable_retry_limit_terminal_hard_stop(self):
+        """Downgrades are not infinite: past recoverable_retry_limit identical
+        calls, the loop detector stops coddling and hard-stops (bounds the
+        quadratic context cost of a loop that ignores escalating warnings)."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=6)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        state = _gated_state(call, [("code_search_logs", _result_meta(), "No log entries for 'q'.")])
+
+        # Calls 1..5: at/below the retry limit -> downgraded.
+        for i in range(5):
+            result = mw._apply(state, runtime)
+            assert result is None, f"call {i + 1} must be downgraded"
+
+        # Call 6: count == recoverable_retry_limit -> terminal hard stop.
+        result = mw._apply(state, runtime)
+        assert result is not None
+        assert result["messages"][0].tool_calls == []
+        assert _HARD_STOP_MSG in result["messages"][0].content
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    # -- no_hard_stop_tools: absolute config opt-out --------------------------
+
+    def test_no_hard_stop_tools_exempts_layer1_forever(self):
+        """Tools in no_hard_stop_tools never Layer-1 hard-stop — not even at
+        the recoverable retry limit, and regardless of result meta."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=5, no_hard_stop_tools=["code_search_logs"])
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        # Success meta + past every limit: still warn-only.
+        state = _gated_state(call, [("code_search_logs", _result_meta(status="success", action="continue"), "logs...")])
+        result = self._drive(mw, runtime, state, 12)
+        assert result is None, "exempt tool must never hard-stop on Layer 1"
+        assert mw._pending_warnings[_pending_key()]
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_no_hard_stop_tools_requires_full_set(self):
+        """A mixed set where only SOME tools are exempt still hard-stops (the
+        non-exempt tool's identical repeat is a real loop)."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=10, no_hard_stop_tools=["code_search_logs"])
+        runtime = _make_runtime()
+        mixed_calls = [_logs_call(), _bash_call()]
+        state = _gated_state(
+            mixed_calls,
+            [
+                ("code_search_logs", _result_meta(), "No log entries for 'q'."),
+                ("bash", None, "ok"),
+            ],
+        )
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None, "partial exemption must not downgrade the set"
+
+    def test_no_hard_stop_tools_exempts_layer2_freq(self):
+        """Layer 2 (volume) also honors no_hard_stop_tools: over the frequency
+        hard limit the run is warned, not stopped."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_warn=2,
+            tool_freq_hard_limit=3,
+            no_hard_stop_tools=["bash"],
+        )
+        runtime = _make_runtime()
+        # Varied args -> Layer 2 path, never Layer 1.
+        for i in range(3):
+            result = mw._apply(_make_state(tool_calls=[_bash_call(f"cmd_{i}")]), runtime)
+        assert result is None, "exempt tool must not Layer-2 hard-stop"
+        queued = mw._pending_warnings[_pending_key()]
+        assert queued
+        assert "bash" in queued[-1]
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_layer2_freq_is_not_meta_gated(self):
+        """Layer 2 is a volume cap, not an identical-repeat detector: it does
+        NOT consult result meta. A recoverable no-results tool hammered past
+        the frequency limit (with varied args) still hard-stops — per-tool
+        tool_freq_overrides exist for legitimately chatty tools."""
+        mw = LoopDetectionMiddleware(tool_freq_warn=2, tool_freq_hard_limit=3)
+        runtime = _make_runtime()
+        # Varied queries (distinct hashes -> Layer 1 never fires), latest
+        # result meta recoverable.
+        for i in range(2):
+            state = _gated_state([_logs_call(f"q_{i}")], [("code_search_logs", _result_meta(), "No log entries.")])
+            result = mw._apply(state, runtime)
+            assert result is None
+        state = _gated_state([_logs_call("q_3")], [("code_search_logs", _result_meta(), "No log entries.")])
+        result = mw._apply(state, runtime)  # freq_count hits hard limit 3
+        assert result is not None, "Layer 2 must not be meta-gated"
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    # -- Config plumbing -------------------------------------------------------
+
+    def test_from_config_flows_new_fields(self):
+        from deerflow.config.loop_detection_config import LoopDetectionConfig
+
+        config = LoopDetectionConfig(no_hard_stop_tools=["code_search_logs"], recoverable_retry_limit=12)
+        mw = LoopDetectionMiddleware.from_config(config)
+        assert mw._no_hard_stop_tools == frozenset({"code_search_logs"})
+        assert mw.recoverable_retry_limit == 12
+
+
 class TestFromConfig:
     """Tests for LoopDetectionMiddleware.from_config — the sole validated construction path."""
 
@@ -1271,6 +1621,19 @@ class TestFromConfig:
         assert mw.max_tracked_threads == 50
         assert mw.tool_freq_warn == 20
         assert mw.tool_freq_hard_limit == 40
+
+    def test_new_fields_mapped(self):
+        """[argus] Patch #68: no_hard_stop_tools and recoverable_retry_limit
+        flow from validated config into the middleware instance."""
+        config = self._config(no_hard_stop_tools=["code_search_logs", "web_search"], recoverable_retry_limit=16)
+        mw = LoopDetectionMiddleware.from_config(config)
+        assert mw._no_hard_stop_tools == frozenset({"code_search_logs", "web_search"})
+        assert mw.recoverable_retry_limit == 16
+
+    def test_new_fields_default(self):
+        mw = LoopDetectionMiddleware.from_config(self._config())
+        assert mw._no_hard_stop_tools == frozenset()
+        assert mw.recoverable_retry_limit == 24
 
     def test_overrides_converted_to_tuples(self):
         config = self._config(tool_freq_overrides={"bash": {"warn": 50, "hard_limit": 100}})
