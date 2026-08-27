@@ -683,8 +683,8 @@ class TestMakeRunEventStore:
         await close_engine()
 
     @pytest.mark.anyio
-    async def test_db_backend_no_engine_falls_back(self):
-        """db backend without engine falls back to memory."""
+    async def test_db_backend_no_engine_logs_before_fallback(self, caplog):
+        """A misconfigured durable backend remains compatible but is loud."""
         from unittest.mock import MagicMock
 
         from deerflow.persistence.engine import close_engine, init_engine
@@ -694,8 +694,11 @@ class TestMakeRunEventStore:
 
         config = MagicMock()
         config.backend = "db"
-        store = make_run_event_store(config)
+        with caplog.at_level("ERROR"):
+            store = make_run_event_store(config)
         assert type(store).__name__ == "MemoryRunEventStore"
+        assert "no SQL session factory is configured" in caplog.text
+        assert "lost on restart" in caplog.text
         await close_engine()
 
     @pytest.mark.anyio

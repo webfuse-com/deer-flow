@@ -37,6 +37,7 @@ from deerflow.persistence.bootstrap import (
     _decide_state,
     _get_alembic_config,
     _get_head_revision,
+    _reflect_state,
     _run_baseline_create_all_sync,
     _upgrade,
     bootstrap_schema,
@@ -844,6 +845,17 @@ class TestDecideState:
         # We still go versioned -> upgrade head, which is the right thing:
         # alembic will run every revision from base.
         assert _decide_state({"has_alembic_version": True, "has_deerflow_tables": False}) == "versioned"
+
+    def test_reflected_state_can_record_run_events_drift(self):
+        """The reflection contract includes the table needed by DB run events."""
+        from unittest.mock import MagicMock, patch
+
+        conn = MagicMock()
+        with patch("deerflow.persistence.bootstrap.sa_inspect") as inspect:
+            inspect.return_value.get_table_names.return_value = ["alembic_version", "runs"]
+            state = _reflect_state(conn)
+        assert state["has_alembic_version"] is True
+        assert state["has_run_events"] is False
 
 
 # ---------------------------------------------------------------------------
