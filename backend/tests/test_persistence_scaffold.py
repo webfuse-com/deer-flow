@@ -66,6 +66,15 @@ class TestDatabaseConfig:
         url = c.app_sqlalchemy_url
         assert url.count("asyncpg") == 1
 
+    def test_app_sqlalchemy_url_postgres_strips_libpq_options(self):
+        c = DatabaseConfig(
+            backend="postgres",
+            postgres_url="postgresql://u:p@h:5432/db?options=-csearch_path%3Ddeerflow_atlas_nicholas",
+        )
+        url = c.app_sqlalchemy_url
+        assert "options" not in url
+        assert "deerflow_atlas_nicholas" not in url
+
     def test_memory_has_no_url(self):
         c = DatabaseConfig(backend="memory")
         with pytest.raises(ValueError, match="No SQLAlchemy URL"):

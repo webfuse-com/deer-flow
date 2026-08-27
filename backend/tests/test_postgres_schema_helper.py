@@ -10,6 +10,7 @@ from deerflow.persistence.postgres_schema import (
     create_schema_sql,
     dsn_with_search_path,
     normalize_libpq_dsn,
+    strip_asyncpg_only_options,
 )
 
 
@@ -19,6 +20,16 @@ class TestBuildAsyncpgConnectArgs:
 
     def test_empty_schema_returns_empty_dict(self):
         assert build_asyncpg_connect_args("") == {}
+
+
+class TestStripAsyncpgOnlyOptions:
+    def test_removes_libpq_options(self):
+        url = "postgresql://u:p@h/db?sslmode=require&options=-csearch_path%3Ddeerflow"
+        assert strip_asyncpg_only_options(url) == "postgresql://u:p@h/db?sslmode=require"
+
+    def test_preserves_other_query_values(self):
+        url = "postgresql://u:p@h/db?options=-csearch_path%3Ddeerflow&application_name=deerflow"
+        assert strip_asyncpg_only_options(url) == "postgresql://u:p@h/db?application_name=deerflow"
 
 
 class TestBuildPsycopgOptions:

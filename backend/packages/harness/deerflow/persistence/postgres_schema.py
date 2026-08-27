@@ -33,6 +33,19 @@ def build_asyncpg_connect_args(schema: str) -> dict:
     return {"server_settings": {"search_path": schema}}
 
 
+def strip_asyncpg_only_options(url: str) -> str:
+    """Remove libpq-only ``options`` from a URL used by asyncpg.
+
+    ``options=-csearch_path=...`` is valid for psycopg/libpq, but asyncpg
+    rejects it as an unexpected keyword argument. Async application URLs may
+    still carry it because the same DSN is also used by the checkpointer.
+    The schema is supplied safely through ``server_settings`` instead.
+    """
+    parts = urlsplit(url)
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != "options"]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
 def build_psycopg_options(schema: str) -> str | None:
     """Return the libpq ``options`` value for psycopg pool kwargs.
 
