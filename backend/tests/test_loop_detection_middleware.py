@@ -131,6 +131,40 @@ def _result_meta(
     }
 
 
+def _kb_content(marker: str = "A") -> str:
+    """A KB-style result body long enough for Jaccard analysis (min_words=10).
+
+    The thread 9dc15e99 incident: two alternating pythia_query result bodies,
+    stable across identical retries (chunk ids + prose unchanged, only score
+    fractions drifted).
+    """
+    return (
+        f"[chunk 52372] (score 1.02{marker}6) # Support Case 00006446 — customer churn review: "
+        "company reported subscription cancellation in July follow-up thread; onboarding notes, "
+        "welcome journal entry, weekly review highlights, billing contact, account activation "
+        "checklist and references to the academy course bundle. More journal prose here to keep "
+        "the body comfortably sized for word-set analysis across alternating query results."
+    )
+
+
+_WORD_BANK = ("alibi beacon cipher delta echo falcon garnet harbor ink juniper karma lumen marmot novice otter pelican quartz raccoon satchel tundra umbrella vortex wren yarrow").split()
+
+
+def _distinct_content(i: int) -> str:
+    """Content whose word-set overlaps little with other indices (Jaccard-safe).
+
+    A template with only the index substituted (``result body variant {i}``)
+    is Jaccard-near-duplicate and would mis-select downgrade arms in the
+    distinct-content tests, so each index pulls a shifted window from a fixed
+    word bank.
+    """
+    n = len(_WORD_BANK)
+    start = (i * 5) % n
+    ws = _WORD_BANK[start:] + _WORD_BANK[:5]
+    chunk = 60000 + i
+    return f"[chunk {chunk}] (score 0.9) {' '.join(ws[:8])} entry {i}"
+
+
 def _gated_state(tool_calls, prior):
     """State shaped like a real identical-retry loop.
 
@@ -1584,6 +1618,102 @@ class TestResultAwareHardStopGating:
         result = mw._apply(state, runtime)  # freq_count hits hard limit 3
         assert result is not None, "Layer 2 must not be meta-gated"
         assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    # -- [argus] Patch #69: near-duplicate SUCCESS downgrades -----------------
+
+    def _paired_kb_state(self, pairs=2):
+        """State reproducing thread 9dc15e99: paired pythia_query calls with
+        two alternating stable result bodies (Jaccard-near-duplicate)."""
+        call = [
+            {"name": "pythia_query", "id": "q1", "args": {"query": "Startpage customer churned 2026"}},
+            {"name": "pythia_query", "id": "q2", "args": {"query": "Lightico deal lost reason 2026"}},
+        ]
+        prior = []
+        for _ in range(pairs):
+            prior.append(("pythia_query", _result_meta(status="success", action="continue"), _kb_content("A")))
+            prior.append(("pythia_query", _result_meta(status="success", action="continue"), _kb_content("B")))
+        return _gated_state(call, prior)
+
+    def test_near_duplicate_success_downgrades_hard_stop(self):
+        """[argus] Patch #69: the thread 9dc15e99 shape — paired pythia_query
+        calls, alternating stable result bodies stamped success. The model
+        already has the information; killing the run mid-synthesis is the
+        false-positive. Downgrade to an escalating warning instead."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=4, recoverable_retry_limit=10)
+        runtime = _make_runtime()
+        state = self._paired_kb_state()
+
+        result = self._drive(mw, runtime, state, 4)  # 4th identical pair crosses hard_limit
+        assert result is None, "near-duplicate SUCCESS must not hard-stop"
+        queued = mw._pending_warnings[_pending_key()]
+        assert queued
+        last = queued[-1]
+        assert "LOOP DETECTED" in last
+        assert "pythia_query" in last
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_near_duplicate_success_respects_retry_limit(self):
+        """Near-duplicate downgrades are bounded by recoverable_retry_limit
+        exactly like error/soft-failure downgrades."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=5)
+        runtime = _make_runtime()
+        state = self._paired_kb_state()
+
+        for i in range(4):  # counts 1..4 downgraded
+            assert mw._apply(state, runtime) is None, f"call {i + 1} must downgrade"
+        result = mw._apply(state, runtime)  # count 5 == retry limit -> terminal stop
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_distinct_success_content_keeps_hard_stop(self):
+        """A successful identical call with FRESH content each round keeps the
+        classic re-read protection — hard stop stays."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        success = _result_meta(status="success", action="continue")
+        state = _gated_state(call, [("code_search_logs", success, _distinct_content(1))])
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_short_success_content_is_conservative_stop(self):
+        """Word sets below the Jaccard minimum cannot be judged: conservative
+        hard stop, same as missing meta."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        success = _result_meta(status="success", action="continue")
+        state = _gated_state(
+            call,
+            [
+                ("code_search_logs", success, "ok"),
+                ("code_search_logs", success, "ok"),
+            ],
+        )
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_mixed_set_near_duplicate_requires_all_qualifying(self):
+        """Whole-set rule with similarity: one near-duplicate success + one
+        distinct success still hard-stops."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=10)
+        runtime = _make_runtime()
+        call = [
+            {"name": "pythia_query", "id": "q1", "args": {"query": "X"}},
+            _bash_call("ls"),
+        ]
+        success = _result_meta(status="success", action="continue")
+        prior = [
+            ("pythia_query", success, _kb_content("A")),
+            ("pythia_query", success, _kb_content("B")),
+            ("bash", success, _distinct_content(7)),
+            ("bash", success, _distinct_content(8)),
+        ]
+        state = _gated_state(call, prior)
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None, "one distinct-success tool keeps the hard stop"
 
     # -- Config plumbing -------------------------------------------------------
 
