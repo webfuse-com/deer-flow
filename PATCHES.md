@@ -1509,6 +1509,46 @@ carry budget ledger.
 - Upstream status: none sent (strong PR candidate; the gate rationale cites
   Gemini CLI's loop-recovery design, which soft-recovers before killing).
 
+## Patch #69
+
+**Patch #69 - SandboxAudit: redact credentials and hard-cap the audited command**
+
+- Class: argus-edit (security hardening of upstream middleware; generic,
+  upstreamable as-is).
+- Intent: `SandboxAuditMiddleware._write_audit` logged the full bash command
+  at INFO, verbatim, on every call; it truncated to 200 chars only for the
+  `block` verdict. Citizens write heredocs with credentials inline
+  (`TOKEN = "..."`, `KEY = "ak_..."`), so on 2026-08-18 (atlas-sasha, a
+  Recruitee API token) and 2026-08-26 (atlas-nicholas, a Webfuse
+  session-mcp key) live secrets went into the systemd journal, the nightly
+  Cerberus hostscan dump, `cerberus_log_fingerprints.sample_context`, and the
+  Cerberus `/logs` page readable by every @surfly.com account. Changes:
+  1. `_redact_secrets()`: replaces credential-shaped spans with
+     `<redacted:KIND>` before the line is formatted. Known prefixes
+     (OpenAI/OpenRouter `sk-`, Webfuse `ak_`, GitHub, Slack, AWS, Google),
+     JWTs, Telegram bot tokens, PEM private keys, `Bearer <token>`,
+     `user:password@` in URLs, and `NAME = "value"` assignments for the
+     names agents actually use (token, key, api_key, secret, password,
+     authorization, cookie, ...). Prose after those words ("password
+     authentication failed", "token: expired") is left alone. Idempotent.
+  2. Redaction runs BEFORE truncation, so a secret is never kept just
+     because it sat inside the first 200 characters of a blocked command.
+  3. `_AUDIT_COMMAND_HARD_LIMIT = 1000`: every audited command is capped,
+     not only blocked ones. The audit line is persisted on the host by the
+     journal and copied nightly; a 4 KB heredoc per bash call was 4 KB of
+     agent-authored text on disk each time.
+  Cerberus grew the matching backstop the same day (acropolis PR #187:
+  `src/redact.py`, `secret_in_logs` finding, migration 007 scrub), but the
+  journal itself is only clean if this line is.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/sandbox_audit_middleware.py` (EDITED)
+- Tests: `backend/tests/test_sandbox_audit_middleware.py` (EDITED,
+  +`TestAuditRedaction`, 6 cases incl. caplog assertions that the logged
+  line never contains the value and is capped without `truncate=True`)
+- Delete-when: upstream redacts or stops logging the command body in the
+  sandbox audit record.
+- Upstream status: none sent (strong PR candidate; security fix with no
+  behavioral change to the tool call itself).
+
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
 **Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**

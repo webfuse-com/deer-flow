@@ -10,6 +10,7 @@ from langchain_core.messages import ToolMessage
 from deerflow.agents.middlewares.sandbox_audit_middleware import (
     SandboxAuditMiddleware,
     _classify_command,
+    _redact_secrets,
     _split_compound_command,
 )
 
@@ -1008,3 +1009,66 @@ class TestBenchmarkSummary:
         assert high_recall == 1.0, f"High-risk block rate must be 100%, got {high_recall:.0%}"
         assert medium_recall >= 0.9, f"Medium-risk warn rate must be >=90%, got {medium_recall:.0%}"
         assert false_positive_rate == 0.0, f"False positive rate must be 0%, got {false_positive_rate:.0%}"
+
+
+# ---------------------------------------------------------------------------
+# Audit-log redaction (patch #69)
+# ---------------------------------------------------------------------------
+
+
+class TestAuditRedaction:
+    HEREDOC = (
+        "cd /tmp && cat > mcp.py << 'EOF'\nimport json\n"
+        'URL = "https://session-mcp.example.test/mcp"\n'
+        'KEY = "ak_6XTULMv_HhGZCbvJHtkahablGR2POKs1"\n'
+        'TOKEN = "bEpRb2NEQzVXR0k5cWNyN05oYURDQT09"\n'
+        "req = urllib.request.Request(url, headers={'Authorization': 'Bearer sk-or-v1-0123456789abcdefghijklmnop'})\n"
+        "EOF\npython3 mcp.py"
+    )
+
+    def test_values_are_masked_and_structure_survives(self):
+        out = _redact_secrets(self.HEREDOC)
+        for secret in ("ak_6XTULMv_HhGZCbvJHtkahablGR2POKs1", "bEpRb2NEQzVXR0k5cWNyN05oYURDQT09", "sk-or-v1-0123456789abcdefghijklmnop"):
+            assert secret not in out
+        assert "session-mcp.example.test" in out
+        assert 'KEY = "<redacted:key>"' in out
+        assert 'TOKEN = "<redacted:assignment>"' in out
+        assert "python3 mcp.py" in out
+
+    def test_prose_is_untouched(self):
+        for line in (
+            "grep -n 'password authentication failed' /var/log/x",
+            "echo token: expired",
+            "ls -la /mnt/user-data/key",
+        ):
+            assert _redact_secrets(line) == line
+
+    def test_idempotent(self):
+        once = _redact_secrets(self.HEREDOC)
+        assert _redact_secrets(once) == once
+
+    def test_write_audit_never_logs_the_secret(self, caplog):
+        mw = SandboxAuditMiddleware()
+        with caplog.at_level("INFO", logger="deerflow.agents.middlewares.sandbox_audit_middleware"):
+            mw._write_audit("thread-1", self.HEREDOC, "allow")
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert "[SandboxAudit]" in joined
+        assert "ak_6XTULMv_HhGZCbvJHtkahablGR2POKs1" not in joined
+        assert "<redacted:key>" in joined
+
+    def test_write_audit_hard_caps_length_even_without_truncate(self, caplog):
+        mw = SandboxAuditMiddleware()
+        long_cmd = "echo " + "x" * 5000
+        with caplog.at_level("INFO", logger="deerflow.agents.middlewares.sandbox_audit_middleware"):
+            mw._write_audit("thread-1", long_cmd, "allow")
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert len(joined) < 2000
+        assert "(5005 chars)" in joined
+
+    def test_secret_inside_truncation_window_is_still_masked(self, caplog):
+        mw = SandboxAuditMiddleware()
+        cmd = 'KEY="ak_6XTULMv_HhGZCbvJHtkahablGR2POKs1"; ' + "sleep 1; " * 100
+        with caplog.at_level("INFO", logger="deerflow.agents.middlewares.sandbox_audit_middleware"):
+            mw._write_audit("thread-1", cmd, "block", truncate=True)
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert "ak_6XTULMv_HhGZCbvJHtkahablGR2POKs1" not in joined
