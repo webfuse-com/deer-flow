@@ -84,6 +84,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#66](#patch-66) | Salvage partial subagent work on timeout + per-run wall-clock deadline | generic-upstreamable | this PR |
 | [#67](#patch-67) | Rejoin in-flight run on WebUI reload + disconnect-safe viewer joins | generic-upstreamable | this PR |
 | [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
+| [#69](#patch-69) | Loop-detection: near-duplicate SUCCESS downgrades (content Jaccard) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1508,6 +1509,41 @@ carry budget ledger.
   independently upstreamable and may land separately.
 - Upstream status: none sent (strong PR candidate; the gate rationale cites
   Gemini CLI's loop-recovery design, which soft-recovers before killing).
+
+## Patch #69
+
+**Patch #69 - Loop-detection: near-duplicate SUCCESS downgrades (content Jaccard)**
+
+- Class: argus-edit (behavioral extension of patch #68's gate; generic-
+  upstreamable candidate alongside it).
+- Intent: patch #68's gate honored the stamped `deerflow_tool_meta` only —
+  `status == "success"` always kept the hard stop ("classic re-read").
+  But a success whose CONTENT is a near-duplicate of the tool's own recent
+  successes carries the same "no new information" signal as a `no_results`
+  soft failure, and ToolProgressMiddleware already treats it that way
+  (Jaccard over recent word sets). Observed: thread 9dc15e99 (2026-08-27,
+  after #68's fleet rollout), a paired `pythia_query` call re-issued the
+  IDENTICAL pair ≥5 times within the window, each round returning the same
+  successful chunks (scores varying marginally), and the run died at
+  hard_limit 8 with another empty `[FORCED STOP]` — the user's exact same
+  complaint class #68 was meant to fix. The gate now compares the stamped
+  content: near-duplicate → downgrade to the escalating warning (bounded by
+  `recoverable_retry_limit` like all other downgrades); success with FRESH
+  content keeps the hard stop (true re-read/progress detection). The
+  similarity helpers (`word_set`, `is_near_duplicate`) are reused from
+  ToolProgressMiddleware, threshold 0.8 / min_words 10 (ToolProgressConfig
+  defaults), judged per tool name over latest result + up to 3 priors.
+  Content too short to judge, like missing meta, remains the conservative
+  hard stop. `_outcome_phrase` gains a "near-duplicate results" branch so
+  the downgraded warning names what the model is doing.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/loop_detection_middleware.py` (EDITED)
+- Tests: `backend/tests/test_loop_detection_middleware.py` (EDITED, +5 cases
+  in `TestResultAwareHardStopGating`: paired-near-duplicate downgrade,
+  retry-limit bound, distinct-content keeps stop, short-content conservative
+  stop, whole-set similarity rule)
+- Delete-when: upstream ships content-similarity-aware gating (or accepts
+  this PR along with #68's gate).
+- Upstream status: none sent.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

@@ -48,7 +48,7 @@ Stop-reason surfacing (#3875 Phase 2):
   ``completed + loop_capped`` and the lead/ledger can tell it was capped
   without parsing result text.
 
-Result-aware hard-stop gating ([argus] patch #68):
+Result-aware hard-stop gating ([argus] patch #68, extended by #69):
   A Layer-1 hard stop on identical calls is *downgraded to an escalating
   warning* when every repeated tool's most recent result meta says the
   failure is model-recoverable (``partial_success`` no-results bodies, or
@@ -60,9 +60,22 @@ Result-aware hard-stop gating ([argus] patch #68):
   atlas-nicholas 2026-08, 8 identical ``code_search_logs`` calls answered by
   "No log entries" ended the run with an empty final answer).
 
+  [argus] patch #69 adds the successful-content leg: a ``success`` whose
+  content is *near-duplicate* of its own recent successes (word-set Jaccard,
+  same helpers/threshold as ToolProgressMiddleware uses) is the same "no new
+  information" as a ``no_results`` soft failure and recovers the same way —
+  observed: thread 9dc15e99, a paired ``pythia_query`` call re-issued its
+  identical pair with the SAME successful chunks ≥5 times and was killed at
+  hard_limit 8 with an empty ``[FORCED STOP]`` message. Near-duplicate is
+  judged per tool name over the latest result + up to 3 priors;
+  ToolProgressMiddleware's default threshold 0.8 / min_words 10 applies.
+  A ``success`` with FRESH content still hard-stops (the classic productive
+  re-read), and contents too short to judge fall back to the conservative
+  stop, same as missing meta.
+
   The hard stop still fires unchanged when the latest result meta is:
-  - ``success`` — an identical *successful* call is the classic runaway
-    re-read; or
+  - ``success`` with distinct content — an identical *re-read* making
+    progress; or
   - an unrecoverable error (auth/config/internal/rate_limited) — the retry
     is futile; or
   - stamped ``source=progress_middleware`` — the tool is BLOCKED by
@@ -100,7 +113,15 @@ from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
+from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
+
+# [argus patch #69] Jaccard similarity parameters mirror ToolProgressConfig's
+# defaults (jaccard_similarity_threshold=0.8, min_word_count_for_similarity=10)
+# so "near-duplicate" means the same thing in both guards.
+_SIMILARITY_THRESHOLD = 0.8
+_SIMILARITY_MIN_WORDS = 10
+_SIMILARITY_HISTORY = 4  # latest result + 3 priors, per tool
 
 if TYPE_CHECKING:
     from deerflow.config.loop_detection_config import LoopDetectionConfig
@@ -271,6 +292,10 @@ def _tool_list(names) -> str:
 def _outcome_phrase(meta: dict) -> str:
     if meta.get("status") == "partial_success":
         return "no usable results"
+    if meta.get("status") == "success":
+        # [argus patch #69] The gate only reaches here for near-duplicate
+        # successes (distinct successes keep the hard stop).
+        return "near-duplicate results"
     return _OUTCOME_PHRASES.get(meta.get("error_type") or "", "recoverable errors")
 
 
@@ -704,13 +729,17 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
           warns forever, immune even to ``recoverable_retry_limit``), or
         - has a most-recent result whose stamped ``deerflow_tool_meta`` says
           the failure is model-recoverable (``partial_success`` no-results
-          bodies, or ``error`` with ``recoverable_by_model=True``), AND the
-          repeat count is still below ``recoverable_retry_limit``.
+          bodies, or ``error`` with ``recoverable_by_model=True``), or whose
+          content is **near-duplicate** of its own recent successes
+          ([argus] patch #69: identical re-reads that return the SAME
+          successful chunks, e.g. thread 9dc15e99's pythia_query pair),
+          AND the repeat count is still below ``recoverable_retry_limit``.
 
         Conservative by construction: missing meta, meta stamped by the
-        progress middleware (tool BLOCKED), successful results, unknown
-        statuses, and partial-exemption call sets all return ``None`` so the
-        hard stop proceeds exactly as before.
+        progress middleware (tool BLOCKED), successful results with FRESH
+        content (the classic productive re-read), contents too short to
+        judge, unknown statuses, and partial-exemption call sets all return
+        ``None`` so the hard stop proceeds exactly as before.
         """
         names = {tc.get("name", "") for tc in tool_calls if tc.get("name")}
         if not names:
@@ -721,7 +750,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         if count < self.recoverable_retry_limit:
             metas = self._latest_result_meta_per_tool(messages, names)
-            if metas is not None and all(self._meta_is_recoverable_retry(meta) for meta in metas.values()):
+            contents = self._recent_contents_per_tool(messages, names)
+            if metas is not None and all(self._meta_is_recoverable_retry(meta, contents.get(name, [])) for name, meta in metas.items()):
                 # Any representative meta flavors the message; sets that got
                 # here agree on recoverability, and the action hint is most
                 # useful when taken from the (shared) first result.
@@ -770,13 +800,41 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         return metas
 
     @staticmethod
-    def _meta_is_recoverable_retry(meta: dict) -> bool:
+    def _recent_contents_per_tool(messages: list, names: set[str], limit: int = _SIMILARITY_HISTORY) -> dict[str, list[str]]:
+        """Most recent ToolMessage contents per tool name, newest first.
+
+        ``contents[name][0]`` is the latest result for that tool; the trailing
+        entries are its priors, which the similarity check compares against.
+        Bounded by ``limit`` per name; tools with no visible results simply
+        have an empty list (the success branch treats that as "cannot judge"
+        and keeps the conservative hard stop).
+        """
+        contents: dict[str, list[str]] = {}
+        for msg in reversed(messages):
+            if all(len(contents.get(name, [])) >= limit for name in names):
+                break
+            if getattr(msg, "type", None) != "tool":
+                continue
+            name = getattr(msg, "name", None)
+            if name in names:
+                bucket = contents.setdefault(name, [])
+                if len(bucket) < limit:
+                    value = getattr(msg, "content", "")
+                    bucket.append(value if isinstance(value, str) else str(value))
+        return contents
+
+    @staticmethod
+    def _meta_is_recoverable_retry(meta: dict, contents: list[str]) -> bool:
         """True when the stamped result says the model could fix the failure
         by changing strategy — a nudge case, not a kill case.
 
         Mirrors ToolProgressMiddleware's own recoverability contract
         (recoverable_by_model=True categories never BLOCK there) so the two
-        guards stop disagreeing about the same retry.
+        guards stop disagreeing about the same retry. [argus] patch #69 adds
+        the successful-content leg: a ``success`` whose content is
+        near-duplicate of its own recent successes is the same "no new
+        information" as a ``no_results`` soft failure, so it recovers too;
+        ``success`` with fresh content keeps the hard stop (classic re-read).
         """
         if meta.get("source") == "progress_middleware":
             # The tool is BLOCKED by ToolProgressMiddleware. That meta is
@@ -788,9 +846,17 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             # no_results-style empty bodies (patch #68 marker set).
             return True
         if status == "success":
-            # An identical *successful* call is the classic runaway re-read;
-            # nothing failed that the model could fix by retrying.
-            return False
+            # [argus patch #69] Near-duplicate of its own recent successes is
+            # "no new information" — recoverable, same as a soft failure.
+            if len(contents) < 2:
+                # No prior content to compare against — cannot judge.
+                return False
+            return is_near_duplicate(
+                word_set(contents[0]),
+                [word_set(c) for c in contents[1:]],
+                _SIMILARITY_THRESHOLD,
+                _SIMILARITY_MIN_WORDS,
+            )
         if status == "error":
             return bool(meta.get("recoverable_by_model", False))
         # Unknown status — conservative.
