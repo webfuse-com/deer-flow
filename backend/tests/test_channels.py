@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.channels.base import Channel
@@ -724,6 +725,84 @@ class TestChannelManager:
             assert created1 is True
             assert created2 is False
             assert store.get_thread_id("slack", "C1") == "thread-1"
+
+        _run(go())
+
+    def test_get_or_create_thread_reregisters_mapped_thread_missing_from_registry(self):
+        # The channel store said "reuse thread X" but the Gateway registry had
+        # been rebuilt (2026-08-27 database.backend switch): every message hit
+        # NotFoundError forever. The manager must re-create the thread under the
+        # SAME id (checkpointer history is keyed by thread_id) and keep going.
+        from langgraph_sdk.errors import NotFoundError
+
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            store.set_thread_id("telegram", "8726302666", "thread-old", user_id="8726302666")
+
+            gets: list[str] = []
+            creates: list[dict] = []
+            known = set()
+
+            async def fake_get(thread_id, **kwargs):
+                gets.append(thread_id)
+                if thread_id not in known:
+                    raise NotFoundError(
+                        f"Thread {thread_id} not found",
+                        response=httpx.Response(404, request=httpx.Request("GET", "http://gateway/api/threads")),
+                        body=None,
+                    )
+                return {"thread_id": thread_id}
+
+            async def fake_create(**kwargs):
+                creates.append(kwargs)
+                known.add(kwargs["thread_id"])
+                return {"thread_id": kwargs["thread_id"]}
+
+            mock_client = MagicMock()
+            mock_client.threads.get = fake_get
+            mock_client.threads.create = fake_create
+            manager._client = mock_client
+
+            msg = InboundMessage(channel_name="telegram", chat_id="8726302666", user_id="8726302666", text="You here?")
+
+            tid, created = await manager._get_or_create_thread(mock_client, msg)
+            assert (tid, created) == ("thread-old", False)
+            assert creates and creates[0]["thread_id"] == "thread-old"
+            assert creates[0]["metadata"]["channel_source"]["provider"] == "telegram"
+            assert store.get_thread_id("telegram", "8726302666") == "thread-old"
+
+            # Verified once per lifetime: the next message does not hit the Gateway again.
+            tid2, created2 = await manager._get_or_create_thread(mock_client, msg)
+            assert (tid2, created2) == ("thread-old", False)
+            assert len(gets) == 1
+            assert len(creates) == 1
+
+        _run(go())
+
+    def test_get_or_create_thread_keeps_mapping_when_gateway_verification_fails(self):
+        # A transient Gateway error (not a 404) must not split the conversation.
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            store.set_thread_id("slack", "C1", "thread-1", user_id="U1")
+
+            async def flaky_get(thread_id, **kwargs):
+                raise RuntimeError("gateway hiccup")
+
+            mock_client = MagicMock()
+            mock_client.threads.get = flaky_get
+            mock_client.threads.create = AsyncMock(side_effect=AssertionError("must not create"))
+            manager._client = mock_client
+
+            msg = InboundMessage(channel_name="slack", chat_id="C1", user_id="U1", text="hi")
+            assert await manager._get_or_create_thread(mock_client, msg) == ("thread-1", False)
 
         _run(go())
 

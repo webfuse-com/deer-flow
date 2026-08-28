@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from langgraph_sdk.errors import ConflictError
+from langgraph_sdk.errors import ConflictError, NotFoundError
 
 from app.channels import buzz_run_policy as _buzz_run_policy  # noqa: F401
 from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
@@ -1212,6 +1212,8 @@ class ChannelManager:
         self._get_stream_bridge = get_stream_bridge
         self._client = None  # lazy init — langgraph_sdk async client
         self._channel_metadata_synced: set[str] = set()
+        # thread ids verified (or re-registered) against the Gateway registry this lifetime
+        self._registered_threads: set[str] = set()
         # Per-conversation locks so concurrent inbound messages for the same
         # chat don't race to create duplicate threads (see _get_or_create_thread).
         self._thread_create_locks: dict[tuple[str, str, str | None], asyncio.Lock] = {}
@@ -2284,7 +2286,7 @@ class ChannelManager:
         """
         thread_id = await self._lookup_thread_id(msg)
         if thread_id:
-            return thread_id, False
+            return await self._ensure_thread_registered(client, msg, thread_id)
 
         key = (msg.channel_name, msg.chat_id, msg.topic_id)
         lock = self._thread_create_locks.setdefault(key, asyncio.Lock())
@@ -2301,6 +2303,65 @@ class ChannelManager:
             # lookup above and never reach this lock, so it's safe to drop the
             # entry and keep the registry bounded to in-flight conversations.
             self._thread_create_locks.pop(key, None)
+
+    async def _ensure_thread_registered(self, client, msg: InboundMessage, thread_id: str) -> tuple[str, bool]:
+        """Make sure a store-mapped thread still exists in the Gateway registry.
+
+        The channel store and the Gateway thread registry are separate stores
+        (``data/channels/store.json`` vs ``threads_meta``). When the registry is
+        rebuilt or moved (the 2026-08-27 ``database.backend`` switch to postgres
+        started from an empty ``threads_meta``) every mapped conversation points
+        at a thread the Gateway no longer knows, and each inbound message fails
+        with ``NotFoundError`` forever, because the mapping is trusted blindly.
+
+        Verify the thread once per manager lifetime. If it is gone, re-create it
+        under the SAME id: the checkpointer keys history by thread_id, so the
+        conversation carries on. Only if that is refused do we fall back to a
+        fresh thread and rewrite the mapping.
+        """
+        if thread_id in self._registered_threads:
+            return thread_id, False
+        owner_headers = _owner_headers(msg)
+        get_kwargs: dict[str, Any] = {"headers": owner_headers} if owner_headers else {}
+        try:
+            await client.threads.get(thread_id, **get_kwargs)
+        except NotFoundError:
+            logger.warning(
+                "[Manager] mapped thread_id=%s is unknown to the Gateway (channel=%s chat_id=%s topic_id=%s); re-registering it",
+                thread_id,
+                msg.channel_name,
+                msg.chat_id,
+                msg.topic_id,
+            )
+            create_kwargs: dict[str, Any] = {"thread_id": thread_id, "metadata": _thread_channel_metadata(msg)}
+            if owner_headers:
+                create_kwargs["headers"] = owner_headers
+            try:
+                await client.threads.create(**create_kwargs)
+            except ConflictError:
+                # A concurrent message re-registered it first; the id is valid again.
+                pass
+            except Exception:
+                logger.exception(
+                    "[Manager] could not re-register thread_id=%s; creating a fresh thread for channel=%s chat_id=%s",
+                    thread_id,
+                    msg.channel_name,
+                    msg.chat_id,
+                )
+                new_thread_id = await self._create_thread(client, msg)
+                self._remember_registered(new_thread_id)
+                return new_thread_id, True
+        except Exception:
+            # Transient Gateway trouble: do not turn a hiccup into a thread split.
+            logger.debug("[Manager] could not verify thread_id=%s; proceeding on the stored mapping", thread_id, exc_info=True)
+            return thread_id, False
+        self._remember_registered(thread_id)
+        return thread_id, False
+
+    def _remember_registered(self, thread_id: str) -> None:
+        if len(self._registered_threads) > 4096:
+            self._registered_threads.clear()
+        self._registered_threads.add(thread_id)
 
     async def _update_thread_channel_metadata(self, client, msg: InboundMessage, thread_id: str) -> None:
         """Best-effort source metadata backfill for existing IM-created threads."""
