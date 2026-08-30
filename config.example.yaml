@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 35
+config_version: 36
 
 # ============================================================================
 # Logging
@@ -1171,6 +1171,11 @@ loop_detection:
 #   jaccard_similarity_threshold: 0.8  # Word-set similarity threshold for near-duplicate detection
 #   min_word_count_for_similarity: 10  # Min unique words to apply Jaccard check
 #   max_tracked_threads: 100
+#   read_only_streak_threshold: 0       # Soft phase hint after N consecutive successful reads/searches; 0 disables
+#   total_tool_call_threshold: 0        # Soft replan hint after N calls in one run; 0 disables
+#   total_tool_call_reminder_interval: 30 # Repeat the replan hint every N additional calls
+#   read_only_tools: [read_file, grep, glob, ls]
+#   write_tools: [write_file, str_replace]
 #   exempt_tools:
 #     - ask_clarification
 #     - write_todos

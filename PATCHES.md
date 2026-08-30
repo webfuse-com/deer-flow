@@ -85,6 +85,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#67](#patch-67) | Rejoin in-flight run on WebUI reload + disconnect-safe viewer joins | generic-upstreamable | this PR |
 | [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
 | [#69](#patch-69) | Loop-detection: near-duplicate SUCCESS downgrades (content Jaccard) | argus-edit | this PR |
+| [#72](#patch-72) | Atomic edit batching + soft execution-phase budgets | config-expressed | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1543,6 +1544,30 @@ carry budget ledger.
   stop, whole-set similarity rule)
 - Delete-when: upstream ships content-similarity-aware gating (or accepts
   this PR along with #68's gate).
+- Upstream status: none sent.
+
+## Patch #72
+
+**Patch #72 - Atomic edit batching + soft execution-phase budgets**
+
+- Class: config-expressed (generic behavior with disabled defaults; Argus
+  enables the soft budgets in Atlas project configuration).
+- Intent: Local models lose most wall time to a model round trip between each
+  tiny read and edit. `str_replace.replacements` applies up to 50 ordered edits
+  to one in-memory file copy and persists only when every entry succeeds.
+  ToolProgressMiddleware can also issue soft hints after a configurable streak
+  of successful read/search calls and at configurable total-call intervals so
+  the model freezes findings and advances to implementation/verification.
+  These counters never block tools or terminate a run.
+- Files: `backend/packages/harness/deerflow/sandbox/tools.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/middlewares/tool_progress_middleware.py`
+  (EDITED), `backend/packages/harness/deerflow/config/tool_progress_config.py`
+  (EDITED), `config.example.yaml` (EDITED).
+- Tests: `backend/tests/test_str_replace_batch.py` (ADDED),
+  `backend/tests/test_tool_progress_middleware.py` (EDITED),
+  `backend/tests/test_config_duplicate_keys.py` (ADDED).
+- Delete-when: upstream provides atomic same-file edit batches and general
+  soft exploration/execution phase budgets with equivalent semantics.
 - Upstream status: none sent.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)

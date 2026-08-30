@@ -1075,12 +1075,70 @@ def test_from_config():
         warn_escalation_count=3,
         jaccard_similarity_threshold=0.7,
         min_word_count_for_similarity=8,
+        read_only_streak_threshold=7,
+        total_tool_call_threshold=50,
+        total_tool_call_reminder_interval=20,
     )
     mw = ToolProgressMiddleware.from_config(cfg)
     assert mw._stagnation_threshold == 4
     assert mw._warn_escalation == 3
     assert mw._jaccard_threshold == pytest.approx(0.7)
     assert mw._min_words == 8
+    assert mw._read_only_streak_threshold == 7
+    assert mw._total_tool_call_threshold == 50
+    assert mw._total_tool_call_reminder_interval == 20
+
+
+def test_read_only_streak_queues_phase_transition_hint() -> None:
+    mw = _make_mw(read_only_streak_threshold=3)
+    rt = _make_runtime()
+
+    for index, tool_name in enumerate(("read_file", "grep", "read_file"), start=1):
+        request = _make_tool_request(tool_name, runtime=rt)
+        message = _make_tool_message(
+            f"unique successful result {index} alpha beta gamma delta epsilon zeta",
+            tool_name=tool_name,
+        )
+        mw.wrap_tool_call(request, lambda _request, message=message: message)
+
+    hints = mw._drain_pending(rt)
+    assert len(hints) == 1
+    assert "3 read/search calls since the last successful file write" in hints[0]
+    assert "freeze" in hints[0].lower()
+    assert "implementation" in hints[0].lower()
+
+
+def test_successful_write_resets_read_only_streak() -> None:
+    mw = _make_mw(read_only_streak_threshold=3)
+    rt = _make_runtime()
+
+    def successful_call(tool_name: str, content: str) -> None:
+        request = _make_tool_request(tool_name, runtime=rt)
+        message = _make_tool_message(content, tool_name=tool_name)
+        mw.wrap_tool_call(request, lambda _request: message)
+
+    successful_call("read_file", "first unique read alpha beta gamma delta epsilon")
+    successful_call("read_file", "second unique read foxtrot golf hotel india juliet")
+    successful_call("str_replace", "OK")
+    successful_call("read_file", "third unique read kilo lima mike november oscar")
+
+    assert mw._drain_pending(rt) == []
+
+
+def test_total_tool_call_budget_queues_periodic_replan_hints() -> None:
+    mw = _make_mw(total_tool_call_threshold=3, total_tool_call_reminder_interval=2, min_words=100)
+    rt = _make_runtime()
+
+    for index in range(5):
+        request = _make_tool_request("bash", runtime=rt)
+        message = _make_tool_message(f"result {index} alpha beta gamma delta epsilon", tool_name="bash")
+        mw.wrap_tool_call(request, lambda _request, message=message: message)
+
+    hints = mw._drain_pending(rt)
+    assert len(hints) == 2
+    assert "used 3 tool calls" in hints[0]
+    assert "used 5 tool calls" in hints[1]
+    assert all("current phase" in hint for hint in hints)
 
 
 def test_from_config_empty_exempt_tools_clears_exemptions():

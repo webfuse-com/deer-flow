@@ -58,6 +58,33 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate keys instead of shadowing them."""
+
+
+def _construct_unique_mapping(loader: _UniqueKeySafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+    seen: set[Any] = set()
+    for key_node, _value_node in node.value:
+        key = loader.construct_object(key_node, deep=False)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r} on line {key_node.start_mark.line + 1}",
+                key_node.start_mark,
+            )
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_UniqueKeySafeLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
+
+
+def load_yaml_with_unique_keys(source: str) -> Any:
+    """Safely load YAML while failing fast on duplicate mapping keys."""
+    return yaml.load(source, Loader=_UniqueKeySafeLoader)
+
+
 CONFIG_FILE_DATABASE_DEFAULTS = {
     "backend": "sqlite",
     "sqlite_dir": ".deer-flow/data",
@@ -408,7 +435,7 @@ class AppConfig(BaseModel):
         """
         resolved_path = cls.resolve_config_path(config_path)
         with open(resolved_path, encoding="utf-8") as f:
-            config_data = yaml.safe_load(f) or {}
+            config_data = load_yaml_with_unique_keys(f.read()) or {}
 
         # Check config version before processing
         cls._check_config_version(config_data, resolved_path)

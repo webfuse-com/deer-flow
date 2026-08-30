@@ -59,6 +59,7 @@ _MAX_GLOB_MAX_RESULTS = 1000
 _DEFAULT_GREP_MAX_RESULTS = 100
 _MAX_GREP_MAX_RESULTS = 500
 _DEFAULT_WRITE_FILE_ERROR_MAX_CHARS = 2000
+_MAX_STR_REPLACE_BATCH_SIZE = 50
 
 # Maximum bytes accepted in a single non-append write_file call (issue #3189).
 # Oversized single-shot writes correlate with LLM streaming chunk-gap timeouts
@@ -2327,12 +2328,17 @@ def str_replace_tool(
     runtime: Runtime,
     description: str,
     path: str,
-    old_str: str,
-    new_str: str,
+    old_str: str | None = None,
+    new_str: str | None = None,
     replace_all: bool = False,
+    replacements: list[dict[str, str | bool]] | None = None,
 ) -> str:
-    """Replace a substring in a file with another substring.
-    If `replace_all` is False (default), the substring to replace must appear **exactly once** in the file.
+    """Atomically replace one or more substrings in one file.
+
+    Use ``old_str`` and ``new_str`` for one replacement. When an edit plan has
+    several changes for the same file, prefer one ``replacements`` batch over
+    repeated tool calls. Batch entries are applied in order to an in-memory
+    copy, and the file is written only if every entry is valid and found.
 
     READ-BEFORE-WRITE (issue #3857): you must have read the file's CURRENT
     version with read_file first; any write invalidates earlier reads.
@@ -2340,11 +2346,26 @@ def str_replace_tool(
     Args:
         description: Explain why you are replacing the substring in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to replace the substring in. ALWAYS PROVIDE THIS PARAMETER SECOND.
-        old_str: The substring to replace. ALWAYS PROVIDE THIS PARAMETER THIRD.
-        new_str: The new substring. ALWAYS PROVIDE THIS PARAMETER FOURTH.
-        replace_all: Whether to replace all occurrences of the substring. If False, only the first occurrence will be replaced. Default is False.
+        old_str: The substring for a legacy single replacement; omit when using replacements.
+        new_str: The new substring for a legacy single replacement; omit when using replacements.
+        replace_all: Whether to replace every occurrence in legacy single mode. Default is False.
+        replacements: Ordered replacement objects with old_str, new_str, and optional replace_all. Maximum 50; mutually exclusive with old_str/new_str.
     """
     try:
+        using_batch = replacements is not None
+        if using_batch and (old_str is not None or new_str is not None):
+            return "Error: Provide either old_str/new_str or replacements, not both."
+        if using_batch:
+            if not replacements:
+                return "Error: replacements must contain at least one replacement."
+            if len(replacements) > _MAX_STR_REPLACE_BATCH_SIZE:
+                return f"Error: replacements exceeds the maximum of {_MAX_STR_REPLACE_BATCH_SIZE}."
+            edit_plan = replacements
+        else:
+            if old_str is None or new_str is None:
+                return "Error: old_str and new_str are required when replacements is omitted."
+            edit_plan = [{"old_str": old_str, "new_str": new_str, "replace_all": replace_all}]
+
         sandbox = ensure_sandbox_initialized(runtime)
         ensure_thread_directories_exist(runtime)
         requested_path = path
@@ -2356,17 +2377,31 @@ def str_replace_tool(
             # Custom mount paths are resolved by LocalSandbox._resolve_path()
         with get_file_operation_lock(sandbox, path):
             content = sandbox.read_file(path)
-            if not old_str:
-                # A no-op edit. str.replace("", new_str) would insert new_str at
-                # every character boundary, so this cannot fall through.
-                return "OK"
-            if not content or old_str not in content:
-                return f"Error: String to replace not found in file: {requested_path}"
-            if replace_all:
-                content = content.replace(old_str, new_str)
-            else:
-                content = content.replace(old_str, new_str, 1)
+            edited_content = content
+            applied = 0
+            for index, replacement in enumerate(edit_plan, start=1):
+                replacement_old = replacement.get("old_str")
+                replacement_new = replacement.get("new_str")
+                replacement_all = replacement.get("replace_all", False)
+                if not isinstance(replacement_old, str) or not isinstance(replacement_new, str) or not isinstance(replacement_all, bool):
+                    return f"Error: Replacement {index} must contain string old_str/new_str and optional boolean replace_all."
+                if not replacement_old:
+                    # Preserve the legacy empty-old-string no-op contract while
+                    # preventing str.replace("", ...) from expanding the file.
+                    continue
+                if replacement_old not in edited_content:
+                    if using_batch:
+                        return f"Error: Replacement {index} string not found in file: {requested_path}"
+                    return f"Error: String to replace not found in file: {requested_path}"
+                edited_content = edited_content.replace(replacement_old, replacement_new, -1 if replacement_all else 1)
+                applied += 1
+            if applied == 0:
+                return "OK" if not using_batch else "OK: applied 0 replacements"
+            content = edited_content
             sandbox.write_file(path, content)
+        if using_batch:
+            noun = "replacement" if applied == 1 else "replacements"
+            return f"OK: applied {applied} {noun}"
         return "OK"
     except SandboxError as e:
         return f"Error: {e}"
@@ -2382,9 +2417,10 @@ async def _str_replace_tool_async(
     runtime: Runtime,
     description: str,
     path: str,
-    old_str: str,
-    new_str: str,
+    old_str: str | None = None,
+    new_str: str | None = None,
     replace_all: bool = False,
+    replacements: list[dict[str, str | bool]] | None = None,
 ) -> str:
     return await _run_sync_tool_after_async_sandbox_init(
         str_replace_tool.func,
@@ -2394,6 +2430,7 @@ async def _str_replace_tool_async(
         old_str,
         new_str,
         replace_all,
+        replacements,
     )
 
 
