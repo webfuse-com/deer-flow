@@ -766,6 +766,11 @@ When you install `.skill` archives through the Gateway, DeerFlow accepts standar
 
 Disabling a skill also removes it from the sandbox filesystem view, so shell commands and structured file tools follow the same enabled state. Local, Docker/AIO, hostPath provisioner, and newly created E2B sandboxes source `/mnt/skills` from enabled-only projections that update when public, custom, legacy, or managed integration skills are toggled, edited, created, deleted, or installed. Structured `read_file` calls (including line ranges and read-before-write checks) use the sandbox provider's mount mapping, so the user identity captured when the sandbox was acquired remains authoritative. Managed integration packages remain shared, while their projected filesystem visibility follows each user's enabled state. Multi-worker Gateways re-read on-disk enable state while rebuilding user projections, so a toggle handled by one worker is honored by another worker's next sandbox acquire. Existing E2B sandboxes retain their creation-time snapshot until they are recreated. PVC-backed provisioner skills keep their configured PVC snapshot/layout for now; dynamic PVC materialization is tracked separately.
 
+For implementation-heavy runs, `str_replace` accepts an ordered `replacements`
+batch for one atomic same-file edit. Operators can also configure soft
+ToolProgress read-only and total-call budgets that prompt a phase transition
+without lowering recursion limits or stopping a legitimate long build.
+
 Managed integrations install shared read-only skill packs without mixing them
 into custom skills. The Lark/Feishu CLI integration is available under
 `Settings → Integrations → Lark / Feishu CLI`; an administrator installs or

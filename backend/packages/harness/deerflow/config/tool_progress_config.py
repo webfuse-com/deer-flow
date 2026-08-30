@@ -43,3 +43,26 @@ class ToolProgressConfig(BaseModel):
         ge=1,
         description="Maximum number of thread histories to keep in memory (LRU eviction)",
     )
+    read_only_streak_threshold: int = Field(
+        default=0,
+        ge=0,
+        description="Successful read/search calls since the last successful file write before a soft implementation-phase hint; 0 disables it",
+    )
+    total_tool_call_threshold: int = Field(
+        default=0,
+        ge=0,
+        description="Total calls in one run before a soft phase/replanning hint; 0 disables it",
+    )
+    total_tool_call_reminder_interval: int = Field(
+        default=30,
+        ge=1,
+        description="Additional calls between soft replanning hints after total_tool_call_threshold",
+    )
+    read_only_tools: set[str] = Field(
+        default_factory=lambda: {"read_file", "grep", "glob", "ls"},
+        description="Successful tools that advance the consecutive read/search streak",
+    )
+    write_tools: set[str] = Field(
+        default_factory=lambda: {"write_file", "str_replace"},
+        description="Successful tools that reset the consecutive read/search streak",
+    )
