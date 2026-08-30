@@ -405,8 +405,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                 over_budget = state.total_tool_calls - threshold
                 if over_budget % self._total_tool_call_reminder_interval == 0:
                     hints.append(
-                        f"[EFFICIENCY HINT] This run has used {state.total_tool_calls} tool calls. "
-                        "Name the current phase, freeze completed findings, batch same-file edits, and complete the next verifiable milestone before widening scope."
+                        f"[EFFICIENCY HINT] This run has used {state.total_tool_calls} tool calls. Name the current phase, freeze completed findings, batch same-file edits, and complete the next verifiable milestone before widening scope."
                     )
 
         for hint in hints:
