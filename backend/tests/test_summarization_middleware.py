@@ -672,6 +672,32 @@ def test_factory_skip_memory_flush_omits_hook(monkeypatch):
     assert middleware._before_summarization_hooks == []
 
 
+@pytest.mark.parametrize(
+    ("summarization", "expected_trim"),
+    [
+        (SummarizationConfig(enabled=True), 4000),
+        (SummarizationConfig(enabled=True, trim_tokens_to_summarize=None), None),
+    ],
+)
+def test_factory_preserves_default_and_explicit_null_trim(monkeypatch, summarization, expected_trim):
+    """An omitted trim setting keeps DeerFlow's configured default, while an
+    explicit YAML null disables pre-summary trimming instead of falling back to
+    the parent middleware's constructor default."""
+    fake_model = MagicMock()
+    fake_model.with_config.return_value = fake_model
+    monkeypatch.setattr("deerflow.agents.middlewares.summarization_middleware.create_chat_model", lambda **kw: fake_model)
+
+    app_config = SimpleNamespace(
+        summarization=summarization,
+        memory=MemoryConfig(enabled=False),
+    )
+
+    middleware = create_summarization_middleware(app_config=app_config)
+
+    assert middleware is not None
+    assert middleware.trim_tokens_to_summarize == expected_trim
+
+
 def test_new_messages_block_escapes_breakout() -> None:
     """A user turn that closes ``</new_messages>`` and forges an authority
     section must be neutralized before it lands in the summary prompt.

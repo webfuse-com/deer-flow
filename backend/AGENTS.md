@@ -264,6 +264,10 @@ Automatic conversation summarization when approaching token limits:
 - Configured in `config.yaml` under `summarization` key
 - Trigger types: tokens, messages, or fraction of max input
 - Keeps recent messages while summarizing older ones
+- `trim_tokens_to_summarize` is always passed through to the middleware.
+  Omitting it uses the configured default of 4000; setting it explicitly to
+  `null` disables pre-summary trimming and must not fall back to the parent
+  middleware constructor default.
 - Manual compaction uses `POST /api/threads/{id}/compact`, reuses the same
   `DeerFlowSummarizationMiddleware`, writes a new checkpoint with updated
   `messages` and `summary_text`, and bumps only those channel versions.

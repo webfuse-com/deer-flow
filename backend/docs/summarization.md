@@ -130,7 +130,7 @@ keep:
 #### `trim_tokens_to_summarize`
 - **Type**: Integer or null
 - **Default**: `4000`
-- **Description**: Maximum tokens to include when preparing messages for the summarization call itself. Set to `null` to skip trimming (not recommended for very long conversations).
+- **Description**: Maximum tokens to include when preparing messages for the summarization call itself. Omit the setting to use `4000`; set it explicitly to `null` to skip trimming (not recommended for very long conversations).
 
 #### `summary_prompt`
 - **Type**: String or null
