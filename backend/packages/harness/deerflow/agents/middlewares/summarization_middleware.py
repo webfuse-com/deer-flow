@@ -776,9 +776,8 @@ def create_summarization_middleware(
         "model": anchor_model,
         "trigger": trigger,
         "keep": keep or config.keep.to_tuple(),
+        "trim_tokens_to_summarize": config.trim_tokens_to_summarize,
     }
-    if config.trim_tokens_to_summarize is not None:
-        kwargs["trim_tokens_to_summarize"] = config.trim_tokens_to_summarize
     if config.summary_prompt is not None:
         kwargs["summary_prompt"] = config.summary_prompt
 
