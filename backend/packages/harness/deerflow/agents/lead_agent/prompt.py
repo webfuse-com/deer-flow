@@ -752,10 +752,6 @@ You have access to skills that provide optimized workflows for specific tasks. E
 - Follow the activated skill before choosing a general workflow.
 - The runtime injects the activated skill content for explicit slash activations; do not call `read_file` for that SKILL.md again unless the injected skill references supporting resources you need.
 
-**Already-Injected Skill Activation:**
-- Explicit slash activation and high-confidence automatic routing inject the complete selected skill body in an activation block.
-- When an activation block already contains a skill body, the skill is loaded: do not call `describe_skill` or reread its `SKILL.md`. Load only supporting resources referenced by that body when they are needed.
-
 **Skills are located at:** {container_base_path}
 {skill_evolution_section}
 {skills_list}
