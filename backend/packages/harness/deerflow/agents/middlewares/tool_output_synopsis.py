@@ -97,10 +97,6 @@ def build_tool_output_synopsis(content: str, *, tool_name: str = "") -> ToolOutp
         )
 
     stripped = content.strip()
-    if tool_name in {"workspace_inspect", "workspace_inspect_tool"}:
-        workspace_synopsis = _try_workspace_inspect(content)
-        if workspace_synopsis is not None:
-            return workspace_synopsis
     json_synopsis = _try_json(content)
     if json_synopsis is not None:
         return json_synopsis
@@ -266,60 +262,6 @@ def _short_value(value: Any) -> str:
     if isinstance(value, str):
         return json.dumps(_clip(value, 80), ensure_ascii=False)
     return _clip(repr(value), 80)
-
-
-def _try_workspace_inspect(content: str) -> ToolOutputSynopsis | None:
-    """Preserve every batched file's outcome when its content is externalized."""
-    try:
-        value = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(value, dict) or not isinstance(value.get("files"), list):
-        return None
-
-    entries = value["files"]
-    succeeded = 0
-    failed = 0
-    structure: list[str] = []
-    notable: list[str] = []
-    for index, entry in enumerate(entries, start=1):
-        if not isinstance(entry, dict):
-            failed += 1
-            structure.append(f"entry {index} — error: malformed manifest entry")
-            continue
-        path = _one_line(str(entry.get("path") or f"entry {index}"), 180)
-        error = entry.get("error")
-        if isinstance(error, str) and error:
-            failed += 1
-            rendered_error = _one_line(error, 180)
-            structure.append(f"{path} — error: {rendered_error}")
-            notable.append(f"Inspection failed for {path}: {rendered_error}")
-            continue
-        succeeded += 1
-        file_content = entry.get("content")
-        char_count = len(file_content) if isinstance(file_content, str) else 0
-        details = ["success", f"{char_count} chars"]
-        digest = entry.get("sha256")
-        if isinstance(digest, str) and digest:
-            details.append(f"sha256={digest[:12]}")
-        if entry.get("truncated") is True:
-            details.append("content truncated")
-        structure.append(f"{path} — {'; '.join(details)}")
-
-    summary = [
-        f"{len(entries)} requested file entries: {succeeded} succeeded, {failed} failed.",
-    ]
-    if value.get("truncated") is True:
-        summary.append("The overall result stopped before all requested file entries were returned.")
-    else:
-        summary.append("The overall result includes every requested file entry.")
-    return ToolOutputSynopsis(
-        kind="json",
-        title="Workspace inspection manifest",
-        summary=summary,
-        structure=structure,
-        notable_items=notable,
-    )
 
 
 def _json_shape(value: Any, *, depth: int = 0) -> str:
