@@ -89,6 +89,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#73](#patch-73) | Agent execution and context efficiency controls | config-expressed | 71b4e515 |
 | [#74](#patch-74) | Recursive completion-ledger compaction handoff | argus-edit | this PR |
 | [#75](#patch-75) | Preserve active user request in compaction input | argus-edit | this PR |
+| [#76](#patch-76) | Loaded-skill and batched-inspection continuity | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1630,6 +1631,26 @@ carry budget ledger.
 - Delete-when: the upstream summarizer receives the preserved current request
   or an equivalent durable objective independently of the compaction slice.
 - Upstream status: pending canary replay evidence.
+
+## Patch #76
+
+**Patch #76 - Loaded-skill and batched-inspection continuity**
+
+- Class: generic-upstreamable.
+- Intent: remove avoidable model turns in multi-file work cycles. Prompt and
+  auto-routing context now state that an injected skill body is already loaded,
+  preventing redundant `describe_skill` plus `read_file` calls. When a large
+  `workspace_inspect` result is externalized, its typed synopsis preserves a
+  complete per-file success/error manifest, character counts, truncation flags,
+  and short hashes so the model does not mistake an omitted preview body for a
+  failed source and re-read it.
+- Files: lead prompt, skill auto-routing middleware, tool-output synopsis,
+  middleware guide, and user-facing harness-efficiency documentation.
+- Tests: prompt contract, automatic activation reminder, and mixed-success
+  workspace manifest synopsis.
+- Delete-when: upstream activation context unambiguously distinguishes loaded
+  skills and its large-output preview preserves batch member outcomes.
+- Upstream status: pending three-sample canary comparison.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

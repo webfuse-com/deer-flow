@@ -741,7 +741,7 @@ Accessing a disabled skill violates user preferences.
 You have access to skills that provide optimized workflows for specific tasks. Each skill contains best practices, frameworks, and references to additional resources.
 
 **Progressive Loading Pattern:**
-1. When a user query matches a skill's use case, immediately call `read_file` on the skill's main file using the path attribute provided in the skill tag below
+1. When a user query matches a listed but unloaded skill, call `read_file` on the skill's main file using the path attribute provided in the skill tag below
 2. Read and understand the skill's workflow and instructions
 3. The skill file contains references to external resources under the same folder
 4. Load referenced resources only when needed during execution
@@ -751,6 +751,10 @@ You have access to skills that provide optimized workflows for specific tasks. E
 - If the user starts a request with `/<skill-name>`, that skill was explicitly requested for the current turn.
 - Follow the activated skill before choosing a general workflow.
 - The runtime injects the activated skill content for explicit slash activations; do not call `read_file` for that SKILL.md again unless the injected skill references supporting resources you need.
+
+**Already-Injected Skill Activation:**
+- Explicit slash activation and high-confidence automatic routing inject the complete selected skill body in an activation block.
+- When an activation block already contains a skill body, the skill is loaded: do not call `describe_skill` or reread its `SKILL.md`. Load only supporting resources referenced by that body when they are needed.
 
 **Skills are located at:** {container_base_path}
 {skill_evolution_section}
@@ -1059,7 +1063,7 @@ def apply_prompt_template(
     # Gate the "Skill First" instruction on the deferred discovery path:
     # legacy mode uses tool-agnostic wording; deferred mode references describe_skill.
     skill_first_reminder = (
-        "- Skill First: For complex tasks, call describe_skill(name) to check if a matching skill exists, then read_file to load it.\n"
+        "- Skill First: For complex tasks without already-injected activation content, call describe_skill(name) to check if a matching skill exists, then read_file to load it. If an activation block already includes the skill body, do not call `describe_skill` or reread its `SKILL.md`.\n"
         if skill_names is not None
         else "- Skill First: Always load the relevant skill before starting **complex** tasks.\n"
     )
