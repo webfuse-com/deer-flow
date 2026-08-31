@@ -88,6 +88,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#72](#patch-72) | Atomic edit batching + soft execution-phase budgets | config-expressed | this PR |
 | [#73](#patch-73) | Agent execution and context efficiency controls | config-expressed | 71b4e515 |
 | [#74](#patch-74) | Recursive completion-ledger compaction handoff | argus-edit | this PR |
+| [#75](#patch-75) | Preserve active user request in compaction input | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1611,6 +1612,24 @@ carry budget ledger.
 - Delete-when: upstream's default summary is a recursive execution ledger and
   its reinjection contract prevents completed-to-pending phase regression.
 - Upstream status: pending replay evidence before proposing upstream.
+
+## Patch #75
+
+**Patch #75 - Preserve active user request in compaction input**
+
+- Class: argus-edit (generic correctness follow-up to patch #74).
+- Intent: the latest real user request is deliberately rescued out of the
+  compacted message window, but that also hid the full objective and acceptance
+  criteria from the summary model. The execution ledger could enumerate
+  completed work yet still guess that later phases were undefined. Copy the
+  rescued request into the escaped summary input so `ACTIVE OBJECTIVE`,
+  `PENDING`, and `EXACT NEXT ACTION` are grounded in the actual current task.
+- Files: `summarization_middleware.py`, middleware guide.
+- Tests: end-to-end automatic compaction prompt capture proves the rescued
+  request is present and XML block delimiters in user content remain escaped.
+- Delete-when: the upstream summarizer receives the preserved current request
+  or an equivalent durable objective independently of the compaction slice.
+- Upstream status: pending canary replay evidence.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
