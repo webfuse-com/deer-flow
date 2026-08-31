@@ -104,15 +104,6 @@ def test_write_file_append_is_discoverable_in_tool_schema() -> None:
     assert "append" in append_field.description
 
 
-def test_write_file_description_is_optional_model_narration() -> None:
-    """A valid write must not fail only because the model omitted narration."""
-    schema = write_file_tool.tool_call_schema
-
-    assert "description" not in schema.model_json_schema()["required"]
-    validated = schema.model_validate({"path": "/tmp/x", "content": "hi"})
-    assert validated.description == ""
-
-
 def test_list_uploaded_files_model_schema_excludes_injected_runtime() -> None:
     """The model-facing schema must not expose ToolRuntime internals."""
     parameters = convert_to_openai_tool(list_uploaded_files)["function"]["parameters"]
