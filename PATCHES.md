@@ -1644,6 +1644,21 @@ carry budget ledger.
 - Revisit only with a narrower patch and a benchmark that passes repeatedly on
   the canary before fleet promotion.
 
+## Patch #77
+
+**Patch #77 - Make write-file narration optional**
+
+- Class: argus-edit (generic tool-schema resilience).
+- Intent: `description` is model-facing narration and is not used to perform or
+  authorize a write. Treating it as required made an otherwise complete
+  `write_file(path, content)` call fail validation and could send the agent into
+  repeated write/read/repair turns. Keep the field documented but default it to
+  an empty string so the file operation succeeds when narration is omitted.
+- Files: `sandbox/tools.py`; tool-schema regression test.
+- Delete-when: upstream makes non-semantic tool narration optional or removes
+  it from the write-file schema.
+- Upstream status: pending repeated canary benchmark evidence.
+
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
 **Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**
