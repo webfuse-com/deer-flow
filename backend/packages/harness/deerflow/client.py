@@ -350,9 +350,7 @@ class DeerFlowClient:
 
         lead_model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=self._app_config, attach_tracing=False)
         routine_model = (
-            create_chat_model(name=model_name, thinking_enabled=False, app_config=self._app_config, attach_tracing=False)
-            if self._app_config.adaptive_reasoning.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True)
-            else None
+            create_chat_model(name=model_name, thinking_enabled=False, app_config=self._app_config, attach_tracing=False) if self._app_config.adaptive_reasoning.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True) else None
         )
         kwargs: dict[str, Any] = {
             # attach_tracing=False because ``stream()`` injects tracing

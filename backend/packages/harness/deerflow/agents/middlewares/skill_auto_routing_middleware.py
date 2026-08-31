@@ -64,13 +64,7 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def _select(self, text: str, skills: list) -> list:
-        allowed = [
-            s
-            for s in skills
-            if s.enabled
-            and not (getattr(s, "required_secrets", ()) or ())
-            and (self._available_skills is None or s.name in self._available_skills)
-        ]
+        allowed = [s for s in skills if s.enabled and not (getattr(s, "required_secrets", ()) or ()) and (self._available_skills is None or s.name in self._available_skills)]
         by_name = {s.name: s for s in allowed}
         selected: list = []
         project_name = self._app_config.skills.project_skill_name
@@ -127,10 +121,7 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
                 logger.warning("Could not safely auto-route skill %s", skill.name, exc_info=True)
                 continue
             routed_names.append(skill.name)
-            blocks.append(
-                f'<skill name="{html.escape(skill.name, quote=True)}" path="{html.escape(skill.get_container_file_path(storage.get_container_root()), quote=True)}">\n'
-                f'{html.escape(content, quote=False)}\n</skill>'
-            )
+            blocks.append(f'<skill name="{html.escape(skill.name, quote=True)}" path="{html.escape(skill.get_container_file_path(storage.get_container_root()), quote=True)}">\n{html.escape(content, quote=False)}\n</skill>')
         if not blocks:
             return request
         reminder = HumanMessage(

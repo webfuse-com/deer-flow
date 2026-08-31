@@ -260,9 +260,7 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
 
             if self._config.warn_at_model_calls and calls >= self._config.warn_at_model_calls and not self._call_warned.get(run_id, False):
                 self._call_warned[run_id] = True
-                self._pending_warnings.setdefault(run_id, []).append(
-                    _CALL_WARNING_MSG.format(used=calls, budget=self._config.max_model_calls)
-                )
+                self._pending_warnings.setdefault(run_id, []).append(_CALL_WARNING_MSG.format(used=calls, budget=self._config.max_model_calls))
 
             return None
 

@@ -2238,12 +2238,14 @@ def workspace_inspect_tool(runtime: Runtime, description: str, files: list[dict[
             clipped = len(content) > remaining
             shown = content[:remaining]
             remaining -= len(shown)
-            results.append({
-                "path": path,
-                "sha256": hashlib.sha256(full.encode("utf-8")).hexdigest(),
-                "content": shown,
-                "truncated": clipped,
-            })
+            results.append(
+                {
+                    "path": path,
+                    "sha256": hashlib.sha256(full.encode("utf-8")).hexdigest(),
+                    "content": shown,
+                    "truncated": clipped,
+                }
+            )
             if remaining <= 0:
                 break
         except Exception as exc:
@@ -2559,13 +2561,12 @@ def workspace_patch_tool(runtime: Runtime, description: str, edits: list[dict[st
                 for actual, original in reversed(written):
                     sandbox.write_file(actual, original)
                 raise
-        return json.dumps({
-            "status": "success",
-            "files": [
-                {"path": path, "sha256": hashlib.sha256(updated.encode("utf-8")).hexdigest()}
-                for path, _actual, _original, updated in prepared
-            ],
-        })
+        return json.dumps(
+            {
+                "status": "success",
+                "files": [{"path": path, "sha256": hashlib.sha256(updated.encode("utf-8")).hexdigest()} for path, _actual, _original, updated in prepared],
+            }
+        )
     except Exception as exc:
         return f"Error: workspace_patch failed: {_sanitize_error(exc, runtime)}"
 
