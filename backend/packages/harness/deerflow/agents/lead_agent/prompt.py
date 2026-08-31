@@ -741,7 +741,7 @@ Accessing a disabled skill violates user preferences.
 You have access to skills that provide optimized workflows for specific tasks. Each skill contains best practices, frameworks, and references to additional resources.
 
 **Progressive Loading Pattern:**
-1. When a user query matches a skill's use case, immediately call `read_file` on the skill's main file using the path attribute provided in the skill tag below
+1. When a user query matches a listed but unloaded skill, call `read_file` on the skill's main file using the path attribute provided in the skill tag below
 2. Read and understand the skill's workflow and instructions
 3. The skill file contains references to external resources under the same folder
 4. Load referenced resources only when needed during execution
@@ -1059,7 +1059,7 @@ def apply_prompt_template(
     # Gate the "Skill First" instruction on the deferred discovery path:
     # legacy mode uses tool-agnostic wording; deferred mode references describe_skill.
     skill_first_reminder = (
-        "- Skill First: For complex tasks, call describe_skill(name) to check if a matching skill exists, then read_file to load it.\n"
+        "- Skill First: For complex tasks without already-injected activation content, call describe_skill(name) to check if a matching skill exists, then read_file to load it. If an activation block already includes the skill body, do not call `describe_skill` or reread its `SKILL.md`.\n"
         if skill_names is not None
         else "- Skill First: Always load the relevant skill before starting **complex** tasks.\n"
     )

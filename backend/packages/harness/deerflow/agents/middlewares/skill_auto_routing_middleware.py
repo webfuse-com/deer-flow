@@ -125,7 +125,14 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
         if not blocks:
             return request
         reminder = HumanMessage(
-            content="<auto_skill_activation>\nHigh-confidence routing selected these workflows. Follow them in order; load referenced resources only when needed.\n" + "\n".join(blocks) + "\n</auto_skill_activation>",
+            content=(
+                "<auto_skill_activation>\n"
+                "High-confidence routing selected and loaded these workflows. Their complete skill bodies are below: "
+                "do not call describe_skill or reread their SKILL.md files. Follow them in order and load only referenced "
+                "supporting resources when needed.\n"
+            )
+            + "\n".join(blocks)
+            + "\n</auto_skill_activation>",
             name="auto_skill_activation",
             additional_kwargs={_AUTO_CONTEXT_KEY: routed_names},
         )
