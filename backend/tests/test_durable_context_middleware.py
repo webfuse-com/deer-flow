@@ -11,7 +11,10 @@ from langgraph.types import Command
 
 from deerflow.agents import thread_state as thread_state_module
 from deerflow.agents.lead_agent import agent as lead_agent_module
-from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
+from deerflow.agents.middlewares.durable_context_middleware import (
+    _AUTHORITY_CONTRACT,
+    DurableContextMiddleware,
+)
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummarizationMiddleware
 from deerflow.agents.middlewares.tool_error_handling_middleware import ToolErrorHandlingMiddleware
@@ -38,6 +41,12 @@ def _make_app_config() -> AppConfig:
         ],
         sandbox=SandboxConfig(use="test"),
     )
+
+
+def test_durable_context_contract_marks_summary_as_handoff_state():
+    assert "past-tense execution handoff" in _AUTHORITY_CONTRACT
+    assert "EXACT NEXT ACTION" in _AUTHORITY_CONTRACT
+    assert "Do not redo COMPLETED work" in _AUTHORITY_CONTRACT
 
 
 def _msgs_with_completed_task():

@@ -86,6 +86,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
 | [#69](#patch-69) | Loop-detection: near-duplicate SUCCESS downgrades (content Jaccard) | argus-edit | this PR |
 | [#72](#patch-72) | Atomic edit batching + soft execution-phase budgets | config-expressed | this PR |
+| [#73](#patch-73) | Agent execution and context efficiency controls | config-expressed | 71b4e515 |
+| [#74](#patch-74) | Recursive completion-ledger compaction handoff | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1569,6 +1571,46 @@ carry budget ledger.
 - Delete-when: upstream provides atomic same-file edit batches and general
   soft exploration/execution phase budgets with equivalent semantics.
 - Upstream status: none sent.
+
+## Patch #73
+
+**Patch #73 - Agent execution and context efficiency controls**
+
+- Class: config-expressed (generic controls with conservative defaults; Atlas
+  opts into the routing, reasoning, and run-budget behavior in project config).
+- Intent: reduce model round trips and prompt overhead without weakening task
+  completion. Adds deterministic high-confidence skill auto-routing, adaptive
+  no-thinking follow-ups after deterministic tools, bounded multi-file
+  inspect/patch tools, model-call warning/hard caps, post-write hash
+  propagation, normalized tool-failure metadata, and a smaller lead prompt.
+- Files: lead-agent assembly/prompt, adaptive reasoning and skill-routing
+  middleware/config, run limits, read-before-write/result metadata, sandbox
+  batch tools, `config.example.yaml` and their focused tests.
+- Tests: fork PR #49 required checks, including backend, replay, and workspace
+  batch-tool coverage.
+- Delete-when: upstream provides equivalent independently configurable controls.
+- Upstream status: none sent.
+
+## Patch #74
+
+**Patch #74 - Recursive completion-ledger compaction handoff**
+
+- Class: argus-edit (generic correction to the default summarization behavior;
+  an operator custom prompt still overrides it).
+- Intent: long implementation runs repeatedly regressed from "ready to write"
+  back to repository/database orientation after compaction. The default summary
+  is now a recursively merged execution ledger with explicit completed work,
+  artifacts/evidence, pending work, exact next action, and do-not-repeat items.
+  Durable-context injection marks that ledger as a past-tense handoff rather
+  than a new request and directs the agent to continue from the exact next
+  action unless newer evidence invalidates completed work.
+- Files: `summarization_middleware.py`, `durable_context_middleware.py`,
+  `summarization_config.py`, middleware guide.
+- Tests: summary prompt contract, prior-ledger merge input, custom prompt
+  override, and durable-context continuation contract.
+- Delete-when: upstream's default summary is a recursive execution ledger and
+  its reinjection contract prevents completed-to-pending phase regression.
+- Upstream status: pending replay evidence before proposing upstream.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

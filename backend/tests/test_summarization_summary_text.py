@@ -145,6 +145,44 @@ class TestSummaryWritesChannel:
         assert model.prompts
         assert "OLD_SUMMARY_SENTINEL" in model.prompts[-1]
 
+    def test_default_prompt_requires_recursive_execution_ledger(self):
+        middleware = self._middleware()
+
+        prompt = middleware._build_summary_prompt(
+            [HumanMessage(content="queried the database and wrote /tmp/result.json")],
+            previous_summary="## COMPLETED\n- Located the target app.",
+        )
+
+        assert prompt is not None
+        assert "## ACTIVE OBJECTIVE" in prompt
+        assert "## COMPLETED" in prompt
+        assert "## ARTIFACTS AND EVIDENCE" in prompt
+        assert "## PENDING" in prompt
+        assert "## EXACT NEXT ACTION" in prompt
+        assert "## DO NOT REPEAT" in prompt
+        assert "integrate the prior ledger" in prompt
+        assert "never move an item from completed back to pending" in prompt.lower()
+        assert "existing summary" in prompt
+        assert "new messages" in prompt
+
+    def test_custom_summary_prompt_remains_an_operator_override(self):
+        middleware = DeerFlowSummarizationMiddleware(
+            model=_StaticChatModel(text="UPDATED_SUMMARY"),
+            trigger=("messages", 4),
+            keep=("messages", 2),
+            token_counter=len,
+            summary_prompt="CUSTOM SUMMARY\n{messages}",
+        )
+
+        prompt = middleware._build_summary_prompt(
+            [HumanMessage(content="new evidence")],
+            previous_summary="old evidence",
+        )
+
+        assert prompt is not None
+        assert prompt.startswith("CUSTOM SUMMARY")
+        assert "## EXACT NEXT ACTION" not in prompt
+
     def test_summary_text_counts_toward_summarization_trigger(self):
         middleware = DeerFlowSummarizationMiddleware(
             model=_StaticChatModel(text="UPDATED_SUMMARY"),
