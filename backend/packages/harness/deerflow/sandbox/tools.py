@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ import posixpath
 import re
 import shlex
 from collections.abc import Callable
+from contextlib import ExitStack
 from functools import lru_cache
 from pathlib import Path
 
@@ -2207,6 +2209,55 @@ async def _read_file_tool_async(
 read_file_tool.coroutine = _read_file_tool_async
 
 
+@tool("workspace_inspect", parse_docstring=True)
+def workspace_inspect_tool(runtime: Runtime, description: str, files: list[dict[str, object]]) -> str:
+    """Read several text files with hashes in one bounded call.
+
+    Args:
+        description: Explain the inspection in short words.
+        files: Up to 20 objects with path and optional start_line/end_line.
+    """
+    if not files or len(files) > 20:
+        return "Error: files must contain between 1 and 20 entries."
+    results: list[dict[str, object]] = []
+    remaining = 120_000
+    for index, item in enumerate(files, start=1):
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or not path:
+            return f"Error: File entry {index} requires a non-empty path."
+        if _is_disabled_skill_path(path, user_id=resolve_runtime_user_id(runtime)):
+            return f"Error: File entry {index} points to a disabled skill."
+        try:
+            full = read_current_file_content(runtime, path)
+            start = item.get("start_line")
+            end = item.get("end_line")
+            if start is not None or end is not None:
+                content = _read_file_from_sandbox(runtime, path, start_line=start if isinstance(start, int) else None, end_line=end if isinstance(end, int) else None)
+            else:
+                content = full
+            clipped = len(content) > remaining
+            shown = content[:remaining]
+            remaining -= len(shown)
+            results.append({
+                "path": path,
+                "sha256": hashlib.sha256(full.encode("utf-8")).hexdigest(),
+                "content": shown,
+                "truncated": clipped,
+            })
+            if remaining <= 0:
+                break
+        except Exception as exc:
+            results.append({"path": path, "error": _sanitize_error(exc, runtime)})
+    return json.dumps({"files": results, "truncated": len(results) < len(files)}, ensure_ascii=False)
+
+
+async def _workspace_inspect_tool_async(runtime: Runtime, description: str, files: list[dict[str, object]]) -> str:
+    return await _run_sync_tool_after_async_sandbox_init(workspace_inspect_tool.func, runtime, description, files)
+
+
+workspace_inspect_tool.coroutine = _workspace_inspect_tool_async
+
+
 def _effective_write_file_max_bytes() -> int:
     """Return the active size cap for non-append write_file calls.
 
@@ -2236,9 +2287,9 @@ def write_file_tool(
 
     READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
     append=True), you must have read its CURRENT version with read_file first.
-    Any write invalidates earlier reads, so re-read between consecutive
-    modifications — a ranged read of the relevant section is enough. Writes
-    that fail this check are rejected with an error.
+    Successful deterministic writes refresh the version mark, so sequential
+    modifications can continue without a redundant read. Failed, external, or
+    concurrent writes require another read. Stale writes are rejected.
 
     SIZE POLICY (issue #3189):
     A single non-append write_file call must not exceed 80 KB of UTF-8 content.
@@ -2341,7 +2392,8 @@ def str_replace_tool(
     copy, and the file is written only if every entry is valid and found.
 
     READ-BEFORE-WRITE (issue #3857): you must have read the file's CURRENT
-    version with read_file first; any write invalidates earlier reads.
+    version with read_file first. A successful deterministic edit refreshes the
+    version mark; failed, external, or concurrent writes require another read.
 
     Args:
         description: Explain why you are replacing the substring in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
@@ -2435,3 +2487,91 @@ async def _str_replace_tool_async(
 
 
 str_replace_tool.coroutine = _str_replace_tool_async
+
+
+@tool("workspace_patch", parse_docstring=True)
+def workspace_patch_tool(runtime: Runtime, description: str, edits: list[dict[str, object]]) -> str:
+    """Apply optimistic, multi-file replacement batches in one transaction.
+
+    Every edit must provide the sha256 returned by workspace_inspect and one or
+    more replacement objects. All hashes and replacements are validated before
+    any file is written. A write failure rolls already-written files back.
+
+    Args:
+        description: Explain the planned patch in short words.
+        edits: Up to 20 objects with path, expected_sha256, and replacements.
+    """
+    if not edits or len(edits) > 20:
+        return "Error: edits must contain between 1 and 20 entries."
+    sandbox = ensure_sandbox_initialized(runtime)
+    ensure_thread_directories_exist(runtime)
+    prepared: list[tuple[str, str, str, str]] = []
+    actual_paths: list[str] = []
+    try:
+        for index, edit in enumerate(edits, start=1):
+            path = edit.get("path") if isinstance(edit, dict) else None
+            expected = edit.get("expected_sha256") if isinstance(edit, dict) else None
+            replacements = edit.get("replacements") if isinstance(edit, dict) else None
+            if not isinstance(path, str) or not path or not isinstance(expected, str) or not expected:
+                return f"Error: Edit {index} requires path and expected_sha256."
+            if not isinstance(replacements, list) or not replacements or len(replacements) > _MAX_STR_REPLACE_BATCH_SIZE:
+                return f"Error: Edit {index} requires 1-{_MAX_STR_REPLACE_BATCH_SIZE} replacements."
+            actual = path
+            if is_local_sandbox(runtime):
+                thread_data = get_thread_data(runtime)
+                validate_local_tool_path(path, thread_data)
+                if not _is_custom_mount_path(path):
+                    actual = _resolve_and_validate_user_data_path(path, thread_data)
+            actual_paths.append(actual)
+
+        if len(set(actual_paths)) != len(actual_paths):
+            return "Error: edits must contain each path at most once. Batch a file's replacements in one edit."
+
+        with ExitStack() as locks:
+            for actual in sorted(set(actual_paths)):
+                locks.enter_context(get_file_operation_lock(sandbox, actual))
+            for index, (edit, actual) in enumerate(zip(edits, actual_paths, strict=True), start=1):
+                path = str(edit["path"])
+                original = sandbox.read_file(actual)
+                actual_hash = hashlib.sha256(original.encode("utf-8")).hexdigest()
+                if actual_hash != edit["expected_sha256"]:
+                    return f"Error: Edit {index} version mismatch for {path}; inspect the file again before patching."
+                updated = original
+                for replacement_index, replacement in enumerate(edit["replacements"], start=1):
+                    if not isinstance(replacement, dict):
+                        return f"Error: Edit {index} replacement {replacement_index} must be an object."
+                    old = replacement.get("old_str")
+                    new = replacement.get("new_str")
+                    replace_all = replacement.get("replace_all", False)
+                    if not isinstance(old, str) or not old or not isinstance(new, str) or not isinstance(replace_all, bool):
+                        return f"Error: Edit {index} replacement {replacement_index} has invalid fields."
+                    if old not in updated:
+                        return f"Error: Edit {index} replacement {replacement_index} string not found in {path}."
+                    updated = updated.replace(old, new, -1 if replace_all else 1)
+                prepared.append((path, actual, original, updated))
+
+            written: list[tuple[str, str]] = []
+            try:
+                for _path, actual, original, updated in prepared:
+                    sandbox.write_file(actual, updated)
+                    written.append((actual, original))
+            except Exception:
+                for actual, original in reversed(written):
+                    sandbox.write_file(actual, original)
+                raise
+        return json.dumps({
+            "status": "success",
+            "files": [
+                {"path": path, "sha256": hashlib.sha256(updated.encode("utf-8")).hexdigest()}
+                for path, _actual, _original, updated in prepared
+            ],
+        })
+    except Exception as exc:
+        return f"Error: workspace_patch failed: {_sanitize_error(exc, runtime)}"
+
+
+async def _workspace_patch_tool_async(runtime: Runtime, description: str, edits: list[dict[str, object]]) -> str:
+    return await _run_sync_tool_after_async_sandbox_init(workspace_patch_tool.func, runtime, description, edits)
+
+
+workspace_patch_tool.coroutine = _workspace_patch_tool_async

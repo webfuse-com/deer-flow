@@ -60,6 +60,8 @@ _DEADLINE_WARNING_MSG = (
     "than spending the remaining time on it."
 )
 _DEADLINE_EXCEEDED_MSG = "[TIME BUDGET EXCEEDED] This run hit its {budget} wall-clock limit. Producing a final answer from the work completed so far. State what was finished and what was not."
+_CALL_WARNING_MSG = "[MODEL CALL BUDGET WARNING] This run has used {used} of {budget} model calls. Finish the current implementation and verification path; do not open new work."
+_CALL_EXCEEDED_MSG = "[MODEL CALL BUDGET EXCEEDED] This run reached {budget} model calls. Returning the completed work and an explicit checkpoint for anything left."
 
 
 def _format_duration(seconds: float) -> str:
@@ -91,7 +93,9 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
         # Bounded so abandoned runs cannot leak.
         self._started_at: BoundedDict[str, float] = BoundedDict(1000)
         self._warned: BoundedDict[str, bool] = BoundedDict(1000)
+        self._call_warned: BoundedDict[str, bool] = BoundedDict(1000)
         self._pending_warnings: BoundedDict[str, list[str]] = BoundedDict(1000)
+        self._model_calls: BoundedDict[str, int] = BoundedDict(1000)
         # Same contract as TokenBudgetMiddleware: not cleared by after_agent so
         # the executor can consume it after the run returns.
         self._stop_reason: BoundedDict[str, str] = BoundedDict(1000)
@@ -104,7 +108,9 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
         with self._lock:
             self._started_at.clear()
             self._warned.clear()
+            self._call_warned.clear()
             self._pending_warnings.clear()
+            self._model_calls.clear()
             self._stop_reason.clear()
 
     def consume_stop_reason(self, run_id: str | None) -> str | None:
@@ -150,6 +156,9 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
         with self._lock:
             self._warned.pop(run_id, None)
             self._pending_warnings.pop(run_id, None)
+            # Model calls, like elapsed time, span the worker's goal-continuation
+            # invocations. They remain bounded by BoundedDict and are reset only
+            # explicitly or by eviction.
 
     @override
     async def aafter_agent(self, state: AgentState, runtime: Runtime) -> None:
@@ -208,6 +217,15 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
 
         with self._lock:
             elapsed = self._elapsed(run_id)
+            calls = self._model_calls.get(run_id, 0)
+
+            if self._config.max_model_calls and calls >= self._config.max_model_calls:
+                logger.warning("Run model-call hard stop for run %s: %s calls", run_id, calls)
+                self._stop_reason[run_id] = "model_calls_capped"
+                ctx = getattr(runtime, "context", None)
+                if isinstance(ctx, dict):
+                    ctx["stop_reason"] = "model_calls_capped"
+                return self._build_hard_stop_update(last_msg, _CALL_EXCEEDED_MSG.format(budget=self._config.max_model_calls))
 
             if elapsed >= budget:
                 logger.warning(
@@ -240,6 +258,12 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
                 self._pending_warnings.setdefault(run_id, []).append(warn_text)
                 return None
 
+            if self._config.warn_at_model_calls and calls >= self._config.warn_at_model_calls and not self._call_warned.get(run_id, False):
+                self._call_warned[run_id] = True
+                self._pending_warnings.setdefault(run_id, []).append(
+                    _CALL_WARNING_MSG.format(used=calls, budget=self._config.max_model_calls)
+                )
+
             return None
 
     @override
@@ -268,10 +292,18 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
 
     @override
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelCallResult:
+        if self._config.enabled:
+            run_id = self._get_run_id(request.runtime)
+            with self._lock:
+                self._model_calls[run_id] = self._model_calls.get(run_id, 0) + 1
         warnings = self._drain_pending_warnings(request.runtime)
         return handler(self._inject_warnings(request, warnings))
 
     @override
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelCallResult:
+        if self._config.enabled:
+            run_id = self._get_run_id(request.runtime)
+            with self._lock:
+                self._model_calls[run_id] = self._model_calls.get(run_id, 0) + 1
         warnings = self._drain_pending_warnings(request.runtime)
         return await handler(self._inject_warnings(request, warnings))

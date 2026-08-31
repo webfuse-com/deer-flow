@@ -371,6 +371,20 @@ def test_normalize_tool_result_stamps_tool_message():
     assert TOOL_META_KEY in result.additional_kwargs
 
 
+@pytest.mark.parametrize("header", ["Exit Code: 7", "Command exited with code 2", "exit=9"])
+def test_shell_nonzero_exit_is_public_error_with_exit_code(header: str):
+    msg = ToolMessage(content=f"output\n{header}", tool_call_id="tc-1", name="bash", status="success")
+    result = normalize_tool_message(msg)
+    assert result.status == "error"
+    assert _meta(result)["status"] == "error"
+    assert _meta(result)["exit_code"] != 0
+
+
+def test_semantic_json_error_updates_public_status():
+    result = normalize_tool_message(_make_msg('{"error": "permission denied"}'))
+    assert result.status == "error"
+
+
 # ---------------------------------------------------------------------------
 # JSON-wrapped error detection
 

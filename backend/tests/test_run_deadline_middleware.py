@@ -119,6 +119,18 @@ class TestWarning:
         mw.after_model(state_with_tool_call(), rt)
         assert mw._drain_pending_warnings(rt) == []
 
+    def test_model_call_warning_is_independent_of_time_warning(self, clock):
+        mw = make_middleware(clock, max_model_calls=4, warn_at_model_calls=2)
+        rt = make_runtime()
+        request = MagicMock(runtime=rt, messages=[HumanMessage(content="go")])
+        request.override.side_effect = lambda **kw: MagicMock(messages=kw["messages"], runtime=rt)
+        mw.wrap_model_call(request, lambda _req: "ok")
+        mw.wrap_model_call(request, lambda _req: "ok")
+        mw.after_model(state_with_tool_call(), rt)
+        warnings = mw._drain_pending_warnings(rt)
+        assert len(warnings) == 1
+        assert "MODEL CALL BUDGET WARNING" in warnings[0]
+
 
 class TestHardStop:
     def test_hard_stop_strips_tool_calls(self, clock):
@@ -161,6 +173,19 @@ class TestHardStop:
         clock.advance(10_000)
         assert mw.after_model({"messages": [HumanMessage(content="go")]}, rt) is None
 
+    def test_model_call_cap_strips_tool_calls_and_stamps_reason(self, clock):
+        mw = make_middleware(clock, max_model_calls=2, warn_at_model_calls=1)
+        rt = make_runtime()
+        request = MagicMock(runtime=rt, messages=[HumanMessage(content="go")])
+        mw.wrap_model_call(request, lambda _req: "ok")
+        mw.wrap_model_call(request, lambda _req: "ok")
+
+        update = mw.after_model(state_with_tool_call(), rt)
+
+        assert update["messages"][0].tool_calls == []
+        assert "MODEL CALL BUDGET EXCEEDED" in update["messages"][0].content
+        assert rt.context["stop_reason"] == "model_calls_capped"
+
 
 class TestRunScoping:
     def test_deadline_survives_after_agent_so_continuations_cannot_reset_it(self, clock):
@@ -189,6 +214,16 @@ class TestRunScoping:
         assert mw.after_model(state_with_tool_call(), rt_a) is not None
         assert mw.after_model(state_with_tool_call(), rt_b) is None
 
+    def test_model_call_count_survives_goal_continuation(self, clock):
+        mw = make_middleware(clock, max_model_calls=2, warn_at_model_calls=1)
+        rt = make_runtime()
+        request = MagicMock(runtime=rt, messages=[HumanMessage(content="go")])
+        mw.wrap_model_call(request, lambda _req: "ok")
+        mw.after_agent({}, rt)
+        mw.wrap_model_call(request, lambda _req: "ok")
+
+        assert mw.after_model(state_with_tool_call(), rt) is not None
+
 
 class TestConfig:
     def test_warn_at_must_precede_hard_stop(self):
@@ -197,6 +232,14 @@ class TestConfig:
 
     def test_disabled_by_default(self):
         assert RunLimitsConfig().enabled is False
+
+    def test_model_call_warning_must_precede_cap(self):
+        with pytest.raises(ValueError, match="warn_at_model_calls"):
+            RunLimitsConfig(max_model_calls=10, warn_at_model_calls=10)
+
+    def test_model_call_warning_requires_cap(self):
+        with pytest.raises(ValueError, match="requires max_model_calls"):
+            RunLimitsConfig(max_model_calls=0, warn_at_model_calls=10)
 
     @pytest.mark.parametrize(
         ("seconds", "expected"),

@@ -408,6 +408,7 @@ def build_middlewares(
     user_id: str | None = None,
     authorization_provider=None,
     extensions=None,
+    adaptive_reasoning_model=None,
 ):
     """Build the lead-agent middleware chain based on runtime configuration.
 
@@ -450,11 +451,32 @@ def build_middlewares(
         runtime_middleware_kwargs["deferred_setup"] = deferred_setup
     middlewares = build_lead_runtime_middlewares(**runtime_middleware_kwargs)
 
+    if adaptive_reasoning_model is not None:
+        from deerflow.agents.middlewares.adaptive_reasoning_middleware import AdaptiveReasoningMiddleware
+
+        middlewares.append(
+            AdaptiveReasoningMiddleware(
+                adaptive_reasoning_model,
+                routine_tools=resolved_app_config.adaptive_reasoning.routine_tools,
+            )
+        )
+
     # Always inject current date (and optionally memory) as <system-reminder> into the
     # first HumanMessage to keep the system prompt fully static for prefix-cache reuse.
     from deerflow.agents.middlewares.dynamic_context_middleware import DynamicContextMiddleware
 
     middlewares.append(DynamicContextMiddleware(agent_name=agent_name, app_config=resolved_app_config))
+
+    if resolved_app_config.skills.auto_route:
+        from deerflow.agents.middlewares.skill_auto_routing_middleware import SkillAutoRoutingMiddleware
+
+        middlewares.append(
+            SkillAutoRoutingMiddleware(
+                available_skills=available_skills,
+                app_config=resolved_app_config,
+                user_id=user_id,
+            )
+        )
 
     # Deterministically load a full SKILL.md when the user starts the turn with
     # /skill-name. This keeps the base system prompt metadata-only while giving
@@ -1049,8 +1071,15 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         top_k=resolved_app_config.tool_search.auto_promote_top_k,
     )
     mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
+    lead_model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides)
+    adaptive_enabled = bool(resolved_app_config.adaptive_reasoning.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True))
+    routine_model = (
+        create_chat_model(name=model_name, thinking_enabled=False, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides)
+        if adaptive_enabled
+        else None
+    )
     return create_agent(
-        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides),
+        model=lead_model,
         tools=final_tools,
         middleware=normalize_middleware_state_schemas(
             build_middlewares(
@@ -1063,6 +1092,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
                 mcp_routing_middleware=mcp_routing_middleware,
                 user_id=resolved_user_id,
                 authorization_provider=_authz_provider,
+                adaptive_reasoning_model=routine_model,
             ),
             mode,
         ),
