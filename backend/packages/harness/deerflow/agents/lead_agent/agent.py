@@ -1072,7 +1072,8 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     )
     mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
     lead_model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides)
-    adaptive_enabled = bool(resolved_app_config.adaptive_reasoning.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True))
+    adaptive_config = getattr(resolved_app_config, "adaptive_reasoning", None)
+    adaptive_enabled = bool(adaptive_config is not None and adaptive_config.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True))
     routine_model = create_chat_model(name=model_name, thinking_enabled=False, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides) if adaptive_enabled else None
     return create_agent(
         model=lead_model,
