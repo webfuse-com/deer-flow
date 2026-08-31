@@ -2280,9 +2280,9 @@ def _effective_write_file_max_bytes() -> int:
 @tool("write_file", parse_docstring=True)
 def write_file_tool(
     runtime: Runtime,
+    description: str,
     path: str,
     content: str,
-    description: str = "",
     append: bool = False,
 ) -> str:
     """Write text content to a file. By default this overwrites the target file; set append=True to add content to the end without replacing existing content.
@@ -2314,9 +2314,9 @@ def write_file_tool(
     (0 disables the guard entirely). Raising it risks streaming timeouts.
 
     Args:
-        path: The **absolute** path to the file to write to.
-        content: The content to write to the file.
-        description: Optional short explanation of why you are writing the file.
+        description: Explain why you are writing to this file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        path: The **absolute** path to the file to write to. ALWAYS PROVIDE THIS PARAMETER SECOND.
+        content: The content to write to the file. ALWAYS PROVIDE THIS PARAMETER THIRD.
         append: Whether to append content to the end of the file instead of overwriting it. Defaults to False.
     """
     if not append:
@@ -2365,12 +2365,12 @@ def write_file_tool(
 
 async def _write_file_tool_async(
     runtime: Runtime,
+    description: str,
     path: str,
     content: str,
-    description: str = "",
     append: bool = False,
 ) -> str:
-    return await _run_sync_tool_after_async_sandbox_init(write_file_tool.func, runtime, path, content, description, append)
+    return await _run_sync_tool_after_async_sandbox_init(write_file_tool.func, runtime, description, path, content, append)
 
 
 write_file_tool.coroutine = _write_file_tool_async
