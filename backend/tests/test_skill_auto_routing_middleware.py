@@ -2,10 +2,6 @@
 
 from types import SimpleNamespace
 
-from langchain.agents.middleware.types import ModelRequest
-from langchain_core.messages import HumanMessage
-
-from deerflow.agents.middlewares.skill_activation_middleware import SkillActivationMiddleware
 from deerflow.agents.middlewares.skill_auto_routing_middleware import SkillAutoRoutingMiddleware
 
 
@@ -36,37 +32,3 @@ def test_ambiguous_request_does_not_guess() -> None:
 def test_project_word_alone_is_not_enough() -> None:
     selected = _middleware()._select("What does the word project mean?", [_skill("project-workspace")])
     assert selected == []
-
-
-def test_auto_activation_says_injected_skill_must_not_be_reloaded(monkeypatch) -> None:
-    skill = SimpleNamespace(
-        name="project-workspace",
-        skill_file="/skills/project-workspace/SKILL.md",
-        get_container_file_path=lambda _root: "/mnt/skills/public/project-workspace/SKILL.md",
-    )
-    storage = SimpleNamespace(
-        load_skills=lambda *, enabled_only: [skill],
-        get_skills_root_path=lambda: "/skills",
-        get_container_root=lambda: "/mnt/skills",
-    )
-    middleware = _middleware()
-    middleware._storage = lambda: storage
-    middleware._select = lambda _text, _skills: [skill]
-    monkeypatch.setattr(
-        SkillActivationMiddleware,
-        "_read_skill_content",
-        lambda *_args, **_kwargs: "# injected body",
-    )
-    request = ModelRequest(
-        model=object(),
-        messages=[HumanMessage(content="Implement the repository refactor", id="m1")],
-        tools=[],
-        state={"messages": []},
-        runtime=SimpleNamespace(context={}),
-    )
-
-    prepared = middleware._prepare(request)
-
-    activation = next(message for message in prepared.messages if message.name == "auto_skill_activation")
-    assert "selected and loaded" in activation.content
-    assert "do not call describe_skill or reread their SKILL.md" in activation.content

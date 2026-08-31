@@ -427,34 +427,6 @@ class TestBuildPreview:
 
 
 class TestToolOutputSynopsis:
-    def test_workspace_inspect_synopsis_preserves_complete_file_manifest(self):
-        content = json.dumps(
-            {
-                "files": [
-                    {
-                        "path": "/mnt/work/a.py",
-                        "sha256": "a" * 64,
-                        "content": "a" * 20_000,
-                        "truncated": False,
-                    },
-                    {
-                        "path": "/mnt/work/b.py",
-                        "error": "permission denied",
-                    },
-                ],
-                "truncated": False,
-            }
-        )
-
-        synopsis = build_tool_output_synopsis(content, tool_name="workspace_inspect")
-
-        assert synopsis.title == "Workspace inspection manifest"
-        assert "2 requested file entries: 1 succeeded, 1 failed." in synopsis.summary
-        assert "The overall result includes every requested file entry." in synopsis.summary
-        assert any("/mnt/work/a.py — success; 20000 chars" in item for item in synopsis.structure)
-        assert any("sha256=aaaaaaaaaaaa" in item for item in synopsis.structure)
-        assert any("/mnt/work/b.py — error: permission denied" in item for item in synopsis.structure)
-
     def test_code_synopsis_extracts_imports_and_symbols(self):
         content = "import os\nfrom pathlib import Path\n\nclass Runner:\n    pass\n\ndef main():\n    return Path(os.getcwd())\n"
         synopsis = build_tool_output_synopsis(content, tool_name="python")

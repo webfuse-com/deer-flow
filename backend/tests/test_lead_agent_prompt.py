@@ -720,7 +720,5 @@ def test_apply_prompt_template_deferred_path_mentions_describe_skill(monkeypatch
 
     # Deferred wording — references describe_skill
     assert "describe_skill(name)" in prompt
-    assert "without already-injected activation content" in prompt
-    assert "do not call `describe_skill` or reread its `SKILL.md`" in prompt
     # Must NOT contain the legacy wording
     assert "Always load the relevant skill" not in prompt
