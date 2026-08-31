@@ -278,6 +278,7 @@ class DeerFlowClient:
             cfg.get("subagent_enabled"),
             cfg.get("max_concurrent_subagents"),
             cfg.get("max_total_subagents"),
+            cfg.get("adaptive_reasoning", True),
             self._agent_name,
             frozenset(self._available_skills) if self._available_skills is not None else None,
             self._checkpoint_channel_mode,
@@ -347,12 +348,16 @@ class DeerFlowClient:
 
         effective_user_id = cfg.get("user_id") or get_effective_user_id()
 
+        lead_model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=self._app_config, attach_tracing=False)
+        routine_model = (
+            create_chat_model(name=model_name, thinking_enabled=False, app_config=self._app_config, attach_tracing=False) if self._app_config.adaptive_reasoning.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True) else None
+        )
         kwargs: dict[str, Any] = {
             # attach_tracing=False because ``stream()`` injects tracing
             # callbacks at the graph invocation root so a single embedded run
             # produces one trace with correct session_id / user_id propagation.
             # Attaching them again on the model would emit duplicate spans.
-            "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled, attach_tracing=False),
+            "model": lead_model,
             "tools": final_tools,
             "middleware": normalize_middleware_state_schemas(
                 build_middlewares(
@@ -366,6 +371,7 @@ class DeerFlowClient:
                     mcp_routing_middleware=mcp_routing_middleware,
                     user_id=effective_user_id,
                     authorization_provider=_authz_provider,
+                    adaptive_reasoning_model=routine_model,
                 ),
                 self._checkpoint_channel_mode,
                 self._checkpoint_snapshot_frequency,

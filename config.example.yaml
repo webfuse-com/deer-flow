@@ -991,6 +991,11 @@ tools:
     group: file:read
     use: deerflow.sandbox.tools:read_file_tool
 
+  # Read up to 20 related files and return content hashes in one bounded call.
+  - name: workspace_inspect
+    group: file:read
+    use: deerflow.sandbox.tools:workspace_inspect_tool
+
   - name: glob
     group: file:read
     use: deerflow.sandbox.tools:glob_tool
@@ -1008,6 +1013,12 @@ tools:
   - name: str_replace
     group: file:write
     use: deerflow.sandbox.tools:str_replace_tool
+
+  # Apply a hash-guarded replacement plan across up to 20 files. All inputs
+  # are validated before any write and completed writes roll back on failure.
+  - name: workspace_patch
+    group: file:write
+    use: deerflow.sandbox.tools:workspace_patch_tool
 
   # Bash execution tool
   # Active only when using an isolated shell sandbox or when
@@ -1203,13 +1214,15 @@ loop_detection:
 #   enabled: false
 #   wall_clock_seconds: 1800   # hard deadline for one run
 #   warn_at_seconds: 1200      # must be < wall_clock_seconds
+#   max_model_calls: 0         # 0 disables the model-call ceiling
+#   warn_at_model_calls: 0     # 0 disables the call-count warning
 
 # ============================================================================
 # Read-Before-Write File Gate (issue #3857)
 # ============================================================================
 # Blocks write_file (append / overwrite of an existing file) and str_replace
-# unless the agent has read the file's current version first; any write
-# invalidates earlier reads, forcing a re-read between consecutive edits.
+# unless the agent has read the file's current version first. A successful
+# deterministic edit refreshes that version; failures and external changes do not.
 # Deterministic guardrail against blind duplicate appends in long tasks.
 
 read_before_write:
@@ -1609,6 +1622,29 @@ skills:
   # This keeps the system prompt compact and prefix-cache friendly when many
   # skills are installed.
   # deferred_discovery: true
+
+  # Deterministically load the project workflow for durable build/fix requests
+  # and at most one domain skill whose literal name appears in the request.
+  # Ambiguous requests remain on deferred discovery.
+  # auto_route: false
+  # project_skill_name: project-workspace
+  # max_auto_activated: 2
+
+# Use the normal reasoning model for user turns, research, and errors, but a
+# no-thinking variant after successful deterministic tools. Disabled by default.
+adaptive_reasoning:
+  enabled: false
+  routine_tools:
+    - read_file
+    - workspace_inspect
+    - write_file
+    - str_replace
+    - workspace_patch
+    - grep
+    - glob
+    - ls
+    - bash
+    - write_todos
 
 # ============================================================================
 # SkillScan Configuration

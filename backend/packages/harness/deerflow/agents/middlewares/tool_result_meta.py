@@ -55,6 +55,7 @@ class ToolResultMeta:
     recoverable_by_model: bool
     recommended_next_action: Literal["continue", "rewrite_query", "try_alternative", "summarize", "stop"]
     source: Literal["exception", "tool_return", "content_analysis", "progress_middleware"]
+    exit_code: int | None = None
 
 
 _ERROR_RULES: list[tuple[list[str], dict[str, object]]] = [
@@ -154,6 +155,11 @@ _NUMERIC_KW_RE: dict[str, re.Pattern[str]] = {kw: re.compile(rf"\b{kw}\b") for r
 
 _SEMANTIC_ZERO_ERROR_STRINGS: frozenset[str] = frozenset({"none", "null", "false", "no", "ok", "success", "n/a", ""})
 
+_SHELL_EXIT_CODE_RE = re.compile(
+    r"(?:^|\n)(?:Exit Code:|Command exited with code|exit=)\s*(-?\d+)\s*(?:$|\n)",
+    re.IGNORECASE,
+)
+
 
 def _extract_json_error_text(content: str) -> str | None:
     """Return the error string from a JSON-wrapped error like {"error": "...", "query": "..."}.
@@ -238,14 +244,23 @@ def _as_status_line(title: str) -> str | None:
     return " ".join(words) or None
 
 
-def _make_meta(*, status: str, source: str, error_type: str | None = None, recoverable_by_model: bool = True, recommended_next_action: str = "continue") -> dict[str, object]:
-    return {
+def _make_meta(*, status: str, source: str, error_type: str | None = None, recoverable_by_model: bool = True, recommended_next_action: str = "continue", exit_code: int | None = None) -> dict[str, object]:
+    meta: dict[str, object] = {
         "status": status,
         "error_type": error_type,
         "recoverable_by_model": recoverable_by_model,
         "recommended_next_action": recommended_next_action,
         "source": source,
     }
+    if exit_code is not None:
+        meta["exit_code"] = exit_code
+    return meta
+
+
+def _sync_message_status(msg: ToolMessage, meta: dict[str, object]) -> ToolMessage:
+    """Keep LangChain's public status aligned with DeerFlow's richer metadata."""
+    msg.status = "error" if meta.get("status") == "error" else "success"
+    return msg
 
 
 def stamp_exception_meta(msg: ToolMessage, exc_info: str) -> ToolMessage:
@@ -259,14 +274,14 @@ def stamp_exception_meta(msg: ToolMessage, exc_info: str) -> ToolMessage:
     updated_kwargs = dict(msg.additional_kwargs or {})
     updated_kwargs[TOOL_META_KEY] = _make_meta(status="error", source="exception", **attrs)
     msg.additional_kwargs = updated_kwargs
-    return msg
+    return _sync_message_status(msg, updated_kwargs[TOOL_META_KEY])
 
 
 def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     """Attach deerflow_tool_meta to a ToolMessage if not already present."""
     existing = (msg.additional_kwargs or {}).get(TOOL_META_KEY)
     if existing is not None:
-        return msg
+        return _sync_message_status(msg, existing) if isinstance(existing, dict) else msg
 
     content = msg.content if isinstance(msg.content, str) else ""
     # Pre-compute once; reused by the partial-success marker check below to avoid calling
@@ -278,7 +293,13 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     # and exit early above — they never reach this branch.)
     # Try JSON extraction first so classification uses only the "error" field value, not
     # keywords that appear incidentally in other JSON fields (e.g. "query").
-    if msg.status == "error" and not content.startswith(_ERROR_PREFIX):
+    shell_exit = _SHELL_EXIT_CODE_RE.search(content) if msg.name in {"bash", "bash_tool"} else None
+    exit_code = int(shell_exit.group(1)) if shell_exit else None
+
+    if exit_code not in (None, 0):
+        attrs = _classify_error_text(content)
+        meta = _make_meta(status="error", source="tool_return", exit_code=exit_code, **attrs)
+    elif msg.status == "error" and not content.startswith(_ERROR_PREFIX):
         json_error = _extract_json_error_text(content)
         if json_error is not None:
             attrs = _classify_error_text(json_error)
@@ -313,7 +334,7 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     updated_kwargs = dict(msg.additional_kwargs or {})
     updated_kwargs[TOOL_META_KEY] = meta
     msg.additional_kwargs = updated_kwargs
-    return msg
+    return _sync_message_status(msg, meta)
 
 
 def normalize_tool_result(result: ToolMessage | Command) -> ToolMessage | Command:

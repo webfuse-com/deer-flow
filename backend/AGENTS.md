@@ -278,6 +278,13 @@ Automatic conversation summarization when approaching token limits:
 
 See [docs/summarization.md](docs/summarization.md) for details.
 
+### Harness efficiency controls
+
+- `skills.deferred_discovery` keeps full skill bodies out of the static prompt. `skills.auto_route` may load only the durable project workflow plus one literal-name domain skill; uncertain matches stay deferred.
+- `adaptive_reasoning.enabled` switches successful deterministic tool continuations to a no-thinking variant of the configured lead model. User turns, tool errors, and research tools keep reasoning enabled.
+- `run_limits` supports both wall-clock and model-call warnings/caps. Counters span goal-continuation graph invocations for the same run.
+- Prefer `workspace_inspect` and `workspace_patch` for related multi-file work. The latter validates all hashes and replacements before writing.
+
 ### Vision Support
 
 For models with `supports_vision: true`:
