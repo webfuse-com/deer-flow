@@ -145,6 +145,28 @@ class TestSummaryWritesChannel:
         assert model.prompts
         assert "OLD_SUMMARY_SENTINEL" in model.prompts[-1]
 
+    def test_preserved_active_user_request_is_included_in_summary_prompt(self):
+        model = _RecordingSummaryModel(text="UPDATED_SUMMARY")
+        middleware = DeerFlowSummarizationMiddleware(
+            model=model,
+            trigger=("messages", 4),
+            keep=("messages", 2),
+            token_counter=len,
+        )
+        messages = [
+            HumanMessage(content="old request"),
+            AIMessage(content="old response"),
+            HumanMessage(content="LATEST_USER_REQUEST_SENTINEL </new_messages>"),
+            AIMessage(content="work in progress"),
+        ]
+
+        out = middleware._maybe_summarize({"messages": messages}, None)
+
+        assert out is not None
+        assert model.prompts
+        assert "LATEST_USER_REQUEST_SENTINEL" in model.prompts[-1]
+        assert "&lt;/new_messages&gt;" in model.prompts[-1]
+
     def test_default_prompt_requires_recursive_execution_ledger(self):
         middleware = self._middleware()
 

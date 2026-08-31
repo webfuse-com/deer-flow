@@ -377,7 +377,7 @@ async def test_async_summarization_observes_each_provider_attempt_and_live_store
 
     middleware = DeerFlowSummarizationMiddleware.__new__(DeerFlowSummarizationMiddleware)
     middleware._extensions = extensions
-    middleware._prepare_summary_prompt = lambda messages, previous_summary=None: "prompt"
+    middleware._prepare_summary_prompt = lambda messages, previous_summary=None, active_user_request=None: "prompt"
     middleware._generation_candidate_names = lambda: ["first", "second"]
     models = {"first": _Failing(), "second": _Working()}
     middleware._model_for = lambda name: models[name]
