@@ -162,8 +162,8 @@ class TestSummaryWritesChannel:
         assert "## DO NOT REPEAT" in prompt
         assert "integrate the prior ledger" in prompt
         assert "never move an item from completed back to pending" in prompt.lower()
-        assert "<existing_summary>" in prompt
-        assert "<new_messages>" in prompt
+        assert "existing summary" in prompt
+        assert "new messages" in prompt
 
     def test_custom_summary_prompt_remains_an_operator_override(self):
         middleware = DeerFlowSummarizationMiddleware(
