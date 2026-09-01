@@ -90,6 +90,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#74](#patch-74) | Recursive completion-ledger compaction handoff | argus-edit | this PR |
 | [#75](#patch-75) | Preserve active user request in compaction input | argus-edit | this PR |
 | [#78](#patch-78) | Merge model profile and runtime constructor kwargs | generic-upstreamable | this PR |
+| [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1678,6 +1679,50 @@ carry budget ledger.
   branch Argus next rebases onto.
 - Upstream status: prior upstream fix regressed; send the regression test and
   restoration upstream.
+
+## Patch #79
+
+**Patch #79 - Restore agents gallery navigation; drop in-UI agent creation**
+
+- Class: argus-edit (frontend-only edits to upstream workspace files).
+- Intent: fork patch #65 removed the sidebar "Agents" entry, which was the
+  only navigation path to `/workspace/agents` - the gallery that also hosts
+  the per-agent settings dialog and the "New Agent" button. The removal was
+  meant to retire in-UI custom-agent creation, but it also orphaned viewing
+  and editing of existing agents: `workspace-nav-chat-list.tsx` no longer
+  linked anywhere into the agents segment, so citizens could not reach their
+  agents' cards, edit their settings, or open a chat with a non-default agent
+  (only `atlas` is reachable via the nginx/console hardcoded entry points).
+  This patch (1) re-adds the feature-gated "Agents" sidebar entry (restoring
+  the pre-#65 block incl. the disabled-tooltip state from feature-gating
+  commit 21b35102), (2) removes the two "New Agent" buttons from
+  `agent-gallery.tsx` so creation is done through the stack's GitHub
+  repository (`config.yaml` + `SOUL.md`, commit, merge) instead of the web
+  UI, (3) redirects the old `/workspace/agents/new` wizard to the gallery so
+  stale links and bookmarks land somewhere useful, and (4) aligns the gallery
+  copy (en + zh) with the repo-driven creation flow. View/edit/delete of
+  existing agents is unchanged (`AgentCard` settings dialog and delete stay).
+  Agent creation remains possible via the `/api/agents` routes (still gated
+  on `agents_api.enabled`, which is also the view/edit gate) - UI-only
+  retirement, matching the "through GitHub" policy.
+- Files: `frontend/src/components/workspace/workspace-nav-chat-list.tsx`
+  (EDITED), `frontend/src/components/workspace/agents/agent-gallery.tsx`
+  (EDITED), `frontend/src/app/workspace/agents/new/page.tsx` (EDITED to a
+  redirect), `frontend/src/core/i18n/locales/en-US.ts` (EDITED),
+  `frontend/src/core/i18n/locales/zh-CN.ts` (EDITED),
+  `frontend/tests/e2e/sidebar.spec.ts` (EDITED),
+  `frontend/tests/e2e/ui-polish-mobile.spec.ts` (EDITED).
+- Tests: `frontend/tests/e2e/sidebar.spec.ts` and
+  `frontend/tests/e2e/ui-polish-mobile.spec.ts` updated to assert the restored
+  Agents entry (desktop + mobile) against the default agents-api-enabled
+  mock; `agents-feature-disabled.spec.ts` still covers the disabled state and
+  the no-API-call gate (unchanged).
+- Delete-when: not tied to an upstream regression; revisit if upstream adds a
+  first-class agents page/nav that we can adopt instead of carrying the
+  gallery nav entry.
+- Upstream status: not upstreamable as-is (the copy and the exact affordances
+  are Argus policy); the separate gallery/view surfaces are upstream code so
+  this is pure carry cost.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
