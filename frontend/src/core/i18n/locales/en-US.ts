@@ -444,11 +444,11 @@ export const enUS: Translations = {
   agents: {
     title: "Agents",
     description:
-      "Create and manage custom agents with specialized prompts and capabilities.",
+      "Manage custom agents. New agents are created through the stack's GitHub repository.",
     newAgent: "New Agent",
     emptyTitle: "No custom agents yet",
     emptyDescription:
-      "Create your first custom agent with a specialized system prompt.",
+      "Add your first custom agent through the stack's GitHub repository.",
     featureDisabledTitle: "Agents feature is not enabled",
     featureDisabledDescription:
       "This feature is not enabled on this server. Please contact your administrator.",

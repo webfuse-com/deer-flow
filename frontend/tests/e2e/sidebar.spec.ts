@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { mockLangGraphAPI } from "./utils/mock-api";
 
 test.describe("Sidebar navigation", () => {
-  test("sidebar contains Chats and the external Akropolis links", async ({
+  test("sidebar contains Chats, Agents, and the external Akropolis links", async ({
     page,
   }) => {
     mockLangGraphAPI(page);
@@ -36,7 +36,12 @@ test.describe("Sidebar navigation", () => {
       await expect(link.locator("svg")).toHaveClass(/text-muted-foreground/);
     }
 
-    await expect(sidebar.locator("a[href='/workspace/agents']")).toHaveCount(0);
+    const agentsLink = sidebar.getByRole("link", {
+      name: "Agents",
+      exact: true,
+    });
+    await expect(agentsLink).toBeVisible();
+    await expect(agentsLink).toHaveAttribute("href", "/workspace/agents");
     await expect(
       sidebar.locator("a[href='/workspace/scheduled-tasks']"),
     ).toHaveCount(0);
@@ -83,6 +88,6 @@ test.describe("Sidebar navigation", () => {
     ).toBeVisible();
     await expect(
       mobileSidebar.locator("a[href='/workspace/agents']"),
-    ).toHaveCount(0);
+    ).toBeVisible();
   });
 });
