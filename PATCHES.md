@@ -89,6 +89,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#73](#patch-73) | Agent execution and context efficiency controls | config-expressed | 71b4e515 |
 | [#74](#patch-74) | Recursive completion-ledger compaction handoff | argus-edit | this PR |
 | [#75](#patch-75) | Preserve active user request in compaction input | argus-edit | this PR |
+| [#78](#patch-78) | Merge model profile and runtime constructor kwargs | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1656,6 +1657,27 @@ carry budget ledger.
   measured fleet-performance gain to justify carrying another fork patch.
 - Revisit only with production-frequency evidence for omitted narration or a
   deterministic end-to-end scenario that demonstrates net improvement.
+
+## Patch #78
+
+**Patch #78 - Merge model profile and runtime constructor kwargs**
+
+- Class: generic-upstreamable (restores the behavior from upstream fix
+  616caa92 / #2017 that a later persistence merge silently overwrote).
+- Intent: `create_chat_model()` previously expanded runtime kwargs and model
+  profile settings separately into the provider constructor. A model with a
+  `when_thinking_disabled.reasoning_effort` fallback therefore crashed before
+  its first request whenever the Web UI also supplied `reasoning_effort`.
+  Merge the dictionaries before expansion and let the explicit runtime value
+  override the profile fallback.
+- Files: `backend/packages/harness/deerflow/models/factory.py` (EDITED), model
+  factory guide and root README (EDITED).
+- Tests: `backend/tests/test_model_factory.py` reproduces the collision and
+  verifies runtime precedence.
+- Delete-when: upstream restores the merge-before-expansion behavior on the
+  branch Argus next rebases onto.
+- Upstream status: prior upstream fix regressed; send the regression test and
+  restoration upstream.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

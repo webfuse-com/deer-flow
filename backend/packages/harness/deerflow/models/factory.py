@@ -310,7 +310,9 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
 
     _warn_unknown_model_settings(model_class, name, model_settings_from_config)
 
-    model_instance = model_class(**kwargs, **model_settings_from_config)
+    # Merge before expansion so a runtime override and a profile transform can
+    # safely target the same constructor field. Runtime values take precedence.
+    model_instance = model_class(**{**model_settings_from_config, **kwargs})
 
     if attach_tracing:
         callbacks = build_tracing_callbacks()
