@@ -1,0 +1,33 @@
+# Companion to replay-e2e.yml. Both "Layer" jobs are required status checks on
+# argus, but replay-e2e.yml only runs when its `paths:` match, so a change that
+# touches none of them (PATCHES.md, scripts/, a workflow) could never merge:
+# the required contexts simply never appeared (fork PR #59, 2026-09-02). This
+# workflow uses the SAME list as `paths-ignore`, so exactly when the real
+# workflow does not run, these two jobs report the same context names as a
+# pass. Keep the two lists identical when editing either file.
+name: replay-e2e (not applicable)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - "frontend/**"
+      - "backend/app/gateway/**"
+      - "backend/packages/harness/**"
+      - "backend/tests/fixtures/replay/**"
+      - "backend/tests/replay_provider.py"
+      - "backend/tests/_replay_fixture.py"
+      - "backend/tests/seed_runs_router.py"
+      - "backend/tests/test_replay_golden.py"
+      - "backend/scripts/run_replay_gateway.py"
+      - ".github/workflows/replay-e2e.yml"
+jobs:
+  backend-replay-golden:
+    name: Layer 1 — backend golden (no API key)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "replay golden not applicable to this change (no replay paths touched)"
+  fullstack-replay-render:
+    name: Layer 2 — full-stack render (no API key)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "full-stack render not applicable to this change (no replay paths touched)"
