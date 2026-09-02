@@ -1,5 +1,10 @@
-# Enforce the PATCHES.md hard rule: a PR that lands an "[argus] patch #NN"
-# commit must update the carry-list in the same PR. See PATCHES.md header.
+# Enforce the PATCHES.md hard rule: a patch that is not in the ledger does not
+# exist. Until 2026-09-02 this matched only the literal subject "[argus] patch
+# #NN"; the commit convention moved on in August and eleven patches landed with
+# no entry. scripts/check_patches_ledger.py now checks the ledger's own
+# consistency, every "patch #N" named in the PR's commits, and that a code
+# change either updates PATCHES.md or declares "Ledger: none (<reason>)" in the
+# PR body. See the script header for the rules.
 name: patches-ledger
 on: [pull_request]
 jobs:
@@ -9,9 +14,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: PATCHES.md updated when a patch commit lands
+      - name: Ledger consistent, commits recorded, code changes declared
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          if git log --format=%s "origin/${{ github.base_ref }}..HEAD" | grep -qi '\[argus\] patch #'; then
-            git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qx 'PATCHES.md' \
-              || { echo '::error::PR contains an [argus] patch commit but does not update PATCHES.md (the carry-list hard rule)'; exit 1; }
-          fi
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed.txt
+          printf '%s' "${PR_BODY}" > /tmp/pr-body.txt
+          python3 scripts/check_patches_ledger.py \
+            --range "origin/${{ github.base_ref }}..HEAD" \
+            --changed-files /tmp/changed.txt --pr-body /tmp/pr-body.txt
