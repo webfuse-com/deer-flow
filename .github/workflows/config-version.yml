@@ -1,0 +1,27 @@
+# config_version is UPSTREAM's counter: DeerFlow warns when a user config is
+# lower than config.example.yaml. Fork patches #66 and #72 bumped it 34 -> 36,
+# so upstream's own 35 and 36 bumps could never warn, and by 2026-09-02
+# upstream was at 39 while every Argus config claimed to be current. Rule: the
+# fork's example carries exactly the value at its upstream merge-base; only a
+# sync moves it. This job fetches upstream, finds the merge-base with the PR
+# head, and compares. See acropolis docs/DEERFLOW-SYNC.md.
+name: config-version
+on: [pull_request]
+jobs:
+  config-version-follows-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: config_version equals the upstream merge-base value
+        run: |
+          git fetch --quiet https://github.com/bytedance/deer-flow.git main
+          base="$(git merge-base HEAD FETCH_HEAD)"
+          ours="$(grep -oE '^config_version: *[0-9]+' config.example.yaml | awk '{print $2}')"
+          theirs="$(git show "${base}:config.example.yaml" | grep -oE '^config_version: *[0-9]+' | awk '{print $2}')"
+          echo "upstream merge-base ${base:0:9}: config_version ${theirs}; this branch: ${ours}"
+          if [ "${ours}" != "${theirs}" ]; then
+            echo "::error::config.example.yaml has config_version ${ours} but the upstream merge-base has ${theirs}. The counter is upstream's; a fork patch must not bump it (a sync moves it together with upstream)."
+            exit 1
+          fi
