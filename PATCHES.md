@@ -69,7 +69,17 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
 | [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
+| [#44](#patch-44) | unattended-silence: no blank-final retry, wider backstop, no token logging (back-filled) | argus-edit | 8a256f7d |
+| [#45](#patch-45) | delivery-report callback for scheduled playbook fires (back-filled) | argus-additive | 27a20421 |
 | [#46](#patch-46) | `tool_search.exclude` — deferral opt-out for hot MCP tools (record back-filled) | config-expressed | 9803a9e3 |
+| [#47](#patch-47) | per-lead-model summarization overrides (back-filled) | config-expressed | 8e2b51b5, ca0cfe85 |
+| [#48](#patch-48) | fail-closed Pythia retrieval ring (back-filled) | argus-edit | 8eec0f98 |
+| [#49](#patch-49) | omitted-item index in list-shaped tool-output previews (back-filled) | argus-edit | 7dd2ed96 |
+| [#50](#patch-50) | connector call proxy + app overlay-tools proxy (back-filled) | argus-additive | 8364d025 |
+| [#51](#patch-51) | inline connector prompts on the playbook fire endpoint (back-filled) | argus-edit | 4bae86f6 |
+| [#52](#patch-52) | scheduled fires deliver to root chats only (back-filled) | argus-edit | c10080d6 |
+| [#53](#patch-53) | agent-level tool policy (`tool_policy.source: agent`) (back-filled) | config-expressed | 457a984e |
+| [#54](#patch-54) | preserve Qwen reasoning_content across turns (PatchedChatQwen) (back-filled) | argus-additive | 77567a8f |
 | [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
 | [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
 | [#57](#patch-57) | Policy-aware guidance for directly bound tools | generic-upstreamable | this PR |
@@ -85,10 +95,14 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#67](#patch-67) | Rejoin in-flight run on WebUI reload + disconnect-safe viewer joins | generic-upstreamable | this PR |
 | [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
 | [#69](#patch-69) | Loop-detection: near-duplicate SUCCESS downgrades (content Jaccard) | argus-edit | this PR |
+| [#70](#patch-70) | surface missing durable run-event storage (back-filled) | generic-upstreamable | 477d652a |
+| [#71](#patch-71) | dynamic subagent-type listing in the `task` tool description (was the first #65) | generic-upstreamable | 7a7a3a64, d760d406 |
 | [#72](#patch-72) | Atomic edit batching + soft execution-phase budgets | config-expressed | this PR |
 | [#73](#patch-73) | Agent execution and context efficiency controls | config-expressed | 71b4e515 |
 | [#74](#patch-74) | Recursive completion-ledger compaction handoff | argus-edit | this PR |
 | [#75](#patch-75) | Preserve active user request in compaction input | argus-edit | this PR |
+| [#76](#reverted-patch-76) | reduce multi-file work-cycle churn (REVERTED 2026-08-31) | argus-edit | d29c414d, fb89651a |
+| [#77](#reverted-patch-77) | optional write-file narration (REVERTED 2026-08-31) | argus-edit | 187d7e28, 8f1d49cb |
 | [#78](#patch-78) | Merge model profile and runtime constructor kwargs | generic-upstreamable | this PR |
 | [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
 
@@ -658,9 +672,9 @@ carry budget ledger.
 - Upstream status: clean PR candidate for both halves. The salvage in
   particular is a strict improvement with an in-repo precedent to cite.
 
-## Patch #65
+## Patch #71
 
-**Patch #65 - Dynamic subagent-type listing in the `task` tool description**
+**Patch #71 - Dynamic subagent-type listing in the `task` tool description** (landed 2026-08-23 as 7a7a3a64 + d760d406 with "Patch #65" in the commit subjects; renumbered 2026-09-02 because #65 was assigned twice that day and #79 refers to the UI simplification as #65; #71 had never been assigned)
 
 - Class: generic-upstreamable (completes the Codex-style dynamic
   agent_type_description pattern for the tool schema)
@@ -1382,6 +1396,28 @@ carry budget ledger.
 ---
 
 
+## Patch #44
+
+**Patch #44 - Unattended silence: no blank-final retry, wider narration backstop, no token logging** (record back-filled 2026-09-02; landed 2026-07-20 as 8a256f7d, fork PR #8; re-applied 2026-08-15)
+
+- Class: argus-edit (of #37 and #34) + a logging pin in the gateway bootstrap.
+- Intent: three fixes from the 2026-07-18/19 hourly Telegram spam. EmptyFinalRetryMiddleware (#37) no longer retries a blank final on an unattended turn: the blank, or the `.` no-op sentinel, is the desired silent outcome and the retry re-sampled the model into narrating. The #34 narrated-silence backstop cap goes 120 to 280 chars, `calendar/schedule is clear` and `nothing ... attention` count as announcement phrasing, and a contrast/alert-marker veto (`but`, `however`, `urgent`, `moved`, `cancelled`) protects genuine content. httpx/httpcore are pinned to WARNING in the gateway bootstrap so the Telegram bot token no longer lands in the journal on every send.
+- Files: `backend/app/channels/manager.py`, `backend/app/gateway/app.py`, `backend/packages/harness/deerflow/agents/middlewares/empty_final_retry_middleware.py`.
+- Tests: `backend/tests/test_empty_final_retry.py`, `backend/tests/test_unattended_silence.py`.
+- Delete-when: upstream grows an unattended (scheduled) turn notion that suppresses blank-final retries and narration, and logs httpx at WARNING by default.
+- Upstream status: none sent; the httpx logging pin is a generic candidate.
+
+## Patch #45
+
+**Patch #45 - Delivery-report callback for scheduled playbook fires** (record back-filled 2026-09-02; landed 2026-07-20 as 27a20421, fork PR #9)
+
+- Class: argus-additive (`_delivery_report.py`) + argus-edit (manager outcome seams).
+- Intent: Chronos expects a delivered|silent|failed callback per run; the gateway never called back, so every channel_notify run sat `running` for 1800s and closed as unreported. `report_delivery()` POSTs `{status, channel, chat_id, message_text, delivered_at, error}` to the run's `report_url` with the internal token, one retry, never raises (a report failure degrades to pre-#45 behavior). `PlaybookFireRequest` and `InboundMessage` carry an optional `report_url`; `manager._report_unattended_outcome()` fires at the silent (both unattended-suppression branches), delivered and failed seams.
+- Files: `backend/app/channels/_delivery_report.py` (new), `backend/app/channels/manager.py`, `backend/app/channels/message_bus.py`, `backend/app/gateway/routers/playbooks.py`.
+- Tests: `backend/tests/test_delivery_report.py`, `backend/tests/test_playbook_fire.py` (report_url flow-through, default None).
+- Delete-when: upstream's scheduled-tasks MVP (4fc08b4f) grows a completion callback; reconcile together with #30/#43.
+- Upstream status: none sent.
+
 ## Patch #46
 
 **Patch #46 - `tool_search.exclude`: deferral opt-out for hot MCP tools** (record back-filled 2026-08-21; landed 2026-07-23 as 9803a9e3 — the #44-#52/#54 records were never written, this one is restored because #60 documents itself against it)
@@ -1399,6 +1435,95 @@ carry budget ledger.
 - Delete-when: with #60's `always_bind` alias, when upstream ships an
   equivalent pin list.
 - Upstream status: none sent; generic candidate together with #60.
+
+## Patch #47
+
+**Patch #47 - Per-lead-model summarization overrides** (record back-filled 2026-09-02; landed 2026-07-30 as 8e2b51b5 + ca0cfe85, fork PR #11)
+
+- Class: config-expressed (absent `per_model` = byte-identical behavior).
+- Intent: `summarization` was one global block, but both the trigger and the summarizer depend on the lead model's window (local-qwen 131k vs glm-nw 1M: a glm run summarized at 8.7% of its window and handed a 1M-token thread to a 131k summarizer). `SummarizationConfig` gains `per_model` + `resolved_for(lead_model_name)`; only fields set on an override apply; the resolved view drops `per_model` so a second resolution cannot compound. `fraction: 0.7` is not an option because our LiteLLM aliases carry no model profile.
+- Files: `backend/packages/harness/deerflow/config/summarization_config.py`, `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (`_create_summarization_middleware(lead_model_name)`).
+- Tests: `backend/tests/test_summarization_per_model.py`; ca0cfe85 relaxed two brittle stubs in `backend/tests/test_lead_agent_model_resolution.py`.
+- Delete-when: upstream resolves summarization thresholds from the lead model without requiring a model profile.
+- Upstream status: none sent; generic candidate.
+
+## Patch #48
+
+**Patch #48 - Fail-closed Pythia retrieval ring** (record back-filled 2026-09-02; landed 2026-07-30 as 8eec0f98)
+
+- Class: argus-edit (of #11).
+- Intent: retrieval was gated fail-open: an agent that declared no `pythia_ring` inherited `internal` from `PYTHIA_ROUTER_INJECT`, so UI threads on stacks whose agent opted out (`pythia_ring: none`) received six blocks of unrelated company knowledge per turn and the model learned to dismiss its own context (0.5 to 1.0s extra latency per turn). Retrieval now attaches only when an agent declares a known ring; absent, empty, `none` and unrecognised all mean no retrieval, in both the build gate and the constructor. `PYTHIA_ROUTER_INJECT` (alias `PYTHIA_RETRIEVAL_ENABLED`) is a kill switch only.
+- Files: `backend/packages/harness/deerflow/agents/lead_agent/agent.py`, `backend/packages/harness/deerflow/agents/middlewares/pythia_retrieval_middleware.py`, `backend/packages/harness/deerflow/config/agents_config.py`.
+- Tests: `backend/tests/test_pythia_retrieval_middleware.py`.
+- Delete-when: together with #11 (Pythia retrieval is Argus-specific).
+- Upstream status: n/a (Argus-specific).
+
+## Patch #49
+
+**Patch #49 - Omitted-item index in list-shaped tool-output previews** (record back-filled 2026-09-02; landed 2026-08-04 as 7dd2ed96; re-integrated into the synopsis preview by db9f5701 on 2026-08-20)
+
+- Class: argus-edit.
+- Intent: a head+tail preview of a `---`-separated list (kb-api's listing tools) kept the first and last item and silently dropped the middle while reading as complete; the 2026-08-03 daily review reported two 1:1s' minutes as not captured because they sat in the omitted span of a 22.6K `pythia_list_meetings` result. The preview marker now indexes the dropped blocks (first line each, cap 24 x 160 chars, `+N more`). Non-list previews are byte-identical; `_build_fallback` keeps its hard `max_chars` contract.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/tool_output_budget_middleware.py`.
+- Tests: `backend/tests/test_tool_output_budget_middleware.py` (TestBuildPreviewOmittedBlockIndex).
+- Delete-when: upstream's preview builder indexes omitted spans.
+- Upstream status: none sent; generic candidate.
+
+## Patch #50
+
+**Patch #50 - Connector call proxy and app overlay-tools proxy** (record back-filled 2026-09-02; landed 2026-08-11 as 8364d025, committing image drift that had shipped since 2026-08-06)
+
+- Class: argus-additive (two routers) + argus-edit (auth and CSRF middleware exemptions).
+- Intent: `/api/connectors/*` (legacy `/api/transformers/*` alias) proxy for app frontends with CORS for `apps-*` origins and credentials off; `/api/apps/{slug}/tools/{name}` overlay-tool proxy with two-layer scoping (infra `http-exposed-tools.json` plus per-app `app.json` `http_tools`); the auth middleware passes OPTIONS preflights and CSRF exempts both prefixes. Code comments in `tools_proxy.py` call themselves #51 because the merged PR #15 had already taken that number; the tools proxy is #50b in this ledger.
+- Files: `backend/app/gateway/app.py`, `backend/app/gateway/auth_middleware.py`, `backend/app/gateway/csrf_middleware.py`, `backend/app/gateway/routers/tools_proxy.py` (new), `backend/app/gateway/routers/transformers_proxy.py` (new).
+- Tests: none in the commit (landed verbatim from the running image); exercised by the Argus-side edge and transformer suites.
+- Delete-when: together with the Argus app tier.
+- Upstream status: n/a (Argus-specific).
+
+## Patch #51
+
+**Patch #51 - Inline connector prompts on the playbook fire endpoint** (record back-filled 2026-09-02; landed 2026-08-10 as 4bae86f6 (plus ruff commits 0d3d4d3a, b3b3130f), fork PR #15)
+
+- Class: argus-edit (of #30).
+- Intent: connector-pinned prompts live in Chronos's registry, not in `config/atlas-playbooks/`, so `PlaybookFireRequest` gains optional `prompt_text`; when set the file lookup is skipped and the path id is attribution only. 422 on whitespace-only or >64KB; date placeholders expand on both paths. Same internal-token trust boundary: the sender (Chronos) pins the prompt and gates the data frame.
+- Files: `backend/app/gateway/routers/playbooks.py`.
+- Tests: `backend/tests/test_playbook_fire.py` (TestFirePromptText).
+- Delete-when: together with #30.
+- Upstream status: n/a (Argus-specific).
+
+## Patch #52
+
+**Patch #52 - Scheduled fires deliver to root chats only** (record back-filled 2026-09-02; landed 2026-08-10 as c10080d6, fork PR #16)
+
+- Class: argus-edit (of #30).
+- Intent: `fire_playbook` iterated every store entry including per-topic thread rows, so one `hook:<connector>` thread (#51) made every scheduled fire deliver twice into the same chat: a coalesced doubled prompt, silence suppression lost, hourly `(No response from agent)` to the citizen. Filter to root rows (no `topic_id`); an only-topic store is 409 like no mapping.
+- Files: `backend/app/gateway/routers/playbooks.py`.
+- Tests: `backend/tests/test_playbook_fire.py` (TestFireTargetsRootChatsOnly).
+- Delete-when: together with #30.
+- Upstream status: n/a (Argus-specific).
+- Note: the coalesce path appears to drop the unattended flag (an empty-final retry ran on an unattended merged turn despite #44); unreachable for scheduled fires after this patch, not fixed.
+
+## Patch #53
+
+**Patch #53 - Agent-level tool policy (`tool_policy.source: agent`)** (record back-filled 2026-09-02; landed 2026-08-11 as 457a984e, fork PR #18; runtime honouring followed in #58)
+
+- Class: config-expressed (default `source: skills` = byte-identical upstream behavior).
+- Intent: config-gated alternative to upstream PR #2626's skill-union enforcement. Under `source: agent`, `AgentConfig.allowed_tools` is the run's whitelist (omitted = no restriction, `[]` = no tools, list = exactly those); the firing schedule's allowed-tools (#43) still union in and become the sole whitelist on an unrestricted agent, so unattended runs stay scopable; skill allowed-tools demote to documentation and tool_search promotion hints; subagents inherit the parent ceiling via run metadata (`agent_allowed_tools`).
+- Files: `backend/packages/harness/deerflow/agents/lead_agent/agent.py`, `backend/packages/harness/deerflow/config/agents_config.py`, `backend/packages/harness/deerflow/config/app_config.py`, `backend/packages/harness/deerflow/config/tool_policy_config.py`, `backend/packages/harness/deerflow/skills/tool_policy.py`, `backend/packages/harness/deerflow/subagents/executor.py`.
+- Tests: `backend/tests/test_tool_policy_agent_source.py`, TestAgentSourceToolPolicy in `backend/tests/test_subagent_executor.py`.
+- Delete-when: upstream ships an agent-level allowed-tools ceiling (watch the PR #2626 line).
+- Upstream status: none sent; generic candidate.
+
+## Patch #54
+
+**Patch #54 - Preserve Qwen `reasoning_content` across turns (PatchedChatQwen)** (record back-filled 2026-09-02; landed 2026-08-12 as 77567a8f)
+
+- Class: argus-additive (new model class; opt-in via `use: deerflow.models.patched_qwen:PatchedChatQwen`).
+- Intent: stock `langchain_openai` drops `reasoning_content` both ways (never extracted from responses, never re-injected on outbound serialisation), so Qwen's `preserve_thinking` template flag was a no-op for DeerFlow. PatchedChatQwen extracts `reasoning_content` on the stream (per delta) and non-stream paths into `additional_kwargs`, and re-injects it on outbound assistant messages only when the request carries `chat_template_kwargs.preserve_thinking: true`; otherwise the payload is byte-identical to stock.
+- Files: `backend/packages/harness/deerflow/models/patched_qwen.py` (new).
+- Tests: `backend/tests/test_patched_qwen.py` (red-checked against stock ChatOpenAI).
+- Delete-when: `langchain_openai` round-trips `reasoning_content` natively.
+- Upstream status: none sent; the langchain side is the real target.
 
 ## Patch #67
 
@@ -1550,6 +1675,17 @@ carry budget ledger.
 - Delete-when: upstream ships content-similarity-aware gating (or accepts
   this PR along with #68's gate).
 - Upstream status: none sent.
+
+## Patch #70
+
+**Patch #70 - Surface missing durable run-event storage** (record back-filled 2026-09-02; landed 2026-08-27 as 477d652a, fork PR #44)
+
+- Class: generic-upstreamable.
+- Intent: the a97e7b74 postmortem found every Argus schema missing `run_events` while stacks configured `run_events.backend=db`: `database.backend` defaulted to memory, `make_run_event_store` fell back to `MemoryRunEventStore` silently, and persistence bootstrap never ran. Now the factory logs ERROR when `run_events.backend=db` has no SQL session factory, and bootstrap reflects `has_run_events` and logs ERROR when a versioned PostgreSQL schema lacks the table, without auto-creating it (schema repair must be deliberate).
+- Files: `backend/packages/harness/deerflow/persistence/bootstrap.py`, `backend/packages/harness/deerflow/runtime/events/store/__init__.py`.
+- Tests: `backend/tests/test_persistence_bootstrap.py`, `backend/tests/test_run_event_store.py`.
+- Delete-when: upstream fails loudly on a db run-event backend without a session factory.
+- Upstream status: none sent; generic candidate.
 
 ## Patch #72
 
@@ -1785,6 +1921,7 @@ design or move it behind an extension point).
 |---|---|---|---|---|---|
 | 2026-07-01 | v2.0.0 -> 2df36c99 | 29 | 85 | +6168 / -812 | ~1600 (~1460 in `app/channels/`) |
 | 2026-07-02 | v2.0.0 -> #40 tip | 32 | 90 | +7433 / -668 | app-code excl. tests/docs: 1923 (776 in `app/channels/`, was 1099); tests: 1350. #40 cut `telegram.py` 574 -> 251 |
+| 2026-09-02 | bytedance/main 3a967d4f (2026-08-15) -> c58d6168 (#79) | 140 | 240 | +17512 / -1740 | app-code excl. tests/docs: 5957 (802 in `app/channels/`); tests: 3389. Measured against the merge-base with `bytedance/main` (v2.0.0 sits on `2.0.x-dev`, not `main`); over the 2,500 alarm, see acropolis docs/DEERFLOW-SYNC.md |
 
 Methodology note (2026-07-02): the last column is now measured against the
 `v2.0.0` tag over files that exist at v2.0.0 (insertions+deletions), split
