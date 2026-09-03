@@ -1360,3 +1360,83 @@ def test_create_backend_threads_network_to_local_backend(tmp_path, monkeypatch):
 
     provider._create_backend()
     assert captured.get("network") == "argus-net"
+
+
+# ── [argus] patch #80: hardening knobs reach the local backend ──────────────
+
+
+def _provider_with_sandbox_config(monkeypatch, **sandbox_overrides):
+    aio_mod = importlib.import_module("deerflow.community.aio_sandbox.aio_sandbox_provider")
+    sandbox_config = SandboxConfig(
+        use="deerflow.community.aio_sandbox:AioSandboxProvider",
+        **sandbox_overrides,
+    )
+    app_config = SimpleNamespace(sandbox=sandbox_config, stream_bridge=None)
+    monkeypatch.setattr(aio_mod, "get_app_config", lambda: app_config)
+    provider = aio_mod.AioSandboxProvider.__new__(aio_mod.AioSandboxProvider)
+    return aio_mod, provider
+
+
+def test_load_config_hardening_defaults_preserve_upstream(monkeypatch):
+    _, provider = _provider_with_sandbox_config(monkeypatch)
+    cfg = provider._load_config()
+
+    assert cfg["memory"] is None
+    assert cfg["pids_limit"] is None
+    assert cfg["cpus"] is None
+    assert cfg["cap_drop"] == [] and cfg["cap_add"] == []
+    assert cfg["seccomp_profile"] is None
+    assert cfg["no_new_privileges"] is False
+    assert cfg["extra_run_args"] == []
+
+
+def test_load_config_carries_the_hardening_knobs(monkeypatch):
+    _, provider = _provider_with_sandbox_config(
+        monkeypatch,
+        memory="3g",
+        pids_limit=1024,
+        cpus=8,
+        cap_drop=["ALL"],
+        cap_add=["CHOWN"],
+        seccomp_profile="default",
+        no_new_privileges=True,
+        extra_run_args=["--ulimit", "nofile=4096:4096"],
+    )
+    cfg = provider._load_config()
+
+    assert cfg["memory"] == "3g"
+    assert cfg["pids_limit"] == 1024
+    assert cfg["cpus"] == 8.0
+    assert cfg["cap_drop"] == ["ALL"] and cfg["cap_add"] == ["CHOWN"]
+    assert cfg["seccomp_profile"] == "default"
+    assert cfg["no_new_privileges"] is True
+    assert cfg["extra_run_args"] == ["--ulimit", "nofile=4096:4096"]
+
+
+def test_create_backend_passes_hardening_knobs_to_the_local_backend(monkeypatch):
+    aio_mod, provider = _provider_with_sandbox_config(monkeypatch)
+    provider._config = {
+        **provider._load_config(),
+        "image": "sandbox:pinned",
+        "port": 8080,
+        "container_prefix": "sandbox",
+        "mounts": [],
+        "environment": {},
+        "network": "argus-net",
+        "memory": "3g",
+        "pids_limit": 1024,
+        "cpus": 8,
+        "cap_drop": ["ALL"],
+        "seccomp_profile": "default",
+        "no_new_privileges": True,
+    }
+
+    backend = provider._create_backend()
+
+    assert isinstance(backend, aio_mod.LocalContainerBackend)
+    assert backend._memory == "3g"
+    assert backend._pids_limit == 1024
+    assert backend._cpus == 8.0
+    assert backend._cap_drop == ["ALL"]
+    assert backend._seccomp_profile == "default"
+    assert backend._no_new_privileges is True
