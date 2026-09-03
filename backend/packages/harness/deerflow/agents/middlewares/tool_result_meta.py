@@ -3,6 +3,10 @@
 Every tool result that passes through ToolErrorHandlingMiddleware gets a
 ``deerflow_tool_meta`` entry in additional_kwargs. Downstream consumers
 (ToolProgressMiddleware, etc.) read this key instead of parsing text.
+
+[argus patch #83] For tool-wrapper error formats (e.g. LangChain/LangGraph's
+"Error invoking tool '...' with kwargs {...} with error:"), classification narrows
+to the trailing error text to prevent incidental matches on echoed kwargs content.
 """
 
 from __future__ import annotations
@@ -160,6 +164,27 @@ _SHELL_EXIT_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# [argus patch #83] Tool-invocation error wrapper regex matching LangChain/LangGraph
+# wrapper format: "Error (invoking|executing) tool '<name>' with kwargs {...} with error:\n<error>\n Please fix..."
+# Anchored at start and using greedy matching {.*} so that echoed kwargs containing literal
+# '} with error:' substrings inside strings or code payloads do not truncate early.
+_TOOL_WRAPPER_ERROR_RE = re.compile(
+    r"^Error (?:invoking|executing) tool '[^']+' with kwargs \{.*\} with error:(?:\n|\Z)(.*)\Z",
+    re.DOTALL,
+)
+_TOOL_WRAPPER_SUFFIX = "Please fix the error and try again."
+
+
+def _extract_tool_wrapper_error_text(text: str) -> str | None:
+    """[argus patch #83] Extract only the trailing error from tool wrapper messages."""
+    match = _TOOL_WRAPPER_ERROR_RE.match(text)
+    if not match:
+        return None
+    trailing = match.group(1).strip()
+    if trailing.endswith(_TOOL_WRAPPER_SUFFIX):
+        trailing = trailing[: -len(_TOOL_WRAPPER_SUFFIX)].strip()
+    return trailing
+
 
 def _extract_json_error_text(content: str) -> str | None:
     """Return the error string from a JSON-wrapped error like {"error": "...", "query": "..."}.
@@ -300,19 +325,25 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
         attrs = _classify_error_text(content)
         meta = _make_meta(status="error", source="tool_return", exit_code=exit_code, **attrs)
     elif msg.status == "error" and not content.startswith(_ERROR_PREFIX):
-        json_error = _extract_json_error_text(content)
-        if json_error is not None:
-            attrs = _classify_error_text(json_error)
+        # [argus patch #83] If content is wrapped in a tool-wrapper error format, classify ONLY
+        # the trailing error text to avoid misclassifying on echoed kwargs content.
+        wrapper_error = _extract_tool_wrapper_error_text(content)
+        if wrapper_error is not None:
+            attrs = _classify_error_text(wrapper_error)
         else:
-            # Determine whether content is a JSON object that simply has no 'error' key.
-            # If so, do NOT classify from the raw JSON string — incidental field values
-            # (e.g. {"user_id": 401}) would spuriously match keyword rules and hard-block
-            # the tool.  Classify raw text only when the content is not valid JSON.
-            try:
-                is_json_dict = isinstance(json.loads(content), dict)
-            except (json.JSONDecodeError, ValueError):
-                is_json_dict = False
-            attrs = {**_UNKNOWN_ERROR} if is_json_dict else _classify_error_text(content)
+            json_error = _extract_json_error_text(content)
+            if json_error is not None:
+                attrs = _classify_error_text(json_error)
+            else:
+                # Determine whether content is a JSON object that simply has no 'error' key.
+                # If so, do NOT classify from the raw JSON string — incidental field values
+                # (e.g. {"user_id": 401}) would spuriously match keyword rules and hard-block
+                # the tool.  Classify raw text only when the content is not valid JSON.
+                try:
+                    is_json_dict = isinstance(json.loads(content), dict)
+                except (json.JSONDecodeError, ValueError):
+                    is_json_dict = False
+                attrs = {**_UNKNOWN_ERROR} if is_json_dict else _classify_error_text(content)
         meta = _make_meta(status="error", source="tool_return", **attrs)
     elif content.startswith(_ERROR_PREFIX):
         attrs = _classify_error_text(content[len(_ERROR_PREFIX) :])

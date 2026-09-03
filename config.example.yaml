@@ -1146,7 +1146,9 @@ loop_detection:
   #   bash:
   #     warn: 150
   #     hard_limit: 300
-  #   # Subcategory keys steer specific bash call shapes; tracked only when present:
+  #   # Subcategory keys steer specific bash call shapes; tracked only when present.
+  #   # [argus patch #83] bash.inspection deque trims to its own limit (not the inflated
+  #   # global window) and clears on hard stop or write progress (write_file, str_replace, execution bash):
   #   bash.inspection:
   #     warn: 25
   #     hard_limit: 50

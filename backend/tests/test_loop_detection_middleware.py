@@ -1886,7 +1886,8 @@ class TestLoopDetectionSubcategoryFrequency:
 
         thread_id = mw._get_thread_id(runtime)
         assert mw._tool_name_counter[thread_id]["bash"] == 6
-        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 6
+        # [argus patch #83] Subcategory counter is reset when hard stop fires
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 0
 
     def test_plain_bash_override_hard_stop_reachable_in_pure_inspection(self):
         """With a low plain 'bash' override, plain-bash hard stop is still reachable in a pure-inspection stream."""
@@ -1948,15 +1949,17 @@ class TestLoopDetectionSubcategoryFrequency:
         assert "bash.inspection" not in counter
 
     def test_mixed_streams_only_inspection_counts_toward_subcategory(self):
-        """Interleaved inspection and execution bash calls: only inspection counts toward subcategory."""
+        """Interleaved inspection and non-write bash calls: only inspection counts toward subcategory."""
         mw = LoopDetectionMiddleware(
             tool_freq_overrides={"bash.inspection": (3, 6)},
         )
         runtime = _make_runtime()
-        # 1 inspection, 2 execution, 1 inspection -> bash=4, bash.inspection=2
+        # 1 inspection, 1 execution (which resets subcategory), 2 inspections -> bash=4, bash.inspection=2
+        # [argus patch #83] execution-classified bash resets subcategory counter on write progress.
+        # So after rm and python run.py, the counter resets; subsequent 2 inspections accumulate to 2.
         mw._apply(_make_state(tool_calls=[_bash_call("cat a.txt")]), runtime)
         mw._apply(_make_state(tool_calls=[_bash_call("rm a.tmp")]), runtime)
-        mw._apply(_make_state(tool_calls=[_bash_call("python run.py")]), runtime)
+        mw._apply(_make_state(tool_calls=[_bash_call("cat b.txt")]), runtime)
         mw._apply(_make_state(tool_calls=[_bash_call("ls -l")]), runtime)
 
         thread_id = mw._get_thread_id(runtime)
@@ -1968,7 +1971,7 @@ class TestLoopDetectionSubcategoryFrequency:
         assert not mw._pending_warnings.get(_pending_key(), [])
 
         # 3rd inspection call trips warn
-        mw._apply(_make_state(tool_calls=[_bash_call("cat b.txt")]), runtime)
+        mw._apply(_make_state(tool_calls=[_bash_call("cat c.txt")]), runtime)
         queued = mw._pending_warnings.get(_pending_key(), [])
         assert len(queued) == 1
         assert "Repeated shell micro-reads: 3 inspection-only bash calls" in queued[0]
@@ -2027,3 +2030,103 @@ class TestLoopDetectionSubcategoryFrequency:
         queued = mw_exempt._pending_warnings.get(_pending_key(), [])
         assert len(queued) == 1
         assert "Repeated shell micro-reads: 2 inspection-only bash calls" in queued[0]
+
+    # ------------------------------------------------------------------
+    # [argus patch #83] Subcategory reset and trim regression tests
+
+    def test_interleaved_inspection_and_batch_writes_no_hard_stop(self):
+        """[argus patch #83] Defect 2A incident regression:
+        40 inspection bash + a batch write (write_file) + 30 more inspection bash with
+        bash: {hard_limit: 300} and bash.inspection: {warn: 25, hard_limit: 50}
+        must NOT trigger a hard stop because the write resets the inspection counter."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash": (150, 300), "bash.inspection": (25, 50)},
+        )
+        runtime = _make_runtime()
+        # 40 inspection calls
+        for i in range(40):
+            res = mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/part_{i}.txt")]), runtime)
+            assert res is None
+
+        thread_id = mw._get_thread_id(runtime)
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 40
+
+        # Batch write: write_file call resets subcategory counter
+        write_call = {"name": "write_file", "id": "w1", "args": {"path": "/tmp/out.txt", "content": "done"}}
+        res = mw._apply(_make_state(tool_calls=[write_call]), runtime)
+        assert res is None
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 0
+
+        # 30 more inspection calls (total bash=71, subcat=30)
+        for i in range(30):
+            res = mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/other_{i}.txt")]), runtime)
+            assert res is None
+
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 30
+        assert mw._tool_name_counter[thread_id]["bash"] == 70
+        assert mw._tool_name_counter[thread_id]["write_file"] == 1
+        assert mw.consume_stop_reason("test-run") is None
+
+    def test_pure_inspection_without_writes_fires_hard_stop(self):
+        """[argus patch #83] Defect 2B: 50 inspection bash calls with NO writes
+        reliably triggers the hard stop at 50."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash": (150, 300), "bash.inspection": (25, 50)},
+        )
+        runtime = _make_runtime()
+        for i in range(49):
+            res = mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/file_{i}.txt")]), runtime)
+            assert res is None
+
+        # 50th inspection call fires subcategory hard stop
+        res = mw._apply(_make_state(tool_calls=[_bash_call("cat /tmp/file_49.txt")]), runtime)
+        assert res is not None
+        forced_msg = res["messages"][0]
+        assert "[FORCED STOP]" in forced_msg.content
+        assert "50 inspection-only bash calls" in forced_msg.content
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_subcategory_hard_stop_resets_counter_for_fresh_start(self):
+        """[argus patch #83] Defect 2C: after a hard stop fires, subcategory tracking resets
+        so a subsequent run/turn starts counting from 0 (no immediate re-stop on call 51)."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash": (150, 300), "bash.inspection": (25, 50)},
+        )
+        runtime = _make_runtime()
+        for i in range(50):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/file_{i}.txt")]), runtime)
+
+        thread_id = mw._get_thread_id(runtime)
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 0
+
+        # Simulate fresh run (clear previous run's pending warnings if any)
+        mw._pending_warnings[_pending_key()].clear()
+
+        # Fresh inspection calls after hard stop: should accumulate from 0, not stop immediately
+        for i in range(24):
+            res = mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/fresh_{i}.txt")]), runtime)
+            assert res is None
+
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 24
+        assert not mw._pending_warnings.get(_pending_key(), [])
+
+    def test_subcategory_deque_trims_to_own_limit_not_inflated_global_window(self):
+        """[argus patch #83] Defect 2D: deque trims to the subcategory's own hard limit (50),
+        even when plain-bash override inflates the global window to 300.
+        Inspection counter can reach hard_limit 50, but never exceeds it."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash": (150, 300), "bash.inspection": (25, 50)},
+        )
+        runtime = _make_runtime()
+        # Verify global window is 300 from plain bash override
+        assert mw._tool_freq_window == 300
+
+        # Run 45 inspection calls
+        for i in range(45):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/step_{i}.txt")]), runtime)
+
+        thread_id = mw._get_thread_id(runtime)
+        subcat_hist = mw._subcat_name_history[thread_id]
+        # Deque length must not exceed subcategory limit 50
+        assert len(subcat_hist) <= 50
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 45

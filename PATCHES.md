@@ -108,6 +108,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#80](#patch-80) | Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges | generic-upstreamable | this PR |
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
+| [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2020,6 +2021,27 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   `backend/tests/test_loop_detection_middleware.py` (added unit tests for default config no-op, subcategory warn/hard-stop without window dilution, execution ignore, mixed streams, warn-once semantics, LRU eviction and reset cleanup);
   `backend/tests/test_loop_detection_config.py` (added test for subcategory override validation).
 - Delete-when: upstream adopts unified shell command classification and efficiency tracking for shell inspection.
+- Upstream status: none sent yet.
+
+## Patch #83
+
+**Patch #83 - Truthful meta-classify for wrapper errors; bash.inspection reset semantics**
+
+- Class: config-expressed
+- Intent: Fix two production defects observed during the patch #82 canary:
+  1. `tool_result_meta.py`: narrow error classification on tool-wrapper errors (`Error invoking tool '...' with kwargs {...} with error:`)
+     to the trailing error text only, preventing echoed kwargs (e.g. file content containing `disabled`) from poisoning classification into false terminal blocks.
+  2. `loop_detection_middleware.py`: trim subcategory history deque to the subcategory's own hard limit rather than the inflated global window,
+     clear the subcategory counter when its hard stop fires, and reset the subcategory counter upon write progress (`write_file`, `str_replace`, or execution `bash`).
+- Files:
+  `backend/packages/harness/deerflow/agents/middlewares/tool_result_meta.py` (EDITED: narrow error classification on tool wrapper messages),
+  `backend/packages/harness/deerflow/agents/middlewares/loop_detection_middleware.py` (EDITED: subcategory own-limit trimming, hard-stop reset, and write-progress reset),
+  `backend/packages/harness/deerflow/agents/middlewares/AGENTS.md` (EDITED: entry 28 reset and trim semantics),
+  `config.example.yaml` (EDITED: comment notes on bash.inspection reset and trim semantics).
+- Tests:
+  `backend/tests/test_tool_result_meta.py` (added regression tests for echoed kwargs poisoning, nested wrapper delimiters, genuine config errors in trailing text, non-wrapper fallback);
+  `backend/tests/test_loop_detection_middleware.py` (added tests for write progress resetting subcat counter, pure inspection hard stop, hard stop resetting counter, subcategory deque trimming to own limit).
+- Delete-when: upstream adopts structured error classification and subcategory frequency window decay.
 - Upstream status: none sent yet.
 
 
