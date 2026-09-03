@@ -83,3 +83,7 @@
 - `read_file` - Read file contents with optional line range
 - `write_file` - Write/append to files, creates directories; overwrites by default and exposes the `append` argument in the model-facing schema for end-of-file writes; subject to the read-before-write gate when `read_before_write.enabled` (see Middleware Chain)
 - `str_replace` - Atomic substring replacement for one file. Legacy `old_str`/`new_str` handles one edit; `replacements` accepts up to 50 ordered edits and writes only after every entry validates and matches. Same-path serialization is scoped to `(sandbox.id, path)` so isolated sandboxes do not contend on identical virtual paths inside one process; subject to the read-before-write gate when `read_before_write.enabled` (see Middleware Chain)
+
+**Command classification** (`sandbox/command_classify.py`):
+Shared quote- and heredoc-aware compound-command splitting (`split_compound_command`) and pure-read vs state-modifying bash command classifier (`classify_bash_command`). Consumed by `SandboxAuditMiddleware` for command-position splitting and security auditing, and by loop-detection and tool-progress middlewares (#82) for efficiency steering (counting inspection commands toward productive progress streaks and separate loop-frequency monitoring). This is efficiency steering, not a security boundary; the sandbox remains the security and isolation boundary.
+
