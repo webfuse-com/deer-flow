@@ -64,6 +64,17 @@ class TestClassifyBashCommand:
         assert classify_bash_command("sed -n 's/foo/bar/p' f.txt") == "inspection"
         assert classify_bash_command("sed 's/foo/bar/' f.txt") == "inspection"
 
+    def test_sort_variants(self):
+        # Output flag writes a file -> execution
+        assert classify_bash_command("sort -o out.txt in.txt") == "execution"
+        assert classify_bash_command("sort --output=out.txt in.txt") == "execution"
+        assert classify_bash_command("sort --output out.txt in.txt") == "execution"
+        assert classify_bash_command("sort -no out.txt in.txt") == "execution"
+        assert classify_bash_command("sort -oout.txt in.txt") == "execution"
+        # Pure inspection sort
+        assert classify_bash_command("sort -u in.txt") == "inspection"
+        assert classify_bash_command("sort -n in.txt") == "inspection"
+
     def test_find_variants(self):
         # find with mutating or execution flags
         assert classify_bash_command("find . -name '*.tmp' -delete") == "execution"
@@ -74,6 +85,7 @@ class TestClassifyBashCommand:
         assert classify_bash_command("find . -name '*.tmp' -okdir rm {} \\;") == "execution"
         assert classify_bash_command("find . -fprintf out.txt '%p\\n'") == "execution"
         assert classify_bash_command("find . -fprint out.txt") == "execution"
+        assert classify_bash_command("find . -fprint0 out.txt") == "execution"
         assert classify_bash_command("find . -fls out.txt") == "execution"
         # Pure read find
         assert classify_bash_command("find . -name '*.py' -type f") == "inspection"

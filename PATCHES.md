@@ -1992,7 +1992,7 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   `backend/packages/harness/deerflow/sandbox/AGENTS.md` (EDITED: documentation),
   `backend/packages/harness/deerflow/agents/middlewares/AGENTS.md` (EDITED: documentation).
 - Tests: `backend/tests/test_command_classify.py` (new unit tests covering splitting,
-  fail-closed/fail-open behaviors, pure-read binaries, sed/find mutating flags, redirection
+  fail-closed/fail-open behaviors, pure-read binaries, sed/sort/find mutating flags, redirection
   sinks/exceptions, git inspection subcommands, env prefixes, and pipelines);
   `backend/tests/test_sandbox_audit_middleware.py` (267 existing tests pass unchanged).
 - Delete-when: upstream grows an equivalent shared shell-classification helper.

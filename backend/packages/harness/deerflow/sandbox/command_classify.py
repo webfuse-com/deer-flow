@@ -436,9 +436,21 @@ def _classify_subcommand(subcmd: str) -> Literal["inspection", "execution"]:
                     return "execution"
         return "inspection"
 
+    if binary == "sort":
+        # Any output flag (-o, bundled short flags containing o like -no, -oout, --output, --output=...) -> execution
+        for arg in args:
+            if arg == "--":
+                break
+            if arg.startswith("--output"):
+                return "execution"
+            if arg.startswith("-") and not arg.startswith("--"):
+                if "o" in arg:
+                    return "execution"
+        return "inspection"
+
     if binary == "find":
-        # Any of -delete, -exec, -execdir, -ok, -okdir, -fprintf, -fprint, -fls -> execution
-        find_exec_flags = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-fls"}
+        # Any of -delete, -exec, -execdir, -ok, -okdir, -fprintf, -fprint, -fprint0, -fls -> execution
+        find_exec_flags = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fprint", "-fprint0", "-fls"}
         for arg in args:
             if arg in find_exec_flags:
                 return "execution"
