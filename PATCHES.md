@@ -105,6 +105,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#77](#reverted-patch-77) | optional write-file narration (REVERTED 2026-08-31) | argus-edit | 187d7e28, 8f1d49cb |
 | [#78](#patch-78) | Merge model profile and runtime constructor kwargs | generic-upstreamable | this PR |
 | [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
+| [#80](#patch-80) | Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1931,3 +1932,43 @@ scope and is not directly comparable; like-for-like against v2.0.0 the
 pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 `git diff --numstat v2.0.0 | while read a d f; do git cat-file -e
 "v2.0.0:$f" 2>/dev/null && echo "$a $d $f"; done | awk '...'`.
+
+## Patch #80
+
+**Patch #80 - Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges**
+
+- Class: generic-upstreamable (config-driven, off by default; upstream behaviour
+  is reproduced exactly when nothing is configured).
+- Intent: `LocalContainerBackend._start_container` launched every agent sandbox
+  with a single hard-coded `--security-opt seccomp=unconfined` and no resource
+  limits, so untrusted agent code ran as an unlimited container with the
+  kernel's syscall filter switched off (live on Argus 2026-09-03: `Memory=0
+  PidsLimit=0 CapDrop=[] SecurityOpt=[seccomp=unconfined]` on every
+  `argus-*-sandbox-*`; Cerberus `sandbox_unhardened` + `seccomp_unconfined`).
+  `SandboxConfig` gains `memory`, `pids_limit`, `cpus`, `cap_drop`, `cap_add`,
+  `seccomp_profile`, `no_new_privileges` and `extra_run_args`; the provider
+  forwards them and the backend renders them on the docker/podman path
+  (`_docker_hardening_args`). `seccomp_profile` unset keeps upstream's
+  `seccomp=unconfined`; `"default"` passes no seccomp option (the runtime's
+  own default filter); any other value is a profile path. Apple `container`
+  has none of these flags and is left untouched. Verified on the production
+  image (`all-in-one-sandbox@sha256:742062f9`) under `--memory 3g
+  --pids-limit 1024 --cpus 8 --security-opt no-new-privileges` with the
+  default seccomp filter: shell exec, cgroup limits visible inside, browser
+  info + screenshot (chromium renders) all fine.
+- Files: `backend/packages/harness/deerflow/config/sandbox_config.py`
+  (EDITED: eight fields + docstring),
+  `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py`
+  (EDITED: constructor kwargs, `_docker_hardening_args`, call site),
+  `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox_provider.py`
+  (EDITED: `_load_config` keys, `_create_backend` forwarding).
+- Tests: `backend/tests/test_aio_sandbox_local_backend.py` (seven new tests:
+  unconfigured == upstream, `default` omits seccomp, custom profile passed
+  through, limits/caps/no-new-privileges/extra args rendered before the
+  image, fractional cpus, blank knobs ignored, Apple runtime untouched);
+  `backend/tests/test_aio_sandbox_provider.py` (three new tests: defaults,
+  knobs carried by `_load_config`, `_create_backend` forwards them).
+- Delete-when: upstream exposes equivalent sandbox resource/security options
+  on `SandboxConfig` (none as of the 2026-08-15 base).
+- Upstream status: none sent yet; the shape is generic (every field maps to a
+  documented docker flag) and is a candidate for the next upstream batch.
