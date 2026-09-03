@@ -65,6 +65,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY, ToolResultMeta
+from deerflow.sandbox.command_classify import classify_bash_command
 
 if TYPE_CHECKING:
     from deerflow.config.tool_progress_config import ToolProgressConfig
@@ -217,6 +218,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         total_tool_call_reminder_interval: int = 30,
         read_only_tools: set[str] | None = None,
         write_tools: set[str] | None = None,
+        bash_inspection_counts_as_read: bool = False,
     ) -> None:
         self._stagnation_threshold = stagnation_threshold
         self._warn_escalation = warn_escalation_count
@@ -230,6 +232,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         self._total_tool_call_reminder_interval = total_tool_call_reminder_interval
         self._read_only_tools = read_only_tools if read_only_tools is not None else {"read_file", "grep", "glob", "ls"}
         self._write_tools = write_tools if write_tools is not None else {"write_file", "str_replace"}
+        self._bash_inspection_counts_as_read = bash_inspection_counts_as_read
 
         # threading.Lock (not asyncio.Lock): critical sections are short in-memory dict
         # ops with no I/O, so event-loop stall risk is negligible.  asyncio.Lock would
@@ -258,6 +261,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             total_tool_call_reminder_interval=config.total_tool_call_reminder_interval,
             read_only_tools=set(config.read_only_tools),
             write_tools=set(config.write_tools),
+            bash_inspection_counts_as_read=config.bash_inspection_counts_as_read,
         )
 
     # ------------------------------------------------------------------
@@ -372,7 +376,13 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             self._queue_assessment(runtime, hint)
         return result
 
-    def _record_run_efficiency(self, result: ToolMessage | Command, tool_name: str, runtime: Runtime) -> None:
+    def _record_run_efficiency(
+        self,
+        result: ToolMessage | Command,
+        tool_name: str,
+        runtime: Runtime,
+        tool_args: object = None,
+    ) -> None:
         """Queue soft phase hints when exploration or total-call budgets grow large."""
         if self._read_only_streak_threshold == 0 and self._total_tool_call_threshold == 0:
             return
@@ -390,7 +400,16 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             if isinstance(result, ToolMessage):
                 meta = _parse_tool_meta((result.additional_kwargs or {}).get(TOOL_META_KEY))
             successful = meta is not None and meta.status == "success"
-            if successful and tool_name in self._read_only_tools:
+
+            # [argus patch #82] Check if bash call qualifies as inspection read
+            is_bash_inspection = False
+            if self._bash_inspection_counts_as_read and tool_name == "bash" and successful:
+                if isinstance(tool_args, dict):
+                    cmd = tool_args.get("command")
+                    if isinstance(cmd, str) and classify_bash_command(cmd) == "inspection":
+                        is_bash_inspection = True
+
+            if successful and (tool_name in self._read_only_tools or is_bash_inspection):
                 state.read_only_streak += 1
                 if self._read_only_streak_threshold and state.read_only_streak % self._read_only_streak_threshold == 0:
                     hints.append(
@@ -556,6 +575,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
         tool_name = str(request.tool_call.get("name", ""))
+        tool_args = request.tool_call.get("args")
         if not tool_name:
             return handler(request)
         runtime = getattr(request, "runtime", None)
@@ -571,12 +591,12 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                     block_reason,
                 )
                 result = self._make_blocked_message(request, tool_name, block_reason)
-                self._record_run_efficiency(result, tool_name, runtime)
+                self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
                 return result
         result = handler(request)
         if tool_name not in self._exempt_tools:
             result = self._update_state_from_result(result, tool_name, runtime)
-        self._record_run_efficiency(result, tool_name, runtime)
+        self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
         return result
 
     @override
@@ -586,6 +606,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
         tool_name = str(request.tool_call.get("name", ""))
+        tool_args = request.tool_call.get("args")
         if not tool_name:
             return await handler(request)
         runtime = getattr(request, "runtime", None)
@@ -601,12 +622,12 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                     block_reason,
                 )
                 result = self._make_blocked_message(request, tool_name, block_reason)
-                self._record_run_efficiency(result, tool_name, runtime)
+                self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
                 return result
         result = await handler(request)
         if tool_name not in self._exempt_tools:
             result = self._update_state_from_result(result, tool_name, runtime)
-        self._record_run_efficiency(result, tool_name, runtime)
+        self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
         return result
 
     # ------------------------------------------------------------------

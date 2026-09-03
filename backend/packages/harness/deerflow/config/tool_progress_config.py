@@ -66,3 +66,12 @@ class ToolProgressConfig(BaseModel):
         default_factory=lambda: {"write_file", "str_replace"},
         description="Successful tools that reset the consecutive read/search streak",
     )
+    bash_inspection_counts_as_read: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #82] When true, a successful bash call whose command classifies as pure-read "
+            "inspection (deerflow.sandbox.command_classify) advances the read_only streak exactly like "
+            "read_file; other bash calls leave the streak untouched (never advance, never reset). "
+            "Default false preserves upstream behavior."
+        ),
+    )

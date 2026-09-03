@@ -107,6 +107,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
 | [#80](#patch-80) | Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges | generic-upstreamable | this PR |
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
+| [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1997,4 +1998,28 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   `backend/tests/test_sandbox_audit_middleware.py` (267 existing tests pass unchanged).
 - Delete-when: upstream grows an equivalent shared shell-classification helper.
 - Upstream status: none sent yet.
+
+## Patch #82
+
+**Patch #82 - Bash inspection wiring for ToolProgress streak and loop-detection Layer 2**
+
+- Class: config-expressed
+- Intent: Wire bash command classification (`deerflow.sandbox.command_classify`, patch #81)
+  into `ToolProgressMiddleware` and `LoopDetectionMiddleware` to eliminate efficiency blindspots
+  where micro-peeking loops through `bash` evade read/write streak accounting and per-tool frequency caps.
+  Config-gated off by default to maintain byte-identical upstream behavior.
+- Files:
+  `backend/packages/harness/deerflow/config/tool_progress_config.py` (EDITED: `bash_inspection_counts_as_read` field),
+  `backend/packages/harness/deerflow/agents/middlewares/tool_progress_middleware.py` (EDITED: wire bash inspection to advance read_only_streak),
+  `backend/packages/harness/deerflow/config/loop_detection_config.py` (EDITED: document subcategory override keys),
+  `backend/packages/harness/deerflow/agents/middlewares/loop_detection_middleware.py` (EDITED: Layer-2 subcategory tracking and steering messages),
+  `backend/packages/harness/deerflow/agents/middlewares/AGENTS.md` (EDITED: entries 12 and 28 documentation),
+  `config.example.yaml` (EDITED: commented-out example configuration for both knobs).
+- Tests:
+  `backend/tests/test_tool_progress_middleware.py` (added unit tests for flag off/on, inspection vs execution bash, failed commands, non-bash tools);
+  `backend/tests/test_loop_detection_middleware.py` (added unit tests for default config no-op, subcategory warn/hard-stop, execution ignore, mixed streams, warn-once semantics);
+  `backend/tests/test_loop_detection_config.py` (added test for subcategory override validation).
+- Delete-when: upstream adopts unified shell command classification and efficiency tracking for shell inspection.
+- Upstream status: none sent yet.
+
 

@@ -115,6 +115,7 @@ from langgraph.runtime import Runtime
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
 from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
+from deerflow.sandbox.command_classify import classify_bash_command
 
 # [argus patch #69] Jaccard similarity parameters mirror ToolProgressConfig's
 # defaults (jaccard_similarity_threshold=0.8, min_word_count_for_similarity=10)
@@ -264,6 +265,12 @@ _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. P
 
 _TOOL_FREQ_HARD_STOP_MSG = "[FORCED STOP] Tool {tool_name} called {count} times — exceeded the per-tool safety limit. Producing final answer with results collected so far."
 
+# [argus patch #82] Subcategory steering messages for Layer-2 frequency detection
+_TOOL_FREQ_SUBCATEGORY_WARNING_MSG = "[LOOP DETECTED] Repeated shell micro-reads: {count} inspection-only bash calls. Use read_file / workspace_inspect for file inspection, batch your reads, and move on to implementation."
+_TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG = (
+    "[FORCED STOP] Repeated shell micro-reads exceeded the safety limit ({count} inspection-only bash calls). Use read_file / workspace_inspect for file inspection. Producing final answer with results collected so far."
+)
+
 _TOOL_FREQ_EXEMPT_MSG = (
     "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. "
     "This tool is exempt from the hard stop, but this volume usually means no new progress is being "
@@ -301,6 +308,17 @@ def _outcome_phrase(meta: dict) -> str:
 
 def _action_hint(meta: dict) -> str:
     return _ACTION_HINTS.get(meta.get("recommended_next_action") or "", " Change the arguments or the approach.")
+
+
+def _bash_subcategory(name: str, args: object) -> str | None:
+    """[argus patch #82] Compute subcategory name for bash inspection calls."""
+    if name != "bash":
+        return None
+    normalized_args, _ = _normalize_tool_call_args(args)
+    cmd = normalized_args.get("command")
+    if isinstance(cmd, str) and classify_bash_command(cmd) == "inspection":
+        return "bash.inspection"
+    return None
 
 
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
@@ -379,6 +397,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # config enforces warn <= hard (covered by sizing to hard), and a misconfig
         # with warn > hard would hard-stop first anyway, so an unreachable warn
         # is harmless and must not inflate the window.
+        # [argus patch #82] Note: subcategory keys (e.g. bash.inspection) flow
+        # through self._tool_freq_overrides and are automatically covered here too.
         self._tool_freq_window = max(
             self.window_size,
             self.tool_freq_hard_limit,
@@ -713,6 +733,60 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     # Windowed count decayed below the warn threshold; allow a
                     # future burst of this tool to warn again.
                     self._tool_freq_warned[thread_id].discard(name)
+
+                # [argus patch #82] Layer-2 subcategory tracking (e.g. bash.inspection)
+                # Gated strictly by key presence in _tool_freq_overrides so default path has zero cost.
+                if name == "bash" and "bash.inspection" in self._tool_freq_overrides:
+                    subcat = _bash_subcategory(name, tc.get("args"))
+                    if subcat:
+                        tool_name_history.append(subcat)
+                        name_counter[subcat] += 1
+                        while len(tool_name_history) > self._tool_freq_window:
+                            old = tool_name_history.popleft()
+                            c = name_counter[old] - 1
+                            if c <= 0:
+                                del name_counter[old]
+                            else:
+                                name_counter[old] = c
+                        subcat_freq = name_counter.get(subcat, 0)
+                        subcat_warn, subcat_hard = self._tool_freq_overrides[subcat]
+
+                        if subcat_freq >= subcat_hard:
+                            if subcat in self._no_hard_stop_tools:
+                                logger.warning(
+                                    "Tool subcategory frequency hard limit reached — tool exempt via no_hard_stop_tools, downgrading to warning",
+                                    extra={
+                                        "thread_id": thread_id,
+                                        "tool_name": subcat,
+                                        "count": subcat_freq,
+                                    },
+                                )
+                                return _TOOL_FREQ_EXEMPT_MSG.format(tool_name=subcat, count=subcat_freq), False
+                            logger.error(
+                                "Tool subcategory frequency hard limit reached — forcing stop",
+                                extra={
+                                    "thread_id": thread_id,
+                                    "tool_name": subcat,
+                                    "count": subcat_freq,
+                                },
+                            )
+                            return _TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG.format(count=subcat_freq), True
+
+                        if subcat_freq >= subcat_warn:
+                            subcat_warned = self._tool_freq_warned[thread_id]
+                            if subcat not in subcat_warned:
+                                subcat_warned.add(subcat)
+                                logger.warning(
+                                    "Tool subcategory frequency warning — too many calls to tool subcategory",
+                                    extra={
+                                        "thread_id": thread_id,
+                                        "tool_name": subcat,
+                                        "count": subcat_freq,
+                                    },
+                                )
+                                return _TOOL_FREQ_SUBCATEGORY_WARNING_MSG.format(count=subcat_freq), False
+                        else:
+                            self._tool_freq_warned[thread_id].discard(subcat)
 
         return None, False
 
