@@ -1146,6 +1146,10 @@ loop_detection:
   #   bash:
   #     warn: 150
   #     hard_limit: 300
+  #   # Subcategory keys steer specific bash call shapes; tracked only when present:
+  #   bash.inspection:
+  #     warn: 25
+  #     hard_limit: 50
   # [argus patch #68] Identical-call hard stops are downgraded to escalating
   # warnings when the tool's most recent result says the failure is
   # model-recoverable (no_results / not_found / permission): the model is
@@ -1183,6 +1187,7 @@ loop_detection:
 #   min_word_count_for_similarity: 10  # Min unique words to apply Jaccard check
 #   max_tracked_threads: 100
 #   read_only_streak_threshold: 0       # Soft phase hint after N consecutive successful reads/searches; 0 disables
+#   bash_inspection_counts_as_read: false  # [argus patch #82] successful pure-read bash advances the read-only streak
 #   total_tool_call_threshold: 0        # Soft replan hint after N calls in one run; 0 disables
 #   total_tool_call_reminder_interval: 30 # Repeat the replan hint every N additional calls
 #   read_only_tools: [read_file, grep, glob, ls]

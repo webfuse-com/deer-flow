@@ -1216,6 +1216,8 @@ class TestToolFrequencyDetection:
         mw._apply(_make_state(tool_calls=[_bash_call("ls")]), _make_runtime("thread-b"))
         assert "thread-evicted" not in mw._tool_name_history
         assert "thread-evicted" not in mw._tool_name_counter
+        assert "thread-evicted" not in mw._subcat_name_history
+        assert "thread-evicted" not in mw._subcat_name_counter
 
         # Thread id reused: its first fresh read_file must not force-stop.
         result = mw._apply(_make_state(tool_calls=[self._read_call("/fresh.py")]), evicted)
@@ -1232,6 +1234,7 @@ class TestToolFrequencyDetection:
             mw._apply(_make_state(tool_calls=[self._read_call(f"/file_{i}.py")]), runtime)
         mw.reset(thread_id="thread-A")
         assert "thread-A" not in mw._tool_name_counter
+        assert "thread-A" not in mw._subcat_name_counter
         result = mw._apply(_make_state(tool_calls=[self._read_call("/fresh.py")]), runtime)
         assert result is None
 
@@ -1242,6 +1245,7 @@ class TestToolFrequencyDetection:
             mw2._apply(_make_state(tool_calls=[self._read_call(f"/f_{i}.py")]), runtime2)
         mw2.reset()
         assert not mw2._tool_name_counter
+        assert not mw2._subcat_name_counter
         result = mw2._apply(_make_state(tool_calls=[self._read_call("/fresh.py")]), runtime2)
         assert result is None
 
@@ -1817,3 +1821,209 @@ class TestFromConfig:
         result = mw._apply(_make_state(tool_calls=[_bash_call(f"cmd_{hard}")]), runtime)
         assert result is not None
         assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+
+class TestLoopDetectionSubcategoryFrequency:
+    """[argus patch #82] Tests for Layer-2 bash.inspection subcategory tracking."""
+
+    def test_default_config_produces_no_subcategory_counter(self):
+        """DEFAULT config (no overrides): many inspection bash calls produce NO new counter
+        and no bash.inspection key in the middleware's internal Counter."""
+        mw = LoopDetectionMiddleware()
+        runtime = _make_runtime()
+        for i in range(10):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"cat file_{i}.txt")]), runtime)
+
+        thread_id = mw._get_thread_id(runtime)
+        counter = mw._tool_name_counter[thread_id]
+        assert "bash" in counter
+        assert "bash.inspection" not in counter
+
+    def test_subcategory_warning_at_warn_threshold(self):
+        """tool_freq_overrides={"bash.inspection": (warn, hard)}: N=warn inspection calls
+        inject the subcategory warning containing 'shell micro-reads' and 'read_file'."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash.inspection": (3, 6)},
+        )
+        runtime = _make_runtime()
+        for i in range(2):
+            result = mw._apply(_make_state(tool_calls=[_bash_call(f"cat /path/to/file_{i}.txt")]), runtime)
+            assert result is None
+            assert not mw._pending_warnings.get(_pending_key(), [])
+
+        # 3rd inspection call trips warn threshold
+        result = mw._apply(_make_state(tool_calls=[_bash_call("grep -rn 'pattern' src/")]), runtime)
+        assert result is None
+        queued = mw._pending_warnings.get(_pending_key(), [])
+        assert len(queued) == 1
+        assert "Repeated shell micro-reads: 3 inspection-only bash calls" in queued[0]
+        assert "read_file" in queued[0]
+
+    def test_subcategory_hard_stop_reaches_limit_without_dilution(self):
+        """Regression test for layer-2 window dilution:
+        With tool_freq_overrides={"bash.inspection": (3, 6)} and window deriving to 6 (window_size=6, tool_freq_hard_limit=10).
+        Fire 6 inspection bash calls with no other tools:
+        The subcategory HARD STOP fires. (On diluted shared deque it capped at ceil(6/2)=3 and never hard-stopped).
+        Also assert plain bash counter still counts every bash call."""
+        mw = LoopDetectionMiddleware(
+            window_size=6,
+            tool_freq_warn=10,
+            tool_freq_hard_limit=10,
+            tool_freq_overrides={"bash.inspection": (3, 6)},
+        )
+        runtime = _make_runtime()
+        for i in range(5):
+            result = mw._apply(_make_state(tool_calls=[_bash_call(f"cat file_{i}.txt")]), runtime)
+            assert result is None
+
+        # 6th call hits hard limit 6
+        result = mw._apply(_make_state(tool_calls=[_bash_call("cat file_5.txt")]), runtime)
+        assert result is not None
+        forced_msg = result["messages"][0]
+        assert "[FORCED STOP]" in forced_msg.content
+        assert "Repeated shell micro-reads exceeded the safety limit (6 inspection-only bash calls)" in forced_msg.content
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+        thread_id = mw._get_thread_id(runtime)
+        assert mw._tool_name_counter[thread_id]["bash"] == 6
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 6
+
+    def test_plain_bash_override_hard_stop_reachable_in_pure_inspection(self):
+        """With a low plain 'bash' override, plain-bash hard stop is still reachable in a pure-inspection stream."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash": (2, 4), "bash.inspection": (10, 20)},
+        )
+        runtime = _make_runtime()
+        for i in range(3):
+            result = mw._apply(_make_state(tool_calls=[_bash_call(f"cat file_{i}.txt")]), runtime)
+            assert result is None
+
+        # 4th inspection call hits plain bash hard limit 4
+        result = mw._apply(_make_state(tool_calls=[_bash_call("cat file_3.txt")]), runtime)
+        assert result is not None
+        forced_msg = result["messages"][0]
+        assert "[FORCED STOP]" in forced_msg.content
+        assert "Tool bash called 4 times — exceeded the per-tool safety limit" in forced_msg.content
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_subcategory_hard_stop_at_hard_limit(self):
+        """tool_freq_overrides={"bash.inspection": (warn, hard)}: N=hard inspection calls
+        hard-stop with the subcategory hard-stop text."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash.inspection": (3, 5)},
+        )
+        runtime = _make_runtime()
+        for i in range(4):
+            result = mw._apply(_make_state(tool_calls=[_bash_call(f"cat file_{i}.txt")]), runtime)
+            assert result is None
+
+        # 5th call hits hard limit 5
+        result = mw._apply(_make_state(tool_calls=[_bash_call("cat file_4.txt")]), runtime)
+        assert result is not None
+        forced_msg = result["messages"][0]
+        assert "[FORCED STOP]" in forced_msg.content
+        assert "Repeated shell micro-reads exceeded the safety limit (5 inspection-only bash calls)" in forced_msg.content
+        assert "read_file" in forced_msg.content
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
+    def test_execution_classified_bash_does_not_advance_subcategory(self):
+        """execution-classified bash calls (sed -i, rm, grep foo f > out) do NOT advance bash.inspection
+        but DO advance the plain bash counter."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash.inspection": (3, 5)},
+        )
+        runtime = _make_runtime()
+        exec_cmds = [
+            "sed -i 's/foo/bar/' file.txt",
+            "rm -rf /tmp/scratch",
+            "grep foo f > out.txt",
+        ]
+        for cmd in exec_cmds:
+            result = mw._apply(_make_state(tool_calls=[_bash_call(cmd)]), runtime)
+            assert result is None
+
+        thread_id = mw._get_thread_id(runtime)
+        counter = mw._tool_name_counter[thread_id]
+        assert counter["bash"] == 3
+        assert "bash.inspection" not in counter
+
+    def test_mixed_streams_only_inspection_counts_toward_subcategory(self):
+        """Interleaved inspection and execution bash calls: only inspection counts toward subcategory."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash.inspection": (3, 6)},
+        )
+        runtime = _make_runtime()
+        # 1 inspection, 2 execution, 1 inspection -> bash=4, bash.inspection=2
+        mw._apply(_make_state(tool_calls=[_bash_call("cat a.txt")]), runtime)
+        mw._apply(_make_state(tool_calls=[_bash_call("rm a.tmp")]), runtime)
+        mw._apply(_make_state(tool_calls=[_bash_call("python run.py")]), runtime)
+        mw._apply(_make_state(tool_calls=[_bash_call("ls -l")]), runtime)
+
+        thread_id = mw._get_thread_id(runtime)
+        counter = mw._tool_name_counter[thread_id]
+        subcat_counter = mw._subcat_name_counter[thread_id]
+        assert counter["bash"] == 4
+        assert "bash.inspection" not in counter
+        assert subcat_counter["bash.inspection"] == 2
+        assert not mw._pending_warnings.get(_pending_key(), [])
+
+        # 3rd inspection call trips warn
+        mw._apply(_make_state(tool_calls=[_bash_call("cat b.txt")]), runtime)
+        queued = mw._pending_warnings.get(_pending_key(), [])
+        assert len(queued) == 1
+        assert "Repeated shell micro-reads: 3 inspection-only bash calls" in queued[0]
+
+    def test_config_from_config_carries_subcategory_override(self):
+        """Config-level: LoopDetectionConfig(tool_freq_overrides={"bash.inspection": {"warn": 25, "hard_limit": 50}})
+        validates and from_config carries it through."""
+        from deerflow.config.loop_detection_config import LoopDetectionConfig
+
+        config = LoopDetectionConfig(tool_freq_overrides={"bash.inspection": {"warn": 25, "hard_limit": 50}})
+        mw = LoopDetectionMiddleware.from_config(config)
+        assert mw._tool_freq_overrides == {"bash.inspection": (25, 50)}
+
+    def test_warn_once_semantics_for_subcategory(self):
+        """Warn-once semantics for subcategory: second burst re-warns only after decay below warn."""
+        mw = LoopDetectionMiddleware(
+            window_size=10,
+            tool_freq_overrides={"bash.inspection": (2, 10)},
+        )
+        runtime = _make_runtime()
+        # Call 1 & 2 -> reaches warn=2
+        mw._apply(_make_state(tool_calls=[_bash_call("cat a.txt")]), runtime)
+        mw._apply(_make_state(tool_calls=[_bash_call("cat b.txt")]), runtime)
+        queued = mw._pending_warnings.get(_pending_key(), [])
+        assert len(queued) == 1
+        mw._pending_warnings[_pending_key()].clear()
+
+        # Call 3: inspection call 3 -> still >= 2, must not warn again
+        mw._apply(_make_state(tool_calls=[_bash_call("cat c.txt")]), runtime)
+        assert mw._pending_warnings.get(_pending_key(), []) == []
+
+        # Dilute window with non-bash tools so bash.inspection decays out
+        # Use a tool with high threshold so it doesn't trigger its own freq warning
+        mw_exempt = LoopDetectionMiddleware(
+            window_size=10,
+            tool_freq_warn=1000,
+            tool_freq_hard_limit=2000,
+            tool_freq_overrides={"bash.inspection": (2, 10)},
+        )
+        rt = _make_runtime()
+        mw_exempt._apply(_make_state(tool_calls=[_bash_call("cat a.txt")]), rt)
+        mw_exempt._apply(_make_state(tool_calls=[_bash_call("cat b.txt")]), rt)
+        assert len(mw_exempt._pending_warnings.get(_pending_key(), [])) == 1
+        mw_exempt._pending_warnings[_pending_key()].clear()
+
+        # Dilute window so bash.inspection drops to 0 (tool_freq_window is 2000)
+        # Alternate multiple distinct tool names so none of them hits warn=1000
+        for i in range(mw_exempt._tool_freq_window + 1):
+            t_name = f"tool_{i % 10}"
+            mw_exempt._apply(_make_state(tool_calls=[{"name": t_name, "id": f"t-{i}", "args": {"arg": i}}]), rt)
+        assert mw_exempt._pending_warnings.get(_pending_key(), []) == []
+
+        # New burst: 2 more inspections should re-warn
+        mw_exempt._apply(_make_state(tool_calls=[_bash_call("cat d.txt")]), rt)
+        mw_exempt._apply(_make_state(tool_calls=[_bash_call("cat e.txt")]), rt)
+        queued = mw_exempt._pending_warnings.get(_pending_key(), [])
+        assert len(queued) == 1
+        assert "Repeated shell micro-reads: 2 inspection-only bash calls" in queued[0]
