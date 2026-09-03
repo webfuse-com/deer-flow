@@ -140,6 +140,17 @@ _DEFAULT_READ_FILE_BUCKET_SIZE = 200  # [argus] read_file line-range bucket (ups
 _DEFAULT_RECOVERABLE_RETRY_LIMIT = 24  # [argus patch #68] identical recoverable retries before terminal stop
 _MAX_PENDING_WARNINGS_PER_RUN = 4
 
+# [argus patch #83] Tool names whose invocation represents write progress,
+# clearing bash.inspection accumulated counts (mirrors ToolProgressMiddleware).
+_WRITE_PROGRESS_TOOLS = frozenset({"write_file", "str_replace"})
+
+# [argus patch #83] Explicit registry of subcategory names this middleware can produce.
+# Today exactly {"bash.inspection"} — the only subcategory name _bash_subcategory can emit.
+# Gating on membership in this registry ensures operator tool_freq_overrides for dotted
+# tool names (e.g. MCP tools like "github.search_issues") are treated as plain tools,
+# inflating the global window and keeping their hard stops reachable.
+_SUBCATEGORY_NAMES: frozenset[str] = frozenset({"bash.inspection"})
+
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     """Normalize tool call args to a dict plus an optional fallback key.
@@ -321,6 +332,25 @@ def _bash_subcategory(name: str, args: object) -> str | None:
     return None
 
 
+def _bash_classify(name: str, args: object) -> tuple[str | None, bool]:
+    """[argus patch #83] Classify bash tool call for subcategory tracking and write progress.
+
+    Returns (subcategory_name, is_execution_write_progress).
+    Only explicit 'execution' commands signal write progress (unknown/empty do not).
+    """
+    if name != "bash":
+        return None, False
+    normalized_args, _ = _normalize_tool_call_args(args)
+    cmd = normalized_args.get("command")
+    if isinstance(cmd, str):
+        c = classify_bash_command(cmd)
+        if c == "inspection":
+            return "bash.inspection", False
+        if c == "execution":
+            return None, True
+    return None, False
+
+
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
     """Detects and breaks repetitive tool call loops.
 
@@ -398,11 +428,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # with warn > hard would hard-stop first anyway, so an unreachable warn
         # is harmless and must not inflate the window.
         # [argus patch #82] Note: subcategory keys (e.g. bash.inspection) flow
-        # through self._tool_freq_overrides and are automatically covered here too.
+        # through self._tool_freq_overrides. [argus patch #83] Exclude subcategories
+        # (names in _SUBCATEGORY_NAMES) from inflating the global window; subcategories
+        # trim to their own hard limit. Dotted MCP tool names (e.g. "github.search_issues")
+        # are NOT subcategories and still inflate the window so their hard stops remain reachable.
         self._tool_freq_window = max(
             self.window_size,
             self.tool_freq_hard_limit,
-            *(hard for _, hard in self._tool_freq_overrides.values()),
+            *(hard for name, (_, hard) in self._tool_freq_overrides.items() if name not in _SUBCATEGORY_NAMES),
         )
         self._lock = threading.Lock()
         self._history: OrderedDict[str, list[str]] = OrderedDict()
@@ -527,6 +560,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     self._drop_pending_warning_key_locked(key)
             logger.debug("Evicted loop tracking for thread %s (LRU)", evicted_id)
 
+    def _clear_subcategory_locked(self, thread_id: str) -> None:
+        """[argus patch #83] Clear subcategory tracking deque, counter, and warned flag for a thread."""
+        self._subcat_name_history.pop(thread_id, None)
+        self._subcat_name_counter.pop(thread_id, None)
+        self._tool_freq_warned[thread_id].discard("bash.inspection")
+
     def _drop_pending_warning_key_locked(self, key: tuple[str, str]) -> None:
         """Drop all pending-warning bookkeeping for one thread/run key.
 
@@ -597,11 +636,17 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         # Precompute subcategory mapping outside the lock (classify_bash_command is pure CPU)
         subcategories: dict[int, str | None] = {}
+        has_write_progress = False
         if "bash.inspection" in self._tool_freq_overrides:
             for idx, tc in enumerate(tool_calls):
                 name = tc.get("name", "")
-                if name == "bash":
-                    subcategories[idx] = _bash_subcategory(name, tc.get("args"))
+                if name in _WRITE_PROGRESS_TOOLS:
+                    has_write_progress = True
+                elif name == "bash":
+                    sub, is_write = _bash_classify(name, tc.get("args"))
+                    subcategories[idx] = sub
+                    if is_write:
+                        has_write_progress = True
 
         with self._lock:
             # Touch / create entry (move to end for LRU)
@@ -677,6 +722,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     )
 
             # --- Layer 2: per-tool-type frequency (windowed) ---
+            # [argus patch #83] Reset on write progress:
+            # When the current AIMessage issues any write_file/str_replace call, or any execution-classified bash call,
+            # clear the subcategory tracking deque+counter for this thread so reads-after-writes do not accumulate.
+            if has_write_progress and "bash.inspection" in self._tool_freq_overrides:
+                self._clear_subcategory_locked(thread_id)
+
             tool_name_history = self._tool_name_history[thread_id]
             name_counter = self._tool_name_counter[thread_id]
             for idx, tc in enumerate(tool_calls):
@@ -708,7 +759,10 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     subcat_history.append(subcat)
                     if subcat:
                         subcat_counter[subcat] += 1
-                    while len(subcat_history) > self._tool_freq_window:
+                    # [argus patch #83] Trim subcategory deque to the subcategory's OWN hard limit,
+                    # not the global window which may be inflated by high plain-tool overrides (e.g. bash: 300).
+                    subcat_limit = self._tool_freq_overrides["bash.inspection"][1]
+                    while len(subcat_history) > subcat_limit:
                         old_sub = subcat_history.popleft()
                         if old_sub:
                             c = subcat_counter[old_sub] - 1
@@ -791,6 +845,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                                 "count": subcat_freq,
                             },
                         )
+                        # [argus patch #83] Clear subcategory tracking state on hard stop so the
+                        # next run starts fresh at 0 without immediate re-stopping.
+                        self._clear_subcategory_locked(thread_id)
                         return _TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG.format(count=subcat_freq), True
 
                     if subcat_freq >= subcat_warn:
@@ -1136,6 +1193,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._warned.pop(thread_id, None)
                 self._tool_name_history.pop(thread_id, None)
                 self._tool_name_counter.pop(thread_id, None)
+                self._subcat_name_history.pop(thread_id, None)
+                self._subcat_name_counter.pop(thread_id, None)
                 self._tool_freq_warned.pop(thread_id, None)
                 for key in list(self._pending_warnings):
                     if key[0] == thread_id:
@@ -1145,6 +1204,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._warned.clear()
                 self._tool_name_history.clear()
                 self._tool_name_counter.clear()
+                self._subcat_name_history.clear()
+                self._subcat_name_counter.clear()
                 self._tool_freq_warned.clear()
                 self._pending_warnings.clear()
                 self._pending_warning_touch_order.clear()

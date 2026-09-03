@@ -542,3 +542,80 @@ def test_numeric_keyword_word_boundary(content: str, expected_error_type: str):
     m = _meta(result)
     assert m["status"] == "error"
     assert m["error_type"] == expected_error_type, f"{content!r} → expected {expected_error_type!r}, got {m['error_type']!r}"
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #83] Tool-wrapper error classification without echoed-kwargs poisoning
+
+
+def test_wrapper_error_echoed_kwargs_does_not_poison_classification():
+    """Incident regression: echoed kwargs containing 'disabled', 'not configured', 'no api key'
+    must NOT cause wrapper errors to misclassify as config/auth/internal stop errors.
+    The real trailing arg-validation error 'description: Field required' is model-recoverable."""
+    decoy_js = "function test() { const disabled = true; /* not configured */ /* no api key */ return disabled; }\n" * 200
+    wrapper_content = f"Error invoking tool 'write_file' with kwargs {{'content': '{decoy_js}', 'path': '/tmp/test.js'}} with error:\n description: Field required\n Please fix the error and try again."
+    msg = _make_msg(wrapper_content, status="error")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+
+    assert m["status"] == "error"
+    assert m["source"] == "tool_return"
+    assert m["error_type"] != "config"
+    assert m["error_type"] != "auth"
+    assert m["error_type"] != "internal"
+    assert m["recoverable_by_model"] is True
+    assert m["recommended_next_action"] in ("try_alternative", "rewrite_query")
+
+
+def test_wrapper_error_nested_delimiters_in_kwargs():
+    """Echoed kwargs containing the literal '} with error:' inside quotes or string content
+    must not break regex matching or truncate kwargs scanning prematurely."""
+    decoy = "const snippet = '} with error:'; const disabled = true;"
+    wrapper_content = f"Error invoking tool 'write_file' with kwargs {{'content': '{decoy}'}} with error:\n description: Field required\n Please fix the error and try again."
+    msg = _make_msg(wrapper_content, status="error")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+
+    assert m["status"] == "error"
+    assert m["error_type"] != "config"
+    assert m["recoverable_by_model"] is True
+
+
+def test_wrapper_error_with_genuine_config_error_in_trailing_text():
+    """When the trailing error text genuinely contains a config error, it must still classify as config.
+    The fix narrows WHAT is scanned, not the classification rules."""
+    wrapper_content = "Error invoking tool 'write_file' with kwargs {'path': '/tmp/file.txt'} with error:\n sandbox not configured\n Please fix the error and try again."
+    msg = _make_msg(wrapper_content, status="error")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+
+    assert m["status"] == "error"
+    assert m["error_type"] == "config"
+    assert m["recoverable_by_model"] is False
+    assert m["recommended_next_action"] == "stop"
+
+
+def test_non_wrapper_error_containing_disabled_still_config():
+    """Non-wrapper error text containing 'disabled' still classifies as config (fallback path unchanged)."""
+    content = "Tool write_file is currently disabled by administrator policy"
+    msg = _make_msg(content, status="error")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+
+    assert m["status"] == "error"
+    assert m["error_type"] == "config"
+    assert m["recoverable_by_model"] is False
+    assert m["recommended_next_action"] == "stop"
+
+
+def test_wrapper_error_tolerates_crlf_line_endings():
+    """Wrapper error extraction tolerates CRLF (\\r?\\n) before the trailing error text."""
+    decoy_js = "function test() { const disabled = true; return disabled; }\r\n" * 50
+    wrapper_content = f"Error invoking tool 'write_file' with kwargs {{'content': '{decoy_js}'}} with error:\r\n description: Field required\r\n Please fix the error and try again."
+    msg = _make_msg(wrapper_content, status="error")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+
+    assert m["status"] == "error"
+    assert m["error_type"] != "config"
+    assert m["recoverable_by_model"] is True
