@@ -1146,8 +1146,7 @@ loop_detection:
   #   bash:
   #     warn: 150
   #     hard_limit: 300
-  # Subcategory keys steer specific bash call shapes; tracked only when present:
-  # tool_freq_overrides:
+  #   # Subcategory keys steer specific bash call shapes; tracked only when present:
   #   bash.inspection:
   #     warn: 25
   #     hard_limit: 50

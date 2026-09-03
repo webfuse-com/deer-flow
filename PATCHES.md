@@ -2016,8 +2016,8 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   `backend/packages/harness/deerflow/agents/middlewares/AGENTS.md` (EDITED: entries 12 and 28 documentation),
   `config.example.yaml` (EDITED: commented-out example configuration for both knobs).
 - Tests:
-  `backend/tests/test_tool_progress_middleware.py` (added unit tests for flag off/on, inspection vs execution bash, failed commands, non-bash tools);
-  `backend/tests/test_loop_detection_middleware.py` (added unit tests for default config no-op, subcategory warn/hard-stop, execution ignore, mixed streams, warn-once semantics);
+  `backend/tests/test_tool_progress_middleware.py` (added unit tests for flag off/on, inspection vs execution bash, failed commands, non-bash tools, JSON-string args);
+  `backend/tests/test_loop_detection_middleware.py` (added unit tests for default config no-op, subcategory warn/hard-stop without window dilution, execution ignore, mixed streams, warn-once semantics, LRU eviction and reset cleanup);
   `backend/tests/test_loop_detection_config.py` (added test for subcategory override validation).
 - Delete-when: upstream adopts unified shell command classification and efficiency tracking for shell inspection.
 - Upstream status: none sent yet.

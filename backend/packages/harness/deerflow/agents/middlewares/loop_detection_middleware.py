@@ -413,10 +413,15 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._tool_name_history: defaultdict[str, deque[str]] = defaultdict(deque)
         # Per-thread Counter mirroring the deque so freq_count is O(1) instead
         # of scanning the whole window on every tool call. A single high
-        # per-tool override (e.g. bash: {hard_limit: 1000}) inflates the window
+        # per-tool override (e.g. bash: hard_limit=1000) inflates the window
         # globally, so the scan would cost 1000 per call for every tool; Counter
         # increments on append and decrements on popleft.
         self._tool_name_counter: defaultdict[str, Counter[str]] = defaultdict(Counter)
+        # [argus patch #82] Separate per-thread history and counter for subcategories
+        # (e.g. bash.inspection) so subcategory calls do not consume window slots in
+        # the plain tool name deque.
+        self._subcat_name_history: defaultdict[str, deque[str | None]] = defaultdict(deque)
+        self._subcat_name_counter: defaultdict[str, Counter[str]] = defaultdict(Counter)
         # Per-thread set of tool names already warned about in Layer 2, so a
         # frequency warning is enqueued once rather than on every subsequent
         # call. Cleared per name when the windowed count decays back below the
@@ -514,6 +519,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             self._warned.pop(evicted_id, None)
             self._tool_name_history.pop(evicted_id, None)
             self._tool_name_counter.pop(evicted_id, None)
+            self._subcat_name_history.pop(evicted_id, None)
+            self._subcat_name_counter.pop(evicted_id, None)
             self._tool_freq_warned.pop(evicted_id, None)
             for key in list(self._pending_warnings):
                 if key[0] == evicted_id:
@@ -587,6 +594,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         thread_id = self._get_thread_id(runtime)
         call_hash = _hash_tool_calls(tool_calls, self.read_file_bucket_size_lines)
+
+        # Precompute subcategory mapping outside the lock (classify_bash_command is pure CPU)
+        subcategories: dict[int, str | None] = {}
+        if "bash.inspection" in self._tool_freq_overrides:
+            for idx, tc in enumerate(tool_calls):
+                name = tc.get("name", "")
+                if name == "bash":
+                    subcategories[idx] = _bash_subcategory(name, tc.get("args"))
 
         with self._lock:
             # Touch / create entry (move to end for LRU)
@@ -664,7 +679,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             # --- Layer 2: per-tool-type frequency (windowed) ---
             tool_name_history = self._tool_name_history[thread_id]
             name_counter = self._tool_name_counter[thread_id]
-            for tc in tool_calls:
+            for idx, tc in enumerate(tool_calls):
                 name = tc.get("name", "")
                 if not name:
                     continue
@@ -684,6 +699,26 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                         name_counter[old] = c
                 freq_count = name_counter.get(name, 0)
 
+                # Subcategory tracking (e.g. bash.inspection) on its own separate window/counter
+                subcat = subcategories.get(idx)
+                subcat_freq = 0
+                if "bash.inspection" in self._tool_freq_overrides:
+                    subcat_history = self._subcat_name_history[thread_id]
+                    subcat_counter = self._subcat_name_counter[thread_id]
+                    subcat_history.append(subcat)
+                    if subcat:
+                        subcat_counter[subcat] += 1
+                    while len(subcat_history) > self._tool_freq_window:
+                        old_sub = subcat_history.popleft()
+                        if old_sub:
+                            c = subcat_counter[old_sub] - 1
+                            if c <= 0:
+                                del subcat_counter[old_sub]
+                            else:
+                                subcat_counter[old_sub] = c
+                    subcat_freq = subcat_counter.get(subcat, 0) if subcat else 0
+
+                # First evaluate plain tool name
                 if name in self._tool_freq_overrides:
                     eff_warn, eff_hard = self._tool_freq_overrides[name]
                 else:
@@ -734,59 +769,45 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     # future burst of this tool to warn again.
                     self._tool_freq_warned[thread_id].discard(name)
 
-                # [argus patch #82] Layer-2 subcategory tracking (e.g. bash.inspection)
-                # Gated strictly by key presence in _tool_freq_overrides so default path has zero cost.
-                if name == "bash" and "bash.inspection" in self._tool_freq_overrides:
-                    subcat = _bash_subcategory(name, tc.get("args"))
-                    if subcat:
-                        tool_name_history.append(subcat)
-                        name_counter[subcat] += 1
-                        while len(tool_name_history) > self._tool_freq_window:
-                            old = tool_name_history.popleft()
-                            c = name_counter[old] - 1
-                            if c <= 0:
-                                del name_counter[old]
-                            else:
-                                name_counter[old] = c
-                        subcat_freq = name_counter.get(subcat, 0)
-                        subcat_warn, subcat_hard = self._tool_freq_overrides[subcat]
-
-                        if subcat_freq >= subcat_hard:
-                            if subcat in self._no_hard_stop_tools:
-                                logger.warning(
-                                    "Tool subcategory frequency hard limit reached — tool exempt via no_hard_stop_tools, downgrading to warning",
-                                    extra={
-                                        "thread_id": thread_id,
-                                        "tool_name": subcat,
-                                        "count": subcat_freq,
-                                    },
-                                )
-                                return _TOOL_FREQ_EXEMPT_MSG.format(tool_name=subcat, count=subcat_freq), False
-                            logger.error(
-                                "Tool subcategory frequency hard limit reached — forcing stop",
+                # Second evaluate subcategory if present
+                if subcat:
+                    subcat_warn, subcat_hard = self._tool_freq_overrides[subcat]
+                    if subcat_freq >= subcat_hard:
+                        if subcat in self._no_hard_stop_tools:
+                            logger.warning(
+                                "Tool subcategory frequency hard limit reached — tool exempt via no_hard_stop_tools, downgrading to warning",
                                 extra={
                                     "thread_id": thread_id,
                                     "tool_name": subcat,
                                     "count": subcat_freq,
                                 },
                             )
-                            return _TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG.format(count=subcat_freq), True
+                            return _TOOL_FREQ_EXEMPT_MSG.format(tool_name=subcat, count=subcat_freq), False
+                        logger.error(
+                            "Tool subcategory frequency hard limit reached — forcing stop",
+                            extra={
+                                "thread_id": thread_id,
+                                "tool_name": subcat,
+                                "count": subcat_freq,
+                            },
+                        )
+                        return _TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG.format(count=subcat_freq), True
 
-                        if subcat_freq >= subcat_warn:
-                            subcat_warned = self._tool_freq_warned[thread_id]
-                            if subcat not in subcat_warned:
-                                subcat_warned.add(subcat)
-                                logger.warning(
-                                    "Tool subcategory frequency warning — too many calls to tool subcategory",
-                                    extra={
-                                        "thread_id": thread_id,
-                                        "tool_name": subcat,
-                                        "count": subcat_freq,
-                                    },
-                                )
-                                return _TOOL_FREQ_SUBCATEGORY_WARNING_MSG.format(count=subcat_freq), False
-                        else:
-                            self._tool_freq_warned[thread_id].discard(subcat)
+                    if subcat_freq >= subcat_warn:
+                        subcat_warned = self._tool_freq_warned[thread_id]
+                        if subcat not in subcat_warned:
+                            subcat_warned.add(subcat)
+                            logger.warning(
+                                "Tool subcategory frequency warning — too many calls to tool subcategory",
+                                extra={
+                                    "thread_id": thread_id,
+                                    "tool_name": subcat,
+                                    "count": subcat_freq,
+                                },
+                            )
+                            return _TOOL_FREQ_SUBCATEGORY_WARNING_MSG.format(count=subcat_freq), False
+                    else:
+                        self._tool_freq_warned[thread_id].discard(subcat)
 
         return None, False
 

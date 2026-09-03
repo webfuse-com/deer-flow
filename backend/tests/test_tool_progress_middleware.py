@@ -1202,6 +1202,17 @@ def test_read_only_streak_bash_inspection() -> None:
     mw_on_tools.wrap_tool_call(req, lambda _r: _make_tool_message("content 4", tool_name="bash"))
     assert mw_on_tools._drain_pending(rt5) == []
 
+    # 6. Flag ON + JSON-string bash args advances the streak
+    mw_json = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=True)
+    rt6 = _make_runtime()
+    for cmd in ("cat a.txt", "grep foo bar.py", "head -n 10 c.txt"):
+        req = _make_tool_request("bash", runtime=rt6, args=f'{{"command": "{cmd}"}}')
+        msg = _make_tool_message("output", tool_name="bash")
+        mw_json.wrap_tool_call(req, lambda _req, m=msg: m)
+    hints6 = mw_json._drain_pending(rt6)
+    assert len(hints6) == 1
+    assert "3 read/search calls since the last successful file write" in hints6[0]
+
 
 def test_successful_write_resets_read_only_streak() -> None:
     mw = _make_mw(read_only_streak_threshold=3)
