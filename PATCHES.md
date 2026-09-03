@@ -106,6 +106,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#78](#patch-78) | Merge model profile and runtime constructor kwargs | generic-upstreamable | this PR |
 | [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
 | [#80](#patch-80) | Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges | generic-upstreamable | this PR |
+| [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1972,3 +1973,28 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   on `SandboxConfig` (none as of the 2026-08-15 base).
 - Upstream status: none sent yet; the shape is generic (every field maps to a
   documented docker flag) and is a candidate for the next upstream batch.
+
+## Patch #81
+
+**Patch #81 - Bash inspection/execution command classification library**
+
+- Class: argus-additive (new module) with a small argus-edit (sandbox_audit import swap).
+- Intent: Move quote- and heredoc-aware shell compound-command splitting helpers out of
+  `SandboxAuditMiddleware` into a neutral location `deerflow.sandbox.command_classify`,
+  and introduce `classify_bash_command` to classify bash commands as pure-read ("inspection")
+  versus state-modifying ("execution") or "unknown" (empty/whitespace). This enables efficiency
+  steering and loop-detection/progress-tracking heuristics (follow-up patch #82) without
+  importing from `deerflow.agents.middlewares`.
+- Files: `backend/packages/harness/deerflow/sandbox/command_classify.py`
+  (NEW: `split_compound_command`, `classify_bash_command`, and helpers),
+  `backend/packages/harness/deerflow/agents/middlewares/sandbox_audit_middleware.py`
+  (EDITED: import `split_compound_command` from `deerflow.sandbox.command_classify`),
+  `backend/packages/harness/deerflow/sandbox/AGENTS.md` (EDITED: documentation),
+  `backend/packages/harness/deerflow/agents/middlewares/AGENTS.md` (EDITED: documentation).
+- Tests: `backend/tests/test_command_classify.py` (new unit tests covering splitting,
+  fail-closed/fail-open behaviors, pure-read binaries, sed/find mutating flags, redirection
+  sinks/exceptions, git inspection subcommands, env prefixes, and pipelines);
+  `backend/tests/test_sandbox_audit_middleware.py` (267 existing tests pass unchanged).
+- Delete-when: upstream grows an equivalent shared shell-classification helper.
+- Upstream status: none sent yet.
+
