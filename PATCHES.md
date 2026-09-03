@@ -2039,8 +2039,8 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   `backend/packages/harness/deerflow/agents/middlewares/AGENTS.md` (EDITED: entry 28 reset and trim semantics),
   `config.example.yaml` (EDITED: comment notes on bash.inspection reset and trim semantics).
 - Tests:
-  `backend/tests/test_tool_result_meta.py` (added regression tests for echoed kwargs poisoning, nested wrapper delimiters, genuine config errors in trailing text, non-wrapper fallback);
-  `backend/tests/test_loop_detection_middleware.py` (added tests for write progress resetting subcat counter, pure inspection hard stop, hard stop resetting counter, subcategory deque trimming to own limit).
+  `backend/tests/test_tool_result_meta.py` (added regression tests for echoed kwargs poisoning, nested wrapper delimiters, genuine config errors in trailing text, non-wrapper fallback, CRLF tolerance);
+  `backend/tests/test_loop_detection_middleware.py` (added tests for write progress resetting subcat counter, pure inspection hard stop, hard stop resetting counter, subcategory deque trimming to own limit, dotted MCP override window inflation, empty bash command write progress avoidance).
 - Delete-when: upstream adopts structured error classification and subcategory frequency window decay.
 - Upstream status: none sent yet.
 

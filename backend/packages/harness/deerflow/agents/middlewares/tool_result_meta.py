@@ -168,8 +168,9 @@ _SHELL_EXIT_CODE_RE = re.compile(
 # wrapper format: "Error (invoking|executing) tool '<name>' with kwargs {...} with error:\n<error>\n Please fix..."
 # Anchored at start and using greedy matching {.*} so that echoed kwargs containing literal
 # '} with error:' substrings inside strings or code payloads do not truncate early.
+# Tolerates CRLF (\r?\n) before the trailing error text.
 _TOOL_WRAPPER_ERROR_RE = re.compile(
-    r"^Error (?:invoking|executing) tool '[^']+' with kwargs \{.*\} with error:(?:\n|\Z)(.*)\Z",
+    r"^Error (?:invoking|executing) tool '[^']+' with kwargs \{.*\} with error:(?:\r?\n|\Z)(.*)\Z",
     re.DOTALL,
 )
 _TOOL_WRAPPER_SUFFIX = "Please fix the error and try again."

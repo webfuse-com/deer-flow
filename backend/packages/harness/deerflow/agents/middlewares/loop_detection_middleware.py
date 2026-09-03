@@ -144,6 +144,13 @@ _MAX_PENDING_WARNINGS_PER_RUN = 4
 # clearing bash.inspection accumulated counts (mirrors ToolProgressMiddleware).
 _WRITE_PROGRESS_TOOLS = frozenset({"write_file", "str_replace"})
 
+# [argus patch #83] Explicit registry of subcategory names this middleware can produce.
+# Today exactly {"bash.inspection"} — the only subcategory name _bash_subcategory can emit.
+# Gating on membership in this registry ensures operator tool_freq_overrides for dotted
+# tool names (e.g. MCP tools like "github.search_issues") are treated as plain tools,
+# inflating the global window and keeping their hard stops reachable.
+_SUBCATEGORY_NAMES: frozenset[str] = frozenset({"bash.inspection"})
+
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     """Normalize tool call args to a dict plus an optional fallback key.
@@ -325,6 +332,25 @@ def _bash_subcategory(name: str, args: object) -> str | None:
     return None
 
 
+def _bash_classify(name: str, args: object) -> tuple[str | None, bool]:
+    """[argus patch #83] Classify bash tool call for subcategory tracking and write progress.
+
+    Returns (subcategory_name, is_execution_write_progress).
+    Only explicit 'execution' commands signal write progress (unknown/empty do not).
+    """
+    if name != "bash":
+        return None, False
+    normalized_args, _ = _normalize_tool_call_args(args)
+    cmd = normalized_args.get("command")
+    if isinstance(cmd, str):
+        c = classify_bash_command(cmd)
+        if c == "inspection":
+            return "bash.inspection", False
+        if c == "execution":
+            return None, True
+    return None, False
+
+
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
     """Detects and breaks repetitive tool call loops.
 
@@ -403,11 +429,13 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # is harmless and must not inflate the window.
         # [argus patch #82] Note: subcategory keys (e.g. bash.inspection) flow
         # through self._tool_freq_overrides. [argus patch #83] Exclude subcategories
-        # from inflating the global window; subcategories trim to their own hard limit.
+        # (names in _SUBCATEGORY_NAMES) from inflating the global window; subcategories
+        # trim to their own hard limit. Dotted MCP tool names (e.g. "github.search_issues")
+        # are NOT subcategories and still inflate the window so their hard stops remain reachable.
         self._tool_freq_window = max(
             self.window_size,
             self.tool_freq_hard_limit,
-            *(hard for name, (_, hard) in self._tool_freq_overrides.items() if "." not in name),
+            *(hard for name, (_, hard) in self._tool_freq_overrides.items() if name not in _SUBCATEGORY_NAMES),
         )
         self._lock = threading.Lock()
         self._history: OrderedDict[str, list[str]] = OrderedDict()
@@ -615,9 +643,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 if name in _WRITE_PROGRESS_TOOLS:
                     has_write_progress = True
                 elif name == "bash":
-                    sub = _bash_subcategory(name, tc.get("args"))
+                    sub, is_write = _bash_classify(name, tc.get("args"))
                     subcategories[idx] = sub
-                    if sub is None:
+                    if is_write:
                         has_write_progress = True
 
         with self._lock:

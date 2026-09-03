@@ -2116,6 +2116,7 @@ class TestLoopDetectionSubcategoryFrequency:
         Inspection counter can reach hard_limit 50, but never exceeds it."""
         mw = LoopDetectionMiddleware(
             tool_freq_overrides={"bash": (150, 300), "bash.inspection": (25, 50)},
+            no_hard_stop_tools=["bash.inspection"],
         )
         runtime = _make_runtime()
         # Verify global window is 300 from plain bash override
@@ -2130,3 +2131,53 @@ class TestLoopDetectionSubcategoryFrequency:
         # Deque length must not exceed subcategory limit 50
         assert len(subcat_hist) <= 50
         assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 45
+
+        # Drive past own limit (60 calls total) with hard stop bypassed via no_hard_stop_tools.
+        # Discriminating assertion: bounded at own limit (50), whereas pre-#83 global window (300) reached 60.
+        for i in range(45, 60):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/step_{i}.txt")]), runtime)
+
+        assert len(subcat_hist) == 50
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 50
+
+    def test_dotted_mcp_tool_override_inflates_window(self):
+        """Regression test for Finding 2: dotted MCP tool override keys (e.g. github.search_issues)
+        are plain tools, not subcategories, and MUST inflate _tool_freq_window so their hard stop is reachable.
+        Conversely, bash.inspection does not inflate it."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"github.search_issues": (1, 10)},
+        )
+        assert mw._tool_freq_window >= 10
+
+        mw_subcat = LoopDetectionMiddleware(
+            window_size=20,
+            tool_freq_hard_limit=50,
+            tool_freq_overrides={"bash.inspection": (25, 100)},
+        )
+        # bash.inspection should NOT inflate the window past global hard limit (50)
+        assert mw_subcat._tool_freq_window == 50
+
+    def test_empty_bash_command_does_not_reset_inspection_counter(self):
+        """Tighten write-progress reset: an empty or unparseable bash call classifies as 'unknown',
+        not 'execution', and does NOT reset a warm inspection counter."""
+        mw = LoopDetectionMiddleware(
+            tool_freq_overrides={"bash": (150, 300), "bash.inspection": (25, 50)},
+        )
+        runtime = _make_runtime()
+        for i in range(5):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"cat /tmp/file_{i}.txt")]), runtime)
+
+        thread_id = mw._get_thread_id(runtime)
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 5
+
+        # Empty command bash call -> unknown -> should NOT reset inspection counter
+        mw._apply(_make_state(tool_calls=[_bash_call("")]), runtime)
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 5
+
+        # Whitespace-only command bash call -> unknown -> should NOT reset inspection counter
+        mw._apply(_make_state(tool_calls=[_bash_call("   ")]), runtime)
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 5
+
+        # Execution bash command -> execution -> SHOULD reset inspection counter
+        mw._apply(_make_state(tool_calls=[_bash_call("rm /tmp/foo.txt")]), runtime)
+        assert mw._subcat_name_counter[thread_id]["bash.inspection"] == 0

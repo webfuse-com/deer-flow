@@ -606,3 +606,16 @@ def test_non_wrapper_error_containing_disabled_still_config():
     assert m["error_type"] == "config"
     assert m["recoverable_by_model"] is False
     assert m["recommended_next_action"] == "stop"
+
+
+def test_wrapper_error_tolerates_crlf_line_endings():
+    """Wrapper error extraction tolerates CRLF (\\r?\\n) before the trailing error text."""
+    decoy_js = "function test() { const disabled = true; return disabled; }\r\n" * 50
+    wrapper_content = f"Error invoking tool 'write_file' with kwargs {{'content': '{decoy_js}'}} with error:\r\n description: Field required\r\n Please fix the error and try again."
+    msg = _make_msg(wrapper_content, status="error")
+    result = normalize_tool_message(msg)
+    m = _meta(result)
+
+    assert m["status"] == "error"
+    assert m["error_type"] != "config"
+    assert m["recoverable_by_model"] is True
