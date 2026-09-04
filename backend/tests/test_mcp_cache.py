@@ -178,6 +178,42 @@ def test_unchanged_file_is_not_stale(cache_globals, monkeypatch, tmp_path):
     assert cache_module._is_cache_stale() is False
 
 
+def test_noop_rewrite_same_content_is_not_stale(cache_globals, monkeypatch, tmp_path):
+    """The 2026-09-04 stall: a fork-sync ``git reset --hard`` to the SAME commit
+    rewrites extensions_config.json byte-for-byte but with a newer mtime. The
+    old tuple-equality check saw a changed signature and invalidated the MCP
+    cache, firing a synchronous 60s re-discovery of every server inside the
+    run's completion path — after the answer had already finished generating.
+    Digest-based comparison must treat a no-op rewrite as NOT stale."""
+    cfg = tmp_path / "extensions_config.json"
+    payload = {"srv1": _server(), "srv2": _server("uvx")}
+    _write_extensions_config(cfg, payload)
+    _initialize_against(monkeypatch, cfg)
+
+    # Byte-identical rewrite, mtime moved FORWARD (worst case for the old bug).
+    _write_extensions_config(cfg, payload)
+    newer = cfg.stat().st_mtime + 100
+    os.utime(cfg, (newer, newer))
+    assert cfg.stat().st_mtime != cache_module._config_signature[0]  # guard: mtime really moved
+
+    assert cache_module._is_cache_stale() is False
+
+
+def test_noop_rewrite_same_content_backward_mtime_is_not_stale(cache_globals, monkeypatch, tmp_path):
+    """Symmetric variant: no-op rewrite whose mtime moves BACKWARD (``cp -p`` /
+    rsync -t restoring an identical file). Still not stale."""
+    cfg = tmp_path / "extensions_config.json"
+    payload = {"srv1": _server()}
+    _write_extensions_config(cfg, payload)
+    _initialize_against(monkeypatch, cfg)
+
+    _write_extensions_config(cfg, payload)
+    older = cache_module._config_signature[0] - 100
+    os.utime(cfg, (older, older))
+
+    assert cache_module._is_cache_stale() is False
+
+
 def test_forward_edit_is_stale(cache_globals, monkeypatch, tmp_path):
     """Sanity: a genuine forward edit is still detected as stale."""
     cfg = tmp_path / "extensions_config.json"

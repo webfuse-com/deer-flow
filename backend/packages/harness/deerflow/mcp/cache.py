@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool
 
 from deerflow.config.file_signature import ConfigSignature as _ConfigSignature
 from deerflow.config.file_signature import get_config_signature as _get_config_signature
+from deerflow.config.file_signature import signatures_differ as _signatures_differ
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,13 @@ def _is_cache_stale() -> bool:
         logger.info("MCP config path changed (%s -> %s), cache is stale", _config_path, current_path)
         return True
 
-    if current_signature != _config_signature:
+    # Content-change detection is digest-based, not tuple-equality: a no-op
+    # rewrite that bumps mtime/size but leaves the sha256 identical (a fork-sync
+    # ``git reset --hard`` to the same commit, a remount, ``cp -p``) is NOT a
+    # change. Treating it as one fires a full synchronous re-discovery of every
+    # MCP server inside a run's completion path — the multi-second stall this
+    # guard exists to prevent.
+    if _signatures_differ(_config_signature, current_signature):
         logger.info("MCP config content changed (signature %s -> %s), cache is stale", _config_signature, current_signature)
         return True
 

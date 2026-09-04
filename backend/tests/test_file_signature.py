@@ -58,6 +58,53 @@ def test_content_change_changes_signature_even_with_same_mtime_and_size(tmp_path
     assert after[2] != before[2]  # only the digest catches the swap
 
 
+def test_noop_rewrite_same_content_is_not_a_change(tmp_path: Path):
+    """A byte-identical rewrite (fork-sync ``git reset --hard`` to the same
+    commit, a remount, ``cp -p``) bumps mtime but leaves the sha256 identical.
+    ``signatures_differ`` must report NO change, or the MCP cache and AppConfig
+    reload fire a full synchronous re-discovery inside a run's completion
+    path — the multi-second post-answer stall this guards against."""
+    from deerflow.config.file_signature import signatures_differ
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("models: []\n", encoding="utf-8")
+    before = get_config_signature(cfg)
+    assert before is not None
+
+    # Rewrite identical content and force a DIFFERENT mtime (newer, then older).
+    cfg.write_text("models: []\n", encoding="utf-8")
+    later = cfg.stat().st_mtime + 100
+    os.utime(cfg, (later, later))
+    newer_mtime_same_content = get_config_signature(cfg)
+    assert newer_mtime_same_content is not None
+    assert newer_mtime_same_content[0] != before[0]  # guard: mtime really changed
+
+    assert signatures_differ(before, newer_mtime_same_content) is False
+
+
+def test_signatures_differ_ignores_mtime_and_size(tmp_path: Path):
+    """Direct unit contract: only the sha256 digest decides, never mtime/size."""
+    from deerflow.config.file_signature import signatures_differ
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("alpha: 1\n", encoding="utf-8")
+    a = get_config_signature(cfg)
+    cfg.write_text("beta: 2\n", encoding="utf-8")
+    b = get_config_signature(cfg)
+    assert a is not None and b is not None
+
+    # Same digest, wildly different mtime/size -> not a change.
+    same_digest_newer = (a[0] + 9999, a[1], a[2])
+    assert signatures_differ(a, same_digest_newer) is False
+    # Different digest -> a change (regardless of mtime/size agreement).
+    assert signatures_differ(a, b) is True
+    # None / missing-digest cases fail soft (treated as no change).
+    assert signatures_differ(None, b) is False
+    assert signatures_differ(a, None) is False
+    assert signatures_differ((a[0], a[1], None), b) is False
+    assert signatures_differ(a, (b[0], b[1], None)) is False
+
+
 def test_signature_type_alias_shape():
     """ConfigSignature is the (mtime, size, sha256) tuple type both call sites share."""
     assert ConfigSignature == tuple[float | None, int | None, str | None]

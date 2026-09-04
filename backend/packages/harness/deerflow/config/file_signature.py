@@ -53,3 +53,31 @@ def get_config_signature(config_path: Path) -> ConfigSignature | None:
         return (stat_result.st_mtime, stat_result.st_size, None)
 
     return (stat_result.st_mtime, stat_result.st_size, digest.hexdigest())
+
+
+def signatures_differ(old: ConfigSignature | None, new: ConfigSignature | None) -> bool:
+    """Return True when two config signatures represent *different file content*.
+
+    This is the staleness predicate both runtime-editable config files use. It
+    deliberately ignores ``mtime`` and ``size`` and compares only the sha256
+    content digest. A byte-identical rewrite — ``git checkout`` / ``git reset
+    --hard`` touching a file to the same content, ``cp -p`` / ``rsync`` /
+    backup restore, a filesystem remount that bumps atime/mtime — must NOT be
+    treated as a change: invalidating on those fires a full config reload and
+    (for the MCP cache) a synchronous re-discovery of every MCP server, which
+    is exactly the stall seen when a fork-sync daemon resets a checkout to an
+    identical commit right after a run's answer finished generating.
+
+    Both ``None`` (file could not be stat-ed) and a ``None`` digest (stat
+    succeeded but content unreadable) are treated as "no change": the callers
+    (``mcp.cache`` and ``app_config``) intentionally fail soft and keep serving
+    the last-known-good configuration rather than tearing down on a transient
+    unreadable file.
+    """
+    if old is None or new is None:
+        return False
+    old_digest = old[2]
+    new_digest = new[2]
+    if old_digest is None or new_digest is None:
+        return False
+    return old_digest != new_digest
