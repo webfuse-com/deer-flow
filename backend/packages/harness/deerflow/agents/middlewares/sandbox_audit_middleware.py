@@ -184,6 +184,71 @@ def _classify_command(command: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# --- Audit-log redaction (patch #84) -----------------------------------------
+# Coarse on purpose: a masked non-secret costs a few characters of an audit
+# line; an unmasked credential in the journal is an incident. Kinds:
+#   known key prefixes (OpenAI/OpenRouter sk-, Webfuse ak_, GitHub gh*_/pat,
+#   Slack xox*, AWS AKIA, Google AIza), JWTs, Telegram bot tokens, PEM blocks,
+#   "Bearer <token>", user:password@ in URLs, and NAME = "value" assignments for
+#   the names agents actually use (TOKEN, KEY, API_KEY, SECRET, PASSWORD, ...).
+_REDACT_VALUE = r"[A-Za-z0-9_\-./+=~:]{8,}"
+_REDACT_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
+    ("key", re.compile(r"\bsk-(?:proj-|ant-|or-v1-)?[A-Za-z0-9_\-]{16,}"), 0),
+    ("key", re.compile(r"\bak_[A-Za-z0-9_\-]{16,}"), 0),
+    ("key", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), 0),
+    ("key", re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"), 0),
+    ("key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), 0),
+    ("key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}"), 0),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"), 0),
+    ("telegram", re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{35}\b"), 0),
+    ("pem", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S), 0),
+    ("bearer", re.compile(r"(?i)\bbearer\s+" + _REDACT_VALUE), 0),
+    ("url-password", re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^/\s:@]+:([^@\s/]{4,})@"), 1),
+    (
+        "assignment",
+        re.compile(
+            r"(?i)(?:^|(?<=[^A-Za-z0-9_]))(?:api[_\-]?key|apikey|access[_\-]?key|secret[_\-]?key|"
+            r"client[_\-]?secret|private[_\-]?key|auth[_\-]?token|access[_\-]?token|refresh[_\-]?token|"
+            r"session[_\-]?token|token|secret|passw(?:or)?d|authorization|x-api-key|key|cookie)\b"
+            r"[\"']?\s*[=:]\s*[\"']?(" + _REDACT_VALUE + r")"
+        ),
+        1,
+    ),
+]
+_REDACT_SKIP_VALUES = re.compile(
+    r"(?i)^(?:expired|invalid|missing|required|none|null|true|false|redacted|failed|error|"
+    r"unknown|expected|provided|not[_\-]?found|authentication|does[_\-]?not|<redacted)"
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Replace credential-shaped spans with <redacted:KIND>; idempotent."""
+    if not text:
+        return text
+    spans: list[tuple[int, int, str]] = []
+    for kind, rx, grp in _REDACT_PATTERNS:
+        for m in rx.finditer(text):
+            value = m.group(grp)
+            if value is None:
+                continue
+            if kind == "assignment" and (_REDACT_SKIP_VALUES.match(value) or value.isdigit()):
+                continue
+            spans.append((m.start(grp), m.end(grp), kind))
+    if not spans:
+        return text
+    spans.sort(key=lambda s: (s[0], -s[1]))
+    out: list[str] = []
+    pos = 0
+    for start, end, kind in spans:
+        if start < pos:
+            continue
+        out.append(text[pos:start])
+        out.append(f"<redacted:{kind}>")
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
     """Bash command security auditing middleware.
 
@@ -219,11 +284,22 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
         return thread_id
 
     _AUDIT_COMMAND_LIMIT = 200
+    # Hard ceiling for any audited command. The audit line goes to the journal,
+    # which is copied nightly into host-side dumps and read by Cerberus, so a
+    # 4 KB heredoc logged verbatim is 4 KB of agent-authored text persisted on
+    # the host per bash call.
+    _AUDIT_COMMAND_HARD_LIMIT = 1000
 
     def _write_audit(self, thread_id: str | None, command: str, verdict: str, *, truncate: bool = False) -> None:
-        audited_command = command
-        if truncate and len(command) > self._AUDIT_COMMAND_LIMIT:
-            audited_command = f"{command[: self._AUDIT_COMMAND_LIMIT]}... ({len(command)} chars)"
+        # Redact BEFORE truncating so a secret is never kept just because it sat
+        # inside the first N characters. Patch #84 (2026-08-27): agents write
+        # heredocs with credentials inline (TOKEN = "...", KEY = "..."), and this
+        # line put a live Recruitee token and a Webfuse session-mcp key into the
+        # systemd journal, where anything reading logs could see them.
+        audited_command = _redact_secrets(command)
+        limit = self._AUDIT_COMMAND_LIMIT if truncate else self._AUDIT_COMMAND_HARD_LIMIT
+        if len(audited_command) > limit:
+            audited_command = f"{audited_command[:limit]}... ({len(command)} chars)"
         record = {
             "timestamp": datetime.now(UTC).isoformat(),
             "thread_id": thread_id or "unknown",

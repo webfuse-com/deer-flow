@@ -109,6 +109,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
 | [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
+| [#84](#patch-84) | SandboxAudit: redact credentials and hard-cap the audited command | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2045,3 +2046,118 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Upstream status: none sent yet.
 
 
+
+## Patch #84
+
+**Patch #84 - SandboxAudit: redact credentials and hard-cap the audited command**
+
+- Class: argus-edit (security hardening of upstream middleware; generic,
+  upstreamable as-is).
+- Intent: `SandboxAuditMiddleware._write_audit` logged the full bash command
+  at INFO, verbatim, on every call; it truncated to 200 chars only for the
+  `block` verdict. Citizens write heredocs with credentials inline
+  (`TOKEN = "..."`, `KEY = "ak_..."`), so on 2026-08-18 (atlas-sasha, a
+  Recruitee API token) and 2026-08-26 (atlas-nicholas, a Webfuse
+  session-mcp key) live secrets went into the systemd journal, the nightly
+  Cerberus hostscan dump, `cerberus_log_fingerprints.sample_context`, and the
+  Cerberus `/logs` page readable by every @surfly.com account. Changes:
+  1. `_redact_secrets()`: replaces credential-shaped spans with
+     `<redacted:KIND>` before the line is formatted. Known prefixes
+     (OpenAI/OpenRouter `sk-`, Webfuse `ak_`, GitHub, Slack, AWS, Google),
+     JWTs, Telegram bot tokens, PEM private keys, `Bearer <token>`,
+     `user:password@` in URLs, and `NAME = "value"` assignments for the
+     names agents actually use (token, key, api_key, secret, password,
+     authorization, cookie, ...). Prose after those words ("password
+     authentication failed", "token: expired") is left alone. Idempotent.
+  2. Redaction runs BEFORE truncation, so a secret is never kept just
+     because it sat inside the first 200 characters of a blocked command.
+  3. `_AUDIT_COMMAND_HARD_LIMIT = 1000`: every audited command is capped,
+     not only blocked ones. The audit line is persisted on the host by the
+     journal and copied nightly; a 4 KB heredoc per bash call was 4 KB of
+     agent-authored text on disk each time.
+  Cerberus grew the matching backstop the same day (acropolis PR #187:
+  `src/redact.py`, `secret_in_logs` finding, migration 007 scrub), but the
+  journal itself is only clean if this line is.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/sandbox_audit_middleware.py` (EDITED)
+- Tests: `backend/tests/test_sandbox_audit_middleware.py` (EDITED,
+  +`TestAuditRedaction`, 6 cases incl. caplog assertions that the logged
+  line never contains the value and is capped without `truncate=True`)
+- Delete-when: upstream redacts or stops logging the command body in the
+  sandbox audit record.
+- Upstream status: none sent (strong PR candidate; security fix with no
+  behavioral change to the tool call itself).
+
+## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
+
+**Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**
+
+- **#8 `langgraph_auth` lazy-init** (numbered #9 in the pre-v2 PATCHES.md):
+  dead since Argus moved off standalone `langgraph dev` to the gateway
+  runtime; the fork had already self-dropped it 2026-06-03. Do not revive
+  unless we run `langgraph dev` standalone again.
+- **#17 agent-dir-fallback** (shared-dir fallback when the per-user dir has
+  only `memory.json`): upstream fixed it better (upstream issue #3390).
+- **`supports_streaming` override**: now native upstream. **CORRECTION
+  2026-07-01: this override is NOT patch #10.** The rebase note originally
+  recorded "#10 supports_streaming override, dropped" - a mislabel that
+  silently regressed Telegram artifact delivery until 762b61eb re-wired the
+  presenter. Patch #10 (the Telegram artifact presenter) is alive; see its
+  section. Do not treat #10 as obsolete on the next sync.
+- **3 pre-2026 loop-detector patches** (nudge-toward-observation,
+  edit-aware-reset, layer-2 frequency drop): subsumed by upstream's
+  warning-queue architecture back in the 2026-05-28 upgrade; if Qwen loop
+  behavior regresses, re-tune against the current architecture.
+
+**Deferred (do not port as-was):**
+
+- **#27 agent sub-component pooling** (perf-only half of the old #27; the
+  fire-and-forget emoji half lives on in the telegram chain): its cache key
+  cannot capture v2.0.0's deferred-tools subsystem inputs, so porting it
+  risks stale prompts for zero behavior change. If the perf matters,
+  re-derive against the `assemble_deferred_tools` /
+  `build_middlewares(deferred_setup=...)` shape.
+
+**Re-expressed as config fields (no longer constant patches):** see #2 and #3.
+
+**Not carried - verify on next sync (suspected silent drops, like #10 was):**
+
+- **#19 agent-chat model precedence** (3 pre-v2 frontend commits: per-thread
+  override, else the agent's pinned model, no global last-pick bleed): absent
+  from `v2.0.0..2df36c99` and NOT visibly upstream-subsumed - at tip, the
+  agent chat page still injects only `agent_name`
+  (`frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`,
+  `context: { ...settings.context, agent_name }`) and InputBox still gates
+  modes on `supports_thinking` via `context.model_name`. If glm-planner mode
+  gating is broken again in the UI, re-port as a new numbered patch.
+- **#12 sandbox Created-but-not-Running detection**: absent from the carry;
+  upstream v2.0.0 ships sandbox orphan reconciliation and #33's network mode
+  removes the port-bind root cause. Presumed subsumed; confirm if sandboxes
+  ever hang in Created again.
+
+---
+
+## Carry budget ledger
+
+Re-measure at every sync (`git diff --shortstat <upstream-base>..argus` plus
+the upstream-file edit split). The goal is that these numbers go DOWN over
+time as patches are upstreamed or subsumed; a rising channels number means the
+telegram subsystem needs the FORK-REVIEW lever-1 treatment (upstream the
+design or move it behind an extension point).
+
+| Date | Base | Commits | Files | Lines | Upstream-file edited lines |
+|---|---|---|---|---|---|
+| 2026-07-01 | v2.0.0 -> 2df36c99 | 29 | 85 | +6168 / -812 | ~1600 (~1460 in `app/channels/`) |
+| 2026-07-02 | v2.0.0 -> #40 tip | 32 | 90 | +7433 / -668 | app-code excl. tests/docs: 1923 (776 in `app/channels/`, was 1099); tests: 1350. #40 cut `telegram.py` 574 -> 251 |
+
+Methodology note (2026-07-02): the last column is now measured against the
+`v2.0.0` tag over files that exist at v2.0.0 (insertions+deletions), split
+app-code vs tests. The 2026-07-01 row's ~1600/~1460 came from FORK-REVIEW's
+2026-06-30 measurement against merge-base 2ace78d1 with a different file
+scope and is not directly comparable; like-for-like against v2.0.0 the
+pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
+`git diff --numstat v2.0.0 | while read a d f; do git cat-file -e
+"v2.0.0:$f" 2>/dev/null && echo "$a $d $f"; done | awk '...'`.
+
+- Numbering: opened 2026-08-27 as #69, while the ledger backfill of 2026-09-02 assigned
+  #69 to the loop-detection near-duplicate downgrade; renumbered to #84 when merged
+  on 2026-09-04 (security wave 2, S-2.6).
