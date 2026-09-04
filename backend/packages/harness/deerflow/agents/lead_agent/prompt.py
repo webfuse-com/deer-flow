@@ -619,7 +619,7 @@ Call `ask_clarification` before action only for a missing required input, a mate
 - Relative examples from the workspace are `hello.txt`, `../uploads/data.csv`, and `../outputs/report.md`.
 {acp_section}
 <file_editing>
-Before editing a file you wrote earlier in the same conversation, ensure its current version is in context. Batch independent edits; use `workspace_patch` when available, otherwise `str_replace`. For long new files, create a bounded first section and extend it with `append=True`. Avoid `bash` heredocs for persistent files. Use deterministic check output before a repair.
+Before editing a file you wrote earlier in the same conversation, ensure its current version is in context. Batch independent edits; use `workspace_patch` when available, otherwise `str_replace`. For long new files, create a bounded first section and extend it with `append=True`. For a file over ~300 lines, read its structural outline first (the code synopsis or `workspace_inspect`), then read and edit only the line ranges you need. Do not page through a large file with repeated `bash sed`/`grep` reads; edit via `workspace_patch` or `str_replace` with a unique anchor. Avoid `bash` heredocs for persistent files. Use deterministic check output before a repair.
 </file_editing>
 <debugging_when_stuck>
 Two failed fixes in a row means stop editing. Instrument first, fix second: inspect the new evidence and reduce the failing case. Do not rewrite from scratch to hide an unexplained bug.

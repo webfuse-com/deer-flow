@@ -1095,6 +1095,12 @@ tool_output:
   exempt_tools:
     - read_file
     - read_file_tool
+  # [argus patch #85] When a tool output looks like code and exceeds
+  # code_outline_min_lines, replace the symbol list in the externalized
+  # synopsis with a line-numbered structural outline (name + line range).
+  # Default false = current behavior unchanged.
+  # code_outline_enabled: false
+  # code_outline_min_lines: 300
   # tool_overrides:
   #   web_search: 8000
   #   bash: 20000

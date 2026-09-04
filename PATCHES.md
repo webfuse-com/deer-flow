@@ -110,6 +110,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
 | [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
 | [#84](#patch-84) | SandboxAudit: redact credentials and hard-cap the audited command | argus-edit | this PR |
+| [#85](#patch-85) | Config-gated line-numbered code outline in tool output synopsis | config-expressed | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2086,6 +2087,22 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   sandbox audit record.
 - Upstream status: none sent (strong PR candidate; security fix with no
   behavioral change to the tool call itself).
+
+## Patch #85
+
+**Patch #85 - Config-gated line-numbered code outline in tool output synopsis**
+
+- Class: config-expressed (tool_output_config.py knobs gate outline rendering; default OFF keeps legacy behavior byte-identical).
+- Intent: When a tool returns oversized code (> `code_outline_min_lines`, default 300), models often lack a structural map of the file and fall into repetitive search/grep loops looking for inline or nested implementations (e.g. 14 identical `grep` calls chasing inline DOM creation). When `code_outline_enabled` is set to true, `_summarize_code` generates a line-numbered outline of top-level functions, classes, and exported/const declarations (`{name} [lines {start}-{end}]`) capped at 40 symbols, and `render_tool_output_preview` appends a range-reading steering instruction for the model.
+- Files: `backend/packages/harness/deerflow/config/tool_output_config.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/middlewares/tool_output_synopsis.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/middlewares/tool_output_budget_middleware.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/lead_agent/prompt.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/middlewares/AGENTS.md` (EDITED),
+  `config.example.yaml` (EDITED)
+- Tests: `backend/tests/test_tool_output_synopsis.py` (NEW, 10 cases covering incident regression, gate ON/OFF, thresholding, line-number accuracy, symbol caps, JS syntax variations, and middleware wiring).
+- Delete-when: upstream adopts structured line-numbered code summaries or an AST-based outline in tool output previews.
+- Upstream status: none sent yet (PR candidate).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
