@@ -43,6 +43,7 @@ _TRACKED_GLOBALS = (
     "_config_signature",
     "_config_mtime",
     "_initialization_lock",
+    "_background_refresh_task",
 )
 
 
@@ -322,3 +323,91 @@ def test_config_deleted_after_init_via_real_env_resolution_does_not_raise(cache_
     # last-known-good MCP tools), matching the deliberate contract in
     # test_config_deleted_after_init_is_not_stale above.
     assert cache_module._is_cache_stale() is False
+
+
+class _FakeTool:
+    """Minimal stand-in for a LangChain tool (only identity matters here)."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return f"_FakeTool({self.name})"
+
+
+def _prime_cache(cache_globals, monkeypatch, tmp_path, tool_names):
+    """Initialize the cache with a stubbed tool list and return the config path."""
+    cfg = tmp_path / "extensions_config.json"
+    _write_extensions_config(cfg, {"srv1": _server()})
+    monkeypatch.setenv("DEER_FLOW_EXTENSIONS_CONFIG_PATH", str(cfg))
+
+    tools = [_FakeTool(n) for n in tool_names]
+
+    async def _fake_get_mcp_tools():
+        return list(tools)
+
+    monkeypatch.setattr("deerflow.mcp.tools.get_mcp_tools", _fake_get_mcp_tools)
+    asyncio.run(cache_module.initialize_mcp_tools())
+    assert cache_module._cache_initialized is True
+    return cfg
+
+
+def test_stale_with_cache_serves_stale_and_refreshes_in_background(cache_globals, monkeypatch, tmp_path):
+    """The async re-init: when tools are already cached and the config changes,
+    ``get_cached_mcp_tools`` returns the CURRENT tools immediately (no blocking
+    on re-discovery) and schedules a background refresh. The stale signature is
+    left in place until the refresh completes, so the caller's turn never waits
+    on a slow/hung MCP server. This is the fix for the post-answer stall where
+    an observing run's completion path blocked ~60s re-discovering servers that
+    had timed out."""
+    cfg = _prime_cache(cache_globals, monkeypatch, tmp_path, ["old_tool"])
+
+    # Change the config so the cache is genuinely stale (different content).
+    _write_extensions_config(cfg, {"srv1": _server(), "srv2": _server("uvx")})
+    assert cache_module._is_cache_stale() is True
+
+    served = []
+
+    async def _drive():
+        # Inside a running loop, get_cached_mcp_tools must serve the stale tools
+        # synchronously and schedule a background refresh instead of blocking.
+        served.extend(cache_module.get_cached_mcp_tools())
+        # Let the background task run to completion.
+        task = cache_module._background_refresh_task
+        assert task is not None
+        await task
+
+    asyncio.run(_drive())
+
+    # The caller was served the OLD tools (no stall), and the background refresh
+    # re-ran discovery with the new config, swapping the cache + signature.
+    assert [t.name for t in served] == ["old_tool"]
+    assert cache_module._is_cache_stale() is False  # signature re-recorded
+    assert cache_module._background_refresh_task is None  # task cleaned up
+
+
+def test_background_refresh_failure_keeps_serving_old_tools(cache_globals, monkeypatch, tmp_path):
+    """A failed background refresh must not tear down the tools the cache is
+    serving. The cache is marked uninitialized (so a later call retries) but
+    the in-memory tool list is preserved, and the exception is swallowed by the
+    background task rather than propagating into the observing run."""
+    cfg = _prime_cache(cache_globals, monkeypatch, tmp_path, ["old_tool"])
+    _write_extensions_config(cfg, {"srv1": _server(), "srv2": _server("uvx")})
+
+    async def _failing_get_mcp_tools():
+        raise RuntimeError("server hung")
+
+    async def _drive():
+        monkeypatch.setattr("deerflow.mcp.tools.get_mcp_tools", _failing_get_mcp_tools)
+        # Serving stale tools still works even though refresh will fail.
+        served = cache_module.get_cached_mcp_tools()
+        task = cache_module._background_refresh_task
+        await task  # must not raise
+        return served
+
+    served = asyncio.run(_drive())
+    assert [t.name for t in served] == ["old_tool"]
+    # Old tools still in the cache despite the failed refresh.
+    assert [t.name for t in (cache_module._mcp_tools_cache or [])] == ["old_tool"]
+    # Marked uninitialized so the NEXT call retries initialization.
+    assert cache_module._cache_initialized is False
