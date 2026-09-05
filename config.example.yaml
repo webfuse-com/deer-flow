@@ -1054,6 +1054,10 @@ tool_search:
   # always_bind/exclude wins when both match. Keyword auto-promotion does NOT
   # cover deferred builtins (routing metadata exists only for MCP servers).
   # defer: ["browser_*"]
+  # Optional operator-owned app/connector capability search provider. It is
+  # imported once during agent assembly and receives the model's query. The
+  # callable returns descriptors; it never executes the selected capability.
+  # custom_provider: "argus_tool_discovery:search_capabilities"
 
 # ============================================================================
 # Tool Authorization Policy [argus patch #53]

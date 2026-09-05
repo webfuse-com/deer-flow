@@ -283,15 +283,56 @@ class SkillToolPolicyMiddleware(AgentMiddleware[AgentState]):
                 logger.warning("Active-policy tool_search returned an unexpected message shape")
                 return self._tool_search_policy_error(request)
             content = message.content
-            if raw_names:
+            if raw_names or isinstance(content, str):
                 try:
                     schemas = json.loads(content) if isinstance(content, str) else None
                 except json.JSONDecodeError:
+                    # Mixed exact-selection responses may carry a concise
+                    # visibility note after the legacy JSON schema array. Keep
+                    # parsing the array prefix so policy filtering never drops
+                    # valid schemas merely because of that note.
                     schemas = None
+                    if isinstance(content, str):
+                        try:
+                            decoder = json.JSONDecoder()
+                            parsed, _ = decoder.raw_decode(content.lstrip())
+                            schemas = parsed
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                 if isinstance(schemas, list):
-                    filtered_schemas = [
-                        schema for schema in schemas if isinstance(schema, dict) and (schema.get("name") in permitted_names or (isinstance(schema.get("function"), dict) and schema["function"].get("name") in permitted_names))
-                    ]
+                    filtered_schemas = []
+                    for schema in schemas:
+                        if not isinstance(schema, dict):
+                            continue
+                        if schema.get("name") in permitted_names or (isinstance(schema.get("function"), dict) and schema["function"].get("name") in permitted_names):
+                            filtered_schemas.append(schema)
+                        # Custom descriptors are never promoted. Their
+                        # invocation tool is the policy boundary and they
+                        # remain discoverable only when that invocation is
+                        # permitted for this active skill.
+                        elif schema.get("kind") in {"app_function", "connector_function"} and schema.get("invocation_tool") in allowed:
+                            filtered_schemas.append(schema)
+                        elif schema.get("kind") == "discovery_status":
+                            # Preserve model-readable availability status while
+                            # removing names of configured tools hidden by the
+                            # active policy.
+                            providers = schema.get("providers")
+                            safe_providers = (
+                                {str(provider): status for provider, status in providers.items() if str(provider) in {"agora", "chronos", "custom"} and status in {"ok", "unavailable", "not_configured"}}
+                                if isinstance(providers, dict)
+                                else {}
+                            )
+                            filtered_schemas.append(
+                                {
+                                    "kind": "discovery_status",
+                                    "status": schema.get("status") if schema.get("status") in {"selection", "partial"} else "selection",
+                                    "already_visible": [name for name in schema.get("already_visible", []) if name in allowed] if isinstance(schema.get("already_visible"), list) else [],
+                                    "configured_not_visible_count": len(schema.get("configured_not_visible", [])) if isinstance(schema.get("configured_not_visible"), list) else 0,
+                                    "unknown": schema.get("unknown", []) if isinstance(schema.get("unknown"), list) else [],
+                                    **({"providers": safe_providers} if safe_providers else {}),
+                                    **({"local_results_complete": True} if schema.get("local_results_complete") is True else {}),
+                                }
+                            )
                     content = json.dumps(filtered_schemas, indent=2, ensure_ascii=False) if filtered_schemas else "No tools found matching the active skill policy."
                 elif permitted_names:
                     content = f"Promoted {len(permitted_names)} tool(s): {', '.join(permitted_names)}. They are now available in your active tool list."

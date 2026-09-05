@@ -284,6 +284,7 @@ See [docs/summarization.md](docs/summarization.md) for details.
 - `adaptive_reasoning.enabled` switches successful deterministic tool continuations to a no-thinking variant of the configured lead model. User turns, tool errors, and research tools keep reasoning enabled.
 - `run_limits` supports both wall-clock and model-call warnings/caps. Counters span goal-continuation graph invocations for the same run.
 - Prefer `workspace_inspect` and `workspace_patch` for related multi-file work. The latter validates all hashes and replacements before writing.
+- `tool_search.custom_provider` is an operator-configured discovery hook resolved once during lead, client, and subagent assembly. It returns metadata-only, namespaced app or connector capabilities for the existing invocation tools; policy filters by invocation tool, and custom entries never affect the MCP catalog hash or execute during discovery. Provider failures remain explicit partial outcomes so local MCP matches are retained.
 
 ### Vision Support
 

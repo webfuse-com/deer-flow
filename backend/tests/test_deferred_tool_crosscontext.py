@@ -98,7 +98,7 @@ def test_fail_closed_when_mcp_survives_without_setup(monkeypatch):
     """
     monkeypatch.setattr(
         "deerflow.tools.builtins.tool_search.build_deferred_tool_setup",
-        lambda tools, *, enabled, exclude=(), defer=(): DeferredToolSetup(None, frozenset(), None),
+        lambda tools, *, enabled, exclude=(), defer=(), custom_provider=None, runtime_visible_names=frozenset(): DeferredToolSetup(None, frozenset(), None),
     )
     with pytest.raises(RuntimeError, match="fail-closed"):
         assemble_deferred_tools([tag_mcp_tool(mcp_secret)], enabled=True)

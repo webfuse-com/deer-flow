@@ -83,6 +83,32 @@ def test_search_regex_on_description(catalog):
     assert "beta_translate" in [t.name for t in got]
 
 
+def test_search_ordinary_query_uses_token_fallback_after_regex_miss():
+    @as_tool
+    def meeting_notes(topic: str) -> str:
+        """Retrieve calendar meeting notes."""
+        return topic
+
+    cat = DeferredToolCatalog((meeting_notes, alpha_search))
+    # The phrase does not occur as a contiguous regex match, but each token is
+    # present in the searchable name/description and should rank deterministically.
+    assert [tool.name for tool in cat.search("calendar notes retrieve")] == ["meeting_notes"]
+
+
+def test_search_token_fallback_is_stable_for_ties():
+    @as_tool("zeta_record")
+    def zeta(value: str) -> str:
+        """Record a value."""
+        return value
+
+    @as_tool("alpha_record")
+    def alpha(value: str) -> str:
+        """Record a value."""
+        return value
+
+    assert [tool.name for tool in DeferredToolCatalog((zeta, alpha)).search("missing words record")] == ["alpha_record", "zeta_record"]
+
+
 def test_search_invalid_regex_falls_back_to_literal():
     @as_tool
     def calc(expr: str) -> str:

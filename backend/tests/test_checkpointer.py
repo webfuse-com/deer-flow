@@ -1202,6 +1202,7 @@ class TestClientCheckpointerFallback:
         config_mock.skills.deferred_discovery = False
         config_mock.skills.container_path = "/mnt/skills"
         config_mock.tool_search.enabled = False
+        config_mock.tool_search.custom_provider = None
 
         with (
             patch("deerflow.client.get_app_config", return_value=config_mock),
@@ -1242,6 +1243,7 @@ class TestClientCheckpointerFallback:
         config_mock.skills.deferred_discovery = False
         config_mock.skills.container_path = "/mnt/skills"
         config_mock.tool_search.enabled = False
+        config_mock.tool_search.custom_provider = None
 
         with (
             patch("deerflow.client.get_app_config", return_value=config_mock),

@@ -62,6 +62,13 @@ class ToolSearchConfig(BaseModel):
         ),
     )
 
+    custom_provider: str | None = Field(
+        default=None,
+        description=(
+            "Optional operator supplied capability discovery callable, resolved once during agent assembly (module.path:function). It returns serializable app/connector descriptors; discovery never executes the described capability."
+        ),
+    )
+
 
 _tool_search_config: ToolSearchConfig | None = None
 
