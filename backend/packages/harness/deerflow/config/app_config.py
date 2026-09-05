@@ -22,6 +22,7 @@ from deerflow.config.dedupe_storage_config import DedupeStorageConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.file_signature import ConfigSignature as _ConfigSignature
 from deerflow.config.file_signature import get_config_signature as _get_config_signature
+from deerflow.config.file_signature import signatures_differ as _signatures_differ
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
 from deerflow.config.input_polish_config import InputPolishConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
@@ -712,7 +713,14 @@ def get_app_config() -> AppConfig:
     current_mtime = _get_config_mtime(resolved_path)
     current_signature = _get_config_signature(resolved_path)
 
-    should_reload = _app_config is None or _app_config_path != resolved_path or _app_config_signature != current_signature
+    # Content-change detection is digest-based (``signatures_differ``), not
+    # signature-tuple equality: a no-op rewrite that bumps mtime/size but leaves
+    # the sha256 identical (a fork-sync ``git reset --hard`` to the same commit,
+    # a remount, ``cp -p``) is NOT a change. Treating it as one triggers a full
+    # AppConfig rebuild and — because the MCP cache watches the sibling file with
+    # the same predicate — a synchronous re-discovery of every MCP server inside
+    # a run's completion path, which is the multi-second stall this avoids.
+    should_reload = _app_config is None or _app_config_path != resolved_path or _signatures_differ(_app_config_signature, current_signature)
     if should_reload:
         if _app_config_path == resolved_path and _app_config_mtime is not None and current_mtime is not None and _app_config_mtime != current_mtime:
             logger.info(
@@ -720,7 +728,7 @@ def get_app_config() -> AppConfig:
                 _app_config_mtime,
                 current_mtime,
             )
-        elif _app_config_path == resolved_path and _app_config_signature != current_signature:
+        elif _app_config_path == resolved_path and _signatures_differ(_app_config_signature, current_signature):
             logger.info("Config file content signature changed, reloading AppConfig")
         _load_and_cache_app_config(str(resolved_path))
     return _app_config
