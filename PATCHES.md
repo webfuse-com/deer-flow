@@ -111,6 +111,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
 | [#84](#patch-84) | SandboxAudit: redact credentials and hard-cap the audited command | argus-edit | this PR |
 | [#85](#patch-85) | Config-gated line-numbered code outline in tool output synopsis | config-expressed | this PR |
+| [#86](#patch-86) | Digest-only config-change detection so no-op rewrites don't stall run completion | argus-edit | this PR |
+| [#87](#patch-87) | Async MCP cache refresh so config changes never stall run completion | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2102,6 +2104,33 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
   `config.example.yaml` (EDITED)
 - Tests: `backend/tests/test_tool_output_synopsis.py` (NEW, 10 cases covering incident regression, gate ON/OFF, thresholding, line-number accuracy, symbol caps, JS syntax variations, and middleware wiring).
 - Delete-when: upstream adopts structured line-numbered code summaries or an AST-based outline in tool output previews.
+- Upstream status: none sent yet (PR candidate).
+
+## Patch #86
+
+**Patch #86 - Digest-only config-change detection so no-op rewrites don't stall run completion**
+
+- Class: argus-edit (changes the staleness predicate in the shared config-signature helper and its two call sites).
+- Intent: A run's answer finished streaming in ~12s but the turn stayed "in progress" ~60s longer (2026-09-04 incident). The MCP/extensions-config staleness check compared the full `(mtime, size, sha256)` signature tuple, so a byte-identical `git reset --hard` by the fork-sync daemon (same commit, remount, `cp -p`) bumped mtime and falsely invalidated the cache, firing a synchronous re-discovery of every MCP server inside the observing run's completion path. New `signatures_differ` compares only the sha256 digest (ignoring mtime/size) and fails soft on missing digests, so no-op rewrites no longer trigger a reload while real content edits (same-second, backward-mtime, same-length swaps) still do.
+- Files: `backend/packages/harness/deerflow/config/file_signature.py` (EDITED),
+  `backend/packages/harness/deerflow/config/app_config.py` (EDITED),
+  `backend/packages/harness/deerflow/mcp/cache.py` (EDITED),
+  `backend/packages/harness/deerflow/config/AGENTS.md` (EDITED),
+  `backend/packages/harness/deerflow/mcp/AGENTS.md` (EDITED)
+- Tests: `backend/tests/test_file_signature.py` (EDITED, +2 cases: no-op rewrite + digest-only contract), `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: forward/backward-mtime no-op rewrite not stale).
+- Delete-when: upstream makes config-change detection content-digest-based instead of mtime/signature-tuple-based.
+- Upstream status: none sent yet (PR candidate).
+
+## Patch #87
+
+**Patch #87 - Async MCP cache refresh so config changes never stall run completion**
+
+- Class: argus-edit (changes the MCP tools cache invalidation/refresh path; stacks on #86).
+- Intent: Removes the remaining blocking path #86 did not cover. When a tool list is already cached and the extensions config genuinely changes, `get_cached_mcp_tools()` now serves the current tools immediately and schedules a single shared background refresh (`initialize_mcp_tools(force=True)`) that atomically swaps cache + recorded signature on success, instead of re-discovering every MCP server synchronously in the caller's (often a run-completion) path. Cold start (nothing cached) stays synchronous — the agent can't be built without tools; the Gateway writer path (`PUT/PATCH /api/mcp/config`) keeps its synchronous reset+reload so a user who edits config then messages still gets fresh tools. A failed background refresh preserves in-memory tools and marks the cache uninitialized so the next call retries.
+- Files: `backend/packages/harness/deerflow/mcp/cache.py` (EDITED),
+  `backend/packages/harness/deerflow/mcp/AGENTS.md` (EDITED)
+- Tests: `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: stale-with-cache serves stale synchronously + refreshes in background; failed background refresh keeps serving old tools + retries).
+- Delete-when: upstream moves MCP tool re-discovery off the synchronous agent-construction path (background/stale-while-revalidate).
 - Upstream status: none sent yet (PR candidate).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
