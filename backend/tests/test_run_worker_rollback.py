@@ -6,6 +6,7 @@ from typing import Annotated, Any, NotRequired, TypedDict
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from deerflow_extension_api import EXTENSION_TASK_STORE_KEY, ExtensionData
 from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage, HumanMessage
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.base import empty_checkpoint
@@ -441,6 +442,33 @@ def test_install_runtime_context_overrides_internal_pre_existing_message_ids():
     )
 
     assert config["context"][CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY] == frozenset({"old-ai"})
+
+
+def test_install_runtime_context_preserves_run_store_and_journal_in_existing_context():
+    task_store = ExtensionData("task-1")
+    journal = object()
+    config = {
+        "context": {
+            "caller_value": "kept",
+            EXTENSION_TASK_STORE_KEY: ExtensionData("stale-task"),
+            "__run_journal": object(),
+        }
+    }
+
+    _install_runtime_context(
+        config,
+        {
+            "thread_id": "thread-1",
+            "run_id": "run-1",
+            EXTENSION_TASK_STORE_KEY: task_store,
+            "__run_journal": journal,
+        },
+    )
+
+    context = config["context"]
+    assert context["caller_value"] == "kept"
+    assert context[EXTENSION_TASK_STORE_KEY] is task_store
+    assert context["__run_journal"] is journal
 
 
 @pytest.mark.anyio

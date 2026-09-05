@@ -7,9 +7,10 @@ from unittest.mock import MagicMock
 import pytest
 from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 
 from deerflow.runtime.secret_context import SKILL_TOOL_POLICY_DECISION_CONTEXT_KEY, write_slash_skill_source_path
 from deerflow.skills.types import Skill, SkillCategory
@@ -364,6 +365,97 @@ def test_active_skill_keeps_framework_discovery_tools():
     )
 
     assert _tool_names(middleware._filter_model_request(request)) == ["calc", "tool_search", "describe_skill"]
+
+
+def test_tool_search_custom_descriptor_is_filtered_by_invocation_tool():
+    allowed_skill = _skill("apps", ["app_function_call"])
+    middleware = _middleware([allowed_skill])
+    request = ToolRequestStub("tool_search", state={"skill_context": [{"path": allowed_skill.get_container_file_path()}]})
+    descriptor = {
+        "kind": "app_function",
+        "name": "app_function:stack/demo/run",
+        "invocation_tool": "app_function_call",
+        "invocation_args": {"app": "demo", "owner_stack": "stack", "function": "run"},
+        "input_schema": {"type": "object"},
+        "description": "Run an app function",
+        "effect": "read",
+        "version": "sha256:v1",
+    }
+    command = Command(
+        update={
+            "promoted": {"catalog_hash": "hash", "names": []},
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(
+                        [
+                            descriptor,
+                            {
+                                "kind": "discovery_status",
+                                "status": "selection",
+                                "already_visible": ["secret_tool"],
+                                "configured_not_visible": ["secret_tool"],
+                                "unknown": ["missing_tool"],
+                            },
+                        ]
+                    ),
+                    tool_call_id="call-1",
+                    name="tool_search",
+                )
+            ],
+        }
+    )
+    filtered = middleware.wrap_tool_call(request, lambda _: command)
+    assert isinstance(filtered, Command)
+    filtered_payload = json.loads(filtered.update["messages"][0].content)
+    assert filtered_payload[0]["name"] == descriptor["name"]
+    assert filtered_payload[1] == {
+        "kind": "discovery_status",
+        "status": "selection",
+        "already_visible": [],
+        "configured_not_visible_count": 1,
+        "unknown": ["missing_tool"],
+    }
+
+    denied = _middleware([_skill("apps", ["connector_call"])])
+    denied_request = ToolRequestStub("tool_search", state={"skill_context": [{"path": "/mnt/skills/public/apps"}]})
+    denied_command = denied.wrap_tool_call(denied_request, lambda _: command)
+    denied_payload = json.loads(denied_command.update["messages"][0].content)
+    assert all(item.get("kind") != "app_function" for item in denied_payload)
+
+
+def test_exact_already_visible_status_survives_active_policy_sanitization():
+    from deerflow.tools.builtins.tool_search import DeferredToolCatalog, build_tool_search_tool
+
+    skill = _skill("direct", ["direct_tool"])
+    middleware = _middleware([skill])
+    search = build_tool_search_tool(
+        DeferredToolCatalog(()),
+        directly_bound_names=frozenset({"direct_tool"}),
+        runtime_visible_names=frozenset({"direct_tool"}),
+    )
+    result = search.invoke(
+        {
+            "type": "tool_call",
+            "name": "tool_search",
+            "args": {"query": "select:direct_tool"},
+            "id": "call-visible",
+        }
+    )
+    request = ToolRequestStub(
+        "tool_search",
+        state={"skill_context": [{"path": skill.get_container_file_path()}]},
+    )
+    filtered = middleware.wrap_tool_call(request, lambda _: result)
+    payload = json.loads(filtered.update["messages"][0].content)
+    assert payload == [
+        {
+            "kind": "discovery_status",
+            "status": "selection",
+            "already_visible": ["direct_tool"],
+            "configured_not_visible_count": 0,
+            "unknown": [],
+        }
+    ]
 
 
 def test_custom_agent_allowlist_rejects_all_out_of_scope_active_skills():

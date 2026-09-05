@@ -9,6 +9,10 @@ Contains:
 - build_mcp_routing_middleware: builds the PR2 auto-promote middleware from
   serialized routing metadata on deferred tools available to the caller.
 
+An optional operator provider can add app/connector descriptors to the search
+response. These descriptors are model-facing metadata only; they never enter
+the MCP catalog hash or execute during discovery.
+
 The agent sees deferred tool names in <available-deferred-tools> but cannot
 call them until it fetches their full schema via the tool_search tool. The
 deferred set rides on a build-time closure and promotion lives in per-thread
@@ -21,17 +25,19 @@ import html
 import json
 import logging
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Annotated, Any
 
-from langchain.tools import BaseTool
+from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.utils.function_calling import convert_to_openai_function
 from langgraph.types import Command
 
+from deerflow.tools.builtins.custom_discovery import CustomDiscoveryProvider, invoke_custom_provider
 from deerflow.tools.mcp_metadata import get_mcp_routing, is_mcp_tool
 
 if TYPE_CHECKING:
@@ -40,6 +46,79 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 5  # Max tools returned per search
+_CUSTOM_NAME_PREFIXES = ("app_function:", "connector_function:")
+
+
+def _runtime_visible_direct_names(runtime: ToolRuntime | None, configured_names: frozenset[str]) -> frozenset[str]:
+    """Resolve direct names visible to the current model policy.
+
+    Assembly only knows configured tools. The policy middleware stores the
+    decision used for the preceding model request in runtime context, which
+    lets exact-selection reporting distinguish visible tools from configured
+    tools hidden by an active skill without guessing at assembly time.
+    """
+    if runtime is None:
+        return frozenset()
+    context = getattr(runtime, "context", None)
+    if not isinstance(context, dict):
+        return frozenset()
+    try:
+        from deerflow.runtime.secret_context import SKILL_TOOL_POLICY_DECISION_CONTEXT_KEY
+
+        decision = context.get(SKILL_TOOL_POLICY_DECISION_CONTEXT_KEY)
+    except Exception:
+        decision = None
+    if not isinstance(decision, dict):
+        return frozenset()
+    allowed = decision.get("allowed_names")
+    if allowed is None:
+        return configured_names
+    if isinstance(allowed, list) and all(isinstance(name, str) for name in allowed):
+        return frozenset(configured_names.intersection(allowed))
+    return frozenset()
+
+
+def _custom_provider_permitted(runtime: ToolRuntime | None) -> bool:
+    """Avoid a provider call when the persisted policy denies both invokers.
+
+    A missing or malformed decision is treated conservatively as unknown: the
+    policy middleware remains the final descriptor filter, while discovery can
+    still report useful local matches.
+    """
+    if runtime is None:
+        return True
+    context = getattr(runtime, "context", None)
+    if not isinstance(context, dict):
+        return True
+    try:
+        from deerflow.runtime.secret_context import SKILL_TOOL_POLICY_DECISION_CONTEXT_KEY
+
+        decision = context.get(SKILL_TOOL_POLICY_DECISION_CONTEXT_KEY)
+    except Exception:
+        return True
+    if not isinstance(decision, dict):
+        return True
+    allowed = decision.get("allowed_names")
+    if not isinstance(allowed, list) or not all(isinstance(name, str) for name in allowed):
+        return True
+    return bool({"app_function_call", "connector_call"}.intersection(allowed))
+
+
+def resolve_custom_provider(path: str | None) -> CustomDiscoveryProvider | None:
+    """Resolve an operator configured provider at agent assembly time."""
+    if path is None:
+        return None
+    if not isinstance(path, str):
+        raise TypeError("custom_provider must be a dotted module.path:function string or None")
+    if not path.strip():
+        return None
+    path = path.strip()
+    from deerflow.reflection import resolve_variable
+
+    provider = resolve_variable(path)
+    if not callable(provider):
+        raise ValueError(f"{path} is not a callable tool discovery provider")
+    return provider
 
 
 def _compile_catalog_regex(pattern: str) -> re.Pattern[str]:
@@ -106,7 +185,25 @@ class DeferredToolCatalog:
             if regex.search(searchable):
                 scored.append((2 if regex.search(t.name) else 1, t))
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [t for _, t in scored][:MAX_RESULTS]
+        matches = [t for _, t in scored][:MAX_RESULTS]
+        if matches:
+            return matches
+
+        # Ordinary queries are documented as keyword search, while retaining
+        # regex matching for compatibility.  Only fall back after regex found
+        # nothing, so an intentionally precise regex keeps its old behavior.
+        tokens = [token for token in re.findall(r"[\w]+", query.casefold()) if token]
+        if not tokens:
+            return []
+        ranked: list[tuple[int, int, str, BaseTool]] = []
+        for candidate in self.tools:
+            searchable = f"{candidate.name} {candidate.description or ''}".casefold()
+            matched = sum(token in searchable for token in tokens)
+            if matched:
+                name_hits = sum(token in candidate.name.casefold() for token in tokens)
+                ranked.append((matched, name_hits, candidate.name, candidate))
+        ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        return [tool for _, _, _, tool in ranked[:MAX_RESULTS]]
 
 
 def _catalog_regex_score(pattern: str, t: BaseTool) -> int:
@@ -130,8 +227,9 @@ class DeferredToolSetup:
       ``deferred_names`` are withheld from the model until promoted, and
       ``catalog_hash`` scopes those promotions in graph state.
 
-    Invariant: ``tool_search_tool is None`` ⟺ ``deferred_names`` is empty ⟺
-    ``catalog_hash is None``.
+    When an operator custom provider is configured, ``tool_search_tool`` may be
+    present with an empty deferred catalog so app/connector discovery remains
+    available even when this agent has no deferred MCP tools.
     """
 
     tool_search_tool: BaseTool | None
@@ -139,11 +237,17 @@ class DeferredToolSetup:
     catalog_hash: str | None
 
 
-def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: frozenset[str] = frozenset()) -> BaseTool:
+def build_tool_search_tool(
+    catalog: DeferredToolCatalog,
+    directly_bound_names: frozenset[str] = frozenset(),
+    *,
+    runtime_visible_names: frozenset[str] = frozenset(),
+    custom_provider: CustomDiscoveryProvider | None = None,
+) -> BaseTool:
     catalog_hash = catalog.hash
 
     @tool
-    def tool_search(query: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
+    def tool_search(query: str, tool_call_id: Annotated[str, InjectedToolCallId], runtime: ToolRuntime = None) -> Command:
         """Fetches full schema definitions for deferred tools so they can be called.
 
         Deferred tools appear by name in <available-deferred-tools> in the system
@@ -155,34 +259,147 @@ def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: f
           - "select:Read,Edit" -- fetch these exact tools by name
           - "notebook jupyter" -- keyword search, up to max_results best matches
           - "+slack send" -- require "slack" in the name, rank by remaining terms
+
+        When an operator custom provider is configured, ordinary searches can
+        also return namespaced ``app_function:...`` or ``connector_function:...``
+        descriptors. Their ``input_schema`` describes arguments for the
+        existing ``app_function_call`` or ``connector_call`` invocation tool;
+        the descriptor itself is metadata and is never promoted or executed.
         """
+        started = time.perf_counter()
+        clean_query = query.strip()
+        is_select = clean_query.startswith("select:")
+        requested = {n.strip() for n in clean_query[7:].split(",") if n.strip()} if is_select else set()
+        # Exact MCP selection is local and deterministic.  Only a namespaced
+        # custom ID opts into the operator provider; generic searches may use
+        # the provider to discover app/connector functions.
+        custom_allowed = custom_provider is not None and _custom_provider_permitted(runtime) and (not is_select or any(name.startswith(_CUSTOM_NAME_PREFIXES) for name in requested))
+        custom_matches: list[dict[str, Any]] = []
+        custom_status: dict[str, Any] = {"providers": {}, "complete": True}
+        if custom_allowed:
+            custom_matches, custom_status = invoke_custom_provider(custom_provider, clean_query)
+            if is_select:
+                custom_matches = [item for item in custom_matches if item.get("name") in requested]
+
         matched = catalog.search(query)
-        if not matched:
+        local_names = {tool.name for tool in matched}
+        policy_visible_names = _runtime_visible_direct_names(runtime, directly_bound_names)
+        effective_visible_names = runtime_visible_names if runtime_visible_names else policy_visible_names
+        already_visible = requested.intersection(effective_visible_names)
+        # ``directly_bound_names`` is retained for old builders, but configured
+        # names are deliberately not reported as runtime-visible: skill and
+        # authorization middleware may have hidden those schemas.
+        configured_only = requested.intersection(directly_bound_names) - already_visible
+        names = [t.name for t in matched]
+        if matched or custom_matches:
+            # Keep ordinary search responses capped across all providers. Exact
+            # selection remains uncapped because every named schema is explicit.
+            custom_for_response = custom_matches if is_select else custom_matches[: max(0, MAX_RESULTS - len(matched))]
+            schemas = [convert_to_openai_function(t) for t in matched] + custom_for_response
+            content = json.dumps(schemas, indent=2, ensure_ascii=False)
+            provider_failed = custom_allowed and not custom_status.get("complete", True)
+            if is_select:
+                unknown = requested - local_names - {item.get("name") for item in custom_matches} - already_visible - configured_only
+                if already_visible or configured_only or unknown or provider_failed:
+                    status_entry = {
+                        "kind": "discovery_status",
+                        "status": "partial" if provider_failed else "selection",
+                        "already_visible": sorted(already_visible),
+                        "configured_not_visible": sorted(configured_only),
+                        "unknown": sorted(unknown),
+                    }
+                    content = json.dumps([*schemas, status_entry], indent=2, ensure_ascii=False)
+            elif provider_failed:
+                content = json.dumps(
+                    [
+                        *schemas,
+                        {
+                            "kind": "discovery_status",
+                            "status": "partial",
+                            "local_results_complete": True,
+                            "providers": dict(custom_status.get("providers", {})),
+                        },
+                    ],
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            status = {
+                "local_matches": len(matched),
+                "custom_matches": len(custom_matches),
+                "provider_status": custom_status,
+                "already_visible": sorted(already_visible),
+                "configured_not_visible": sorted(configured_only),
+                "unknown": sorted(requested - local_names - {item.get("name") for item in custom_matches} - already_visible - configured_only),
+                "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+            }
+            message_kwargs = {"tool_search_timing": status}
+            if provider_failed:
+                message_kwargs["tool_search_partial"] = True
+            return Command(
+                update={
+                    "promoted": {"catalog_hash": catalog_hash, "names": names},
+                    "messages": [ToolMessage(content=content, tool_call_id=tool_call_id, name="tool_search", additional_kwargs=message_kwargs)],
+                }
+            )
+
+        if not matched and not custom_matches:
             # Build-time binding does not guarantee runtime policy kept the schema visible.
-            clean_query = query.strip()
-            if clean_query.startswith("select:"):
-                requested = {n.strip() for n in clean_query[7:].split(",") if n.strip()}
-            else:
-                requested = {clean_query}
-            already_active = requested.intersection(directly_bound_names)
-            if already_active:
-                active_list = ", ".join(sorted(already_active))
+            if already_visible:
+                active_list = ", ".join(sorted(already_visible))
+                content = f"Tool(s) '{active_list}' are already visible in the current tool list; call them directly. tool_search does not need to promote them."
+            elif configured_only:
+                active_list = ", ".join(sorted(configured_only))
                 content = (
-                    f"Tool(s) '{active_list}' are configured as directly bound, not deferred, so tool_search cannot promote them. "
-                    "Call a tool directly only if its schema is present in your current tool list. If its schema is absent, "
-                    "the current runtime policy does not allow it; use an allowed alternative or explain that limitation. "
+                    f"Tool(s) '{active_list}' are configured as directly bound, not deferred, but are not visible under the current runtime policy. "
+                    "Call a tool directly only if its schema is present in your current tool list. "
+                    "If its schema is absent, the current runtime policy does not allow it. "
                     "Do NOT retry tool_search for it."
                 )
             else:
                 content = f"No tools found matching: {query}"
+                if custom_allowed and not custom_status.get("complete", True):
+                    content += " Custom capability discovery is temporarily unavailable; local results are complete."
+            if is_select:
+                unknown = requested - local_names - {item.get("name") for item in custom_matches} - already_visible - configured_only
+                if already_visible or configured_only or unknown or (custom_allowed and not custom_status.get("complete", True)):
+                    content = json.dumps(
+                        [
+                            {
+                                "kind": "discovery_status",
+                                "status": "partial" if custom_allowed and not custom_status.get("complete", True) else "selection",
+                                "message": content,
+                                "already_visible": sorted(already_visible),
+                                "configured_not_visible": sorted(configured_only),
+                                "unknown": sorted(unknown),
+                                "providers": dict(custom_status.get("providers", {})),
+                            }
+                        ],
+                        indent=2,
+                        ensure_ascii=False,
+                    )
             names = []
-        else:
-            content = json.dumps([convert_to_openai_function(t) for t in matched], indent=2, ensure_ascii=False)
-            names = [t.name for t in matched]
+        status = {
+            "local_matches": 0,
+            "custom_matches": 0,
+            "provider_status": custom_status,
+            "already_visible": sorted(already_visible),
+            "configured_not_visible": sorted(configured_only),
+            "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+        }
         return Command(
             update={
                 "promoted": {"catalog_hash": catalog_hash, "names": names},
-                "messages": [ToolMessage(content=content, tool_call_id=tool_call_id, name="tool_search")],
+                "messages": [
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=tool_call_id,
+                        name="tool_search",
+                        additional_kwargs={
+                            "tool_search_timing": status,
+                            "tool_search_partial": custom_allowed and not custom_status.get("complete", True),
+                        },
+                    )
+                ],
             }
         )
 
@@ -212,7 +429,15 @@ def _is_deferrable(tool: BaseTool, *, defer=(), exclude=()) -> bool:
     return is_mcp_tool(tool) or _matches_any(tool.name, defer)
 
 
-def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=()) -> DeferredToolSetup:
+def build_deferred_tool_setup(
+    candidate_tools: list[BaseTool],
+    *,
+    enabled: bool,
+    exclude=(),
+    defer=(),
+    custom_provider: CustomDiscoveryProvider | None = None,
+    runtime_visible_names: frozenset[str] = frozenset(),
+) -> DeferredToolSetup:
     """Build deferred-tool setup from one agent build's candidate tools.
 
     Lead agents pass their full configured tool list; ``SkillToolPolicyMiddleware``
@@ -230,15 +455,33 @@ def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool,
         # Deferral disabled: defer nothing; the model binds every tool as before.
         return DeferredToolSetup(None, frozenset(), None)
     deferred = [t for t in candidate_tools if _is_deferrable(t, defer=defer, exclude=exclude)]
-    if not deferred:
-        # Enabled, but no deferrable tool: same empty result, different reason.
+    if not deferred and custom_provider is None:
+        # Enabled, but no deferrable tool or custom catalog: no discovery tool
+        # is needed and the upstream binding shape is preserved.
         return DeferredToolSetup(None, frozenset(), None)
     catalog = DeferredToolCatalog(tuple(deferred))
     directly_bound_names = frozenset(t.name for t in candidate_tools if t not in deferred)
-    return DeferredToolSetup(build_tool_search_tool(catalog, directly_bound_names), catalog.names, catalog.hash)
+    return DeferredToolSetup(
+        build_tool_search_tool(
+            catalog,
+            directly_bound_names,
+            runtime_visible_names=runtime_visible_names,
+            custom_provider=custom_provider,
+        ),
+        catalog.names,
+        catalog.hash,
+    )
 
 
-def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=()) -> tuple[list[BaseTool], DeferredToolSetup]:
+def assemble_deferred_tools(
+    candidate_tools: list[BaseTool],
+    *,
+    enabled: bool,
+    exclude=(),
+    defer=(),
+    custom_provider: CustomDiscoveryProvider | None = None,
+    runtime_visible_names: frozenset[str] = frozenset(),
+) -> tuple[list[BaseTool], DeferredToolSetup]:
     """Build the final tool list and deferred setup from candidate tools.
 
     Fail closed on deferral assembly itself: if tool_search is enabled and
@@ -251,7 +494,14 @@ def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, e
     Shared by every agent-build path (lead, embedded client, subagent) so they
     all get the same fail-closed guarantee from one place.
     """
-    deferred_setup = build_deferred_tool_setup(candidate_tools, enabled=enabled, exclude=exclude, defer=defer)
+    deferred_setup = build_deferred_tool_setup(
+        candidate_tools,
+        enabled=enabled,
+        exclude=exclude,
+        defer=defer,
+        custom_provider=custom_provider,
+        runtime_visible_names=runtime_visible_names,
+    )
     if enabled and not deferred_setup.deferred_names and any(_is_deferrable(t, defer=defer, exclude=exclude) for t in candidate_tools):
         raise RuntimeError("tool_search enabled and deferrable candidates exist, but no deferred set was recovered - refusing to bind their schemas (fail-closed).")
     final_tools = list(candidate_tools)

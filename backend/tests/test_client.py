@@ -51,6 +51,7 @@ def mock_app_config():
     config.skills.deferred_discovery = False
     config.skills.container_path = "/mnt/skills"
     config.tool_search.enabled = False
+    config.tool_search.custom_provider = None
     config.database.checkpoint_channel_mode = "full"
     config.database.checkpoint_delta.snapshot_frequency = 10
     config.authorization = AuthorizationConfig(enabled=False)

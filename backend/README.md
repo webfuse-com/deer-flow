@@ -365,6 +365,14 @@ always-bound instead of deferred. `tool_search.defer` extends deferral to
 matching non-MCP (builtin/config) tools; those promote via explicit
 `tool_search` calls only, since routing metadata exists only for MCP servers.
 
+Operator deployments can set `tool_search.custom_provider` to a trusted
+`module.path:function`. The callable receives the model's query and returns
+metadata-only app or connector descriptors. Their `input_schema` documents the
+JSON arguments and `invocation_args` identifies the target for the existing
+`app_function_call` or `connector_call` tool. These descriptors are filtered by
+the lead and subagent policy, never execute during discovery, and do not enter
+the MCP catalog hash or promoted tool names.
+
 ### Environment Variables
 
 - `DEER_FLOW_CONFIG_PATH` - Override config.yaml location

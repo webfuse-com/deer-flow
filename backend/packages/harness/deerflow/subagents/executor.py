@@ -727,7 +727,7 @@ class SubagentExecutor:
         # Lazy import: see the TYPE_CHECKING note at the top of this module -
         # importing tool_search runs tools/builtins/__init__, which would
         # re-enter this package during its own initialization.
-        from deerflow.tools.builtins.tool_search import assemble_deferred_tools, get_deferred_tools_prompt_section, get_mcp_routing_hints_prompt_section
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools, get_deferred_tools_prompt_section, get_mcp_routing_hints_prompt_section, resolve_custom_provider
 
         # Skills are discoverable metadata until explicitly slash-activated or
         # loaded through read_file. Their allowed-tools declarations are applied
@@ -778,11 +778,13 @@ class SubagentExecutor:
         # its catalog is built from that already-filtered list. Active skill
         # policy is applied later by middleware to both schema visibility and
         # execution, so promotion cannot widen an active skill's authority.
+        custom_provider = resolve_custom_provider(getattr(resolved_app_config.tool_search, "custom_provider", None))
         final_tools, deferred_setup = assemble_deferred_tools(
             configured_tools,
             enabled=resolved_app_config.tool_search.enabled,
             exclude=getattr(resolved_app_config.tool_search, "exclude", None),
             defer=getattr(resolved_app_config.tool_search, "defer", None),
+            custom_provider=custom_provider,
         )
         final_tools.extend(late_tools)
         # Combine the system prompt and skill discovery metadata into a single

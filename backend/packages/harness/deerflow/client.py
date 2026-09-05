@@ -59,7 +59,7 @@ from deerflow.runtime.goal import DEFAULT_MAX_GOAL_CONTINUATIONS, build_goal_sta
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.describe import build_skill_search_setup
 from deerflow.skills.storage import get_or_new_user_skill_storage
-from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section
+from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section, resolve_custom_provider
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, generate_trace_id, get_current_trace_id, reset_current_trace_id, set_current_trace_id
 from deerflow.tracing import build_tracing_callbacks, inject_langfuse_metadata
 from deerflow.uploads.manager import (
@@ -332,11 +332,13 @@ class DeerFlowClient:
         )
         tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
         late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
+        custom_provider = resolve_custom_provider(getattr(self._app_config.tool_search, "custom_provider", None))
         final_tools, deferred_setup = assemble_deferred_tools(
             tools,
             enabled=self._app_config.tool_search.enabled,
             exclude=getattr(self._app_config.tool_search, "exclude", ()),
             defer=getattr(self._app_config.tool_search, "defer", ()),
+            custom_provider=custom_provider,
         )
         final_tools.extend(late_tools)
         mcp_routing_middleware = build_mcp_routing_middleware(

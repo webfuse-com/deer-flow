@@ -113,6 +113,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#85](#patch-85) | Config-gated line-numbered code outline in tool output synopsis | config-expressed | this PR |
 | [#86](#patch-86) | Digest-only config-change detection so no-op rewrites don't stall run completion | argus-edit | this PR |
 | [#87](#patch-87) | Async MCP cache refresh so config changes never stall run completion | argus-edit | this PR |
+| [#88](#patch-88) | Policy-aware custom capability discovery and precise search status | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2132,6 +2133,43 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: stale-with-cache serves stale synchronously + refreshes in background; failed background refresh keeps serving old tools + retries).
 - Delete-when: upstream moves MCP tool re-discovery off the synchronous agent-construction path (background/stale-while-revalidate).
 - Upstream status: none sent yet (PR candidate).
+
+## Patch #88
+
+**Patch #88 - Policy-aware custom capability discovery and precise search status**
+
+- Class: argus-additive (custom discovery overlay and runtime policy wiring).
+- Intent: Keep ordinary tool search fast while making deferred and operator-
+  supplied app/connector capabilities discoverable at runtime. Adds the
+  namespaced custom descriptor contract and provider hook, deterministic token
+  fallback after an ordinary search miss, and structured exact-selection
+  outcomes for configured, visible, unknown, and partial results. Custom
+  descriptors remain outside the MCP catalog hash and are filtered by the
+  existing invocation-tool policy before they can be shown. Provider failures
+  are explicit partial results; no custom descriptor is executable by itself.
+  Runtime context propagation preserves the task store and run journal so the
+  tool timing evidence remains durable for both lead and subagent runs.
+- Files: `backend/packages/harness/deerflow/tools/builtins/tool_search.py`,
+  `backend/packages/harness/deerflow/tools/builtins/custom_discovery.py`,
+  `backend/packages/harness/deerflow/agents/middlewares/skill_tool_policy_middleware.py`,
+  `backend/packages/harness/deerflow/client.py`,
+  `backend/packages/harness/deerflow/agents/lead_agent/agent.py`,
+  `backend/packages/harness/deerflow/subagents/executor.py`,
+  `backend/packages/harness/deerflow/runtime/runs/worker.py`,
+  `backend/packages/harness/deerflow/config/tool_search_config.py`, and the
+  corresponding runtime/config guidance files.
+- Tests: `backend/tests/test_custom_tool_discovery.py`,
+  `backend/tests/test_tool_search_argus_runtime_integration.py`,
+  `backend/tests/test_skill_tool_policy_middleware.py`,
+  `backend/tests/test_client.py`, `backend/tests/test_models_authorization.py`,
+  `backend/tests/test_lead_agent_skills.py`, and the deferred-tool regression
+  tests.
+- Delete-when: upstream provides an equivalent policy-aware runtime capability
+  discovery hook and preserves the task-store/run-journal context contract;
+  verify custom descriptors still cannot enter MCP promotion state before
+  removing this overlay.
+- Upstream status: none sent yet (PR candidate; requires the Argus/Agora
+  provider contract and the staged quality/speed evidence before rollout).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

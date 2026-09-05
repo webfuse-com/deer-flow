@@ -437,6 +437,19 @@ class RunContext:
 def _install_runtime_context(config: dict, runtime_context: dict[str, Any]) -> None:
     existing_context = config.get("context")
     if isinstance(existing_context, dict):
+        # The gateway may already have a caller context when the worker adds
+        # run-scoped infrastructure. Preserve the authoritative internal
+        # objects so middleware and tools share the same task store and journal;
+        # remove stale caller-supplied values when this run has none.
+        from deerflow_extension_api import EXTENSION_TASK_STORE_KEY
+
+        from deerflow.extensions import EXTENSION_SNAPSHOT_CONTEXT_KEY
+
+        for key in (EXTENSION_TASK_STORE_KEY, "__run_journal", EXTENSION_SNAPSHOT_CONTEXT_KEY):
+            if key in runtime_context:
+                existing_context[key] = runtime_context[key]
+            else:
+                existing_context.pop(key, None)
         existing_context.setdefault("thread_id", runtime_context["thread_id"])
         existing_context.setdefault("run_id", runtime_context["run_id"])
         if DEERFLOW_TRACE_METADATA_KEY in runtime_context:

@@ -429,6 +429,14 @@ Targeted updates accept both DeerFlow's `type` field and the MCP-spec `transport
 Runtime MCP and skill updates replace `extensions_config.json` atomically, so an interrupted write cannot leave the shared configuration truncated or partially written.
 MCP routing hints can also prefer a specific MCP tool for matching requests without forbidding other tools. When `tool_search` defers MCP schemas, matching routing metadata can auto-promote up to `tool_search.auto_promote_top_k` deferred schemas before the model call.
 
+Tool search can also discover operator supplied app and connector functions by
+setting `tool_search.custom_provider` to a trusted `module.path:function` in
+`config.yaml`. The provider returns metadata only: `input_schema` describes the
+arguments and `invocation_args` identifies the target for the existing
+`app_function_call` or `connector_call` tool. Custom descriptors are never
+executed or added to the MCP catalog, and the invocation tool remains subject
+to the lead and subagent tool policy.
+
 OpenViking users can register the official Streamable HTTP endpoint at `/mcp`
 with an owner-bound USER API key. The native `forget` tool is exposed for
 capability parity; deletion is irreversible, so it should be called only after
