@@ -74,6 +74,51 @@ describe("artifact URL helpers", () => {
     ).toBe("/demo/threads/thread-1/user-data/outputs/style.css");
   });
 
+  test("routes a colleague's shared thread to the Agora snapshot files", async () => {
+    const { resolveArtifactURL, resolveMessageImageURL, urlOfArtifact } =
+      await loadFreshArtifactUtils();
+    const threadId =
+      "shared:atlas-nicholas:aa5151dc-0000-4000-8000-000000000001";
+
+    expect(
+      urlOfArtifact({
+        filepath: "/mnt/user-data/outputs/report.md",
+        threadId,
+      }),
+    ).toBe(
+      "/api/shared-threads/atlas-nicholas/aa5151dc-0000-4000-8000-000000000001/files/outputs/report.md",
+    );
+    expect(
+      urlOfArtifact({
+        filepath: "/mnt/user-data/outputs/a b.png",
+        threadId,
+        download: true,
+      }),
+    ).toBe(
+      "/api/shared-threads/atlas-nicholas/aa5151dc-0000-4000-8000-000000000001/files/outputs/a%20b.png?download=true",
+    );
+    expect(
+      resolveArtifactURL("/mnt/user-data/workspace/notes.md", threadId),
+    ).toBe(
+      "/api/shared-threads/atlas-nicholas/aa5151dc-0000-4000-8000-000000000001/files/workspace/notes.md",
+    );
+    // Relative image references resolve through the same switch.
+    expect(
+      resolveMessageImageURL("chart.png", threadId, [
+        "/mnt/user-data/outputs/chart.png",
+      ]),
+    ).toBe(
+      "/api/shared-threads/atlas-nicholas/aa5151dc-0000-4000-8000-000000000001/files/outputs/chart.png",
+    );
+    // A plain thread id is untouched.
+    expect(
+      urlOfArtifact({
+        filepath: "/mnt/user-data/outputs/report.md",
+        threadId: "thread-1",
+      }),
+    ).toBe("/api/threads/thread-1/artifacts/mnt/user-data/outputs/report.md");
+  });
+
   test("encodes reserved characters in artifact URL path segments", async () => {
     const { resolveArtifactURL, urlOfArtifact } =
       await loadFreshArtifactUtils();

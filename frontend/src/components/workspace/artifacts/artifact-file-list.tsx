@@ -13,6 +13,7 @@ import {
 import { urlOfArtifact } from "@/core/artifacts/utils";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
+import { isSharedThreadId } from "@/core/sharing/thread-id";
 import { installSkill, SkillRequestError } from "@/core/skills/api";
 import {
   getFileExtensionDisplayName,
@@ -22,6 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { useArtifacts } from "./context";
+import { InternalizeArtifactAction } from "./internalize-artifact-action";
 
 export function ArtifactFileList({
   className,
@@ -37,6 +39,7 @@ export function ArtifactFileList({
   const isAdmin = user?.system_role === "admin";
   const { select: selectArtifact, setOpen } = useArtifacts();
   const [installingFile, setInstallingFile] = useState<string | null>(null);
+  const isShared = isSharedThreadId(threadId);
 
   const handleClick = useCallback(
     (filepath: string) => {
@@ -97,7 +100,7 @@ export function ArtifactFileList({
               {getFileExtensionDisplayName(file)} file
             </CardDescription>
             <CardAction className="row-span-1 self-center">
-              {file.endsWith(".skill") && isAdmin && (
+              {file.endsWith(".skill") && isAdmin && !isShared && (
                 <Button
                   variant="ghost"
                   disabled={installingFile === file}
@@ -111,6 +114,11 @@ export function ArtifactFileList({
                   {t.common.install}
                 </Button>
               )}
+              <InternalizeArtifactAction
+                variant="card"
+                threadId={threadId}
+                filepath={file}
+              />
               <Button variant="ghost" asChild>
                 <a
                   href={urlOfArtifact({

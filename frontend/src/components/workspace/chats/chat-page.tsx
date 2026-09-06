@@ -15,6 +15,7 @@ import {
   InputBox,
   type InputBoxSubmitOptions,
 } from "@/components/workspace/input-box";
+import { InternalizeTrigger } from "@/components/workspace/internalize-trigger";
 import {
   MessageList,
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
@@ -309,6 +310,9 @@ export default function ChatPage() {
                 <SidecarTrigger />
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
+                {!isNewThread && !isMock && (
+                  <InternalizeTrigger threadId={threadId} />
+                )}
                 <ArtifactTrigger />
               </div>
             </header>

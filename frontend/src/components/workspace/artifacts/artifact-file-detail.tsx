@@ -57,6 +57,7 @@ import { extractCitationSources } from "@/core/citations/sources";
 import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import { findToolCallResult } from "@/core/messages/utils";
+import { isSharedThreadId } from "@/core/sharing/thread-id";
 import { installSkill, SkillRequestError } from "@/core/skills/api";
 import {
   SafeStreamdown,
@@ -78,6 +79,7 @@ import { useThread } from "../messages/context";
 import { Tooltip } from "../tooltip";
 
 import { useArtifacts } from "./context";
+import { InternalizeArtifactAction } from "./internalize-artifact-action";
 import { artifactMarkdownPlugins } from "./markdown-preview-plugins";
 
 const WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS = 3000;
@@ -225,15 +227,19 @@ export function ArtifactFileDetail({
     (draft) => draft.draftContent !== draft.baselineContent,
   );
   const isEditing = editingPath === filepath;
-  const canEdit = canEditOpenedArtifact({
-    filepath,
-    isCodeFile,
-    isWriteFile,
-    isSkillFile,
-    isMock: Boolean(isMock),
-    hasRevision: typeof sha256 === "string",
-    isStaticWebsite: env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
-  });
+  // A colleague's shared snapshot is read-only: no edits, no skill installs.
+  const isShared = isSharedThreadId(threadId);
+  const canEdit =
+    !isShared &&
+    canEditOpenedArtifact({
+      filepath,
+      isCodeFile,
+      isWriteFile,
+      isSkillFile,
+      isMock: Boolean(isMock),
+      hasRevision: typeof sha256 === "string",
+      isStaticWebsite: env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
+    });
   const editorContent = isDirty ? activeDraft.draftContent : visibleContent;
 
   useEffect(() => {
@@ -521,6 +527,7 @@ export function ArtifactFileDetail({
             )}
             {!isEditing &&
               !isWriteFile &&
+              !isShared &&
               filepath.endsWith(".skill") &&
               isAdmin && (
                 <Tooltip content={t.toolCalls.skillInstallTooltip}>
@@ -547,6 +554,13 @@ export function ArtifactFileDetail({
                     "_blank",
                   );
                 }}
+              />
+            )}
+            {!isEditing && !isWriteFile && (
+              <InternalizeArtifactAction
+                variant="detail"
+                threadId={threadId}
+                filepath={filepath}
               />
             )}
             {!isEditing && isCodeFile && (
