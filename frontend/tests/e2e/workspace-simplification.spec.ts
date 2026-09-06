@@ -57,7 +57,7 @@ test("chat header keeps context and debug while hiding token and browser control
 
   // Argus patch #88: the Internalize control asks the Agora for the thread's
   // share state; answer "not shared" so the header renders the plain button.
-  await page.route("**/api/shared-threads/mine/**", (route) =>
+  await page.route("**/api/shared-threads/**", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -84,15 +84,20 @@ test("chat header keeps context and debug while hiding token and browser control
     header.getByRole("button", { name: "Live Desktop & Browser" }),
   ).toBeVisible();
 
+  // Argus patch #88: the Internalize control sits in the same cluster. Check
+  // it before opening the export menu, which hides everything else from the
+  // accessibility tree while it is open.
+  const internalizeButton = header.getByRole("button", {
+    name: "Internalize",
+  });
+  await expect(internalizeButton).toBeVisible();
+  await expect(internalizeButton).toHaveText("");
+
   const exportButton = header.getByRole("button", { name: "Export" });
   await expect(exportButton).toBeVisible();
   await expect(exportButton).toHaveText("");
   await exportButton.click();
   await expect(page.getByText("Export as Markdown")).toBeVisible();
-
-  await expect(
-    header.getByRole("button", { name: "Internalize" }),
-  ).toBeVisible();
 
   await expect(page.getByText(/Input:\s*100/)).toHaveCount(0);
   await expect(page.getByText(/Output:\s*25/)).toHaveCount(0);
