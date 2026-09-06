@@ -1,6 +1,5 @@
 "use client";
 
-import { Landmark } from "lucide-react";
 import { useState } from "react";
 
 import { ArtifactAction } from "@/components/ai-elements/artifact";
@@ -12,6 +11,8 @@ import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { cn } from "@/lib/utils";
 
 import { useThread } from "../messages/context";
+import { ShareStateIcon, shareStateGlyph } from "../share-state-icon";
+import { Tooltip } from "../tooltip";
 
 import { InternalizeFileDialog } from "./internalize-file-dialog";
 
@@ -83,7 +84,7 @@ export function InternalizeArtifactAction({
     return (
       <>
         <ArtifactAction
-          icon={Landmark}
+          icon={shareStateGlyph(shared)}
           label={label}
           tooltip={label}
           aria-pressed={shared}
@@ -95,21 +96,27 @@ export function InternalizeArtifactAction({
     );
   }
 
+  // Icon-only on the card (patch #89): the label lives in the tooltip and the
+  // accessible name, so the card's filename keeps its room.
   return (
     <>
-      <Button
-        variant="ghost"
-        aria-pressed={shared}
-        className={cn(shared && "text-primary")}
-        onClick={(event) => {
-          event.stopPropagation();
-          event.preventDefault();
-          setOpen(true);
-        }}
-      >
-        <Landmark className="size-4" />
-        {label}
-      </Button>
+      <Tooltip content={label}>
+        <Button
+          aria-label={label}
+          aria-pressed={shared}
+          className={cn("size-8", shared && "text-primary")}
+          data-testid="internalize-artifact-card"
+          size="icon"
+          variant="ghost"
+          onClick={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            setOpen(true);
+          }}
+        >
+          <ShareStateIcon shared={shared} className="size-4" />
+        </Button>
+      </Tooltip>
       {dialog}
     </>
   );

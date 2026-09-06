@@ -4,6 +4,7 @@ import {
   BookOpenTextIcon,
   BotIcon,
   Clock3Icon,
+  LandmarkIcon,
   LightbulbIcon,
   MessagesSquare,
 } from "lucide-react";
@@ -91,6 +92,19 @@ export function WorkspaceNavChatList() {
             >
               <Clock3Icon className="text-muted-foreground" />
               <span>Chronos</span>
+            </a>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton asChild>
+            <a
+              className="text-muted-foreground"
+              href="https://agora.acro.surfly.com/knowledge"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <LandmarkIcon className="text-muted-foreground" />
+              <span>Agora</span>
             </a>
           </SidebarMenuButton>
         </SidebarMenuItem>

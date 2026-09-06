@@ -1,6 +1,5 @@
 "use client";
 
-import { Landmark } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +10,7 @@ import { cn } from "@/lib/utils";
 
 import { InternalizeDialog } from "./internalize-dialog";
 import { useThread } from "./messages/context";
+import { ShareStateIcon } from "./share-state-icon";
 import { Tooltip } from "./tooltip";
 
 /**
@@ -49,7 +49,7 @@ export function InternalizeTrigger({ threadId }: { threadId: string }) {
           variant="ghost"
           onClick={() => setOpen(true)}
         >
-          <Landmark />
+          <ShareStateIcon shared={shared} />
         </Button>
       </Tooltip>
       <InternalizeDialog

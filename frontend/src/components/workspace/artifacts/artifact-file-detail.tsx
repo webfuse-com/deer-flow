@@ -398,10 +398,10 @@ export function ArtifactFileDetail({
   return (
     <Artifact className={cn(className)}>
       <ArtifactHeader className="px-2">
-        <div className="flex items-center gap-2">
-          <ArtifactTitle>
+        <div className="flex min-w-0 items-center gap-2">
+          <ArtifactTitle className="min-w-0 truncate">
             {isWriteFile ? (
-              <div className="px-2">{getFileName(filepath)}</div>
+              <div className="truncate px-2">{getFileName(filepath)}</div>
             ) : (
               <Select
                 value={filepath}
@@ -414,7 +414,7 @@ export function ArtifactFileDetail({
                   }
                 }}
               >
-                <SelectTrigger className="border-none bg-transparent! shadow-none select-none focus:outline-0 active:outline-0">
+                <SelectTrigger className="max-w-60 min-w-0 border-none bg-transparent! shadow-none select-none focus:outline-0 active:outline-0">
                   <SelectValue placeholder="Select a file" />
                 </SelectTrigger>
                 <SelectContent className="select-none">
@@ -468,8 +468,8 @@ export function ArtifactFileDetail({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <ArtifactActions>
+        <div className="flex shrink-0 items-center gap-2">
+          <ArtifactActions className="shrink-0">
             {canEdit && !isEditing && (
               <ArtifactAction
                 icon={PencilIcon}
