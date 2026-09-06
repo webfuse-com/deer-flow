@@ -55,6 +55,23 @@ test("chat header keeps context and debug while hiding token and browser control
     }),
   );
 
+  // Argus patch #88: the Internalize control asks the Agora for the thread's
+  // share state; answer "not shared" so the header renders the plain button.
+  await page.route("**/api/shared-threads/mine/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        thread_id: MOCK_THREAD_ID,
+        stack: "atlas-test",
+        shared: false,
+        share: null,
+        share_url: `https://agora.example/threads/shared/atlas-test/${MOCK_THREAD_ID}`,
+        view_path: `/workspace/shared/atlas-test/${MOCK_THREAD_ID}`,
+      }),
+    }),
+  );
+
   await page.goto(`/workspace/chats/${MOCK_THREAD_ID}`);
 
   const header = page.locator("header");
@@ -72,6 +89,10 @@ test("chat header keeps context and debug while hiding token and browser control
   await expect(exportButton).toHaveText("");
   await exportButton.click();
   await expect(page.getByText("Export as Markdown")).toBeVisible();
+
+  await expect(
+    header.getByRole("button", { name: "Internalize" }),
+  ).toBeVisible();
 
   await expect(page.getByText(/Input:\s*100/)).toHaveCount(0);
   await expect(page.getByText(/Output:\s*25/)).toHaveCount(0);

@@ -113,6 +113,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#85](#patch-85) | Config-gated line-numbered code outline in tool output synopsis | config-expressed | this PR |
 | [#86](#patch-86) | Digest-only config-change detection so no-op rewrites don't stall run completion | argus-edit | this PR |
 | [#87](#patch-87) | Async MCP cache refresh so config changes never stall run completion | argus-edit | this PR |
+| [#88](#patch-88) | Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1867,6 +1868,17 @@ carry budget ledger.
 - Upstream status: not upstreamable as-is (the copy and the exact affordances
   are Argus policy); the separate gallery/view surfaces are upstream code so
   this is pure carry cost.
+
+## Patch #88
+
+**Patch #88 - Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend**
+
+- Class: argus-additive (new `core/sharing/` domain, new components and route; four small argus-edits: the shared-thread URL switch in `core/artifacts/utils.ts`, one button in each chat header, one action slot in the artifact detail toolbar and list card).
+- Intent: A citizen shares a conversation or a produced file with every colleague from inside Atlas. The header gains an "Internalize" control (lucide `Landmark`, the temple: to the Agora) that opens a dialog with a preview (message counts, text size, files, secret/PII findings as a warning, tool results off by default), then POSTs to the Agora over the same-origin path `/api/shared-threads/mine/{tid}` (proxied by the Caddy edge; the gateway never sees these calls). The Agora stores a snapshot and hands back a stable link. A colleague opening that link lands on `/workspace/shared/[stack]/[thread_id]` on THEIR OWN stack, where this page fetches the snapshot (`GET /api/shared-threads/{stack}/{tid}`) and renders it with the real `MessageList` through a synthetic `BaseStream` (`core/sharing/snapshot.ts`), read-only: no input box, no regenerate/edit/branch, no sidecar. Artifacts travel under the synthetic thread id `shared:<stack>:<tid>`; one switch in `urlOfArtifact`/`resolveArtifactURL` routes every file, image and markdown link to `/api/shared-threads/{stack}/{tid}/files/<rel>`. The per-artifact action (`variant="detail"|"card"`) shares one produced file through `/api/shared-files/mine/{tid}`. The owner's gateway stays owner-gated at the edge: nothing here reads through another citizen's stack. An expired SSO surfaces as a redirect, not a 401, so `core/sharing/api.ts` reports any redirected or non-JSON answer as `session_expired` and the UI offers a reload.
+- Files: `frontend/src/core/sharing/thread-id.ts` (NEW), `frontend/src/core/sharing/api.ts` (NEW), `frontend/src/core/sharing/snapshot.ts` (NEW), `frontend/src/core/sharing/hooks.ts` (NEW), `frontend/src/core/sharing/format.ts` (NEW), `frontend/src/components/workspace/internalize-trigger.tsx` (NEW), `frontend/src/components/workspace/internalize-dialog.tsx` (NEW), `frontend/src/components/workspace/artifacts/internalize-artifact-action.tsx` (NEW), `frontend/src/components/workspace/artifacts/internalize-file-dialog.tsx` (NEW), `frontend/src/components/workspace/shared/shared-thread-page.tsx` (NEW), `frontend/src/app/workspace/shared/[stack]/[thread_id]/layout.tsx` (NEW), `frontend/src/app/workspace/shared/[stack]/[thread_id]/page.tsx` (NEW), `frontend/src/core/artifacts/utils.ts` (EDITED, shared-thread URL switch), `frontend/src/components/workspace/artifacts/artifact-file-detail.tsx` (EDITED, +action, read-only when shared), `frontend/src/components/workspace/artifacts/artifact-file-list.tsx` (EDITED, +card action), `frontend/src/components/workspace/chats/chat-page.tsx` (EDITED, +header button), `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` (EDITED, +header button), `frontend/src/core/i18n/locales/{types,en-US,zh-CN}.ts` (EDITED, `sharing` section), `frontend/AGENTS.md` (EDITED, route + domain).
+- Tests: `frontend/tests/unit/core/sharing/{thread-id,api,snapshot}.test.ts` (NEW), `frontend/tests/unit/core/artifacts/utils.test.ts` (EDITED, shared URL switch), `frontend/tests/unit/components/workspace/internalize-trigger.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/shared/shared-thread-page.dom.test.tsx` (NEW), `frontend/tests/unit/fixtures/shared-thread-snapshot.json` (NEW), `frontend/tests/e2e/workspace-simplification.spec.ts` (EDITED, header shows Internalize).
+- Delete-when: the Agora share API (`/api/shared-threads`, `/api/shared-files`) is retired. Not upstreamable: the transport and the snapshot contract are Argus-specific.
+- Upstream status: n/a (Argus integration).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

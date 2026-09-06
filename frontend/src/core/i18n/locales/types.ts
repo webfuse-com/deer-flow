@@ -928,4 +928,56 @@ export interface Translations {
       sso_not_allowed: string;
     };
   };
+
+  // Sharing (Argus patch #88): internalize a thread or a file through the Agora
+  sharing: {
+    internalize: string;
+    shared: string;
+    dialogTitle: string;
+    dialogDescription: string;
+    sharedSince: (when: string) => string;
+    includeToolBodies: string;
+    includeToolBodiesHint: string;
+    preview: (human: number, ai: number, tool: number) => string;
+    textSize: (size: string) => string;
+    files: (count: number, size: string) => string;
+    filesTooLarge: (size: string, cap: string) => string;
+    noFiles: string;
+    filesBundled: (size: string) => string;
+    filesNotIncluded: string;
+    toolBodiesIncluded: string;
+    toolBodiesOmitted: string;
+    scrubWarning: (count: number) => string;
+    scrubHint: string;
+    confirm: string;
+    confirming: string;
+    refresh: string;
+    refreshed: string;
+    revoke: string;
+    revokeConfirm: string;
+    revokeYes: string;
+    revoked: string;
+    linkLabel: string;
+    copyLink: string;
+    linkCopied: string;
+    openLink: string;
+    success: string;
+    failed: string;
+    tooLarge: string;
+    sessionExpired: string;
+    reload: string;
+    retry: string;
+    sharedBy: (email: string) => string;
+    readOnlyNotice: (when: string) => string;
+    notFoundTitle: string;
+    notFoundDescription: string;
+    artifact: {
+      internalize: string;
+      shared: string;
+      dialogTitle: (name: string) => string;
+      dialogDescription: string;
+      confirm: string;
+      success: string;
+    };
+  };
 }

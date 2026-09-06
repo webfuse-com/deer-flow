@@ -1,0 +1,62 @@
+{
+  "share": {
+    "stack": "atlas-nicholas",
+    "thread_id": "aa5151dc-0000-4000-8000-000000000001",
+    "title": "Q2 seat forecast",
+    "owner_email": "nicholas@surfly.com",
+    "snapshot_at": "2026-09-06T09:12:00+00:00",
+    "include_tool_bodies": false,
+    "files_included": true,
+    "scrub_findings": 0
+  },
+  "is_owner": false,
+  "share_url": "https://agora.acro.surfly.com/threads/shared/atlas-nicholas/aa5151dc-0000-4000-8000-000000000001",
+  "snapshot": {
+    "schema_version": 2,
+    "messages": [
+      {
+        "type": "human",
+        "id": "h1",
+        "content": "How many seats did we sell in Q2?"
+      },
+      {
+        "type": "ai",
+        "id": "a1",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "c1",
+            "name": "bash",
+            "args": { "command": "python3 seats.py --quarter Q2" },
+            "type": "tool_call"
+          }
+        ]
+      },
+      {
+        "type": "tool",
+        "id": "t1",
+        "name": "bash",
+        "tool_call_id": "c1",
+        "content": "[tool result omitted by the owner, 1834 chars]",
+        "additional_kwargs": { "omitted_chars": 1834 }
+      },
+      {
+        "type": "ai",
+        "id": "a2",
+        "content": "We sold **1,240 seats** in Q2, up 18% on Q1. The report is in `outputs/report.md`.",
+        "tool_calls": []
+      },
+      {
+        "type": "system",
+        "id": "junk-1",
+        "content": "this row must be dropped"
+      }
+    ],
+    "values": {
+      "title": "Q2 seat forecast",
+      "artifacts": ["/mnt/user-data/outputs/report.md"]
+    },
+    "files": [{ "path": "outputs/report.md", "bytes": 1200 }],
+    "omitted": { "tool_bodies": 1 }
+  }
+}

@@ -1176,4 +1176,67 @@ export const enUS: Translations = {
         "SSO login is not allowed for your account. Contact your administrator.",
     },
   },
+
+  // Sharing (Argus patch #88)
+  sharing: {
+    internalize: "Internalize",
+    shared: "Shared with colleagues",
+    dialogTitle: "Share this conversation with your colleagues",
+    dialogDescription:
+      "Everyone at the company gets a read-only snapshot of this conversation, your questions and the answers, exactly as you see it. Nothing is filtered.",
+    sharedSince: (when) =>
+      `Shared since ${when}. Colleagues see the snapshot as it was then.`,
+    includeToolBodies: "Include tool results",
+    includeToolBodiesHint:
+      "Off by default. Tool output is the part of a conversation you have read least; the steps stay visible, their output is left out.",
+    preview: (human, ai, tool) =>
+      `${human} of your messages, ${ai} answers and ${tool} tool steps.`,
+    textSize: (size) => `About ${size} of text.`,
+    files: (count, size) =>
+      `${count} ${count === 1 ? "file" : "files"} (${size}) bundled with the snapshot.`,
+    filesTooLarge: (size, cap) =>
+      `The files total ${size}, above the ${cap} limit, so the conversation is shared without them.`,
+    noFiles: "No files in this conversation.",
+    filesBundled: (size) => `Files bundled (${size}).`,
+    filesNotIncluded: "Files were not included.",
+    toolBodiesIncluded: "Tool results included.",
+    toolBodiesOmitted: "Tool results left out.",
+    scrubWarning: (count) =>
+      `${count} ${count === 1 ? "thing looks" : "things look"} like a secret or a personal detail:`,
+    scrubHint: "Nothing is removed automatically; review before sharing.",
+    confirm: "Internalize",
+    confirming: "Sharing...",
+    refresh: "Refresh snapshot",
+    refreshed: "Snapshot refreshed.",
+    revoke: "Stop sharing",
+    revokeConfirm:
+      "The link stops working for everyone. Anything a colleague already copied stays with them.",
+    revokeYes: "Yes, stop sharing",
+    revoked: "No longer shared.",
+    linkLabel: "Link for colleagues",
+    copyLink: "Copy link",
+    linkCopied: "Link copied.",
+    openLink: "Open link",
+    success: "Shared with your colleagues.",
+    failed: "Sharing failed.",
+    tooLarge: "This conversation is too large to share as a snapshot.",
+    sessionExpired: "Your session has expired.",
+    reload: "Reload",
+    retry: "Try again",
+    sharedBy: (email) => `Shared by ${email}`,
+    readOnlyNotice: (when) =>
+      `Read-only snapshot of a colleague's conversation, taken ${when}.`,
+    notFoundTitle: "This shared conversation is not available",
+    notFoundDescription:
+      "The link may be wrong, or its owner stopped sharing it.",
+    artifact: {
+      internalize: "Internalize",
+      shared: "Shared with colleagues",
+      dialogTitle: (name) => `Share ${name} with your colleagues`,
+      dialogDescription:
+        "Everyone at the company can open this file from the Agora. Nothing is filtered.",
+      confirm: "Internalize",
+      success: "File shared with your colleagues.",
+    },
+  },
 };
