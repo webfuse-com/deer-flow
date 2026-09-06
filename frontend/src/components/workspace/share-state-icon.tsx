@@ -1,18 +1,23 @@
 "use client";
 
-import { Landmark, type LucideIcon, type LucideProps } from "lucide-react";
+import {
+  LockIcon,
+  type LucideIcon,
+  type LucideProps,
+  UsersIcon,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 /**
  * Argus patch #89: the one place the "Internalize" glyph lives. The thread
- * header trigger and the artifact action both render it, so swapping the
- * private and shared looks is a change here and nowhere else. Today both
- * states draw the temple (to the Agora); the shared state is carried by the
- * colour the callers apply and by `data-shared`.
+ * header trigger and the artifact action both render it, so the private and
+ * shared looks change here and nowhere else. Private is a lock (only you);
+ * shared is people (everyone at the company). Callers add the colour:
+ * muted while private, `text-primary` once shared.
  */
-export function shareStateGlyph(_shared: boolean): LucideIcon {
-  return Landmark;
+export function shareStateGlyph(shared: boolean): LucideIcon {
+  return shared ? UsersIcon : LockIcon;
 }
 
 export function ShareStateIcon({
@@ -24,7 +29,7 @@ export function ShareStateIcon({
   return (
     <Glyph
       aria-hidden="true"
-      className={cn(className)}
+      className={cn("size-4", className)}
       data-shared={shared ? "true" : "false"}
       {...props}
     />
