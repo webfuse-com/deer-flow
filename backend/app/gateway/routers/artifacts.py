@@ -74,6 +74,7 @@ def _inline_media_type(mime_type: str | None) -> str | None:
         return INLINE_TEXT_MEDIA_TYPE
     return mime_type
 
+
 MAX_SKILL_ARCHIVE_MEMBER_BYTES = 16 * 1024 * 1024
 _SKILL_ARCHIVE_READ_CHUNK_SIZE = 64 * 1024
 MAX_EDITABLE_ARTIFACT_BYTES = 2 * 1024 * 1024
