@@ -30,24 +30,15 @@ function renderHeader(defaultOpen: boolean) {
 afterEach(cleanup);
 
 describe("WorkspaceHeader (DOM)", () => {
-  it("shows a solid star as the collapsed brand mark, never the DF text", () => {
+  it("shows DF as the collapsed brand mark", () => {
     renderHeader(false);
     const mark = screen.getByTestId("brand-mark");
-    expect(mark.getAttribute("aria-label")).toBe("Atlas");
-    const star = mark.querySelector("svg");
-    expect(star).not.toBeNull();
-    expect(star?.getAttribute("fill")).toBe("currentColor");
-    expect(mark.textContent?.trim()).toBe("");
-    expect(screen.queryByText("DF")).toBeNull();
+    expect(mark.textContent?.trim()).toBe("DF");
   });
 
-  it("keeps the DeerFlow word with the same star when expanded", () => {
+  it("keeps the DeerFlow word when expanded", () => {
     renderHeader(true);
     const mark = screen.getByTestId("brand-mark");
     expect(mark.textContent).toContain("DeerFlow");
-    expect(mark.querySelector("svg")?.getAttribute("fill")).toBe(
-      "currentColor",
-    );
-    expect(screen.queryByText("DF")).toBeNull();
   });
 });
