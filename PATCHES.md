@@ -115,6 +115,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#87](#patch-87) | Async MCP cache refresh so config changes never stall run completion | argus-edit | this PR |
 | [#88](#patch-88) | Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend | argus-additive | this PR |
 | [#89](#patch-89) | UI round 2: star brand mark, Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
+| [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2084,6 +2085,17 @@ carry budget ledger.
 - Tests: `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: stale-with-cache serves stale synchronously + refreshes in background; failed background refresh keeps serving old tools + retries).
 - Delete-when: upstream moves MCP tool re-discovery off the synchronous agent-construction path (background/stale-while-revalidate).
 - Upstream status: none sent yet (PR candidate).
+
+## Patch #90
+
+**Patch #90 - Re-register a store-mapped thread the Gateway registry no longer knows**
+
+- Class: generic-upstreamable (the channel store trusting a thread id the Gateway has lost is upstream's data model, not an Argus addition).
+- Intent: The channel store (`data/channels/store.json`) and the Gateway thread registry (`threads_meta`) are separate stores, and the manager trusted the mapping blindly. When the registry is rebuilt or moved, every mapped conversation points at a thread the Gateway 404s on and every inbound message fails with `NotFoundError` forever. That is exactly what the 2026-08-27 `database.backend=postgres` switch did: it started from an empty `threads_meta`, and 20 of 20 Telegram chats were dead while every gateway reported healthy. `_ensure_thread_registered()` now verifies a store-mapped thread once per manager lifetime and, if the Gateway does not know it, re-creates it under the SAME id -- the checkpointer keys history by `thread_id`, so the conversation continues rather than restarting. A `ConflictError` means a concurrent message won the race and the id is valid again. Only an outright refusal falls back to a fresh thread and rewrites the mapping, and a transient verification error keeps the mapping rather than splitting the conversation.
+- Files: `backend/app/channels/manager.py` (EDITED)
+- Tests: `backend/tests/test_channels.py` (EDITED, +2 cases: `test_get_or_create_thread_reregisters_mapped_thread_missing_from_registry` (unknown thread re-created under the same id) and `test_get_or_create_thread_keeps_mapping_when_gateway_verification_fails` (a transient verification error keeps the stored mapping rather than splitting the conversation)). Not covered: the `ConflictError` race branch and the fresh-thread fallback when re-registration is refused outright -- both are fail-safe directions, but a sync that touches this method should add them rather than assume they are exercised.
+- Delete-when: upstream makes the Gateway create a thread row on demand for an id a channel already maps, or gives the channel store a registry-backed lookup that cannot go stale.
+- Upstream status: none sent yet (clean PR candidate -- the failure mode needs no Argus context).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
