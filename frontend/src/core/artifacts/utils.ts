@@ -1,4 +1,8 @@
 import { getBackendBaseURL } from "../config";
+import {
+  parseSharedThreadId,
+  type SharedThreadRef,
+} from "../sharing/thread-id";
 import { isStaticWebsiteOnly } from "../static-mode";
 import type { AgentThreadState } from "../threads";
 
@@ -51,6 +55,20 @@ function decodeRelativeArtifactPath(filepath: string) {
   return filepath.split("/").map(decodePathSegment).join("/");
 }
 
+/**
+ * Argus patch #88: a thread shared by a colleague is rendered from an Agora
+ * snapshot under the synthetic id `shared:<stack>:<tid>`; its files live in the
+ * snapshot bundle the Agora serves, not on any gateway.
+ */
+function sharedThreadFileURL(
+  { stack, threadId }: SharedThreadRef,
+  filepath: string,
+  download = false,
+) {
+  const rel = filepath.replace(/^\/mnt\/user-data\//, "").replace(/^\/+/, "");
+  return `${getBackendBaseURL()}/api/shared-threads/${encodeURIComponent(stack)}/${encodeURIComponent(threadId)}/files/${encodeArtifactPath(rel)}${download ? "?download=true" : ""}`;
+}
+
 export function urlOfArtifact({
   filepath,
   threadId,
@@ -64,6 +82,10 @@ export function urlOfArtifact({
 }) {
   if (isStaticWebsiteOnly()) {
     return staticDemoArtifactURL({ filepath, threadId, download });
+  }
+  const shared = parseSharedThreadId(threadId);
+  if (shared) {
+    return sharedThreadFileURL(shared, filepath, download);
   }
   const encodedThreadId = encodeURIComponent(threadId);
   const encodedFilepath = encodeArtifactPath(filepath);
@@ -82,6 +104,10 @@ export function extractArtifactsFromThread(thread: {
 export function resolveArtifactURL(absolutePath: string, threadId: string) {
   if (isStaticWebsiteOnly()) {
     return staticDemoArtifactURL({ filepath: absolutePath, threadId });
+  }
+  const shared = parseSharedThreadId(threadId);
+  if (shared) {
+    return sharedThreadFileURL(shared, absolutePath);
   }
   return `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}/artifacts${encodeArtifactPath(absolutePath)}`;
 }

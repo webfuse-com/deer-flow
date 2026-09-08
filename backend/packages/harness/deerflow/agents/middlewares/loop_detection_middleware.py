@@ -115,6 +115,7 @@ from langgraph.runtime import Runtime
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
 from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
+from deerflow.sandbox.command_classify import classify_bash_command
 
 # [argus patch #69] Jaccard similarity parameters mirror ToolProgressConfig's
 # defaults (jaccard_similarity_threshold=0.8, min_word_count_for_similarity=10)
@@ -138,6 +139,17 @@ _DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool
 _DEFAULT_READ_FILE_BUCKET_SIZE = 200  # [argus] read_file line-range bucket (upstream default)
 _DEFAULT_RECOVERABLE_RETRY_LIMIT = 24  # [argus patch #68] identical recoverable retries before terminal stop
 _MAX_PENDING_WARNINGS_PER_RUN = 4
+
+# [argus patch #83] Tool names whose invocation represents write progress,
+# clearing bash.inspection accumulated counts (mirrors ToolProgressMiddleware).
+_WRITE_PROGRESS_TOOLS = frozenset({"write_file", "str_replace"})
+
+# [argus patch #83] Explicit registry of subcategory names this middleware can produce.
+# Today exactly {"bash.inspection"} — the only subcategory name _bash_subcategory can emit.
+# Gating on membership in this registry ensures operator tool_freq_overrides for dotted
+# tool names (e.g. MCP tools like "github.search_issues") are treated as plain tools,
+# inflating the global window and keeping their hard stops reachable.
+_SUBCATEGORY_NAMES: frozenset[str] = frozenset({"bash.inspection"})
 
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
@@ -264,6 +276,12 @@ _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. P
 
 _TOOL_FREQ_HARD_STOP_MSG = "[FORCED STOP] Tool {tool_name} called {count} times — exceeded the per-tool safety limit. Producing final answer with results collected so far."
 
+# [argus patch #82] Subcategory steering messages for Layer-2 frequency detection
+_TOOL_FREQ_SUBCATEGORY_WARNING_MSG = "[LOOP DETECTED] Repeated shell micro-reads: {count} inspection-only bash calls. Use read_file / workspace_inspect for file inspection, batch your reads, and move on to implementation."
+_TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG = (
+    "[FORCED STOP] Repeated shell micro-reads exceeded the safety limit ({count} inspection-only bash calls). Use read_file / workspace_inspect for file inspection. Producing final answer with results collected so far."
+)
+
 _TOOL_FREQ_EXEMPT_MSG = (
     "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. "
     "This tool is exempt from the hard stop, but this volume usually means no new progress is being "
@@ -301,6 +319,36 @@ def _outcome_phrase(meta: dict) -> str:
 
 def _action_hint(meta: dict) -> str:
     return _ACTION_HINTS.get(meta.get("recommended_next_action") or "", " Change the arguments or the approach.")
+
+
+def _bash_subcategory(name: str, args: object) -> str | None:
+    """[argus patch #82] Compute subcategory name for bash inspection calls."""
+    if name != "bash":
+        return None
+    normalized_args, _ = _normalize_tool_call_args(args)
+    cmd = normalized_args.get("command")
+    if isinstance(cmd, str) and classify_bash_command(cmd) == "inspection":
+        return "bash.inspection"
+    return None
+
+
+def _bash_classify(name: str, args: object) -> tuple[str | None, bool]:
+    """[argus patch #83] Classify bash tool call for subcategory tracking and write progress.
+
+    Returns (subcategory_name, is_execution_write_progress).
+    Only explicit 'execution' commands signal write progress (unknown/empty do not).
+    """
+    if name != "bash":
+        return None, False
+    normalized_args, _ = _normalize_tool_call_args(args)
+    cmd = normalized_args.get("command")
+    if isinstance(cmd, str):
+        c = classify_bash_command(cmd)
+        if c == "inspection":
+            return "bash.inspection", False
+        if c == "execution":
+            return None, True
+    return None, False
 
 
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
@@ -379,10 +427,15 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # config enforces warn <= hard (covered by sizing to hard), and a misconfig
         # with warn > hard would hard-stop first anyway, so an unreachable warn
         # is harmless and must not inflate the window.
+        # [argus patch #82] Note: subcategory keys (e.g. bash.inspection) flow
+        # through self._tool_freq_overrides. [argus patch #83] Exclude subcategories
+        # (names in _SUBCATEGORY_NAMES) from inflating the global window; subcategories
+        # trim to their own hard limit. Dotted MCP tool names (e.g. "github.search_issues")
+        # are NOT subcategories and still inflate the window so their hard stops remain reachable.
         self._tool_freq_window = max(
             self.window_size,
             self.tool_freq_hard_limit,
-            *(hard for _, hard in self._tool_freq_overrides.values()),
+            *(hard for name, (_, hard) in self._tool_freq_overrides.items() if name not in _SUBCATEGORY_NAMES),
         )
         self._lock = threading.Lock()
         self._history: OrderedDict[str, list[str]] = OrderedDict()
@@ -393,10 +446,15 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._tool_name_history: defaultdict[str, deque[str]] = defaultdict(deque)
         # Per-thread Counter mirroring the deque so freq_count is O(1) instead
         # of scanning the whole window on every tool call. A single high
-        # per-tool override (e.g. bash: {hard_limit: 1000}) inflates the window
+        # per-tool override (e.g. bash: hard_limit=1000) inflates the window
         # globally, so the scan would cost 1000 per call for every tool; Counter
         # increments on append and decrements on popleft.
         self._tool_name_counter: defaultdict[str, Counter[str]] = defaultdict(Counter)
+        # [argus patch #82] Separate per-thread history and counter for subcategories
+        # (e.g. bash.inspection) so subcategory calls do not consume window slots in
+        # the plain tool name deque.
+        self._subcat_name_history: defaultdict[str, deque[str | None]] = defaultdict(deque)
+        self._subcat_name_counter: defaultdict[str, Counter[str]] = defaultdict(Counter)
         # Per-thread set of tool names already warned about in Layer 2, so a
         # frequency warning is enqueued once rather than on every subsequent
         # call. Cleared per name when the windowed count decays back below the
@@ -494,11 +552,19 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             self._warned.pop(evicted_id, None)
             self._tool_name_history.pop(evicted_id, None)
             self._tool_name_counter.pop(evicted_id, None)
+            self._subcat_name_history.pop(evicted_id, None)
+            self._subcat_name_counter.pop(evicted_id, None)
             self._tool_freq_warned.pop(evicted_id, None)
             for key in list(self._pending_warnings):
                 if key[0] == evicted_id:
                     self._drop_pending_warning_key_locked(key)
             logger.debug("Evicted loop tracking for thread %s (LRU)", evicted_id)
+
+    def _clear_subcategory_locked(self, thread_id: str) -> None:
+        """[argus patch #83] Clear subcategory tracking deque, counter, and warned flag for a thread."""
+        self._subcat_name_history.pop(thread_id, None)
+        self._subcat_name_counter.pop(thread_id, None)
+        self._tool_freq_warned[thread_id].discard("bash.inspection")
 
     def _drop_pending_warning_key_locked(self, key: tuple[str, str]) -> None:
         """Drop all pending-warning bookkeeping for one thread/run key.
@@ -567,6 +633,20 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         thread_id = self._get_thread_id(runtime)
         call_hash = _hash_tool_calls(tool_calls, self.read_file_bucket_size_lines)
+
+        # Precompute subcategory mapping outside the lock (classify_bash_command is pure CPU)
+        subcategories: dict[int, str | None] = {}
+        has_write_progress = False
+        if "bash.inspection" in self._tool_freq_overrides:
+            for idx, tc in enumerate(tool_calls):
+                name = tc.get("name", "")
+                if name in _WRITE_PROGRESS_TOOLS:
+                    has_write_progress = True
+                elif name == "bash":
+                    sub, is_write = _bash_classify(name, tc.get("args"))
+                    subcategories[idx] = sub
+                    if is_write:
+                        has_write_progress = True
 
         with self._lock:
             # Touch / create entry (move to end for LRU)
@@ -642,9 +722,15 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     )
 
             # --- Layer 2: per-tool-type frequency (windowed) ---
+            # [argus patch #83] Reset on write progress:
+            # When the current AIMessage issues any write_file/str_replace call, or any execution-classified bash call,
+            # clear the subcategory tracking deque+counter for this thread so reads-after-writes do not accumulate.
+            if has_write_progress and "bash.inspection" in self._tool_freq_overrides:
+                self._clear_subcategory_locked(thread_id)
+
             tool_name_history = self._tool_name_history[thread_id]
             name_counter = self._tool_name_counter[thread_id]
-            for tc in tool_calls:
+            for idx, tc in enumerate(tool_calls):
                 name = tc.get("name", "")
                 if not name:
                     continue
@@ -664,6 +750,29 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                         name_counter[old] = c
                 freq_count = name_counter.get(name, 0)
 
+                # Subcategory tracking (e.g. bash.inspection) on its own separate window/counter
+                subcat = subcategories.get(idx)
+                subcat_freq = 0
+                if "bash.inspection" in self._tool_freq_overrides:
+                    subcat_history = self._subcat_name_history[thread_id]
+                    subcat_counter = self._subcat_name_counter[thread_id]
+                    subcat_history.append(subcat)
+                    if subcat:
+                        subcat_counter[subcat] += 1
+                    # [argus patch #83] Trim subcategory deque to the subcategory's OWN hard limit,
+                    # not the global window which may be inflated by high plain-tool overrides (e.g. bash: 300).
+                    subcat_limit = self._tool_freq_overrides["bash.inspection"][1]
+                    while len(subcat_history) > subcat_limit:
+                        old_sub = subcat_history.popleft()
+                        if old_sub:
+                            c = subcat_counter[old_sub] - 1
+                            if c <= 0:
+                                del subcat_counter[old_sub]
+                            else:
+                                subcat_counter[old_sub] = c
+                    subcat_freq = subcat_counter.get(subcat, 0) if subcat else 0
+
+                # First evaluate plain tool name
                 if name in self._tool_freq_overrides:
                     eff_warn, eff_hard = self._tool_freq_overrides[name]
                 else:
@@ -713,6 +822,49 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     # Windowed count decayed below the warn threshold; allow a
                     # future burst of this tool to warn again.
                     self._tool_freq_warned[thread_id].discard(name)
+
+                # Second evaluate subcategory if present
+                if subcat:
+                    subcat_warn, subcat_hard = self._tool_freq_overrides[subcat]
+                    if subcat_freq >= subcat_hard:
+                        if subcat in self._no_hard_stop_tools:
+                            logger.warning(
+                                "Tool subcategory frequency hard limit reached — tool exempt via no_hard_stop_tools, downgrading to warning",
+                                extra={
+                                    "thread_id": thread_id,
+                                    "tool_name": subcat,
+                                    "count": subcat_freq,
+                                },
+                            )
+                            return _TOOL_FREQ_EXEMPT_MSG.format(tool_name=subcat, count=subcat_freq), False
+                        logger.error(
+                            "Tool subcategory frequency hard limit reached — forcing stop",
+                            extra={
+                                "thread_id": thread_id,
+                                "tool_name": subcat,
+                                "count": subcat_freq,
+                            },
+                        )
+                        # [argus patch #83] Clear subcategory tracking state on hard stop so the
+                        # next run starts fresh at 0 without immediate re-stopping.
+                        self._clear_subcategory_locked(thread_id)
+                        return _TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG.format(count=subcat_freq), True
+
+                    if subcat_freq >= subcat_warn:
+                        subcat_warned = self._tool_freq_warned[thread_id]
+                        if subcat not in subcat_warned:
+                            subcat_warned.add(subcat)
+                            logger.warning(
+                                "Tool subcategory frequency warning — too many calls to tool subcategory",
+                                extra={
+                                    "thread_id": thread_id,
+                                    "tool_name": subcat,
+                                    "count": subcat_freq,
+                                },
+                            )
+                            return _TOOL_FREQ_SUBCATEGORY_WARNING_MSG.format(count=subcat_freq), False
+                    else:
+                        self._tool_freq_warned[thread_id].discard(subcat)
 
         return None, False
 
@@ -1041,6 +1193,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._warned.pop(thread_id, None)
                 self._tool_name_history.pop(thread_id, None)
                 self._tool_name_counter.pop(thread_id, None)
+                self._subcat_name_history.pop(thread_id, None)
+                self._subcat_name_counter.pop(thread_id, None)
                 self._tool_freq_warned.pop(thread_id, None)
                 for key in list(self._pending_warnings):
                     if key[0] == thread_id:
@@ -1050,6 +1204,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._warned.clear()
                 self._tool_name_history.clear()
                 self._tool_name_counter.clear()
+                self._subcat_name_history.clear()
+                self._subcat_name_counter.clear()
                 self._tool_freq_warned.clear()
                 self._pending_warnings.clear()
                 self._pending_warning_touch_order.clear()

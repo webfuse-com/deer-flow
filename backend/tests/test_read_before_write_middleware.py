@@ -169,6 +169,40 @@ class TestWriteGate:
         handler.assert_called_once()
         assert result.status != "error"
 
+    def test_successful_write_refreshes_mark_for_sequential_edit(self):
+        files = {self.PATH: "v1"}
+        mw = _middleware(files)
+        messages = [_read_marked_message(self.PATH, "v1")]
+        first = _make_request("write_file", {"description": "d", "path": self.PATH, "content": "v2"}, messages)
+
+        def first_handler(_request):
+            files[self.PATH] = "v2"
+            return ToolMessage(content="OK", tool_call_id="call-1", name="write_file")
+
+        first_result = mw.wrap_tool_call(first, first_handler)
+        assert first_result.additional_kwargs["deerflow_read_mark"]["hash"] == _sha("v2")
+
+        second = _make_request(
+            "str_replace",
+            {"description": "d", "path": self.PATH, "old_str": "v2", "new_str": "v3"},
+            [*messages, first_result],
+        )
+        second_handler = MagicMock(return_value=ToolMessage(content="OK", tool_call_id="call-2", name="str_replace"))
+        result = mw.wrap_tool_call(second, second_handler)
+        second_handler.assert_called_once()
+        assert result.status != "error"
+
+    def test_failed_write_does_not_refresh_mark(self):
+        files = {self.PATH: "v1"}
+        mw = _middleware(files)
+        messages = [_read_marked_message(self.PATH, "v1")]
+        request = _make_request("write_file", {"description": "d", "path": self.PATH, "content": "v2"}, messages)
+        result = mw.wrap_tool_call(
+            request,
+            MagicMock(return_value=ToolMessage(content="Error: disk full", tool_call_id="call-1", name="write_file", status="error")),
+        )
+        assert "deerflow_read_mark" not in result.additional_kwargs
+
     def test_stale_mark_after_modification_blocked(self):
         mw = _middleware({self.PATH: "v2"})  # file changed since the read of v1
         messages = [_read_marked_message(self.PATH, "v1")]

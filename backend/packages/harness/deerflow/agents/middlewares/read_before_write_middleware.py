@@ -11,9 +11,10 @@ Design invariants:
   gate's state lives in ``state["messages"]``.
 - Summarization deleting the read result deletes the mark with it — the gate
   can never pass while the read content is gone from context.
-- Writes never refresh marks: any successful write changes the file hash and
-  therefore invalidates every earlier read, forcing a re-read between
-  consecutive modifications.
+- Successful deterministic writes refresh the mark from the file that actually
+  landed. This permits a later sequential edit without a redundant read while
+  preserving the optimistic-version check. Same-turn parallel writes still
+  cannot reuse the mark because results are not in the shared request state.
 - Gate check and tool execution are serialized per (scope, path): LangGraph
   runs the tool calls of one AIMessage concurrently, so without a critical
   section two same-turn writes could both pass on one stale mark before
@@ -56,7 +57,7 @@ _UNINSPECTABLE_CONTENT_PREFIX = "Error:"
 
 _BLOCK_MESSAGE = (
     "Error: {tool_name} blocked — {path} already exists and you have not read its current version. "
-    "Any write invalidates earlier reads, so re-read before every modification. "
+    "A failed, external, or concurrent write invalidates earlier reads. "
     "Call read_file on it (a ranged read of the relevant section is enough, e.g. the last ~30 lines "
     "before an append), check what is already there, then retry."
 )
@@ -104,14 +105,18 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
         if name in _GATED_WRITE_TOOLS:
             path = self._requested_path(request)
             if path is None:
-                return handler(request)
+                result = handler(request)
+                self._attach_write_mark(request, result)
+                return result
             with self._lock_for(request, path):
                 blocked = self._check_write_gate(request)
                 if blocked is not None:
                     # Stamp deerflow_tool_meta so ToolProgressMiddleware can classify
                     # the blocked write even though it bypasses ToolErrorHandlingMiddleware.
                     return normalize_tool_result(blocked)
-                return handler(request)
+                result = handler(request)
+                self._attach_write_mark(request, result)
+                return result
         if name in _READ_TOOLS:
             path = self._requested_path(request)
             if path is None:
@@ -132,17 +137,22 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
         if name in _GATED_WRITE_TOOLS:
             path = self._requested_path(request)
             if path is None:
-                return await handler(request)
+                result = await handler(request)
+                await asyncio.to_thread(self._attach_write_mark, request, result)
+                return result
             # threading.Lock may be released from a different thread than the
             # acquiring one, so acquiring in a worker thread and releasing on
             # the event-loop thread is safe.
             lock = self._lock_for(request, path)
-            await asyncio.to_thread(lock.acquire)
+            if not lock.acquire(blocking=False):
+                await asyncio.to_thread(lock.acquire)
             try:
                 blocked = await asyncio.to_thread(self._check_write_gate, request)
                 if blocked is not None:
                     return normalize_tool_result(blocked)
-                return await handler(request)
+                result = await handler(request)
+                await asyncio.to_thread(self._attach_write_mark, request, result)
+                return result
             finally:
                 lock.release()
         if name in _READ_TOOLS:
@@ -150,7 +160,8 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
             if path is None:
                 return await handler(request)
             lock = self._lock_for(request, path)
-            await asyncio.to_thread(lock.acquire)
+            if not lock.acquire(blocking=False):
+                await asyncio.to_thread(lock.acquire)
             try:
                 result = await handler(request)
                 await asyncio.to_thread(self._attach_read_mark, request, result)
@@ -256,6 +267,16 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
             "path": _normalize_mark_path(path),
             "hash": _content_hash(content),
         }
+
+    def _attach_write_mark(self, request: ToolCallRequest, result: ToolMessage | Command) -> None:
+        """Stamp the post-write version only when the write really succeeded."""
+        message = self._extract_tool_message(result)
+        if message is None or message.status == "error":
+            return
+        meta = (message.additional_kwargs or {}).get("deerflow_tool_meta")
+        if isinstance(meta, dict) and meta.get("status") != "success":
+            return
+        self._attach_read_mark(request, result)
 
     @staticmethod
     def _extract_tool_message(result: ToolMessage | Command) -> ToolMessage | None:

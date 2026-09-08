@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ import posixpath
 import re
 import shlex
 from collections.abc import Callable
+from contextlib import ExitStack
 from functools import lru_cache
 from pathlib import Path
 
@@ -59,6 +61,7 @@ _MAX_GLOB_MAX_RESULTS = 1000
 _DEFAULT_GREP_MAX_RESULTS = 100
 _MAX_GREP_MAX_RESULTS = 500
 _DEFAULT_WRITE_FILE_ERROR_MAX_CHARS = 2000
+_MAX_STR_REPLACE_BATCH_SIZE = 50
 
 # Maximum bytes accepted in a single non-append write_file call (issue #3189).
 # Oversized single-shot writes correlate with LLM streaming chunk-gap timeouts
@@ -2206,6 +2209,57 @@ async def _read_file_tool_async(
 read_file_tool.coroutine = _read_file_tool_async
 
 
+@tool("workspace_inspect", parse_docstring=True)
+def workspace_inspect_tool(runtime: Runtime, description: str, files: list[dict[str, object]]) -> str:
+    """Read several text files with hashes in one bounded call.
+
+    Args:
+        description: Explain the inspection in short words.
+        files: Up to 20 objects with path and optional start_line/end_line.
+    """
+    if not files or len(files) > 20:
+        return "Error: files must contain between 1 and 20 entries."
+    results: list[dict[str, object]] = []
+    remaining = 120_000
+    for index, item in enumerate(files, start=1):
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or not path:
+            return f"Error: File entry {index} requires a non-empty path."
+        if _is_disabled_skill_path(path, user_id=resolve_runtime_user_id(runtime)):
+            return f"Error: File entry {index} points to a disabled skill."
+        try:
+            full = read_current_file_content(runtime, path)
+            start = item.get("start_line")
+            end = item.get("end_line")
+            if start is not None or end is not None:
+                content = _read_file_from_sandbox(runtime, path, start_line=start if isinstance(start, int) else None, end_line=end if isinstance(end, int) else None)
+            else:
+                content = full
+            clipped = len(content) > remaining
+            shown = content[:remaining]
+            remaining -= len(shown)
+            results.append(
+                {
+                    "path": path,
+                    "sha256": hashlib.sha256(full.encode("utf-8")).hexdigest(),
+                    "content": shown,
+                    "truncated": clipped,
+                }
+            )
+            if remaining <= 0:
+                break
+        except Exception as exc:
+            results.append({"path": path, "error": _sanitize_error(exc, runtime)})
+    return json.dumps({"files": results, "truncated": len(results) < len(files)}, ensure_ascii=False)
+
+
+async def _workspace_inspect_tool_async(runtime: Runtime, description: str, files: list[dict[str, object]]) -> str:
+    return await _run_sync_tool_after_async_sandbox_init(workspace_inspect_tool.func, runtime, description, files)
+
+
+workspace_inspect_tool.coroutine = _workspace_inspect_tool_async
+
+
 def _effective_write_file_max_bytes() -> int:
     """Return the active size cap for non-append write_file calls.
 
@@ -2235,9 +2289,9 @@ def write_file_tool(
 
     READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
     append=True), you must have read its CURRENT version with read_file first.
-    Any write invalidates earlier reads, so re-read between consecutive
-    modifications — a ranged read of the relevant section is enough. Writes
-    that fail this check are rejected with an error.
+    Successful deterministic writes refresh the version mark, so sequential
+    modifications can continue without a redundant read. Failed, external, or
+    concurrent writes require another read. Stale writes are rejected.
 
     SIZE POLICY (issue #3189):
     A single non-append write_file call must not exceed 80 KB of UTF-8 content.
@@ -2327,24 +2381,45 @@ def str_replace_tool(
     runtime: Runtime,
     description: str,
     path: str,
-    old_str: str,
-    new_str: str,
+    old_str: str | None = None,
+    new_str: str | None = None,
     replace_all: bool = False,
+    replacements: list[dict[str, str | bool]] | None = None,
 ) -> str:
-    """Replace a substring in a file with another substring.
-    If `replace_all` is False (default), the substring to replace must appear **exactly once** in the file.
+    """Atomically replace one or more substrings in one file.
+
+    Use ``old_str`` and ``new_str`` for one replacement. When an edit plan has
+    several changes for the same file, prefer one ``replacements`` batch over
+    repeated tool calls. Batch entries are applied in order to an in-memory
+    copy, and the file is written only if every entry is valid and found.
 
     READ-BEFORE-WRITE (issue #3857): you must have read the file's CURRENT
-    version with read_file first; any write invalidates earlier reads.
+    version with read_file first. A successful deterministic edit refreshes the
+    version mark; failed, external, or concurrent writes require another read.
 
     Args:
         description: Explain why you are replacing the substring in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to replace the substring in. ALWAYS PROVIDE THIS PARAMETER SECOND.
-        old_str: The substring to replace. ALWAYS PROVIDE THIS PARAMETER THIRD.
-        new_str: The new substring. ALWAYS PROVIDE THIS PARAMETER FOURTH.
-        replace_all: Whether to replace all occurrences of the substring. If False, only the first occurrence will be replaced. Default is False.
+        old_str: The substring for a legacy single replacement; omit when using replacements.
+        new_str: The new substring for a legacy single replacement; omit when using replacements.
+        replace_all: Whether to replace every occurrence in legacy single mode. Default is False.
+        replacements: Ordered replacement objects with old_str, new_str, and optional replace_all. Maximum 50; mutually exclusive with old_str/new_str.
     """
     try:
+        using_batch = replacements is not None
+        if using_batch and (old_str is not None or new_str is not None):
+            return "Error: Provide either old_str/new_str or replacements, not both."
+        if using_batch:
+            if not replacements:
+                return "Error: replacements must contain at least one replacement."
+            if len(replacements) > _MAX_STR_REPLACE_BATCH_SIZE:
+                return f"Error: replacements exceeds the maximum of {_MAX_STR_REPLACE_BATCH_SIZE}."
+            edit_plan = replacements
+        else:
+            if old_str is None or new_str is None:
+                return "Error: old_str and new_str are required when replacements is omitted."
+            edit_plan = [{"old_str": old_str, "new_str": new_str, "replace_all": replace_all}]
+
         sandbox = ensure_sandbox_initialized(runtime)
         ensure_thread_directories_exist(runtime)
         requested_path = path
@@ -2356,17 +2431,31 @@ def str_replace_tool(
             # Custom mount paths are resolved by LocalSandbox._resolve_path()
         with get_file_operation_lock(sandbox, path):
             content = sandbox.read_file(path)
-            if not old_str:
-                # A no-op edit. str.replace("", new_str) would insert new_str at
-                # every character boundary, so this cannot fall through.
-                return "OK"
-            if not content or old_str not in content:
-                return f"Error: String to replace not found in file: {requested_path}"
-            if replace_all:
-                content = content.replace(old_str, new_str)
-            else:
-                content = content.replace(old_str, new_str, 1)
+            edited_content = content
+            applied = 0
+            for index, replacement in enumerate(edit_plan, start=1):
+                replacement_old = replacement.get("old_str")
+                replacement_new = replacement.get("new_str")
+                replacement_all = replacement.get("replace_all", False)
+                if not isinstance(replacement_old, str) or not isinstance(replacement_new, str) or not isinstance(replacement_all, bool):
+                    return f"Error: Replacement {index} must contain string old_str/new_str and optional boolean replace_all."
+                if not replacement_old:
+                    # Preserve the legacy empty-old-string no-op contract while
+                    # preventing str.replace("", ...) from expanding the file.
+                    continue
+                if replacement_old not in edited_content:
+                    if using_batch:
+                        return f"Error: Replacement {index} string not found in file: {requested_path}"
+                    return f"Error: String to replace not found in file: {requested_path}"
+                edited_content = edited_content.replace(replacement_old, replacement_new, -1 if replacement_all else 1)
+                applied += 1
+            if applied == 0:
+                return "OK" if not using_batch else "OK: applied 0 replacements"
+            content = edited_content
             sandbox.write_file(path, content)
+        if using_batch:
+            noun = "replacement" if applied == 1 else "replacements"
+            return f"OK: applied {applied} {noun}"
         return "OK"
     except SandboxError as e:
         return f"Error: {e}"
@@ -2382,9 +2471,10 @@ async def _str_replace_tool_async(
     runtime: Runtime,
     description: str,
     path: str,
-    old_str: str,
-    new_str: str,
+    old_str: str | None = None,
+    new_str: str | None = None,
     replace_all: bool = False,
+    replacements: list[dict[str, str | bool]] | None = None,
 ) -> str:
     return await _run_sync_tool_after_async_sandbox_init(
         str_replace_tool.func,
@@ -2394,7 +2484,95 @@ async def _str_replace_tool_async(
         old_str,
         new_str,
         replace_all,
+        replacements,
     )
 
 
 str_replace_tool.coroutine = _str_replace_tool_async
+
+
+@tool("workspace_patch", parse_docstring=True)
+def workspace_patch_tool(runtime: Runtime, description: str, edits: list[dict[str, object]]) -> str:
+    """Apply optimistic, multi-file replacement batches in one transaction.
+
+    Every edit must provide the sha256 returned by workspace_inspect and one or
+    more replacement objects. All hashes and replacements are validated before
+    any file is written. A write failure rolls already-written files back.
+
+    Args:
+        description: Explain the planned patch in short words.
+        edits: Up to 20 objects with path, expected_sha256, and replacements.
+    """
+    if not edits or len(edits) > 20:
+        return "Error: edits must contain between 1 and 20 entries."
+    sandbox = ensure_sandbox_initialized(runtime)
+    ensure_thread_directories_exist(runtime)
+    prepared: list[tuple[str, str, str, str]] = []
+    actual_paths: list[str] = []
+    try:
+        for index, edit in enumerate(edits, start=1):
+            path = edit.get("path") if isinstance(edit, dict) else None
+            expected = edit.get("expected_sha256") if isinstance(edit, dict) else None
+            replacements = edit.get("replacements") if isinstance(edit, dict) else None
+            if not isinstance(path, str) or not path or not isinstance(expected, str) or not expected:
+                return f"Error: Edit {index} requires path and expected_sha256."
+            if not isinstance(replacements, list) or not replacements or len(replacements) > _MAX_STR_REPLACE_BATCH_SIZE:
+                return f"Error: Edit {index} requires 1-{_MAX_STR_REPLACE_BATCH_SIZE} replacements."
+            actual = path
+            if is_local_sandbox(runtime):
+                thread_data = get_thread_data(runtime)
+                validate_local_tool_path(path, thread_data)
+                if not _is_custom_mount_path(path):
+                    actual = _resolve_and_validate_user_data_path(path, thread_data)
+            actual_paths.append(actual)
+
+        if len(set(actual_paths)) != len(actual_paths):
+            return "Error: edits must contain each path at most once. Batch a file's replacements in one edit."
+
+        with ExitStack() as locks:
+            for actual in sorted(set(actual_paths)):
+                locks.enter_context(get_file_operation_lock(sandbox, actual))
+            for index, (edit, actual) in enumerate(zip(edits, actual_paths, strict=True), start=1):
+                path = str(edit["path"])
+                original = sandbox.read_file(actual)
+                actual_hash = hashlib.sha256(original.encode("utf-8")).hexdigest()
+                if actual_hash != edit["expected_sha256"]:
+                    return f"Error: Edit {index} version mismatch for {path}; inspect the file again before patching."
+                updated = original
+                for replacement_index, replacement in enumerate(edit["replacements"], start=1):
+                    if not isinstance(replacement, dict):
+                        return f"Error: Edit {index} replacement {replacement_index} must be an object."
+                    old = replacement.get("old_str")
+                    new = replacement.get("new_str")
+                    replace_all = replacement.get("replace_all", False)
+                    if not isinstance(old, str) or not old or not isinstance(new, str) or not isinstance(replace_all, bool):
+                        return f"Error: Edit {index} replacement {replacement_index} has invalid fields."
+                    if old not in updated:
+                        return f"Error: Edit {index} replacement {replacement_index} string not found in {path}."
+                    updated = updated.replace(old, new, -1 if replace_all else 1)
+                prepared.append((path, actual, original, updated))
+
+            written: list[tuple[str, str]] = []
+            try:
+                for _path, actual, original, updated in prepared:
+                    sandbox.write_file(actual, updated)
+                    written.append((actual, original))
+            except Exception:
+                for actual, original in reversed(written):
+                    sandbox.write_file(actual, original)
+                raise
+        return json.dumps(
+            {
+                "status": "success",
+                "files": [{"path": path, "sha256": hashlib.sha256(updated.encode("utf-8")).hexdigest()} for path, _actual, _original, updated in prepared],
+            }
+        )
+    except Exception as exc:
+        return f"Error: workspace_patch failed: {_sanitize_error(exc, runtime)}"
+
+
+async def _workspace_patch_tool_async(runtime: Runtime, description: str, edits: list[dict[str, object]]) -> str:
+    return await _run_sync_tool_after_async_sandbox_init(workspace_patch_tool.func, runtime, description, edits)
+
+
+workspace_patch_tool.coroutine = _workspace_patch_tool_async

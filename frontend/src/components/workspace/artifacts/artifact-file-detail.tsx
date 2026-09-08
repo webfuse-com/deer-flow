@@ -57,6 +57,7 @@ import { extractCitationSources } from "@/core/citations/sources";
 import { writeTextToClipboard } from "@/core/clipboard";
 import { useI18n } from "@/core/i18n/hooks";
 import { findToolCallResult } from "@/core/messages/utils";
+import { isSharedThreadId } from "@/core/sharing/thread-id";
 import { installSkill, SkillRequestError } from "@/core/skills/api";
 import {
   SafeStreamdown,
@@ -78,6 +79,7 @@ import { useThread } from "../messages/context";
 import { Tooltip } from "../tooltip";
 
 import { useArtifacts } from "./context";
+import { InternalizeArtifactAction } from "./internalize-artifact-action";
 import { artifactMarkdownPlugins } from "./markdown-preview-plugins";
 
 const WRITE_FILE_PREVIEW_REFRESH_INTERVAL_MS = 3000;
@@ -225,15 +227,19 @@ export function ArtifactFileDetail({
     (draft) => draft.draftContent !== draft.baselineContent,
   );
   const isEditing = editingPath === filepath;
-  const canEdit = canEditOpenedArtifact({
-    filepath,
-    isCodeFile,
-    isWriteFile,
-    isSkillFile,
-    isMock: Boolean(isMock),
-    hasRevision: typeof sha256 === "string",
-    isStaticWebsite: env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
-  });
+  // A colleague's shared snapshot is read-only: no edits, no skill installs.
+  const isShared = isSharedThreadId(threadId);
+  const canEdit =
+    !isShared &&
+    canEditOpenedArtifact({
+      filepath,
+      isCodeFile,
+      isWriteFile,
+      isSkillFile,
+      isMock: Boolean(isMock),
+      hasRevision: typeof sha256 === "string",
+      isStaticWebsite: env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
+    });
   const editorContent = isDirty ? activeDraft.draftContent : visibleContent;
 
   useEffect(() => {
@@ -392,10 +398,10 @@ export function ArtifactFileDetail({
   return (
     <Artifact className={cn(className)}>
       <ArtifactHeader className="px-2">
-        <div className="flex items-center gap-2">
-          <ArtifactTitle>
+        <div className="flex min-w-0 items-center gap-2">
+          <ArtifactTitle className="min-w-0 truncate">
             {isWriteFile ? (
-              <div className="px-2">{getFileName(filepath)}</div>
+              <div className="truncate px-2">{getFileName(filepath)}</div>
             ) : (
               <Select
                 value={filepath}
@@ -408,7 +414,7 @@ export function ArtifactFileDetail({
                   }
                 }}
               >
-                <SelectTrigger className="border-none bg-transparent! shadow-none select-none focus:outline-0 active:outline-0">
+                <SelectTrigger className="max-w-60 min-w-0 border-none bg-transparent! shadow-none select-none focus:outline-0 active:outline-0">
                   <SelectValue placeholder="Select a file" />
                 </SelectTrigger>
                 <SelectContent className="select-none">
@@ -462,8 +468,8 @@ export function ArtifactFileDetail({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <ArtifactActions>
+        <div className="flex shrink-0 items-center gap-2">
+          <ArtifactActions className="shrink-0">
             {canEdit && !isEditing && (
               <ArtifactAction
                 icon={PencilIcon}
@@ -521,6 +527,7 @@ export function ArtifactFileDetail({
             )}
             {!isEditing &&
               !isWriteFile &&
+              !isShared &&
               filepath.endsWith(".skill") &&
               isAdmin && (
                 <Tooltip content={t.toolCalls.skillInstallTooltip}>
@@ -547,6 +554,13 @@ export function ArtifactFileDetail({
                     "_blank",
                   );
                 }}
+              />
+            )}
+            {!isEditing && !isWriteFile && (
+              <InternalizeArtifactAction
+                variant="detail"
+                threadId={threadId}
+                filepath={filepath}
               />
             )}
             {!isEditing && isCodeFile && (

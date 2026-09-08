@@ -82,6 +82,20 @@ class ToolOutputConfig(BaseModel):
         default_factory=lambda: ["read_file", "read_file_tool"],
         description="Tool names exempt from budget enforcement (prevents persist→read→persist loops).",
     )
+    code_outline_enabled: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #85] When a tool output looks like code and exceeds "
+            "code_outline_min_lines, replace the symbol list in the externalized "
+            "synopsis with a line-numbered structural outline (name + line range). "
+            "Default false = current behavior unchanged."
+        ),
+    )
+    code_outline_min_lines: int = Field(
+        default=300,
+        ge=1,
+        description=("[argus patch #85] Minimum line count for a code output to get the line-numbered outline. ~300 keeps small files on the existing symbol-list path."),
+    )
     tool_overrides: dict[str, int] = Field(
         default_factory=dict,
         description="Per-tool externalize_min_chars overrides. Keys are tool names, values are char thresholds. Use 0 to disable externalization for a specific tool.",

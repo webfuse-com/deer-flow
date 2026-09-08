@@ -28,6 +28,7 @@ _TEXT_HEADER_LIMIT = 16
 _TEXT_EXCERPT_CHARS = 420
 _CODE_IMPORT_LIMIT = 12
 _CODE_SYMBOL_LIMIT = 24
+OUTLINE_SYMBOL_LIMIT = 40
 _JSON_SHAPE_MAX_DEPTH = 2
 _JSON_STRUCTURE_LIMIT = 24
 _JSON_STRUCTURE_DEPTH = 4
@@ -58,9 +59,16 @@ class ToolOutputSynopsis:
     structure: list[str]
     notable_items: list[str]
     sample: str = ""
+    is_outline: bool = False
 
 
-def build_tool_output_synopsis(content: str, *, tool_name: str = "") -> ToolOutputSynopsis:
+def build_tool_output_synopsis(
+    content: str,
+    *,
+    tool_name: str = "",
+    code_outline_enabled: bool = False,
+    code_outline_min_lines: int = 300,
+) -> ToolOutputSynopsis:
     """Return a typed synopsis for *content* without using an LLM."""
     if content == "":
         return ToolOutputSynopsis(
@@ -120,7 +128,11 @@ def build_tool_output_synopsis(content: str, *, tool_name: str = "") -> ToolOutp
         return yaml_synopsis
 
     if _looks_code(content):
-        return _summarize_code(content)
+        return _summarize_code(
+            content,
+            code_outline_enabled=code_outline_enabled,
+            code_outline_min_lines=code_outline_min_lines,
+        )
 
     return _summarize_text(content, tool_name=tool_name)
 
@@ -132,6 +144,8 @@ def render_tool_output_preview(
     virtual_path: str,
     head_chars: int,
     tail_chars: int,
+    code_outline_enabled: bool = False,
+    code_outline_min_lines: int = 300,
 ) -> str:
     """Render a file-backed preview as a typed synopsis plus a raw head/tail sample.
 
@@ -143,7 +157,12 @@ def render_tool_output_preview(
     tail_chars from the end of *content*.
     """
     total = len(content)
-    synopsis = build_tool_output_synopsis(content, tool_name=tool_name)
+    synopsis = build_tool_output_synopsis(
+        content,
+        tool_name=tool_name,
+        code_outline_enabled=code_outline_enabled,
+        code_outline_min_lines=code_outline_min_lines,
+    )
     head_budget = max(0, head_chars)
     tail_budget = max(0, tail_chars)
     # For text kind, skip excerpts in the synopsis when a raw sample will be
@@ -177,6 +196,8 @@ def render_tool_output_preview(
     lines.append("")
     lines.append("Access:")
     lines.append(f"- Use read_file on {virtual_path} with start_line and end_line to inspect the raw output.")
+    if synopsis.is_outline:
+        lines.append("- Outline above: use read_file with start_line and end_line on the referenced ranges instead of re-reading the whole file.")
     return "\n".join(lines)
 
 
@@ -555,37 +576,95 @@ def _try_yaml(content: str) -> ToolOutputSynopsis | None:
     )
 
 
+_OUTLINE_SYMBOL_RE = re.compile(
+    r"^(?:"
+    r"(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_]\w*)"
+    r"|(?:export\s+)?(?:const|let|var)\s+([A-Za-z_]\w*)\s*="
+    r"|(?:export\s+)?class\s+([A-Za-z_]\w*)"
+    r"|public\s+class\s+([A-Za-z_]\w*)"
+    r"|(?:async\s+)?def\s+([A-Za-z_]\w*)"
+    r"|(?:pub\s+)?fn\s+([A-Za-z_]\w*)"
+    r")"
+)
+
+
 def _looks_code(content: str) -> bool:
     return any(pattern.search(content) for pattern in _CODE_HINTS)
 
 
-def _summarize_code(content: str) -> ToolOutputSynopsis:
+def _summarize_code(
+    content: str,
+    *,
+    code_outline_enabled: bool = False,
+    code_outline_min_lines: int = 300,
+) -> ToolOutputSynopsis:
     imports: list[str] = []
     symbols: list[str] = []
+    raw_outline: list[tuple[str, int]] = []
     lines = content.splitlines()
-    for line in lines:
+    line_count = len(lines)
+    is_outline = code_outline_enabled and line_count >= code_outline_min_lines
+
+    for line_idx, line in enumerate(lines, start=1):
+        if is_outline and (line.startswith(" ") or line.startswith("\t")):
+            continue
         stripped = line.strip()
         import_match = re.match(r"^(?:from\s+(\S+)\s+import|import\s+(\S+))", stripped)
         if import_match:
             imports.append(_one_line(import_match.group(1) or import_match.group(2) or "", 160))
             continue
-        symbol_match = re.match(
-            r"^(class|def|async\s+def|function|export\s+function|pub\s+fn|fn)\s+([A-Za-z_]\w*)",
-            stripped,
-        )
-        if symbol_match:
-            symbols.append(_one_line(f"{symbol_match.group(1)} {symbol_match.group(2)}", 180))
 
-    structure = [f"line count: {len(lines)}"]
+        if is_outline:
+            m = _OUTLINE_SYMBOL_RE.match(stripped)
+            if m:
+                name = next(g for g in m.groups() if g is not None)
+                raw_outline.append((name, line_idx))
+        else:
+            symbol_match = re.match(
+                r"^(class|def|async\s+def|function|export\s+function|pub\s+fn|fn)\s+([A-Za-z_]\w*)",
+                stripped,
+            )
+            if symbol_match:
+                symbols.append(_one_line(f"{symbol_match.group(1)} {symbol_match.group(2)}", 180))
+
+    structure = [f"line count: {line_count}"]
     if imports:
         structure.append(f"imports: {', '.join(imports[:_CODE_IMPORT_LIMIT])}")
+
+    if is_outline and raw_outline:
+        outline_entries: list[str] = []
+        for idx, (name, start) in enumerate(raw_outline):
+            if idx + 1 < len(raw_outline):
+                end = raw_outline[idx + 1][1] - 1
+                if end > start:
+                    outline_entries.append(f"{name} [lines {start}-{end}]")
+                else:
+                    outline_entries.append(f"{name} [line {start}]")
+            else:
+                outline_entries.append(f"{name} [line {start}]")
+
+        if len(outline_entries) > OUTLINE_SYMBOL_LIMIT:
+            remaining = len(outline_entries) - OUTLINE_SYMBOL_LIMIT
+            notable = outline_entries[:OUTLINE_SYMBOL_LIMIT] + [f"... (+{remaining} more)"]
+        else:
+            notable = outline_entries
+
+        return ToolOutputSynopsis(
+            kind="code",
+            title="Code-like output",
+            summary=[f"Code-like text with {line_count} lines."],
+            structure=structure,
+            notable_items=notable,
+            is_outline=True,
+        )
 
     return ToolOutputSynopsis(
         kind="code",
         title="Code-like output",
-        summary=[f"Code-like text with {len(lines)} lines."],
+        summary=[f"Code-like text with {line_count} lines."],
         structure=structure,
         notable_items=symbols[:_CODE_SYMBOL_LIMIT],
+        is_outline=False,
     )
 
 

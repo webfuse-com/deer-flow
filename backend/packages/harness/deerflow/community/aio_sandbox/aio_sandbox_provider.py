@@ -288,6 +288,14 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             config_mounts=self._config["mounts"],
             environment=self._config["environment"],
             network=self._config.get("network"),
+            memory=self._config.get("memory"),
+            pids_limit=self._config.get("pids_limit"),
+            cpus=self._config.get("cpus"),
+            cap_drop=self._config.get("cap_drop"),
+            cap_add=self._config.get("cap_add"),
+            seccomp_profile=self._config.get("seccomp_profile"),
+            no_new_privileges=bool(self._config.get("no_new_privileges", False)),
+            extra_run_args=self._config.get("extra_run_args"),
         )
 
     # ── Configuration ────────────────────────────────────────────────────
@@ -321,6 +329,17 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             # only). When set, sandboxes join this network and are reached by container
             # DNS name on port 8080 with NO host port published (DeerFlow patch #26).
             "network": getattr(sandbox_config, "network", None) or None,
+            # [argus] Hardening knobs for LocalContainerBackend (DeerFlow patch #80).
+            # Every one is off by default; unset reproduces upstream's
+            # `seccomp=unconfined` with no limits.
+            "memory": getattr(sandbox_config, "memory", None) or None,
+            "pids_limit": getattr(sandbox_config, "pids_limit", None),
+            "cpus": getattr(sandbox_config, "cpus", None),
+            "cap_drop": list(getattr(sandbox_config, "cap_drop", None) or []),
+            "cap_add": list(getattr(sandbox_config, "cap_add", None) or []),
+            "seccomp_profile": getattr(sandbox_config, "seccomp_profile", None) or None,
+            "no_new_privileges": bool(getattr(sandbox_config, "no_new_privileges", False)),
+            "extra_run_args": list(getattr(sandbox_config, "extra_run_args", None) or []),
         }
 
     @staticmethod

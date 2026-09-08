@@ -91,6 +91,9 @@ class SandboxConfig(BaseModel):
         mounts: List of volume mounts to share directories with the container
         thread_data_mounts: Override whether thread data is already visible to
             the sandbox through shared mounts. Omit to auto-detect from the backend.
+        memory, pids_limit, cpus, cap_drop, cap_add, seccomp_profile,
+            no_new_privileges, extra_run_args: [argus] hardening knobs for the local
+            container backend (DeerFlow patch #80); all off by default.
 
     AioSandboxProvider and E2BSandboxProvider shared options:
         ownership: Cross-instance sandbox ownership store (memory | redis). Multi-instance
@@ -145,6 +148,47 @@ class SandboxConfig(BaseModel):
             "published. When unset, the legacy host-port publish path is used. Eliminates "
             "the rootless-Podman port-bind race that wedged runs (DeerFlow patch #26)."
         ),
+    )
+    # [argus] Hardening knobs for LocalContainerBackend (DeerFlow patch #80).
+    # Upstream starts every sandbox with `--security-opt seccomp=unconfined` and
+    # no resource limits. Every knob below is off by default, so a config that
+    # does not mention them keeps upstream's behaviour exactly.
+    memory: str | None = Field(
+        default=None,
+        description="startup-only: [argus] memory limit for a sandbox container (docker `--memory`, e.g. '3g'). LocalContainerBackend only.",
+    )
+    pids_limit: int | None = Field(
+        default=None,
+        description="startup-only: [argus] maximum number of processes in a sandbox (docker `--pids-limit`). LocalContainerBackend only.",
+    )
+    cpus: float | None = Field(
+        default=None,
+        description="startup-only: [argus] CPU quota for a sandbox, in cores (docker `--cpus`). LocalContainerBackend only.",
+    )
+    cap_drop: list[str] = Field(
+        default_factory=list,
+        description="startup-only: [argus] capabilities to drop (docker `--cap-drop`, e.g. ['ALL']). LocalContainerBackend only.",
+    )
+    cap_add: list[str] = Field(
+        default_factory=list,
+        description="startup-only: [argus] capabilities to add back after cap_drop (docker `--cap-add`). LocalContainerBackend only.",
+    )
+    seccomp_profile: str | None = Field(
+        default=None,
+        description=(
+            "startup-only: [argus] seccomp policy for sandboxes. Unset keeps upstream's "
+            "`seccomp=unconfined`; 'default' passes no seccomp option so the runtime's own "
+            "default filter applies; any other value is passed through as `seccomp=<value>` "
+            "(a profile path). LocalContainerBackend only."
+        ),
+    )
+    no_new_privileges: bool = Field(
+        default=False,
+        description="startup-only: [argus] start sandboxes with `--security-opt no-new-privileges`. LocalContainerBackend only.",
+    )
+    extra_run_args: list[str] = Field(
+        default_factory=list,
+        description="startup-only: [argus] extra arguments appended verbatim to the sandbox `run` command, before the image. LocalContainerBackend only.",
     )
     idle_timeout: int | None = Field(
         default=None,

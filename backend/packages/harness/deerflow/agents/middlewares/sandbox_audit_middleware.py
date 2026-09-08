@@ -14,6 +14,7 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from deerflow.agents.thread_state import ThreadState
+from deerflow.sandbox.command_classify import split_compound_command as _split_compound_command  # [argus patch #81]
 
 logger = logging.getLogger(__name__)
 
@@ -115,185 +116,6 @@ _MEDIUM_RISK_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-# A heredoc header and its delimiter: ``<<EOF``, ``<< EOF``, ``<<-EOF``,
-# ``<<\EOF``, ``<<'EOF'``, ``<<"EOF"``. Both guards are needed to keep ``<<<``
-# (a here-string, which has no body) from opening one: the lookahead rejects it
-# at its first ``<``, and the lookbehind stops its trailing ``<<`` from matching
-# one character later, where ``<<< "text"`` would otherwise read as a heredoc
-# with delimiter ``text``.
-_HEREDOC_HEADER = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:\\?([A-Za-z_][\w.-]*)|'([^'\n]*)'|\"([^\"\n]*)\")")
-
-
-def _consume_heredoc_bodies(command: str, pos: int, delimiters: list[str]) -> int:
-    """Return the index just past the bodies of the *delimiters* opened so far.
-
-    Bodies are consumed in the order their headers appeared, each running until a
-    line whose stripped content equals its delimiter (``<<-`` strips leading tabs,
-    which ``strip()`` covers). An unterminated body consumes the rest of the
-    string: everything after the header genuinely is body, and there is no later
-    statement to find.
-    """
-    for delimiter in delimiters:
-        while pos < len(command):
-            newline = command.find("\n", pos)
-            if newline == -1:
-                return len(command)
-            line = command[pos:newline]
-            pos = newline + 1
-            if line.strip() == delimiter:
-                break
-        else:
-            return len(command)
-    return pos
-
-
-def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[str]:
-    """Split a compound command into sub-commands (quote-aware).
-
-    Scans the raw command string so unquoted shell control operators are
-    recognised even when they are not surrounded by whitespace
-    (e.g. ``safe;rm -rf /`` or ``rm -rf /&&echo ok``). Operators inside
-    quotes are ignored. If the command ends with an unclosed quote or a
-    dangling escape, return the whole command unchanged (fail-closed —
-    safer to classify the unsplit string than silently drop parts).
-
-    Sequencing operators (``&&``, ``||``, ``;``) split, and so does an unquoted
-    newline — it separates statements exactly like ``;``, so leaving it joined let
-    ``echo hi\\n$(curl url)`` evade the anchored command-position rules that
-    ``echo hi; $(curl url)`` triggers, despite identical shell semantics.
-
-    A heredoc body is data, not statements: its newlines and operators are file
-    content. Headers (``<<EOF``, ``<<-EOF``, ``<<'EOF'``) are therefore recorded
-    as they are read and their bodies consumed verbatim at the newline that
-    starts them, so a body line beginning with ``$(curl url)`` is not promoted to
-    command position. ``<<<`` is a here-string, not a heredoc, and does not open
-    one; neither does a ``<<`` inside ``$(( ... ))`` or ``(( ... ))``, where it is
-    a bit shift whose right operand would otherwise read as a delimiter that never
-    appears — swallowing the rest of the command. This is a heuristic, not shell
-    parsing — the goal is only to avoid manufacturing command positions that the
-    shell would never create, and to avoid destroying real ones.
-
-    Pipes do not split by default, because a pipeline is one logical command.
-    Pass ``split_pipes=True`` to also split on ``|``, which is what
-    command-position detection needs — the word after a pipe starts a new
-    command. Rules that span a pipe (``| sh``, ``base64 -d | ...``) are matched by
-    the whole-command scan in :func:`_classify_command`, so they are unaffected by
-    the extra split.
-    """
-    parts: list[str] = []
-    current: list[str] = []
-    pending_heredocs: list[str] = []
-    in_single_quote = False
-    in_double_quote = False
-    arithmetic_depth = 0
-    escaping = False
-    index = 0
-
-    while index < len(command):
-        char = command[index]
-
-        if escaping:
-            current.append(char)
-            escaping = False
-            index += 1
-            continue
-
-        if char == "\\" and not in_single_quote:
-            current.append(char)
-            escaping = True
-            index += 1
-            continue
-
-        if char == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
-            current.append(char)
-            index += 1
-            continue
-
-        if char == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-            current.append(char)
-            index += 1
-            continue
-
-        if not in_single_quote and not in_double_quote:
-            # ``<<`` inside arithmetic is a bit shift, not a redirection, and a
-            # phantom header whose delimiter never appears would swallow the rest
-            # of the command. Both ``$(( ... ))`` and the bare arithmetic command
-            # ``(( ... ))`` are tracked. An unclosed ``((`` leaves the depth
-            # positive, which only disables heredoc detection — newlines keep
-            # splitting, so the failure direction stays towards seeing more
-            # command positions rather than fewer.
-            if char == "(" and command.startswith("((", index):
-                arithmetic_depth += 1
-                current.append("((")
-                index += 2
-                continue
-            if arithmetic_depth and char == ")" and command.startswith("))", index):
-                arithmetic_depth -= 1
-                current.append("))")
-                index += 2
-                continue
-            # A header can only start at ``<``; checking that first keeps the
-            # regex off every other character of a long command.
-            if char == "<" and not arithmetic_depth:
-                heredoc = _HEREDOC_HEADER.match(command, index)
-                if heredoc:
-                    pending_heredocs.append(next(group for group in heredoc.groups() if group is not None))
-                    current.append(heredoc.group(0))
-                    index = heredoc.end()
-                    continue
-            if char == "\n":
-                # The newline that follows a heredoc header is the statement
-                # separator, and its body belongs to the statement being closed.
-                if pending_heredocs:
-                    body_end = _consume_heredoc_bodies(command, index + 1, pending_heredocs)
-                    pending_heredocs = []
-                    current.append(command[index:body_end])
-                    index = body_end
-                else:
-                    index += 1
-                part = "".join(current).strip()
-                if part:
-                    parts.append(part)
-                current = []
-                continue
-            if command.startswith("&&", index) or command.startswith("||", index):
-                part = "".join(current).strip()
-                if part:
-                    parts.append(part)
-                current = []
-                index += 2
-                continue
-            # Checked after "||" so a single "|" cannot steal that operator.
-            if split_pipes and char == "|":
-                part = "".join(current).strip()
-                if part:
-                    parts.append(part)
-                current = []
-                index += 1
-                continue
-            if char == ";":
-                part = "".join(current).strip()
-                if part:
-                    parts.append(part)
-                current = []
-                index += 1
-                continue
-
-        current.append(char)
-        index += 1
-
-    # Unclosed quote or dangling escape → fail-closed, return whole command
-    if in_single_quote or in_double_quote or escaping:
-        return [command]
-
-    part = "".join(current).strip()
-    if part:
-        parts.append(part)
-    return parts if parts else [command]
-
-
 def _matches_high_risk(candidate: str) -> bool:
     """Return True if *candidate* (one sub-command) matches any high-risk rule."""
     if any(pattern.search(candidate) for pattern in _HIGH_RISK_PATTERNS):
@@ -362,6 +184,71 @@ def _classify_command(command: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# --- Audit-log redaction (patch #84) -----------------------------------------
+# Coarse on purpose: a masked non-secret costs a few characters of an audit
+# line; an unmasked credential in the journal is an incident. Kinds:
+#   known key prefixes (OpenAI/OpenRouter sk-, Webfuse ak_, GitHub gh*_/pat,
+#   Slack xox*, AWS AKIA, Google AIza), JWTs, Telegram bot tokens, PEM blocks,
+#   "Bearer <token>", user:password@ in URLs, and NAME = "value" assignments for
+#   the names agents actually use (TOKEN, KEY, API_KEY, SECRET, PASSWORD, ...).
+_REDACT_VALUE = r"[A-Za-z0-9_\-./+=~:]{8,}"
+_REDACT_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
+    ("key", re.compile(r"\bsk-(?:proj-|ant-|or-v1-)?[A-Za-z0-9_\-]{16,}"), 0),
+    ("key", re.compile(r"\bak_[A-Za-z0-9_\-]{16,}"), 0),
+    ("key", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), 0),
+    ("key", re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"), 0),
+    ("key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), 0),
+    ("key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}"), 0),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"), 0),
+    ("telegram", re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{35}\b"), 0),
+    ("pem", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S), 0),
+    ("bearer", re.compile(r"(?i)\bbearer\s+" + _REDACT_VALUE), 0),
+    ("url-password", re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^/\s:@]+:([^@\s/]{4,})@"), 1),
+    (
+        "assignment",
+        re.compile(
+            r"(?i)(?:^|(?<=[^A-Za-z0-9_]))(?:api[_\-]?key|apikey|access[_\-]?key|secret[_\-]?key|"
+            r"client[_\-]?secret|private[_\-]?key|auth[_\-]?token|access[_\-]?token|refresh[_\-]?token|"
+            r"session[_\-]?token|token|secret|passw(?:or)?d|authorization|x-api-key|key|cookie)\b"
+            r"[\"']?\s*[=:]\s*[\"']?(" + _REDACT_VALUE + r")"
+        ),
+        1,
+    ),
+]
+_REDACT_SKIP_VALUES = re.compile(
+    r"(?i)^(?:expired|invalid|missing|required|none|null|true|false|redacted|failed|error|"
+    r"unknown|expected|provided|not[_\-]?found|authentication|does[_\-]?not|<redacted)"
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Replace credential-shaped spans with <redacted:KIND>; idempotent."""
+    if not text:
+        return text
+    spans: list[tuple[int, int, str]] = []
+    for kind, rx, grp in _REDACT_PATTERNS:
+        for m in rx.finditer(text):
+            value = m.group(grp)
+            if value is None:
+                continue
+            if kind == "assignment" and (_REDACT_SKIP_VALUES.match(value) or value.isdigit()):
+                continue
+            spans.append((m.start(grp), m.end(grp), kind))
+    if not spans:
+        return text
+    spans.sort(key=lambda s: (s[0], -s[1]))
+    out: list[str] = []
+    pos = 0
+    for start, end, kind in spans:
+        if start < pos:
+            continue
+        out.append(text[pos:start])
+        out.append(f"<redacted:{kind}>")
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
     """Bash command security auditing middleware.
 
@@ -397,11 +284,22 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
         return thread_id
 
     _AUDIT_COMMAND_LIMIT = 200
+    # Hard ceiling for any audited command. The audit line goes to the journal,
+    # which is copied nightly into host-side dumps and read by Cerberus, so a
+    # 4 KB heredoc logged verbatim is 4 KB of agent-authored text persisted on
+    # the host per bash call.
+    _AUDIT_COMMAND_HARD_LIMIT = 1000
 
     def _write_audit(self, thread_id: str | None, command: str, verdict: str, *, truncate: bool = False) -> None:
-        audited_command = command
-        if truncate and len(command) > self._AUDIT_COMMAND_LIMIT:
-            audited_command = f"{command[: self._AUDIT_COMMAND_LIMIT]}... ({len(command)} chars)"
+        # Redact BEFORE truncating so a secret is never kept just because it sat
+        # inside the first N characters. Patch #84 (2026-08-27): agents write
+        # heredocs with credentials inline (TOKEN = "...", KEY = "..."), and this
+        # line put a live Recruitee token and a Webfuse session-mcp key into the
+        # systemd journal, where anything reading logs could see them.
+        audited_command = _redact_secrets(command)
+        limit = self._AUDIT_COMMAND_LIMIT if truncate else self._AUDIT_COMMAND_HARD_LIMIT
+        if len(audited_command) > limit:
+            audited_command = f"{audited_command[:limit]}... ({len(command)} chars)"
         record = {
             "timestamp": datetime.now(UTC).isoformat(),
             "thread_id": thread_id or "unknown",

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from deerflow.config.acp_config import ACPAgentConfig, load_acp_config_from_dict
+from deerflow.config.adaptive_reasoning_config import AdaptiveReasoningConfig
 from deerflow.config.agent_storage_config import AgentStorageConfig
 from deerflow.config.agents_api_config import AgentsApiConfig, load_agents_api_config_from_dict
 from deerflow.config.auth_config import AuthAppConfig
@@ -21,6 +22,7 @@ from deerflow.config.dedupe_storage_config import DedupeStorageConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.file_signature import ConfigSignature as _ConfigSignature
 from deerflow.config.file_signature import get_config_signature as _get_config_signature
+from deerflow.config.file_signature import signatures_differ as _signatures_differ
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
 from deerflow.config.input_polish_config import InputPolishConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
@@ -56,6 +58,33 @@ from deerflow.extensions.loader import ExtensionSpec
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate keys instead of shadowing them."""
+
+
+def _construct_unique_mapping(loader: _UniqueKeySafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+    seen: set[Any] = set()
+    for key_node, _value_node in node.value:
+        key = loader.construct_object(key_node, deep=False)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r} on line {key_node.start_mark.line + 1}",
+                key_node.start_mark,
+            )
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_UniqueKeySafeLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
+
+
+def load_yaml_with_unique_keys(source: str) -> Any:
+    """Safely load YAML while failing fast on duplicate mapping keys."""
+    return yaml.load(source, Loader=_UniqueKeySafeLoader)
 
 
 CONFIG_FILE_DATABASE_DEFAULTS = {
@@ -263,6 +292,7 @@ class AppConfig(BaseModel):
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig, description="Loop detection middleware configuration")
     tool_progress: ToolProgressConfig = Field(default_factory=ToolProgressConfig, description="Tool progress state machine middleware configuration")
     run_limits: RunLimitsConfig = Field(default_factory=RunLimitsConfig, description="Per-run wall-clock deadline configuration")
+    adaptive_reasoning: AdaptiveReasoningConfig = Field(default_factory=AdaptiveReasoningConfig, description="Adaptive per-turn thinking-mode configuration")
     read_before_write: ReadBeforeWriteConfig = Field(default_factory=ReadBeforeWriteConfig, description="Read-before-write file gate middleware configuration")
     safety_finish_reason: SafetyFinishReasonConfig = Field(default_factory=SafetyFinishReasonConfig, description="Provider safety-filter finish_reason interception middleware configuration")
     auth: AuthAppConfig = Field(default_factory=AuthAppConfig, description="Authentication configuration (local + OIDC SSO)")
@@ -408,7 +438,7 @@ class AppConfig(BaseModel):
         """
         resolved_path = cls.resolve_config_path(config_path)
         with open(resolved_path, encoding="utf-8") as f:
-            config_data = yaml.safe_load(f) or {}
+            config_data = load_yaml_with_unique_keys(f.read()) or {}
 
         # Check config version before processing
         cls._check_config_version(config_data, resolved_path)
@@ -683,7 +713,14 @@ def get_app_config() -> AppConfig:
     current_mtime = _get_config_mtime(resolved_path)
     current_signature = _get_config_signature(resolved_path)
 
-    should_reload = _app_config is None or _app_config_path != resolved_path or _app_config_signature != current_signature
+    # Content-change detection is digest-based (``signatures_differ``), not
+    # signature-tuple equality: a no-op rewrite that bumps mtime/size but leaves
+    # the sha256 identical (a fork-sync ``git reset --hard`` to the same commit,
+    # a remount, ``cp -p``) is NOT a change. Treating it as one triggers a full
+    # AppConfig rebuild and — because the MCP cache watches the sibling file with
+    # the same predicate — a synchronous re-discovery of every MCP server inside
+    # a run's completion path, which is the multi-second stall this avoids.
+    should_reload = _app_config is None or _app_config_path != resolved_path or _signatures_differ(_app_config_signature, current_signature)
     if should_reload:
         if _app_config_path == resolved_path and _app_config_mtime is not None and current_mtime is not None and _app_config_mtime != current_mtime:
             logger.info(
@@ -691,7 +728,7 @@ def get_app_config() -> AppConfig:
                 _app_config_mtime,
                 current_mtime,
             )
-        elif _app_config_path == resolved_path and _app_config_signature != current_signature:
+        elif _app_config_path == resolved_path and _signatures_differ(_app_config_signature, current_signature):
             logger.info("Config file content signature changed, reloading AppConfig")
         _load_and_cache_app_config(str(resolved_path))
     return _app_config

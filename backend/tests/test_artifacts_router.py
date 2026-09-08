@@ -387,7 +387,10 @@ def test_get_skill_archive_preview_supports_bounded_range_requests(tmp_path, mon
 
 
 @pytest.mark.parametrize(("filename", "content"), ACTIVE_ARTIFACT_CASES)
-def test_get_artifact_forces_download_for_active_content(tmp_path, monkeypatch, filename: str, content: str) -> None:
+def test_get_artifact_serves_active_content_inline_inside_a_csp_sandbox(tmp_path, monkeypatch, filename: str, content: str) -> None:
+    # Argus patch #89: "open in new window" must display the page. The sandbox
+    # directive (no allow-same-origin) gives it an opaque origin, which is the
+    # containment the old forced attachment provided.
     artifact_path = tmp_path / filename
     artifact_path.write_text(content, encoding="utf-8")
 
@@ -396,11 +399,28 @@ def test_get_artifact_forces_download_for_active_content(tmp_path, monkeypatch, 
     response = asyncio.run(call_unwrapped(artifacts_router.get_artifact, "thread-1", f"mnt/user-data/outputs/{filename}", _make_request()))
 
     assert isinstance(response, FileResponse)
-    assert response.headers.get("content-disposition", "").startswith("attachment;")
+    assert response.headers.get("content-disposition", "").startswith("inline;")
+    assert response.headers["content-security-policy"] == "sandbox allow-scripts"
+    assert "allow-same-origin" not in response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.parametrize(("filename", "content"), ACTIVE_ARTIFACT_CASES)
-def test_get_artifact_forces_download_for_active_content_in_skill_archive(tmp_path, monkeypatch, filename: str, content: str) -> None:
+def test_get_artifact_download_true_still_forces_attachment_for_active_content(tmp_path, monkeypatch, filename: str, content: str) -> None:
+    artifact_path = tmp_path / filename
+    artifact_path.write_text(content, encoding="utf-8")
+
+    monkeypatch.setattr(artifacts_router, "resolve_thread_virtual_path", lambda _thread_id, _path, user_id=None: artifact_path)
+
+    response = asyncio.run(call_unwrapped(artifacts_router.get_artifact, "thread-1", f"mnt/user-data/outputs/{filename}", _make_request(), download=True))
+
+    assert isinstance(response, FileResponse)
+    assert response.headers.get("content-disposition", "").startswith("attachment;")
+    assert "content-security-policy" not in response.headers
+
+
+@pytest.mark.parametrize(("filename", "content"), ACTIVE_ARTIFACT_CASES)
+def test_get_artifact_serves_active_content_inline_inside_a_csp_sandbox_in_skill_archive(tmp_path, monkeypatch, filename: str, content: str) -> None:
     skill_path = tmp_path / "sample.skill"
     with zipfile.ZipFile(skill_path, "w") as zip_ref:
         zip_ref.writestr(filename, content)
@@ -409,8 +429,57 @@ def test_get_artifact_forces_download_for_active_content_in_skill_archive(tmp_pa
 
     response = asyncio.run(call_unwrapped(artifacts_router.get_artifact, "thread-1", f"mnt/user-data/outputs/sample.skill/{filename}", _make_request()))
 
-    assert response.headers.get("content-disposition", "").startswith("attachment;")
+    assert "attachment" not in response.headers.get("content-disposition", "")
+    assert response.headers["content-security-policy"] == "sandbox allow-scripts"
+    assert response.headers["x-content-type-options"] == "nosniff"
     assert bytes(response.body) == content.encode("utf-8")
+
+    download = asyncio.run(call_unwrapped(artifacts_router.get_artifact, "thread-1", f"mnt/user-data/outputs/sample.skill/{filename}", _make_request(), download=True))
+    assert download.headers.get("content-disposition", "").startswith("attachment;")
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "guessed"),
+    [
+        ("report.md", "# Q2 seats\n\nfacts only\n", "text/markdown"),
+        ("data.csv", "a,b\n1,2\n", "text/csv"),
+    ],
+)
+def test_get_artifact_shows_unrenderable_text_types_as_plain_text_inline(tmp_path, monkeypatch, filename: str, content: str, guessed: str) -> None:
+    # Chrome downloads text/markdown and text/csv; a new tab must show them.
+    artifact_path = tmp_path / filename
+    artifact_path.write_text(content, encoding="utf-8")
+
+    monkeypatch.setattr(artifacts_router, "resolve_thread_virtual_path", lambda _thread_id, _path, user_id=None: artifact_path)
+
+    app = make_authed_test_app()
+    app.include_router(artifacts_router.router)
+    with TestClient(app) as client:
+        inline = client.get(f"/api/threads/thread-1/artifacts/mnt/user-data/outputs/{filename}")
+        download = client.get(f"/api/threads/thread-1/artifacts/mnt/user-data/outputs/{filename}?download=true")
+
+    assert inline.status_code == 200
+    assert inline.text == content
+    assert inline.headers["content-type"].startswith("text/plain")
+    assert inline.headers["content-disposition"].startswith("inline;")
+
+    assert download.headers["content-disposition"].startswith("attachment;")
+    assert download.headers["content-type"].startswith(guessed)
+
+
+def test_get_artifact_keeps_browser_renderable_text_types(tmp_path, monkeypatch) -> None:
+    artifact_path = tmp_path / "style.css"
+    artifact_path.write_text("body { color: red }", encoding="utf-8")
+
+    monkeypatch.setattr(artifacts_router, "resolve_thread_virtual_path", lambda _thread_id, _path, user_id=None: artifact_path)
+
+    app = make_authed_test_app()
+    app.include_router(artifacts_router.router)
+    with TestClient(app) as client:
+        response = client.get("/api/threads/thread-1/artifacts/mnt/user-data/outputs/style.css")
+
+    assert response.headers["content-type"].startswith("text/css")
+    assert response.headers["content-disposition"].startswith("inline;")
 
 
 def test_get_artifact_download_false_does_not_force_attachment(tmp_path, monkeypatch) -> None:

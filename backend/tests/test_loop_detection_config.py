@@ -63,6 +63,13 @@ class TestLoopDetectionConfig:
         assert override.warn == 150
         assert override.hard_limit == 300
 
+    def test_tool_freq_override_subcategory_valid(self):
+        """[argus patch #82] Subcategory keys such as bash.inspection validate and carry through."""
+        config = LoopDetectionConfig(tool_freq_overrides={"bash.inspection": {"warn": 25, "hard_limit": 50}})
+        override = config.tool_freq_overrides["bash.inspection"]
+        assert override.warn == 25
+        assert override.hard_limit == 50
+
     def test_tool_freq_override_rejects_zero_warn(self):
         with pytest.raises(ValueError):
             LoopDetectionConfig(tool_freq_overrides={"bash": {"warn": 0, "hard_limit": 10}})

@@ -48,6 +48,7 @@ Division of labor with LoopDetectionMiddleware (middleware position 23):
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -65,6 +66,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY, ToolResultMeta
+from deerflow.sandbox.command_classify import classify_bash_command
 
 if TYPE_CHECKING:
     from deerflow.config.tool_progress_config import ToolProgressConfig
@@ -91,6 +93,14 @@ class ToolPhaseState:
     # (problem paths) cannot accidentally share a mutable list between the old and new
     # state objects and cause silent cross-state corruption via .append().
     recent_word_sets: tuple[frozenset[str], ...] = field(default_factory=tuple)
+
+
+@dataclass(slots=True)
+class RunEfficiencyState:
+    """Soft, per-run counters used to prompt phase transitions without hard stops."""
+
+    total_tool_calls: int = 0
+    read_only_streak: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +214,12 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         min_words: int = 10,
         exempt_tools: set[str] | None = None,
         max_tracked_threads: int = 100,
+        read_only_streak_threshold: int = 0,
+        total_tool_call_threshold: int = 0,
+        total_tool_call_reminder_interval: int = 30,
+        read_only_tools: set[str] | None = None,
+        write_tools: set[str] | None = None,
+        bash_inspection_counts_as_read: bool = False,
     ) -> None:
         self._stagnation_threshold = stagnation_threshold
         self._warn_escalation = warn_escalation_count
@@ -212,9 +228,15 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         self._min_words = min_words
         self._exempt_tools: set[str] = exempt_tools if exempt_tools is not None else {"ask_clarification", "write_todos", "present_files", "task"}
         self._max_tracked_threads = max_tracked_threads
+        self._read_only_streak_threshold = read_only_streak_threshold
+        self._total_tool_call_threshold = total_tool_call_threshold
+        self._total_tool_call_reminder_interval = total_tool_call_reminder_interval
+        self._read_only_tools = read_only_tools if read_only_tools is not None else {"read_file", "grep", "glob", "ls"}
+        self._write_tools = write_tools if write_tools is not None else {"write_file", "str_replace"}
+        self._bash_inspection_counts_as_read = bash_inspection_counts_as_read
 
         # threading.Lock (not asyncio.Lock): critical sections are short in-memory dict
-        # ops with no I/O, so event-loop stall risk is negligible.  asyncio.Lock would
+        # ops with no I/O (classify_bash_command is hoisted outside the lock), so event-loop stall risk is negligible.  asyncio.Lock would
         # not protect the sync wrap_tool_call path used by subagent executor thread
         # pools — two separate locks would be required instead.  This matches the
         # existing LoopDetectionMiddleware pattern; see module docstring for details.
@@ -223,6 +245,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         self._phase_states: OrderedDict[str, dict[str, ToolPhaseState]] = OrderedDict()
         # Pending hint queue: (thread_id, run_id) → [hint texts]
         self._pending: dict[tuple[str, str], list[str]] = defaultdict(list)
+        self._run_efficiency: dict[tuple[str, str], RunEfficiencyState] = {}
 
     @classmethod
     def from_config(cls, config: ToolProgressConfig) -> ToolProgressMiddleware:
@@ -234,6 +257,12 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             min_words=config.min_word_count_for_similarity,
             exempt_tools=set(config.exempt_tools),
             max_tracked_threads=config.max_tracked_threads,
+            read_only_streak_threshold=config.read_only_streak_threshold,
+            total_tool_call_threshold=config.total_tool_call_threshold,
+            total_tool_call_reminder_interval=config.total_tool_call_reminder_interval,
+            read_only_tools=set(config.read_only_tools),
+            write_tools=set(config.write_tools),
+            bash_inspection_counts_as_read=config.bash_inspection_counts_as_read,
         )
 
     # ------------------------------------------------------------------
@@ -263,6 +292,8 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                 # Evict pending hints for the evicted thread to prevent unbounded growth.
                 for key in [k for k in self._pending if k[0] == evicted_thread]:
                     del self._pending[key]
+                for key in [k for k in self._run_efficiency if k[0] == evicted_thread]:
+                    del self._run_efficiency[key]
         self._phase_states.move_to_end(thread_id)
         return self._phase_states[thread_id].get(tool_name, ToolPhaseState())
 
@@ -345,6 +376,70 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         if hint and self._inject_assessment:
             self._queue_assessment(runtime, hint)
         return result
+
+    def _record_run_efficiency(
+        self,
+        result: ToolMessage | Command,
+        tool_name: str,
+        runtime: Runtime,
+        tool_args: object = None,
+    ) -> None:
+        """Queue soft phase hints when exploration or total-call budgets grow large."""
+        if self._read_only_streak_threshold == 0 and self._total_tool_call_threshold == 0:
+            return
+
+        meta = None
+        if isinstance(result, ToolMessage):
+            meta = _parse_tool_meta((result.additional_kwargs or {}).get(TOOL_META_KEY))
+        successful = meta is not None and meta.status == "success"
+
+        # [argus patch #82] Compute is_bash_inspection outside the lock (classify_bash_command is CPU-only)
+        is_bash_inspection = False
+        if self._bash_inspection_counts_as_read and tool_name == "bash" and successful:
+            norm_args = None
+            if isinstance(tool_args, dict):
+                norm_args = tool_args
+            elif isinstance(tool_args, str):
+                try:
+                    parsed = json.loads(tool_args)
+                    if isinstance(parsed, dict):
+                        norm_args = parsed
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    norm_args = None
+            if isinstance(norm_args, dict):
+                cmd = norm_args.get("command")
+                if isinstance(cmd, str) and classify_bash_command(cmd) == "inspection":
+                    is_bash_inspection = True
+
+        key = self._pending_key(runtime)
+        hints: list[str] = []
+        with self._lock:
+            # Ensure this thread participates in the same bounded LRU lifecycle as
+            # quality tracking, including runs whose first calls are exempt tools.
+            self._get_state(key[0], "__run_efficiency__")
+            state = self._run_efficiency.setdefault(key, RunEfficiencyState())
+            state.total_tool_calls += 1
+
+            if successful and (tool_name in self._read_only_tools or is_bash_inspection):
+                state.read_only_streak += 1
+                if self._read_only_streak_threshold and state.read_only_streak % self._read_only_streak_threshold == 0:
+                    hints.append(
+                        f"[EFFICIENCY HINT] You have made {state.read_only_streak} read/search calls since the last successful file write. "
+                        "Freeze the current findings, batch any final targeted reads, and move into implementation unless a concrete blocker remains."
+                    )
+            elif successful and tool_name in self._write_tools:
+                state.read_only_streak = 0
+
+            threshold = self._total_tool_call_threshold
+            if threshold and state.total_tool_calls >= threshold:
+                over_budget = state.total_tool_calls - threshold
+                if over_budget % self._total_tool_call_reminder_interval == 0:
+                    hints.append(
+                        f"[EFFICIENCY HINT] This run has used {state.total_tool_calls} tool calls. Name the current phase, freeze completed findings, batch same-file edits, and complete the next verifiable milestone before widening scope."
+                    )
+
+        for hint in hints:
+            self._queue_assessment(runtime, hint)
 
     # ------------------------------------------------------------------
     # State machine
@@ -441,6 +536,9 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             for key in list(self._pending):
                 if key[0] == thread_id and key[1] != current_run:
                     del self._pending[key]
+            for key in list(self._run_efficiency):
+                if key[0] == thread_id:
+                    del self._run_efficiency[key]
 
     def _reset_run_states(self, runtime: Runtime) -> None:
         """Reset all per-run tool state for the thread at the start of a new agent run.
@@ -488,21 +586,29 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
         tool_name = str(request.tool_call.get("name", ""))
-        if not tool_name or tool_name in self._exempt_tools:
+        tool_args = request.tool_call.get("args")
+        if not tool_name:
             return handler(request)
         runtime = getattr(request, "runtime", None)
         if runtime is None:
             return handler(request)
-        block_reason = self._get_block_reason(runtime, tool_name)
-        if block_reason:
-            logger.info(
-                "tool_progress: %s/%s call intercepted (blocked): %s",
-                self._thread_id(runtime),
-                tool_name,
-                block_reason,
-            )
-            return self._make_blocked_message(request, tool_name, block_reason)
-        return self._update_state_from_result(handler(request), tool_name, runtime)
+        if tool_name not in self._exempt_tools:
+            block_reason = self._get_block_reason(runtime, tool_name)
+            if block_reason:
+                logger.info(
+                    "tool_progress: %s/%s call intercepted (blocked): %s",
+                    self._thread_id(runtime),
+                    tool_name,
+                    block_reason,
+                )
+                result = self._make_blocked_message(request, tool_name, block_reason)
+                self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
+                return result
+        result = handler(request)
+        if tool_name not in self._exempt_tools:
+            result = self._update_state_from_result(result, tool_name, runtime)
+        self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
+        return result
 
     @override
     async def awrap_tool_call(
@@ -511,21 +617,29 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
         tool_name = str(request.tool_call.get("name", ""))
-        if not tool_name or tool_name in self._exempt_tools:
+        tool_args = request.tool_call.get("args")
+        if not tool_name:
             return await handler(request)
         runtime = getattr(request, "runtime", None)
         if runtime is None:
             return await handler(request)
-        block_reason = self._get_block_reason(runtime, tool_name)
-        if block_reason:
-            logger.info(
-                "tool_progress: %s/%s call intercepted (blocked): %s",
-                self._thread_id(runtime),
-                tool_name,
-                block_reason,
-            )
-            return self._make_blocked_message(request, tool_name, block_reason)
-        return self._update_state_from_result(await handler(request), tool_name, runtime)
+        if tool_name not in self._exempt_tools:
+            block_reason = self._get_block_reason(runtime, tool_name)
+            if block_reason:
+                logger.info(
+                    "tool_progress: %s/%s call intercepted (blocked): %s",
+                    self._thread_id(runtime),
+                    tool_name,
+                    block_reason,
+                )
+                result = self._make_blocked_message(request, tool_name, block_reason)
+                self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
+                return result
+        result = await handler(request)
+        if tool_name not in self._exempt_tools:
+            result = self._update_state_from_result(result, tool_name, runtime)
+        self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
+        return result
 
     # ------------------------------------------------------------------
     # wrap_model_call: drain pending hints and inject before model sees messages

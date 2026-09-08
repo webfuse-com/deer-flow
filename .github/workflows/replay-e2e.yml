@@ -10,7 +10,7 @@ name: Replay E2E (front-back contract)
 
 on:
   push:
-    branches: ["main", "2.0.x-dev"]
+    branches: ["main", "2.0.x-dev", "argus"]
     paths:
       - "frontend/**"
       - "backend/app/gateway/**"

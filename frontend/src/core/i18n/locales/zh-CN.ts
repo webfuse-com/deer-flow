@@ -426,10 +426,10 @@ export const zhCN: Translations = {
   // Agents
   agents: {
     title: "智能体",
-    description: "创建和管理具有专属 Prompt 与能力的自定义智能体。",
+    description: "管理自定义智能体。新智能体通过堆栈的 GitHub 代码仓库创建。",
     newAgent: "新建智能体",
     emptyTitle: "还没有自定义智能体",
-    emptyDescription: "创建你的第一个自定义智能体，设置专属系统提示词。",
+    emptyDescription: "通过堆栈的 GitHub 代码仓库添加你的第一个自定义智能体。",
     featureDisabledTitle: "智能体功能未启用",
     featureDisabledDescription: "该功能未在此服务器上启用，请联系管理员。",
     chat: "对话",
@@ -1117,6 +1117,63 @@ export const zhCN: Translations = {
       sso_account_exists:
         "该邮箱对应的账号已存在。请使用密码登录或联系管理员。",
       sso_not_allowed: "你的账号不允许使用 SSO 登录。请联系管理员。",
+    },
+  },
+
+  // Sharing (Argus patch #88)
+  sharing: {
+    internalize: "内化分享",
+    shared: "已分享给同事",
+    dialogTitle: "把这段对话分享给同事",
+    dialogDescription:
+      "公司里的每个人都会看到这段对话的只读快照，包括你的提问和回答，与你所见完全一致。不会做任何过滤。",
+    sharedSince: (when) => `自 ${when} 起分享。同事看到的是当时的快照。`,
+    includeToolBodies: "包含工具结果",
+    includeToolBodiesHint:
+      "默认关闭。工具输出是对话中你阅读最少的部分；步骤仍然可见，输出被省略。",
+    preview: (human, ai, tool) =>
+      `你的 ${human} 条消息、${ai} 条回答和 ${tool} 个工具步骤。`,
+    textSize: (size) => `约 ${size} 文本。`,
+    files: (count, size) => `${count} 个文件（${size}）随快照一起分享。`,
+    filesTooLarge: (size, cap) =>
+      `文件共 ${size}，超过 ${cap} 上限，因此对话将不带文件分享。`,
+    noFiles: "这段对话没有文件。",
+    filesBundled: (size) => `已包含文件（${size}）。`,
+    filesNotIncluded: "未包含文件。",
+    toolBodiesIncluded: "已包含工具结果。",
+    toolBodiesOmitted: "已省略工具结果。",
+    scrubWarning: (count) => `有 ${count} 处看起来像密钥或个人信息：`,
+    scrubHint: "不会自动删除任何内容；分享前请先检查。",
+    confirm: "内化分享",
+    confirming: "分享中...",
+    refresh: "刷新快照",
+    refreshed: "快照已刷新。",
+    revoke: "停止分享",
+    revokeConfirm: "链接将对所有人失效。同事已经复制的内容不会被收回。",
+    revokeYes: "是，停止分享",
+    revoked: "已停止分享。",
+    linkLabel: "给同事的链接",
+    copyLink: "复制链接",
+    linkCopied: "链接已复制。",
+    openLink: "打开链接",
+    success: "已分享给同事。",
+    failed: "分享失败。",
+    tooLarge: "这段对话太大，无法以快照分享。",
+    sessionExpired: "你的会话已过期。",
+    reload: "重新加载",
+    retry: "重试",
+    sharedBy: (email) => `由 ${email} 分享`,
+    readOnlyNotice: (when) => `同事对话的只读快照，拍摄于 ${when}。`,
+    notFoundTitle: "此共享对话不可用",
+    notFoundDescription: "链接可能有误，或者所有者已停止分享。",
+    artifact: {
+      internalize: "内化分享",
+      shared: "已分享给同事",
+      dialogTitle: (name) => `把 ${name} 分享给同事`,
+      dialogDescription:
+        "公司里的每个人都可以从 Agora 打开此文件。不会做任何过滤。",
+      confirm: "内化分享",
+      success: "文件已分享给同事。",
     },
   },
 };

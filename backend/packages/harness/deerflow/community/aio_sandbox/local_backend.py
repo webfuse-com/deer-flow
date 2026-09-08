@@ -214,6 +214,14 @@ class LocalContainerBackend(SandboxBackend):
         config_mounts: list,
         environment: dict[str, str],
         network: str | None = None,
+        memory: str | None = None,
+        pids_limit: int | None = None,
+        cpus: float | None = None,
+        cap_drop: list[str] | None = None,
+        cap_add: list[str] | None = None,
+        seccomp_profile: str | None = None,
+        no_new_privileges: bool = False,
+        extra_run_args: list[str] | None = None,
     ):
         """Initialize the local container backend.
 
@@ -227,6 +235,11 @@ class LocalContainerBackend(SandboxBackend):
                 sandboxes join this network and are reached by container DNS name on
                 port 8080 with NO host port published. When None, the legacy
                 host-port publish path is used.
+            memory, pids_limit, cpus, cap_drop, cap_add, seccomp_profile,
+                no_new_privileges, extra_run_args: [argus] hardening knobs applied on
+                the docker/podman path (DeerFlow patch #80). All off by default, which
+                reproduces upstream's `seccomp=unconfined` and no limits. See
+                _docker_hardening_args.
         """
         self._image = image
         self._base_port = base_port
@@ -234,6 +247,14 @@ class LocalContainerBackend(SandboxBackend):
         self._config_mounts = config_mounts
         self._environment = environment
         self._network = (network or "").strip() or None
+        self._memory = (str(memory).strip() if memory else "") or None
+        self._pids_limit = int(pids_limit) if pids_limit is not None else None
+        self._cpus = float(cpus) if cpus is not None else None
+        self._cap_drop = [str(c) for c in (cap_drop or []) if str(c).strip()]
+        self._cap_add = [str(c) for c in (cap_add or []) if str(c).strip()]
+        self._seccomp_profile = (seccomp_profile or "").strip() or None
+        self._no_new_privileges = bool(no_new_privileges)
+        self._extra_run_args = [str(a) for a in (extra_run_args or [])]
         self._runtime = self._detect_runtime()
 
     @property
@@ -580,6 +601,41 @@ class LocalContainerBackend(SandboxBackend):
 
     # ── Container operations ─────────────────────────────────────────────
 
+    def _docker_hardening_args(self) -> list[str]:
+        """[argus] Security and resource flags for the docker/podman path (patch #80).
+
+        Upstream passed one flag here, `--security-opt seccomp=unconfined`, and no
+        limits: an agent sandbox ran as an unlimited container with the kernel's
+        syscall filter switched off. That stays the DEFAULT so a deployment that
+        configures nothing behaves exactly as before; every knob is opt-in from
+        SandboxConfig. Apple `container` has none of these flags, so the caller only
+        asks for them on the docker runtime (which is also rootless Podman behind
+        the podman-docker shim, the production case).
+
+        seccomp_profile: None -> "seccomp=unconfined" (upstream); "default" -> no
+        seccomp option at all, the runtime's own default profile applies; anything
+        else -> "seccomp=<value>" (a profile path).
+        """
+        args: list[str] = []
+        if self._seccomp_profile is None:
+            args.extend(["--security-opt", "seccomp=unconfined"])
+        elif self._seccomp_profile != "default":
+            args.extend(["--security-opt", f"seccomp={self._seccomp_profile}"])
+        if self._no_new_privileges:
+            args.extend(["--security-opt", "no-new-privileges"])
+        if self._memory:
+            args.extend(["--memory", self._memory])
+        if self._pids_limit is not None:
+            args.extend(["--pids-limit", str(self._pids_limit)])
+        if self._cpus is not None:
+            args.extend(["--cpus", f"{self._cpus:g}"])
+        for cap in self._cap_drop:
+            args.extend(["--cap-drop", cap])
+        for cap in self._cap_add:
+            args.extend(["--cap-add", cap])
+        args.extend(self._extra_run_args)
+        return args
+
     def _start_container(
         self,
         container_name: str,
@@ -601,9 +657,10 @@ class LocalContainerBackend(SandboxBackend):
         """
         cmd = [self._runtime, "run"]
 
-        # Docker-specific security options
+        # Docker-specific security and resource options ([argus] patch #80: config-driven;
+        # the unconfigured result is upstream's single `seccomp=unconfined`).
         if self._runtime == "docker":
-            cmd.extend(["--security-opt", "seccomp=unconfined"])
+            cmd.extend(self._docker_hardening_args())
 
         cmd.extend(["--rm", "-d"])
 

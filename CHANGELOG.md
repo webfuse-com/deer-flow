@@ -86,6 +86,10 @@ This section accumulates work toward the **2.1.0** milestone
 
 #### Agents & runtime
 
+- **tools:** Add atomic same-file replacement batches and optional soft
+  read-only/total-call phase budgets to reduce model round trips in long
+  implementation workflows.
+
 - **middleware:** New `TokenBudgetMiddleware` enforces a per-run token budget,
   shared additively across the lead agent and subagents. ([#3412])
 - **middleware:** Structured tool-result metadata and a tool-progress state

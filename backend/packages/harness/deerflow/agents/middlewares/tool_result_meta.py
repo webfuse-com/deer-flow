@@ -3,6 +3,10 @@
 Every tool result that passes through ToolErrorHandlingMiddleware gets a
 ``deerflow_tool_meta`` entry in additional_kwargs. Downstream consumers
 (ToolProgressMiddleware, etc.) read this key instead of parsing text.
+
+[argus patch #83] For tool-wrapper error formats (e.g. LangChain/LangGraph's
+"Error invoking tool '...' with kwargs {...} with error:"), classification narrows
+to the trailing error text to prevent incidental matches on echoed kwargs content.
 """
 
 from __future__ import annotations
@@ -55,6 +59,7 @@ class ToolResultMeta:
     recoverable_by_model: bool
     recommended_next_action: Literal["continue", "rewrite_query", "try_alternative", "summarize", "stop"]
     source: Literal["exception", "tool_return", "content_analysis", "progress_middleware"]
+    exit_code: int | None = None
 
 
 _ERROR_RULES: list[tuple[list[str], dict[str, object]]] = [
@@ -154,6 +159,33 @@ _NUMERIC_KW_RE: dict[str, re.Pattern[str]] = {kw: re.compile(rf"\b{kw}\b") for r
 
 _SEMANTIC_ZERO_ERROR_STRINGS: frozenset[str] = frozenset({"none", "null", "false", "no", "ok", "success", "n/a", ""})
 
+_SHELL_EXIT_CODE_RE = re.compile(
+    r"(?:^|\n)(?:Exit Code:|Command exited with code|exit=)\s*(-?\d+)\s*(?:$|\n)",
+    re.IGNORECASE,
+)
+
+# [argus patch #83] Tool-invocation error wrapper regex matching LangChain/LangGraph
+# wrapper format: "Error (invoking|executing) tool '<name>' with kwargs {...} with error:\n<error>\n Please fix..."
+# Anchored at start and using greedy matching {.*} so that echoed kwargs containing literal
+# '} with error:' substrings inside strings or code payloads do not truncate early.
+# Tolerates CRLF (\r?\n) before the trailing error text.
+_TOOL_WRAPPER_ERROR_RE = re.compile(
+    r"^Error (?:invoking|executing) tool '[^']+' with kwargs \{.*\} with error:(?:\r?\n|\Z)(.*)\Z",
+    re.DOTALL,
+)
+_TOOL_WRAPPER_SUFFIX = "Please fix the error and try again."
+
+
+def _extract_tool_wrapper_error_text(text: str) -> str | None:
+    """[argus patch #83] Extract only the trailing error from tool wrapper messages."""
+    match = _TOOL_WRAPPER_ERROR_RE.match(text)
+    if not match:
+        return None
+    trailing = match.group(1).strip()
+    if trailing.endswith(_TOOL_WRAPPER_SUFFIX):
+        trailing = trailing[: -len(_TOOL_WRAPPER_SUFFIX)].strip()
+    return trailing
+
 
 def _extract_json_error_text(content: str) -> str | None:
     """Return the error string from a JSON-wrapped error like {"error": "...", "query": "..."}.
@@ -238,14 +270,23 @@ def _as_status_line(title: str) -> str | None:
     return " ".join(words) or None
 
 
-def _make_meta(*, status: str, source: str, error_type: str | None = None, recoverable_by_model: bool = True, recommended_next_action: str = "continue") -> dict[str, object]:
-    return {
+def _make_meta(*, status: str, source: str, error_type: str | None = None, recoverable_by_model: bool = True, recommended_next_action: str = "continue", exit_code: int | None = None) -> dict[str, object]:
+    meta: dict[str, object] = {
         "status": status,
         "error_type": error_type,
         "recoverable_by_model": recoverable_by_model,
         "recommended_next_action": recommended_next_action,
         "source": source,
     }
+    if exit_code is not None:
+        meta["exit_code"] = exit_code
+    return meta
+
+
+def _sync_message_status(msg: ToolMessage, meta: dict[str, object]) -> ToolMessage:
+    """Keep LangChain's public status aligned with DeerFlow's richer metadata."""
+    msg.status = "error" if meta.get("status") == "error" else "success"
+    return msg
 
 
 def stamp_exception_meta(msg: ToolMessage, exc_info: str) -> ToolMessage:
@@ -259,14 +300,14 @@ def stamp_exception_meta(msg: ToolMessage, exc_info: str) -> ToolMessage:
     updated_kwargs = dict(msg.additional_kwargs or {})
     updated_kwargs[TOOL_META_KEY] = _make_meta(status="error", source="exception", **attrs)
     msg.additional_kwargs = updated_kwargs
-    return msg
+    return _sync_message_status(msg, updated_kwargs[TOOL_META_KEY])
 
 
 def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     """Attach deerflow_tool_meta to a ToolMessage if not already present."""
     existing = (msg.additional_kwargs or {}).get(TOOL_META_KEY)
     if existing is not None:
-        return msg
+        return _sync_message_status(msg, existing) if isinstance(existing, dict) else msg
 
     content = msg.content if isinstance(msg.content, str) else ""
     # Pre-compute once; reused by the partial-success marker check below to avoid calling
@@ -278,20 +319,32 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     # and exit early above — they never reach this branch.)
     # Try JSON extraction first so classification uses only the "error" field value, not
     # keywords that appear incidentally in other JSON fields (e.g. "query").
-    if msg.status == "error" and not content.startswith(_ERROR_PREFIX):
-        json_error = _extract_json_error_text(content)
-        if json_error is not None:
-            attrs = _classify_error_text(json_error)
+    shell_exit = _SHELL_EXIT_CODE_RE.search(content) if msg.name in {"bash", "bash_tool"} else None
+    exit_code = int(shell_exit.group(1)) if shell_exit else None
+
+    if exit_code not in (None, 0):
+        attrs = _classify_error_text(content)
+        meta = _make_meta(status="error", source="tool_return", exit_code=exit_code, **attrs)
+    elif msg.status == "error" and not content.startswith(_ERROR_PREFIX):
+        # [argus patch #83] If content is wrapped in a tool-wrapper error format, classify ONLY
+        # the trailing error text to avoid misclassifying on echoed kwargs content.
+        wrapper_error = _extract_tool_wrapper_error_text(content)
+        if wrapper_error is not None:
+            attrs = _classify_error_text(wrapper_error)
         else:
-            # Determine whether content is a JSON object that simply has no 'error' key.
-            # If so, do NOT classify from the raw JSON string — incidental field values
-            # (e.g. {"user_id": 401}) would spuriously match keyword rules and hard-block
-            # the tool.  Classify raw text only when the content is not valid JSON.
-            try:
-                is_json_dict = isinstance(json.loads(content), dict)
-            except (json.JSONDecodeError, ValueError):
-                is_json_dict = False
-            attrs = {**_UNKNOWN_ERROR} if is_json_dict else _classify_error_text(content)
+            json_error = _extract_json_error_text(content)
+            if json_error is not None:
+                attrs = _classify_error_text(json_error)
+            else:
+                # Determine whether content is a JSON object that simply has no 'error' key.
+                # If so, do NOT classify from the raw JSON string — incidental field values
+                # (e.g. {"user_id": 401}) would spuriously match keyword rules and hard-block
+                # the tool.  Classify raw text only when the content is not valid JSON.
+                try:
+                    is_json_dict = isinstance(json.loads(content), dict)
+                except (json.JSONDecodeError, ValueError):
+                    is_json_dict = False
+                attrs = {**_UNKNOWN_ERROR} if is_json_dict else _classify_error_text(content)
         meta = _make_meta(status="error", source="tool_return", **attrs)
     elif content.startswith(_ERROR_PREFIX):
         attrs = _classify_error_text(content[len(_ERROR_PREFIX) :])
@@ -313,7 +366,7 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     updated_kwargs = dict(msg.additional_kwargs or {})
     updated_kwargs[TOOL_META_KEY] = meta
     msg.additional_kwargs = updated_kwargs
-    return msg
+    return _sync_message_status(msg, meta)
 
 
 def normalize_tool_result(result: ToolMessage | Command) -> ToolMessage | Command:

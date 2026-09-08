@@ -280,6 +280,8 @@ def _build_preview(
     virtual_path: str,
     head_chars: int,
     tail_chars: int,
+    code_outline_enabled: bool = False,
+    code_outline_min_lines: int = 300,
 ) -> str:
     """Build a typed synopsis preview with a file reference for externalized output.
 
@@ -294,6 +296,8 @@ def _build_preview(
         virtual_path=virtual_path,
         head_chars=head_chars,
         tail_chars=tail_chars,
+        code_outline_enabled=code_outline_enabled,
+        code_outline_min_lines=code_outline_min_lines,
     )
 
     total = len(content)
@@ -474,6 +478,8 @@ def _budget_content(
                 virtual_path=virtual_path,
                 head_chars=config.preview_head_chars,
                 tail_chars=config.preview_tail_chars,
+                code_outline_enabled=config.code_outline_enabled,
+                code_outline_min_lines=config.code_outline_min_lines,
             )
 
     if config.fallback_max_chars > 0 and len(content) > config.fallback_max_chars:
@@ -644,9 +650,25 @@ def _patch_model_messages(messages: list[Any], config: ToolOutputConfig) -> list
 class ToolOutputBudgetMiddleware(AgentMiddleware[AgentState]):
     """Enforce per-result budget on tool outputs via externalization or truncation."""
 
-    def __init__(self, config: ToolOutputConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ToolOutputConfig | None = None,
+        *,
+        code_outline_enabled: bool = False,
+        code_outline_min_lines: int = 300,
+    ) -> None:
         super().__init__()
-        self._config = config if config is not None else _default_config()
+        if config is not None:
+            self._config = config
+        else:
+            self._config = ToolOutputConfig(
+                code_outline_enabled=code_outline_enabled,
+                code_outline_min_lines=code_outline_min_lines,
+            )
+
+    @classmethod
+    def from_config(cls, config: ToolOutputConfig) -> ToolOutputBudgetMiddleware:
+        return cls(config=config)
 
     @classmethod
     def from_app_config(cls, app_config: Any) -> ToolOutputBudgetMiddleware:

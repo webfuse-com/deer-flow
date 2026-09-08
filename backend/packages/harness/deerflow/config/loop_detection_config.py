@@ -60,7 +60,15 @@ class LoopDetectionConfig(BaseModel):
     )
     tool_freq_overrides: dict[str, ToolFreqOverride] = Field(
         default_factory=dict,
-        description=("Per-tool overrides for tool_freq_warn / tool_freq_hard_limit, keyed by tool name. Values can be higher or lower than the global defaults. Commonly used to raise thresholds for high-frequency tools like bash."),
+        description=(
+            "Per-tool overrides for tool_freq_warn / tool_freq_hard_limit, keyed by tool name. "
+            "Values can be higher or lower than the global defaults. Commonly used to raise thresholds "
+            "for high-frequency tools like bash. [argus patch #82] Keys may also be SUBCATEGORY names "
+            "of the form <tool>.<subcategory> (currently only bash.inspection is produced). A subcategory "
+            "counter is only tracked when its key is present in this dict (that presence is the gate; "
+            "default config tracks nothing new). Note that no_hard_stop_tools matches exact counter names "
+            "only (exempting bash does NOT exempt bash.inspection)."
+        ),
     )
     read_file_bucket_size_lines: int = Field(
         default=200,

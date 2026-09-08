@@ -27,10 +27,18 @@ def _make_runtime(thread_id: str = "t1", run_id: str = "r1") -> MagicMock:
     return rt
 
 
-def _make_tool_request(tool_name: str = "web_search", *, runtime: MagicMock | None = None) -> SimpleNamespace:
+def _make_tool_request(
+    tool_name: str = "web_search",
+    *,
+    runtime: MagicMock | None = None,
+    args: dict | None = None,
+) -> SimpleNamespace:
     rt = runtime or _make_runtime()
+    tc = {"name": tool_name, "id": f"tc-{tool_name}"}
+    if args is not None:
+        tc["args"] = args
     return SimpleNamespace(
-        tool_call={"name": tool_name, "id": f"tc-{tool_name}"},
+        tool_call=tc,
         runtime=rt,
     )
 
@@ -1075,12 +1083,168 @@ def test_from_config():
         warn_escalation_count=3,
         jaccard_similarity_threshold=0.7,
         min_word_count_for_similarity=8,
+        read_only_streak_threshold=7,
+        total_tool_call_threshold=50,
+        total_tool_call_reminder_interval=20,
     )
     mw = ToolProgressMiddleware.from_config(cfg)
     assert mw._stagnation_threshold == 4
     assert mw._warn_escalation == 3
     assert mw._jaccard_threshold == pytest.approx(0.7)
     assert mw._min_words == 8
+    assert mw._read_only_streak_threshold == 7
+    assert mw._total_tool_call_threshold == 50
+    assert mw._total_tool_call_reminder_interval == 20
+
+
+def test_read_only_streak_queues_phase_transition_hint() -> None:
+    mw = _make_mw(read_only_streak_threshold=3)
+    rt = _make_runtime()
+
+    for index, tool_name in enumerate(("read_file", "grep", "read_file"), start=1):
+        request = _make_tool_request(tool_name, runtime=rt)
+        message = _make_tool_message(
+            f"unique successful result {index} alpha beta gamma delta epsilon zeta",
+            tool_name=tool_name,
+        )
+        mw.wrap_tool_call(request, lambda _request, message=message: message)
+
+    hints = mw._drain_pending(rt)
+    assert len(hints) == 1
+    assert "3 read/search calls since the last successful file write" in hints[0]
+    assert "freeze" in hints[0].lower()
+    assert "implementation" in hints[0].lower()
+
+
+def test_read_only_streak_bash_inspection() -> None:
+    # 1. Flag OFF + successful inspection bash -> streak does NOT advance
+    mw_off = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=False)
+    rt = _make_runtime()
+    for cmd in ("cat file.txt", "cd src && grep foo bar.py", "cat log | grep ERR | sort -u"):
+        req = _make_tool_request("bash", runtime=rt, args={"command": cmd})
+        msg = _make_tool_message("some inspection output", tool_name="bash")
+        mw_off.wrap_tool_call(req, lambda _req, m=msg: m)
+    assert mw_off._drain_pending(rt) == []
+
+    # 2. Flag ON + inspection bash -> streak advances and hint fires at threshold
+    mw_on = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=True)
+    rt2 = _make_runtime()
+    for cmd in ("cat file.txt", "cd src && grep foo bar.py", "cat log | grep ERR | sort -u"):
+        req = _make_tool_request("bash", runtime=rt2, args={"command": cmd})
+        msg = _make_tool_message("some inspection output", tool_name="bash")
+        mw_on.wrap_tool_call(req, lambda _req, m=msg: m)
+    hints = mw_on._drain_pending(rt2)
+    assert len(hints) == 1
+    assert "3 read/search calls since the last successful file write" in hints[0]
+    assert "freeze" in hints[0].lower()
+
+    # 3. Flag ON + execution bash -> streak untouched (no advance, no reset)
+    mw_on_exec = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=True)
+    rt3 = _make_runtime()
+    # 2 inspection calls (streak = 2)
+    for cmd in ("cat a.txt", "ls -la"):
+        req = _make_tool_request("bash", runtime=rt3, args={"command": cmd})
+        msg = _make_tool_message("inspect output", tool_name="bash")
+        mw_on_exec.wrap_tool_call(req, lambda _req, m=msg: m)
+    assert mw_on_exec._drain_pending(rt3) == []
+
+    # Now run execution commands: sed -i, grep foo f > out, rm, unparseable
+    for cmd in ("sed -i 's/foo/bar/' file.txt", "grep foo f > out", "rm -rf /tmp/test", 'echo "unterminated'):
+        req = _make_tool_request("bash", runtime=rt3, args={"command": cmd})
+        msg = _make_tool_message("exec output", tool_name="bash")
+        mw_on_exec.wrap_tool_call(req, lambda _req, m=msg: m)
+    # Streak should not have reset to 0 or advanced to 3
+    assert mw_on_exec._drain_pending(rt3) == []
+    # 1 more inspection call should advance streak to 3 and fire the hint!
+    req = _make_tool_request("bash", runtime=rt3, args={"command": "head -n 5 file.txt"})
+    msg = _make_tool_message("head output", tool_name="bash")
+    mw_on_exec.wrap_tool_call(req, lambda _req, m=msg: m)
+    hints3 = mw_on_exec._drain_pending(rt3)
+    assert len(hints3) == 1
+    assert "3 read/search calls since the last successful file write" in hints3[0]
+
+    # 4. Flag ON + failed bash result -> no advance
+    mw_on_fail = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=True)
+    rt4 = _make_runtime()
+    # 2 successful inspections
+    for cmd in ("cat a.txt", "cat b.txt"):
+        req = _make_tool_request("bash", runtime=rt4, args={"command": cmd})
+        msg = _make_tool_message("inspect output", tool_name="bash")
+        mw_on_fail.wrap_tool_call(req, lambda _req, m=msg: m)
+    # 1 failed inspection bash
+    req = _make_tool_request("bash", runtime=rt4, args={"command": "cat non_existent.txt"})
+    msg_fail = _make_error_message("cat: non_existent.txt: No such file or directory", tool_name="bash")
+    mw_on_fail.wrap_tool_call(req, lambda _req: msg_fail)
+    assert mw_on_fail._drain_pending(rt4) == []
+    # Still at streak 2: 1 more successful inspection trips threshold
+    req = _make_tool_request("bash", runtime=rt4, args={"command": "cat c.txt"})
+    msg = _make_tool_message("inspect output", tool_name="bash")
+    mw_on_fail.wrap_tool_call(req, lambda _req, m=msg: m)
+    hints4 = mw_on_fail._drain_pending(rt4)
+    assert len(hints4) == 1
+
+    # 5. Flag ON + non-bash tools behave exactly as before
+    mw_on_tools = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=True)
+    rt5 = _make_runtime()
+    req = _make_tool_request("read_file", runtime=rt5)
+    mw_on_tools.wrap_tool_call(req, lambda _r: _make_tool_message("content 1", tool_name="read_file"))
+    req = _make_tool_request("bash", runtime=rt5, args={"command": "cat log.txt"})
+    mw_on_tools.wrap_tool_call(req, lambda _r: _make_tool_message("content 2", tool_name="bash"))
+    req = _make_tool_request("grep", runtime=rt5)
+    mw_on_tools.wrap_tool_call(req, lambda _r: _make_tool_message("content 3", tool_name="grep"))
+    hints5 = mw_on_tools._drain_pending(rt5)
+    assert len(hints5) == 1
+    assert "3 read/search calls since the last successful file write" in hints5[0]
+    # Write resets streak
+    req = _make_tool_request("write_file", runtime=rt5)
+    mw_on_tools.wrap_tool_call(req, lambda _r: _make_tool_message("written", tool_name="write_file"))
+    req = _make_tool_request("bash", runtime=rt5, args={"command": "cat log.txt"})
+    mw_on_tools.wrap_tool_call(req, lambda _r: _make_tool_message("content 4", tool_name="bash"))
+    assert mw_on_tools._drain_pending(rt5) == []
+
+    # 6. Flag ON + JSON-string bash args advances the streak
+    mw_json = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=True)
+    rt6 = _make_runtime()
+    for cmd in ("cat a.txt", "grep foo bar.py", "head -n 10 c.txt"):
+        req = _make_tool_request("bash", runtime=rt6, args=f'{{"command": "{cmd}"}}')
+        msg = _make_tool_message("output", tool_name="bash")
+        mw_json.wrap_tool_call(req, lambda _req, m=msg: m)
+    hints6 = mw_json._drain_pending(rt6)
+    assert len(hints6) == 1
+    assert "3 read/search calls since the last successful file write" in hints6[0]
+
+
+def test_successful_write_resets_read_only_streak() -> None:
+    mw = _make_mw(read_only_streak_threshold=3)
+    rt = _make_runtime()
+
+    def successful_call(tool_name: str, content: str) -> None:
+        request = _make_tool_request(tool_name, runtime=rt)
+        message = _make_tool_message(content, tool_name=tool_name)
+        mw.wrap_tool_call(request, lambda _request: message)
+
+    successful_call("read_file", "first unique read alpha beta gamma delta epsilon")
+    successful_call("read_file", "second unique read foxtrot golf hotel india juliet")
+    successful_call("str_replace", "OK")
+    successful_call("read_file", "third unique read kilo lima mike november oscar")
+
+    assert mw._drain_pending(rt) == []
+
+
+def test_total_tool_call_budget_queues_periodic_replan_hints() -> None:
+    mw = _make_mw(total_tool_call_threshold=3, total_tool_call_reminder_interval=2, min_words=100)
+    rt = _make_runtime()
+
+    for index in range(5):
+        request = _make_tool_request("bash", runtime=rt)
+        message = _make_tool_message(f"result {index} alpha beta gamma delta epsilon", tool_name="bash")
+        mw.wrap_tool_call(request, lambda _request, message=message: message)
+
+    hints = mw._drain_pending(rt)
+    assert len(hints) == 2
+    assert "used 3 tool calls" in hints[0]
+    assert "used 5 tool calls" in hints[1]
+    assert all("current phase" in hint for hint in hints)
 
 
 def test_from_config_empty_exempt_tools_clears_exemptions():

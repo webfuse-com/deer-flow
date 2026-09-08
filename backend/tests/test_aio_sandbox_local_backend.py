@@ -524,3 +524,93 @@ def test_destroy_legacy_mode_releases_host_port(monkeypatch):
     )
 
     assert released == [18080]
+
+
+# ── [argus] patch #80: hardening knobs on the docker/podman path ─────────────
+
+
+def _hardening_backend(**overrides) -> LocalContainerBackend:
+    kwargs = dict(
+        image="sandbox:pinned",
+        base_port=18080,
+        container_prefix="sandbox",
+        config_mounts=[],
+        environment={},
+        network="argus-net",
+    )
+    kwargs.update(overrides)
+    return LocalContainerBackend(**kwargs)
+
+
+def test_start_container_unconfigured_hardening_reproduces_upstream(monkeypatch):
+    """No knobs set: exactly upstream's single `seccomp=unconfined`, no limits."""
+    cmd = _capture_start_container_command(monkeypatch, _hardening_backend())
+
+    assert cmd[cmd.index("--security-opt") + 1] == "seccomp=unconfined"
+    assert cmd.count("--security-opt") == 1
+    for flag in ("--memory", "--pids-limit", "--cpus", "--cap-drop", "--cap-add"):
+        assert flag not in cmd
+    assert "no-new-privileges" not in cmd
+
+
+def test_start_container_default_seccomp_profile_omits_the_option(monkeypatch):
+    cmd = _capture_start_container_command(monkeypatch, _hardening_backend(seccomp_profile="default"))
+
+    assert not any(arg.startswith("seccomp=") for arg in cmd)
+    assert "--security-opt" not in cmd
+
+
+def test_start_container_custom_seccomp_profile_is_passed_through(monkeypatch):
+    cmd = _capture_start_container_command(monkeypatch, _hardening_backend(seccomp_profile="/etc/sandbox-seccomp.json"))
+
+    assert cmd[cmd.index("--security-opt") + 1] == "seccomp=/etc/sandbox-seccomp.json"
+    assert "seccomp=unconfined" not in cmd
+
+
+def test_start_container_applies_limits_caps_and_no_new_privileges(monkeypatch):
+    backend = _hardening_backend(
+        memory="3g",
+        pids_limit=1024,
+        cpus=8,
+        cap_drop=["ALL"],
+        cap_add=["NET_BIND_SERVICE", "CHOWN"],
+        seccomp_profile="default",
+        no_new_privileges=True,
+        extra_run_args=["--ulimit", "nofile=4096:4096"],
+    )
+    cmd = _capture_start_container_command(monkeypatch, backend)
+
+    assert cmd[cmd.index("--memory") + 1] == "3g"
+    assert cmd[cmd.index("--pids-limit") + 1] == "1024"
+    assert cmd[cmd.index("--cpus") + 1] == "8"
+    assert cmd[cmd.index("--cap-drop") + 1] == "ALL"
+    add_positions = [i for i, a in enumerate(cmd) if a == "--cap-add"]
+    assert [cmd[i + 1] for i in add_positions] == ["NET_BIND_SERVICE", "CHOWN"]
+    assert cmd[cmd.index("--security-opt") + 1] == "no-new-privileges"
+    assert cmd[cmd.index("--ulimit") + 1] == "nofile=4096:4096"
+    # Every flag precedes the image, which stays last.
+    assert cmd[-1] == "sandbox:pinned"
+    assert cmd.index("--memory") < cmd.index("--name")
+
+
+def test_start_container_fractional_cpus_render_plainly(monkeypatch):
+    cmd = _capture_start_container_command(monkeypatch, _hardening_backend(cpus=0.5))
+
+    assert cmd[cmd.index("--cpus") + 1] == "0.5"
+
+
+def test_start_container_blank_knobs_are_ignored(monkeypatch):
+    backend = _hardening_backend(memory="  ", cap_drop=["", "  "], seccomp_profile="  ", extra_run_args=[])
+    cmd = _capture_start_container_command(monkeypatch, backend)
+
+    assert "--memory" not in cmd
+    assert "--cap-drop" not in cmd
+    assert cmd[cmd.index("--security-opt") + 1] == "seccomp=unconfined"
+
+
+def test_apple_container_runtime_ignores_docker_hardening(monkeypatch):
+    backend = _hardening_backend(memory="3g", pids_limit=64, cap_drop=["ALL"], no_new_privileges=True)
+    cmd = _capture_start_container_command(monkeypatch, backend, runtime="container")
+
+    for flag in ("--memory", "--pids-limit", "--cap-drop", "--security-opt"):
+        assert flag not in cmd

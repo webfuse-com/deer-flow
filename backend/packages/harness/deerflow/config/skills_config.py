@@ -33,6 +33,20 @@ class SkillsConfig(BaseModel):
         default=False,
         description=("When enabled, skill metadata is not injected into the system prompt. Instead, only skill names appear in <skill_index> and the LLM discovers details on demand via the describe_skill tool."),
     )
+    auto_route: bool = Field(
+        default=False,
+        description="Automatically inject high-confidence matching skill instructions on the first model call.",
+    )
+    project_skill_name: str = Field(
+        default="project-workspace",
+        description="Skill automatically selected for durable project and artifact work.",
+    )
+    max_auto_activated: int = Field(
+        default=2,
+        ge=1,
+        le=2,
+        description="Maximum high-confidence skills injected automatically for one user request.",
+    )
 
     def get_skills_path(self) -> Path:
         """
