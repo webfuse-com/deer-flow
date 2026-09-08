@@ -9,7 +9,11 @@ was never assigned. This script is the rule made mechanical.
 
 Checks (stdlib only, exit 1 on any failure):
   1. No patch number appears in two section headers ("## Patch #N",
-     "## Patch #N/#M", "## Reverted patch #N").
+     "## Patch #N/#M", "## Reverted patch #N"), and no "## " heading text
+     appears twice at all: a bad merge once left the "Dropped" and "Carry
+     budget ledger" tails duplicated with the patch sections between the
+     copies, so the LAST carry ledger in the file was the stale one and
+     nothing noticed for six days.
   2. Every number in the table of contents has a section, and every section
      has a table-of-contents row.
   3. With --range A..B: every "patch #N" named in a commit subject or body in
@@ -32,6 +36,7 @@ from collections import Counter
 from pathlib import Path
 
 HEADER_RE = re.compile(r"^## (?:Reverted )?[Pp]atch (.+?)\s*$", re.M)
+ANY_HEADING_RE = re.compile(r"^## (.+?)\s*$", re.M)
 TOC_RE = re.compile(r"^\| \[([^\]]+)\]\(#[^)]*\)", re.M)
 NUM_RE = re.compile(r"#(\d+)")
 MENTION_RE = re.compile(r"\bpatch #(\d+)", re.I)
@@ -57,6 +62,13 @@ def main() -> int:
     dupes = sorted((n for n, c in Counter(section_nums).items() if c > 1), key=int)
     if dupes:
         errors.append(f"patch number(s) used by more than one section: {', '.join('#' + d for d in dupes)}")
+
+    repeated = sorted(h for h, c in Counter(ANY_HEADING_RE.findall(text)).items() if c > 1)
+    if repeated:
+        errors.append(
+            "heading(s) appear more than once, so one copy is unreachable and probably stale: "
+            + "; ".join(f'"## {h}"' for h in repeated)
+        )
 
     toc_nums: list[str] = []
     for label in TOC_RE.findall(text):
