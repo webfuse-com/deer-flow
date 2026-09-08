@@ -1892,78 +1892,6 @@ carry budget ledger.
 - Delete-when: the brand mark, the Agora link and the sharing controls are Argus-specific and stay with the fork; the inline viewing policy could be offered upstream (an opt-in "sandboxed inline active content" setting) and dropped here if upstream adopts it.
 - Upstream status: n/a for the Atlas UI; the artifacts route change is upstreamable as a proposal.
 
-## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
-
-**Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**
-
-- **#8 `langgraph_auth` lazy-init** (numbered #9 in the pre-v2 PATCHES.md):
-  dead since Argus moved off standalone `langgraph dev` to the gateway
-  runtime; the fork had already self-dropped it 2026-06-03. Do not revive
-  unless we run `langgraph dev` standalone again.
-- **#17 agent-dir-fallback** (shared-dir fallback when the per-user dir has
-  only `memory.json`): upstream fixed it better (upstream issue #3390).
-- **`supports_streaming` override**: now native upstream. **CORRECTION
-  2026-07-01: this override is NOT patch #10.** The rebase note originally
-  recorded "#10 supports_streaming override, dropped" - a mislabel that
-  silently regressed Telegram artifact delivery until 762b61eb re-wired the
-  presenter. Patch #10 (the Telegram artifact presenter) is alive; see its
-  section. Do not treat #10 as obsolete on the next sync.
-- **3 pre-2026 loop-detector patches** (nudge-toward-observation,
-  edit-aware-reset, layer-2 frequency drop): subsumed by upstream's
-  warning-queue architecture back in the 2026-05-28 upgrade; if Qwen loop
-  behavior regresses, re-tune against the current architecture.
-
-**Deferred (do not port as-was):**
-
-- **#27 agent sub-component pooling** (perf-only half of the old #27; the
-  fire-and-forget emoji half lives on in the telegram chain): its cache key
-  cannot capture v2.0.0's deferred-tools subsystem inputs, so porting it
-  risks stale prompts for zero behavior change. If the perf matters,
-  re-derive against the `assemble_deferred_tools` /
-  `build_middlewares(deferred_setup=...)` shape.
-
-**Re-expressed as config fields (no longer constant patches):** see #2 and #3.
-
-**Not carried - verify on next sync (suspected silent drops, like #10 was):**
-
-- **#19 agent-chat model precedence** (3 pre-v2 frontend commits: per-thread
-  override, else the agent's pinned model, no global last-pick bleed): absent
-  from `v2.0.0..2df36c99` and NOT visibly upstream-subsumed - at tip, the
-  agent chat page still injects only `agent_name`
-  (`frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`,
-  `context: { ...settings.context, agent_name }`) and InputBox still gates
-  modes on `supports_thinking` via `context.model_name`. If glm-planner mode
-  gating is broken again in the UI, re-port as a new numbered patch.
-- **#12 sandbox Created-but-not-Running detection**: absent from the carry;
-  upstream v2.0.0 ships sandbox orphan reconciliation and #33's network mode
-  removes the port-bind root cause. Presumed subsumed; confirm if sandboxes
-  ever hang in Created again.
-
----
-
-## Carry budget ledger
-
-Re-measure at every sync (`git diff --shortstat <upstream-base>..argus` plus
-the upstream-file edit split). The goal is that these numbers go DOWN over
-time as patches are upstreamed or subsumed; a rising channels number means the
-telegram subsystem needs the FORK-REVIEW lever-1 treatment (upstream the
-design or move it behind an extension point).
-
-| Date | Base | Commits | Files | Lines | Upstream-file edited lines |
-|---|---|---|---|---|---|
-| 2026-07-01 | v2.0.0 -> 2df36c99 | 29 | 85 | +6168 / -812 | ~1600 (~1460 in `app/channels/`) |
-| 2026-07-02 | v2.0.0 -> #40 tip | 32 | 90 | +7433 / -668 | app-code excl. tests/docs: 1923 (776 in `app/channels/`, was 1099); tests: 1350. #40 cut `telegram.py` 574 -> 251 |
-| 2026-09-02 | bytedance/main 3a967d4f (2026-08-15) -> c58d6168 (#79) | 140 | 240 | +17512 / -1740 | app-code excl. tests/docs: 5957 (802 in `app/channels/`); tests: 3389. Measured against the merge-base with `bytedance/main` (v2.0.0 sits on `2.0.x-dev`, not `main`); over the 2,500 alarm, see acropolis docs/DEERFLOW-SYNC.md |
-
-Methodology note (2026-07-02): the last column is now measured against the
-`v2.0.0` tag over files that exist at v2.0.0 (insertions+deletions), split
-app-code vs tests. The 2026-07-01 row's ~1600/~1460 came from FORK-REVIEW's
-2026-06-30 measurement against merge-base 2ace78d1 with a different file
-scope and is not directly comparable; like-for-like against v2.0.0 the
-pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
-`git diff --numstat v2.0.0 | while read a d f; do git cat-file -e
-"v2.0.0:$f" 2>/dev/null && echo "$a $d $f"; done | awk '...'`.
-
 ## Patch #80
 
 **Patch #80 - Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges**
@@ -2218,6 +2146,8 @@ design or move it behind an extension point).
 |---|---|---|---|---|---|
 | 2026-07-01 | v2.0.0 -> 2df36c99 | 29 | 85 | +6168 / -812 | ~1600 (~1460 in `app/channels/`) |
 | 2026-07-02 | v2.0.0 -> #40 tip | 32 | 90 | +7433 / -668 | app-code excl. tests/docs: 1923 (776 in `app/channels/`, was 1099); tests: 1350. #40 cut `telegram.py` 574 -> 251 |
+| 2026-09-02 | bytedance/main 3a967d4f (2026-08-15) -> c58d6168 (#79) | 140 | 240 | +17512 / -1740 | app-code excl. tests/docs: 5957 (802 in `app/channels/`); tests: 3389. Measured against the merge-base with `bytedance/main` (v2.0.0 sits on `2.0.x-dev`, not `main`); over the 2,500 alarm, see acropolis docs/DEERFLOW-SYNC.md |
+| 2026-09-08 | bytedance/main 3a967d4f (2026-08-15) -> 00c5cd72 (#89 follow-up) | 131 | 288 | +24023 / -2022 | app-code excl. tests/docs: 7147 (802 in `app/channels/`); tests: 4585. Base 24 days old and upstream 211 commits past it: all three Cerberus `fork_drift` warnings tripping. 2.9x the 2,500 alarm; the sync is the next action, see acropolis docs/DEERFLOW-SYNC.md |
 
 Methodology note (2026-07-02): the last column is now measured against the
 `v2.0.0` tag over files that exist at v2.0.0 (insertions+deletions), split
