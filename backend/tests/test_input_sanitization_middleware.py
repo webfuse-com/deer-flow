@@ -17,9 +17,9 @@ from deerflow.agents.middlewares.input_sanitization_middleware import (
     _USER_INPUT_END,
     InputSanitizationMiddleware,
     _check_user_content,
-    _is_genuine_user_message,
     neutralize_untrusted_tags,
 )
+from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY
 
 
@@ -200,6 +200,9 @@ _FRAMEWORK_STRUCTURED_TAGS = [
     # Framework-authored hidden HumanMessage that instructs the agent to keep
     # working (runtime/goal.py::make_goal_continuation_message).
     "goal_continuation",
+    # Gateway-authored hidden HumanMessage carrying untrusted remote MCP task
+    # output as data for a user-facing notification run.
+    "background_task_event",
     # Subagent system-prompt blocks. Subagents run the same sanitization
     # middlewares (build_subagent_runtime_middlewares -> _build_runtime_middlewares),
     # so forging these mimics trusted context on that agent's model input too.
@@ -207,6 +210,11 @@ _FRAMEWORK_STRUCTURED_TAGS = [
     "guidelines",
     "output_format",
     "working_directory",
+    # Subagent report-contract blocks (subagents/report_contract.py, RFC #4651
+    # PR3): injected into every subagent system prompt and into delegated
+    # prompts carrying acceptance criteria.
+    "report_contract",
+    "acceptance_criteria",
 ]
 
 
@@ -259,6 +267,9 @@ _EXEMPT_BLOCK_TAGS = {
     "consolidation_candidates",
     "existing_summary",
     "new_messages",
+    # [argus patch #75] the summarizer's own copy of the current request; same
+    # call, same escaping as the two blocks above.
+    "active_user_request",
     # MindIE provider wire format: parsed out of model *output*, never injected
     # into model input, so it is not framework authority context.
     "function",
@@ -374,21 +385,21 @@ def test_allows_non_blocked_tag(tag):
 
 
 # ---------------------------------------------------------------------------
-# _is_genuine_user_message
+# is_genuine_user_message
 # ---------------------------------------------------------------------------
 
 
 def test_genuine_user_message_true_for_plain_human_message():
-    assert _is_genuine_user_message(HumanMessage(content="Hi"))
+    assert is_genuine_user_message(HumanMessage(content="Hi"))
 
 
 def test_genuine_user_message_false_for_ai_message():
-    assert not _is_genuine_user_message(AIMessage(content="Hi"))
+    assert not is_genuine_user_message(AIMessage(content="Hi"))
 
 
 def test_genuine_user_message_false_for_hide_from_ui():
     msg = HumanMessage(content="reminder", additional_kwargs={"hide_from_ui": True})
-    assert not _is_genuine_user_message(msg)
+    assert not is_genuine_user_message(msg)
 
 
 def test_genuine_user_message_true_for_hidden_human_input_response():
@@ -406,12 +417,12 @@ def test_genuine_user_message_true_for_hidden_human_input_response():
             },
         },
     )
-    assert _is_genuine_user_message(msg)
+    assert is_genuine_user_message(msg)
 
 
 def test_genuine_user_message_false_for_legacy_summary_message():
     msg = HumanMessage(content="Here is a summary of the conversation", name="summary")
-    assert not _is_genuine_user_message(msg)
+    assert not is_genuine_user_message(msg)
 
 
 # ---------------------------------------------------------------------------

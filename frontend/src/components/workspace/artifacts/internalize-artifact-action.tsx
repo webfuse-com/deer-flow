@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useContext, useState } from "react";
 
 import { ArtifactAction } from "@/components/ai-elements/artifact";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { isSharedThreadId } from "@/core/sharing/thread-id";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { cn } from "@/lib/utils";
 
-import { useThread } from "../messages/context";
+import { ThreadContext } from "../messages/context";
 import { ShareStateIcon, shareStateGlyph } from "../share-state-icon";
 import { Tooltip } from "../tooltip";
 
@@ -44,7 +44,10 @@ export function InternalizeArtifactAction({
   variant: "detail" | "card";
 }) {
   const { t } = useI18n();
-  const { isMock } = useThread();
+  // The list card also renders outside a ThreadContext (upstream's archive
+  // download surface mounts ArtifactFileList on its own), so read the context
+  // optionally instead of through useThread(), which throws without one.
+  const isMock = useContext(ThreadContext)?.isMock ?? false;
   const [open, setOpen] = useState(false);
 
   const eligible =

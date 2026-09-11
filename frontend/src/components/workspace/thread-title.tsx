@@ -3,6 +3,7 @@ import { useEffect } from "react";
 
 import { useI18n } from "@/core/i18n/hooks";
 import type { AgentThreadState } from "@/core/threads";
+import { cn } from "@/lib/utils";
 
 import { useThreadChat } from "./chats";
 import { FlipDisplay } from "./flip-display";
@@ -27,21 +28,28 @@ export function formatThreadDocumentTitle({
   return `${title} - ${appName}`;
 }
 
-export function ThreadTitle({
-  threadId,
-  thread,
-}: {
+export type ThreadTitleProps = {
   className?: string;
   threadId: string;
   thread: BaseStream<AgentThreadState>;
-}) {
+  canonicalTitle?: string;
+};
+
+export function ThreadTitle({
+  className,
+  threadId,
+  thread,
+  canonicalTitle,
+}: ThreadTitleProps) {
   const { t } = useI18n();
   const { isNewThread } = useThreadChat();
+  const title = canonicalTitle?.length ? canonicalTitle : thread.values?.title;
+
   useEffect(() => {
     let _title = t.pages.untitled;
 
-    if (thread.values?.title) {
-      _title = thread.values.title;
+    if (title) {
+      _title = title;
     } else if (isNewThread) {
       _title = t.pages.newChat;
     }
@@ -58,15 +66,18 @@ export function ThreadTitle({
     t.pages.appName,
     thread.isThreadLoading,
     thread.isLoading,
-    thread.values,
+    title,
   ]);
 
-  if (!thread.values?.title) {
+  if (!title) {
     return null;
   }
   return (
-    <FlipDisplay uniqueKey={threadId}>
-      {thread.values.title ?? "Untitled"}
+    <FlipDisplay
+      uniqueKey={threadId}
+      className={cn("min-w-0 [&>div]:truncate", className)}
+    >
+      {title}
     </FlipDisplay>
   );
 }

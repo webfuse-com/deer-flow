@@ -371,8 +371,12 @@ def test_case_10_middleware_wiring(tmp_path):
         config=mw_enabled._config,
     )
     assert budgeted_enabled is not None
-    assert steering_line in budgeted_enabled
-    assert "[lines " in budgeted_enabled
+    # Upstream returns (replacement, transform_kind) since #5183; the outline
+    # lives in the replacement half.
+    budgeted_enabled_text, budgeted_enabled_kind = budgeted_enabled
+    assert budgeted_enabled_kind in ("externalized", "truncated")
+    assert steering_line in budgeted_enabled_text
+    assert "[lines " in budgeted_enabled_text
 
     # With default config:
     budgeted_default = _budget_content(
