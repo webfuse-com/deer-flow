@@ -136,7 +136,6 @@ function SystemToolsList({ tools }: { tools: SystemTool[] }) {
   );
 }
 
-
 function MCPServerList({
   servers,
 }: {
