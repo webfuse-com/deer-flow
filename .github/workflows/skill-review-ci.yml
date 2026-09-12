@@ -35,7 +35,19 @@ permissions:
 
 jobs:
   skill-review:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # [argus] This fork authors no public skills: `git diff --name-only
+    # <upstream-base> -- skills/` is empty, and the Argus skills live in the
+    # acropolis repo, not here. So the only thing that ever changes under
+    # skills/public/ on this branch is upstream's own content arriving with a
+    # sync, and reviewing it means failing on findings in a tree we do not own
+    # -- twice per sync, on the sync PR and on the push that merges it. The
+    # 2026-09-11 sync failed exactly that way on upstream's skill-creator
+    # package. Skip those two; a PR that genuinely adds or edits a skill here
+    # still runs the full review.
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+      && !startsWith(github.head_ref, 'sync/upstream-')
+      && !contains(github.event.head_commit.message, 'sync/upstream-')
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
