@@ -29,6 +29,10 @@ class SubagentConfig:
             effective limit is the global ``subagents.timeout_seconds`` (default
             1800 = 30 min), layered on by the registry; this 900 only applies
             when no differing global value exists.
+        thinking_enabled: Request the model's extended-thinking mode for this
+            subagent. ``None`` preserves the historical default (thinking off).
+            Only meaningful when the resolved model profile advertises
+            ``supports_thinking``; ignored otherwise by the model factory.
     """
 
     name: str
@@ -40,12 +44,23 @@ class SubagentConfig:
     model: str = "inherit"
     max_turns: int = 50
     timeout_seconds: int = 900
+    thinking_enabled: bool | None = None
 
 
 def _default_model_name(app_config: "AppConfig") -> str:
     if not app_config.models:
         raise ValueError("No chat models are configured. Please configure at least one model in config.yaml.")
     return app_config.models[0].name
+
+
+def resolve_subagent_thinking(config: SubagentConfig) -> bool:
+    """Effective thinking flag for a subagent.
+
+    ``None`` preserves the historical default (off). An explicit True/False is
+    honored as-is; the model factory ignores True for models whose profile does
+    not advertise ``supports_thinking``.
+    """
+    return bool(config.thinking_enabled) if config.thinking_enabled is not None else False
 
 
 def resolve_subagent_model_name(config: SubagentConfig, parent_model: str | None, *, app_config: "AppConfig | None" = None) -> str:

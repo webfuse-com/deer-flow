@@ -1066,6 +1066,59 @@ class TestAgentConstruction:
         # tool_search is infra: present despite being named in disallowed_tools.
         assert "tool_search" in names
 
+    def test_create_agent_honors_per_subagent_thinking_flag(
+        self,
+        classes,
+        base_config,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A custom agent's thinking_enabled reaches create_chat_model.
+
+        None must preserve the historical default (off), so existing workers and
+        this image's behaviour are unchanged unless a subagent opts in.
+        """
+        from deerflow.subagents import executor as executor_module
+
+        SubagentExecutor = classes["SubagentExecutor"]
+        app_config = SimpleNamespace(models=[SimpleNamespace(name="default-model")])
+        captured: dict[str, dict] = {}
+
+        def fake_create_chat_model(**kwargs):
+            captured["model"] = kwargs
+            return object()
+
+        monkeypatch.setattr(executor_module, "create_chat_model", fake_create_chat_model)
+        monkeypatch.setattr(executor_module, "create_agent", lambda **kwargs: object())
+        monkeypatch.setitem(
+            sys.modules,
+            "deerflow.agents.middlewares.tool_error_handling_middleware",
+            _module(
+                "deerflow.agents.middlewares.tool_error_handling_middleware",
+                build_subagent_runtime_middlewares=lambda **kwargs: [],
+            ),
+        )
+
+        opted_in = classes["SubagentConfig"](
+            name="build",
+            description="build worker",
+            system_prompt="p",
+            model="m1",
+            thinking_enabled=True,
+        )
+        SubagentExecutor(
+            config=opted_in, tools=[], app_config=app_config, parent_model="parent"
+        )._create_agent()
+        assert captured["model"]["thinking_enabled"] is True
+
+        captured.clear()
+        default = classes["SubagentConfig"](
+            name="build", description="build worker", system_prompt="p", model="m1"
+        )
+        SubagentExecutor(
+            config=default, tools=[], app_config=app_config, parent_model="parent"
+        )._create_agent()
+        assert captured["model"]["thinking_enabled"] is False
+
     def test_create_agent_threads_deferred_setup_to_middlewares(
         self,
         classes,

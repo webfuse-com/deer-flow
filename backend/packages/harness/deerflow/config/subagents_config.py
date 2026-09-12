@@ -98,6 +98,10 @@ class SubagentOverrideConfig(BaseModel):
         default=None,
         description="Per-run token budget override for this subagent (None = use the global subagents.token_budget default). Symmetric with timeout_seconds/max_turns.",
     )
+    thinking_enabled: bool | None = Field(
+        default=None,
+        description="Per-agent thinking override (None = use the agent's own setting; built-ins default off). Only applies when the resolved model profile supports thinking.",
+    )
 
 
 class CustomSubagentConfig(BaseModel):
@@ -134,6 +138,10 @@ class CustomSubagentConfig(BaseModel):
         default=900,
         ge=1,
         description="Maximum execution time in seconds",
+    )
+    thinking_enabled: bool | None = Field(
+        default=None,
+        description="Request the model's extended-thinking mode for this subagent (None = default off). Only applies when the resolved model profile supports thinking.",
     )
 
 
@@ -221,6 +229,21 @@ class SubagentsAppConfig(BaseModel):
         override = self.agents.get(agent_name)
         if override is not None and override.model is not None:
             return override.model
+        return None
+
+    def get_thinking_for(self, agent_name: str) -> bool | None:
+        """Get the thinking override for a specific agent.
+
+        Args:
+            agent_name: The name of the subagent.
+
+        Returns:
+            The thinking override if set, None otherwise (use the agent's own
+            value; built-ins default off).
+        """
+        override = self.agents.get(agent_name)
+        if override is not None:
+            return override.thinking_enabled
         return None
 
     def get_max_turns_for(self, agent_name: str, builtin_default: int) -> int:
