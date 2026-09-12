@@ -124,6 +124,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#89](#patch-89) | UI round 2: star brand mark, Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
 | [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
 | [#91](#patch-91) | Graceful run stream options: accept `stream_resumable`, drop unsupported stream modes while one remains (back-filled) | generic-upstreamable | aeb52487 |
+| [#92](#patch-92) | Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2113,6 +2114,23 @@ carry budget ledger.
 - Delete-when: upstream stops rejecting mixed mode lists, or the SDK stops
   sending modes the Gateway does not implement.
 - Upstream status: none sent (small PR candidate).
+
+## Patch #92
+
+**Patch #92 - Per-subagent `thinking_enabled` opt-in**
+
+- Class: argus-additive (a new optional config field; the default path is byte-identical to upstream).
+- Intent: `SubagentExecutor._create_agent` hardcoded `thinking_enabled=False`, so a reasoning-heavy worker (for example a local build agent) could not be tried without changing every existing subagent at once. Adds `thinking_enabled: bool | None` to `SubagentConfig`, `subagents.custom_agents.<name>`, and `subagents.agents.<name>` overrides. `None` preserves the historical default (off); an explicit `true` is honored only when the resolved model profile advertises `supports_thinking` (the model factory already ignores it otherwise). Resolution lives in `resolve_subagent_thinking` and is threaded into both `create_chat_model(...)` and the agent-assembly descriptor so the recorded descriptor matches the model that ran. A per-agent override beats the custom agent's own value.
+- Files: `backend/packages/harness/deerflow/subagents/config.py` (EDITED),
+  `backend/packages/harness/deerflow/subagents/executor.py` (EDITED),
+  `backend/packages/harness/deerflow/subagents/registry.py` (EDITED),
+  `backend/packages/harness/deerflow/config/subagents_config.py` (EDITED),
+  `backend/docs/CONFIGURATION.md` (EDITED),
+  `config.example.yaml` (EDITED, commented example field only; `config_version`
+  is upstream's counter and is deliberately NOT bumped).
+- Tests: `backend/tests/test_subagent_thinking_config.py` (NEW: resolution helper, config surface, registry plumbing, override precedence), `backend/tests/test_subagent_executor.py` (EDITED, +1 case: opt-in reaches `create_chat_model`; default stays off). Full `test_subagent_executor.py` (145), `test_subagent_timeout_config.py` + `test_managed_subagent_registry.py` (71), and `test_config_version.py`/`test_verification_config.py`/`test_subagents_router.py`/`test_app_config_reload.py` (59) pass.
+- Delete-when: upstream exposes per-subagent thinking/reasoning controls; then re-express on their field.
+- Upstream status: none sent yet (clean additive PR candidate).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

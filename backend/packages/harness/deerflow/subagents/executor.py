@@ -40,7 +40,11 @@ from deerflow.subagents.capacity import (
     SubagentExecutionCapacity,
     get_subagent_execution_capacity,
 )
-from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
+from deerflow.subagents.config import (
+    SubagentConfig,
+    resolve_subagent_model_name,
+    resolve_subagent_thinking,
+)
 from deerflow.subagents.report_contract import (
     build_acceptance_criteria_system_note,
     build_report_contract_section,
@@ -947,7 +951,10 @@ class SubagentExecutor:
         app_config = self._get_resolved_app_config()
         if self.model_name is None:
             self.model_name = resolve_subagent_model_name(self.config, self.parent_model, app_config=app_config)
-        model = create_chat_model(name=self.model_name, thinking_enabled=False, app_config=app_config, attach_tracing=False)
+        # Per-subagent thinking: None preserves the historical default (off).
+        # Built-ins and managed definitions carry None; custom agents may opt in.
+        thinking_enabled = resolve_subagent_thinking(self.config)
+        model = create_chat_model(name=self.model_name, thinking_enabled=thinking_enabled, app_config=app_config, attach_tracing=False)
 
         from deerflow.agents.middlewares.tool_error_handling_middleware import build_subagent_runtime_middlewares
 
@@ -1004,6 +1011,7 @@ class SubagentExecutor:
             middlewares=middlewares,
             deferred_setup=deferred_setup,
             extensions=extensions if extensions is not None else self.extensions,
+            thinking_enabled=thinking_enabled,
         )
         return agent
 
@@ -1015,6 +1023,7 @@ class SubagentExecutor:
         middlewares: list[Any],
         deferred_setup: "DeferredToolSetup | None",
         extensions: Any | None,
+        thinking_enabled: bool = False,
     ) -> None:
         """Record and publish what this subagent was assembled from.
 
@@ -1051,7 +1060,7 @@ class SubagentExecutor:
                 requested_model=(self.config.model if self.config.model != "inherit" else self.parent_model),
                 effective_model=self.model_name,
                 model_config=model_config,
-                thinking_enabled=False,
+                thinking_enabled=thinking_enabled,
                 reasoning_effort=None,
                 rendered_base_prompt=self._assembled_system_prompt,
                 prompt_template_id="deerflow-subagent-v1",

@@ -936,6 +936,8 @@ This field is a discovery and activation allowlist; it does not activate every l
 
 The same semantics apply to `subagents.agents.<name>.skills` and `subagents.custom_agents.<name>.skills`: omitted or `null` exposes all enabled skills, `[]` exposes none, and a list limits discovery and activation. A passive subagent skill never removes baseline tools; its `allowed-tools` declaration becomes active only after slash activation or a completed `SKILL.md` read.
 
+Subagents can opt into the resolved model's extended-thinking mode with `subagents.custom_agents.<name>.thinking_enabled` or a per-agent `subagents.agents.<name>.thinking_enabled` override (the override wins). Omitted or `null` keeps the historical default (thinking off) for every built-in and existing custom agent, so this field is inert until an agent opts in. `true` is honored only when the model profile advertises `supports_thinking`; the model factory ignores it otherwise.
+
 `LocalSandboxProvider` enforces this filesystem view through its managed virtual
 path mappings only. Explicit per-Agent skill policies therefore fail closed when
 `sandbox.allow_host_bash` is enabled, because host subprocesses can bypass those
