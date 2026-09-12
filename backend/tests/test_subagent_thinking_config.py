@@ -7,13 +7,10 @@ historical default (thinking off) so this change is inert until a subagent
 opts in.
 """
 
-import pytest
-
 from deerflow.config.subagents_config import (
     CustomSubagentConfig,
     SubagentOverrideConfig,
     SubagentsAppConfig,
-    get_subagents_app_config,
     load_subagents_config_from_dict,
 )
 from deerflow.subagents.config import SubagentConfig, resolve_subagent_thinking
@@ -30,23 +27,17 @@ class TestResolveSubagentThinking:
         assert resolve_subagent_thinking(config) is False
 
     def test_explicit_true(self):
-        config = SubagentConfig(
-            name="a", description="a", system_prompt="p", thinking_enabled=True
-        )
+        config = SubagentConfig(name="a", description="a", system_prompt="p", thinking_enabled=True)
         assert resolve_subagent_thinking(config) is True
 
     def test_explicit_false(self):
-        config = SubagentConfig(
-            name="a", description="a", system_prompt="p", thinking_enabled=False
-        )
+        config = SubagentConfig(name="a", description="a", system_prompt="p", thinking_enabled=False)
         assert resolve_subagent_thinking(config) is False
 
 
 class TestConfigSurface:
     def test_custom_subagent_accepts_thinking(self):
-        custom = CustomSubagentConfig(
-            description="d", system_prompt="p", thinking_enabled=True
-        )
+        custom = CustomSubagentConfig(description="d", system_prompt="p", thinking_enabled=True)
         assert custom.thinking_enabled is True
         assert CustomSubagentConfig(description="d", system_prompt="p").thinking_enabled is None
 
@@ -56,9 +47,7 @@ class TestConfigSurface:
         assert SubagentOverrideConfig(thinking_enabled=False).thinking_enabled is False
 
     def test_get_thinking_for(self):
-        config = SubagentsAppConfig(
-            agents={"bash": SubagentOverrideConfig(thinking_enabled=True)}
-        )
+        config = SubagentsAppConfig(agents={"bash": SubagentOverrideConfig(thinking_enabled=True)})
         assert config.get_thinking_for("bash") is True
         assert config.get_thinking_for("general-purpose") is None
         assert config.get_thinking_for("unknown") is None
@@ -95,9 +84,7 @@ class TestRegistryPlumbing:
         load_subagents_config_from_dict(
             {
                 "timeout_seconds": 900,
-                "custom_agents": {
-                    "build": {"description": "build worker", "system_prompt": "p"}
-                },
+                "custom_agents": {"build": {"description": "build worker", "system_prompt": "p"}},
             }
         )
         assert get_subagent_config("build").thinking_enabled is None

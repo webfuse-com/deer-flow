@@ -1105,18 +1105,12 @@ class TestAgentConstruction:
             model="m1",
             thinking_enabled=True,
         )
-        SubagentExecutor(
-            config=opted_in, tools=[], app_config=app_config, parent_model="parent"
-        )._create_agent()
+        SubagentExecutor(config=opted_in, tools=[], app_config=app_config, parent_model="parent")._create_agent()
         assert captured["model"]["thinking_enabled"] is True
 
         captured.clear()
-        default = classes["SubagentConfig"](
-            name="build", description="build worker", system_prompt="p", model="m1"
-        )
-        SubagentExecutor(
-            config=default, tools=[], app_config=app_config, parent_model="parent"
-        )._create_agent()
+        default = classes["SubagentConfig"](name="build", description="build worker", system_prompt="p", model="m1")
+        SubagentExecutor(config=default, tools=[], app_config=app_config, parent_model="parent")._create_agent()
         assert captured["model"]["thinking_enabled"] is False
 
     def test_create_agent_threads_deferred_setup_to_middlewares(
