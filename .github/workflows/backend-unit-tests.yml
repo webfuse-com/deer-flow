@@ -45,7 +45,14 @@ jobs:
         working-directory: backend
         run: uv run pytest --collect-only -q
 
-  backend-unit-tests:
+  backend-unit-tests-shard:
+    # [argus] Upstream turned this job into a 4-shard matrix, which renames its
+    # check runs to "backend-unit-tests (1..4)" and leaves the branch
+    # protection's required "backend-unit-tests" context reporting forever.
+    # The shards keep their own names here and the aggregate job below carries
+    # the required name, so the contract survives upstream changing the shard
+    # count again (a `needs:` on a matrix job is green only when every leg is).
+    name: backend-unit-tests-shard ${{ matrix.shard }}
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -114,3 +121,18 @@ jobs:
           # exercised in CI.
           DEDUPE_TEST_POSTGRES_URL: ${{ env.TEST_POSTGRES_URI }}
         run: make test-shard SPLITS=4 GROUP=${{ matrix.shard }}
+
+  backend-unit-tests:
+    # [argus] The required status context. Green only when every shard passed;
+    # a cancelled or skipped shard is a failure here, not a silent pass.
+    name: backend-unit-tests
+    needs: [backend-unit-tests-shard]
+    if: always() && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every backend shard passed
+        run: |
+          result='${{ needs.backend-unit-tests-shard.result }}'
+          echo "shards: ${result}"
+          [ "${result}" = "success" ] || exit 1
