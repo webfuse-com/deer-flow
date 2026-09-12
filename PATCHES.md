@@ -15,8 +15,17 @@ a #7/#8 collision between the prompt blocks and the todo middleware). This
 file is now canonical; where older documents disagree, the section notes the
 alias. Baseline facts:
 
-- Upstream base: tag `v2.0.0` (`7e7f0410`). Fork tip: `2df36c99` (29 commits,
-  ~26 logical patches after grouping). Deployed pin: `/opt/argus/VERSIONS.md`.
+- Upstream base: `3f0b6ecc` (`bytedance/main`, 2026-09-11), reached by the
+  merge-based sync of 2026-09-11 (acropolis `docs/DEERFLOW-SYNC.md`; previous
+  base `3a967d4f` of 2026-08-15, 237 upstream commits behind). The 2026-07-02
+  rebuild was against tag `v2.0.0` (`7e7f0410`), fork tip `2df36c99` (29
+  commits, ~26 logical patches). Deployed pin: `/opt/argus/VERSIONS.md`.
+- Sync 2026-09-11 in one line: retired #63 (its upstream original is now in
+  the base), #80 (upstream ships `DEER_FLOW_SANDBOX_*` env knobs; the Argus
+  profile moves to the gateway environment and the socket proxy) and the
+  backend half of #67 (upstream #5041); re-expressed #20, #22, #33, #66,
+  #68/#69, #75, #87 onto upstream's new designs. Each section carries a
+  "Sync 2026-09-11" bullet; retired items are under "Dropped".
 - Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
   `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
 
@@ -58,7 +67,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [coalesce](#patch-coalesce) | split-paste message coalescing | argus-additive | 8a67af3c |
 | [#30](#patch-30) | scheduled-playbook fire + per-job agent & memory | argus-additive | 1be4c909, 3cc5491e |
 | [#31/#32](#patch-3132) | unattended-silence: empty/filler turns | argus-edit | 488fe077 |
-| [#33](#patch-33) | wire `sandbox.network` DNS mode (no host-port publish) | generic-upstreamable | 7e238127 |
+| [#33](#patch-33) | sandbox network-DNS mode: `container_network` (legacy `sandbox.network: <name>`), no host-port publish | generic-upstreamable | 7e238127, sync 2026-09-11 |
 | [#34](#patch-34) | unattended-silence: narrated-silence announcements | argus-edit | 8bf85a9c |
 | [#35](#patch-35) | landing-galaxy CPU/GPU cost cut | generic-upstreamable | ccf1b69f |
 | [#36](#patch-36) | surface `(No response from agent)` on blank final | argus-edit | 89ea4d2f |
@@ -88,11 +97,10 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#60](#patch-60) | `tool_search.defer` — latency-tiered deferral for builtin tools (+`always_bind` alias) | config-expressed | this PR |
 | [#61](#patch-61) | WebUI and server default `max_recursion_limit` bump to 10000 | generic-upstreamable | this PR |
 | [#62](#patch-62) | Telegram voice-note inbound via overlay Deepgram STT | argus-additive | this PR |
-| [#63](#patch-63) | Summarization must not resurrect answered user turns (upstream backport) | generic-upstreamable | this PR |
 | [#64](#patch-64) | Config-gated subagent delegation posture | config-expressed | 09af0482 |
 | [#65](#patch-65) | Simplified shared UI + serialized Telegram stage cleanup | argus-edit | this PR |
 | [#66](#patch-66) | Salvage partial subagent work on timeout + per-run wall-clock deadline | generic-upstreamable | this PR |
-| [#67](#patch-67) | Rejoin in-flight run on WebUI reload + disconnect-safe viewer joins | generic-upstreamable | this PR |
+| [#67](#patch-67) | Rejoin in-flight run on WebUI reload (frontend; the backend disconnect half was subsumed by upstream #5041 at the 2026-09-11 sync) | generic-upstreamable | this PR |
 | [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
 | [#69](#patch-69) | Loop-detection: near-duplicate SUCCESS downgrades (content Jaccard) | argus-edit | this PR |
 | [#70](#patch-70) | surface missing durable run-event storage (back-filled) | generic-upstreamable | 477d652a |
@@ -105,7 +113,6 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#77](#reverted-patch-77) | optional write-file narration (REVERTED 2026-08-31) | argus-edit | 187d7e28, 8f1d49cb |
 | [#78](#patch-78) | Merge model profile and runtime constructor kwargs | generic-upstreamable | this PR |
 | [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
-| [#80](#patch-80) | Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges | generic-upstreamable | this PR |
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
 | [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
@@ -116,6 +123,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#88](#patch-88) | Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend | argus-additive | this PR |
 | [#89](#patch-89) | UI round 2: star brand mark, Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
 | [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
+| [#91](#patch-91) | Graceful run stream options: accept `stream_resumable`, drop unsupported stream modes while one remains (back-filled) | generic-upstreamable | aeb52487 |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -179,6 +187,7 @@ carry budget ledger.
   frequency overrides (PR #2711, merged) grow the expressiveness to state
   this in config alone.
 - Upstream status: none (PR candidate; default equals upstream).
+- Sync 2026-09-11: kept, re-threaded; upstream still hardcodes `bucket_size = 200`.
 
 ## Patch #4
 
@@ -241,6 +250,7 @@ carry budget ledger.
   Surface: `lead_agent/prompt.py`.
 - Upstream status: subsumed-watch (upstream absorbs pillars piecemeal, #3195
   precedent).
+- Sync 2026-09-11: upstream re-expanded `<clarification_system>` (ea9b7014, "no sibling tool calls"); kept our one-paragraph form plus one sentence carrying that rule ("Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped"). The other residual blocks auto-merged.
 
 ## Patch #7/#18
 
@@ -682,6 +692,7 @@ carry budget ledger.
   contract for timed-out subagents.
 - Upstream status: clean PR candidate for both halves. The salvage in
   particular is a strict improvement with an in-repo precedent to cite.
+- Sync 2026-09-11: the timeout salvage is re-expressed into upstream's rewritten `execute_async` (`asyncio.wait_for` + `except TimeoutError` on the persistent isolated loop; upstream still stamps a bare `TIMED_OUT` there and salvages only on the GraphRecursionError path). Both outcomes now carry upstream's `tool_receipts=result.snapshot_tool_receipts()`. `time_capped` in `status_contract.py`, `run_deadline_middleware.py`, `run_limits_config.py`, `delegation_ledger.py` auto-merged intact. The sync `execute()`/`_execute_in_isolated_loop` timeout path is unchanged (ours never touched it).
 
 ## Patch #71
 
@@ -731,6 +742,7 @@ carry budget ledger.
 - Delete-when: never (additive; upstreaming encouraged — natural completion
   of the dynamic agent_type_description pattern the system prompt already
   uses).
+- Sync 2026-09-11: kept; upstream's `bind_task_tool` copies only the coroutine and `SUBAGENT_TOOLS` still holds the `task_tool` singleton, so the `is task_tool` swap still matches; now combined with upstream's batch tools (`batch_task`/`batch_status`/`cancel_batch`). The stale "Patch #65" header comment in `task_tool.py` was renamed to #71.
 
 ## Patch #64
 
@@ -777,6 +789,7 @@ carry budget ledger.
 - Delete-when: never (config knob; the conservative default IS upstream
   behavior). Drop only if upstream grows its own posture/mode-aware
   delegation framing worth switching to.
+- Sync 2026-09-11: kept; the `parallel_first` template also carries upstream's new "Act on ordinary `task` acceptance results" block and `{durable_batch_guidance}`, and honours upstream's `allowed_subagents` filter.
 
 ## Patch #65
 
@@ -855,30 +868,6 @@ carry budget ledger.
   equivalent STT hook, or Argus stops using Telegram voice.
 - Upstream status: not upstreamable as-is (Argus overlay import).
 
-## Patch #63
-
-**Patch #63 - Summarization must not resurrect answered user turns**
-
-- Class: generic-upstreamable (already merged upstream — this is a backport)
-- Intent: `_preserve_dynamic_context_reminders` rescued the dynamic-context
-  ID-swap `__user` peer (the thread's FIRST user message) from every
-  compaction with no staleness check, so an old, long-answered question kept
-  masquerading as the live request while its answer was summarized away
-  (atlas-nicholas thread `bacbf501`, 2026-08-22: the lead agent broke off
-  mid-task and re-answered a 20-minutes-stale question twice). Now only
-  tagged reminders plus the LATEST real user message (locked by exact id in
-  `_prepare_compaction`) are rescued; stale `__user` peers compress like any
-  other history.
-- Files: `backend/packages/harness/deerflow/agents/middlewares/summarization_middleware.py`,
-  `backend/tests/test_summarization_middleware.py`
-- Tests: `test_stale_user_peer_is_compressed_not_rescued`,
-  `test_stale_user_peer_compressed_without_memory`,
-  `test_non_reminder_messages_with_double_underscore_id_not_rescued`,
-  `test_current_request_survives_and_stale_peer_compresses` (upstream commit)
-- Delete-when: the fork base includes upstream `0a3c04eb` (bytedance PR
-  #4882, merged 2026-08-22) — drop this patch at the next base sync.
-- Upstream status: ALREADY UPSTREAM — verbatim cherry-pick of `0a3c04eb`.
-
 ## Patch #20
 
 **Patch #20 - view_image: vision-describe for non-vision lead models**
@@ -898,6 +887,7 @@ carry budget ledger.
   every Argus lead model is vision-capable (then the branch is unused; verify
   before deleting).
 - Upstream status: none.
+- Sync 2026-09-11: re-expressed onto upstream's `wrap_model_call` design (cb24bc26 #5014 stops checkpointing base64 payloads, 3a6e681d #5306 reads active-sandbox images). `_describe_inputs` now reuses upstream's provenance-checked `_read_image_as_data_url`, so the replacement-sandbox/sha rules apply to the describe path too; the sync path sweeps stranded context and defers as before. DROPPED inside #20: the `legacy_base64` fallback for pre-#4138 checkpoints (upstream removed that read path; such images render as "file unavailable or changed"). Tests rewritten to the `ModelRequest` harness, +1 case (unreadable image -> placeholder). Carry is now additive only (103/0).
 
 ## Patch #21/#24
 
@@ -921,6 +911,7 @@ carry budget ledger.
   context natively (it already did `channel_user_id`; watch each sync for the
   rest), or upstream makes runtime-context key whitelisting configurable.
 - Upstream status: subsumed-watch (one of four keys absorbed in v2.0.0).
+- Sync 2026-09-11: upstream's `_resolve_run_params` now sets `run_context_identity["channel_name"]` natively (two of the four keys absorbed). Carried: `channel_id`/`thread_ts` in the manager plus the `services.py` whitelist for all four (upstream still whitelists none of them).
 
 ## Patch #22
 
@@ -941,6 +932,7 @@ carry budget ledger.
 - Delete-when: the minutes draft is posted through the agent (creating a real
   DeerFlow thread), or upstream adds channel thread-history hydration.
 - Upstream status: none.
+- Sync 2026-09-11 (finding): the manager half had been DEAD since the 2026-08-15 reconcile. It sat on `if thread_id is None:` inside `_handle_chat_on_thread`, a branch that cannot run because `_handle_chat` always resolves a thread first. Re-wired as `_prepend_new_topic_context()` called from `_handle_chat`'s `created` branch, so the documented behaviour (Slack replies under non-agent posts start with the thread's context) is live again; treat that as a behaviour change on the next rollout. Still no manager-level test; the `SlackChannel.fetch_thread_context` tests pass.
 
 ## Patch #23
 
@@ -990,6 +982,7 @@ carry budget ledger.
   instead of being rejected (then re-evaluate whether combining is still
   wanted for answer quality).
 - Upstream status: none (PR candidate).
+- Sync 2026-09-11: upstream's new `test_trace_entry_points.py::test_inbound_messages_are_handled_under_distinct_trace_scopes` publishes two inbound messages to one chat and waits for two handled units of work, which split-paste coalescing merges into one. The test now constructs the manager with `coalesce_window=0`, as `test_channels.py`, `test_channel_intake_backpressure.py`, `test_github_dispatcher.py`, `test_multi_pod_inbound_dedupe.py` and `test_github_token_plumbing.py` already do.
 
 ## Patch #30
 
@@ -1039,6 +1032,7 @@ carry budget ledger.
   surfaces to watch: `manager._resolve_run_params`, the
   `_CONTEXT_CONFIGURABLE_KEYS` whitelist, and the two memory-write paths.
 - Upstream status: none.
+- Sync 2026-09-11: `msg.agent_name` now feeds upstream's `explicit_agent_choice` path (`_apply_explicit_agent_choice`), so a playbook's agent is SET in all three Gateway carriers and outranks the metadata override, the new `/agent` thread pin and every session layer for that fire only (the documented precedence). Router, CSRF exemption, memory-policy seams unchanged; `effective_memory_mode` still sits at the first-turn injection site, which upstream e59ee482 (#4667) now targets at the latest user message (verified).
 
 ## Patch #31/#32
 
@@ -1066,29 +1060,47 @@ carry budget ledger.
 
 ## Patch #33
 
-**Patch #33 - wire `sandbox.network` so DNS mode skips host-port publish**
+**Patch #33 - sandbox network-DNS mode (`container_network`; legacy `sandbox.network: <name>`)**
 
-- Class: generic-upstreamable (real fix for rootless-Podman deployments)
-- Intent: The `sandbox.network` config key (from legacy #26) was never
-  consumed: `LocalContainerBackend` always host-published `-p`, per-thread
-  sandboxes collided on 8080/8081/8082 under rootless Podman, stuck in
-  Created, and wedged runs holding the thread lock. Wire it end to end: when
-  `network` is set, `--network <net>` and NO `-p`; sandbox URL becomes
-  `http://<container_name>:8080` via container DNS; create/discover/
-  list_running/destroy are all network-aware (no port alloc/release, orphan
-  reconciliation adopts network-mode containers). Legacy host-publish path is
-  byte-for-byte preserved when unset.
-- Files: `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py` (EDITED),
-  `.../aio_sandbox/aio_sandbox_provider.py` (EDITED),
-  `backend/packages/harness/deerflow/config/sandbox_config.py` (EDITED, `network` field)
-- Tests: `backend/tests/test_aio_sandbox_local_backend.py`,
-  `backend/tests/test_aio_sandbox_provider.py`,
-  `backend/tests/test_sandbox_orphan_reconciliation.py` (all EDITED, 11 new
-  cases)
-- Delete-when: upstream accepts network-mode for `LocalContainerBackend` (PR
-  candidate: default-off, legacy path untouched), or upstream's sandbox
-  backend abstraction gains a first-class no-publish/DNS mode.
-- Upstream status: none (PR candidate).
+- Class: generic-upstreamable (real fix for rootless-Podman deployments; on
+  Argus it is also mandatory, the socket proxy refuses `PortBindings`).
+- Intent: sandboxes join the stack's container network and the gateway reaches
+  them by container DNS name on the container's own port 8080; NO host port
+  is published, so there is no port allocation, no "port already allocated"
+  retry loop and no rootless-Podman port-bind race (the original #26 symptom:
+  per-thread sandboxes colliding on 8080/8081/8082, stuck in Created, wedging
+  runs). create/discover/list_running/destroy are all network-aware; orphan
+  adoption gets a usable DNS URL instead of `""`. Unset keeps upstream's
+  host-publish path byte for byte.
+- Sync 2026-09-11 (re-expressed onto upstream's rebuilt `local_backend.py`,
+  #4986/#5152/#5163): upstream's `network` config key is now the egress-policy
+  object (`mode: open|isolated|allowlist`), so the network NAME moved to a new
+  `SandboxConfig.container_network`; a `model_validator(mode="before")` maps
+  the legacy string form `network: <name>` (what every stack config and the
+  socket-proxy policy read) onto it, so no stack config changes. The backend
+  takes a `container_network` kwarg and, in open mode only, starts sandboxes
+  through upstream's own `network_override=`/`publish_port=False` plumbing
+  with upstream's identity labels; `_sandbox_url()` builds the DNS URL;
+  discover/list_running accept an unpublished port instead of marking the
+  sandbox `requires_replacement`; destroy releases no port. Restricted modes
+  plus `container_network` raise at construction. An unlabelled pre-sync
+  sandbox is a legacy open sandbox to upstream's `_persisted_sandbox_mode`, so
+  running threads survive the rollout.
+- Files: `backend/packages/harness/deerflow/config/sandbox_config.py`
+  (`container_network`, legacy mapping),
+  `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox_provider.py`
+  (`_load_config`/`_create_backend` forwarding),
+  `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py`
+  (constructor, `_sandbox_url`, create/discover/list_running/destroy branches),
+  `config.example.yaml` (comment on the legacy form).
+- Tests: `backend/tests/test_aio_sandbox_local_backend.py` (6 cases under
+  "[argus] patch #33"), `backend/tests/test_aio_sandbox_provider.py` (3),
+  `backend/tests/test_sandbox_orphan_reconciliation.py` (1).
+- Delete-when: upstream's open mode gains a first-class no-publish/DNS option
+  (`DEER_FLOW_SANDBOX_NETWORK` exists upstream since #5152 but still publishes
+  a host port), or upstream's sandbox backend abstraction gains one.
+- Upstream status: none (PR candidate: "open mode: reach sandboxes by
+  container DNS when a network is given, publish no port").
 
 ## Patch #34
 
@@ -1222,6 +1234,7 @@ carry budget ledger.
   the chat-header component layout; could be offered upstream as a generic
   feature if the sandbox-provider id gating is generalized.
 - Upstream status: none.
+- Sync 2026-09-11: kept. A duplicate definition of `_CONTAINER_SANDBOX_ID_RE`/`_is_container_sandbox_id` that our carry had accumulated was removed; `_is_pin_metadata_patch` dropped (upstream replaced it with `_is_organization_metadata_patch`, no references left).
 
 ## Patch #39
 
@@ -1405,7 +1418,7 @@ carry budget ledger.
   default and is upstreamable as a generic extension).
 
 ---
-
+- Sync 2026-09-11: kept, now next to upstream's `allowed_subagents` filter and the hard-deny `subagent_enabled` block.
 
 ## Patch #44
 
@@ -1457,6 +1470,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_summarization_per_model.py`; ca0cfe85 relaxed two brittle stubs in `backend/tests/test_lead_agent_model_resolution.py`.
 - Delete-when: upstream resolves summarization thresholds from the lead model without requiring a model profile.
 - Upstream status: none sent; generic candidate.
+- Sync 2026-09-11: kept. The explicit-null trim (6734fe90) is now identical to upstream (`trim_tokens_to_summarize` passed unconditionally), carry 0 for that line; the config doc line combines upstream's description with our "omit = 4000 / explicit null = skip" sentence.
 
 ## Patch #48
 
@@ -1479,6 +1493,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_tool_output_budget_middleware.py` (TestBuildPreviewOmittedBlockIndex).
 - Delete-when: upstream's preview builder indexes omitted spans.
 - Upstream status: none sent; generic candidate.
+- Sync 2026-09-11: kept, wrapped in upstream's new `(preview, "externalized")` tuple return.
 
 ## Patch #50
 
@@ -1524,6 +1539,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_tool_policy_agent_source.py`, TestAgentSourceToolPolicy in `backend/tests/test_subagent_executor.py`.
 - Delete-when: upstream ships an agent-level allowed-tools ceiling (watch the PR #2626 line).
 - Upstream status: none sent; generic candidate.
+- Sync 2026-09-11: kept; `parent_agent_allowed_tools` sits next to upstream's new `execution_capacity`/`acceptance_criteria`/recorder kwargs, `tool_policy` next to upstream's new `verification` field; upstream's `DeferredToolPromotionAuditMiddleware` is registered before `SkillToolPolicyMiddleware` as upstream requires.
 
 ## Patch #54
 
@@ -1587,6 +1603,7 @@ carry budget ledger.
 - Upstream status: none sent. Supersedes the unmerged #42 `isLastGroup`
   approach by fixing the root cause (rejoin) plus a scoped fallback; #42's
   commit is not in argus history.
+- Sync 2026-09-11: the BACKEND half is DROPPED as subsumed. Upstream bf740ffa (#5041) makes every join surface (`join_run`, `_stream_existing_run`) call `sse_consumer(..., apply_on_disconnect=False)`, so an observer disconnect can never cancel a run; that is strictly stronger than our tristate `cancel_on_disconnect` override. Removed: the query param, `_should_cancel_on_disconnect`, and its two tests in `test_gateway_services.py`. The frontend half (rejoin on reload, `owningRunIsActive` fallback) is kept unchanged.
 
 ## Patch #68
 
@@ -1651,6 +1668,7 @@ carry budget ledger.
   independently upstreamable and may land separately.
 - Upstream status: none sent (strong PR candidate; the gate rationale cites
   Gemini CLI's loop-recovery design, which soft-recovers before killing).
+- Sync 2026-09-11: re-expressed onto upstream's `_LoopDecision` shape after e7c059d8 (#5245 hard-stop ordering), 9b32b5d8 (#5127 event persistence), 13f0a7f2 (#4863 extension observers) and 36ce7590 (#5344 per-run state). The Layer-1 downgrade is a `warn` decision with a new `downgrade: "recoverable_retry" | "exempt_tool" | None` field. Four behaviour decisions: (1) a downgraded hard stop no longer short-circuits Layer 2 (upstream requires warnings not to skip frequency accounting), so a Layer-2 hard stop can supersede it; it still escalates per call because it is never marked "already warned" (default `recoverable_retry_limit` 24 < freq hard 50, so defaults are unchanged); (2) downgrades are persisted to the run journal as `action="warn"` with `changes["downgrade"]`, added only when set so upstream's exact-equality event tests stay untouched; (3) `release_policy_parameters()` now includes `read_file_bucket_size_lines`, `no_hard_stop_tools`, `recoverable_retry_limit`; (4) upstream's `_WARNING_MSG` stays defined but Layer-1 warnings use our actionable text. Tests ported from `_get_thread_id` to `_run_scope_key` indexing.
 
 ## Patch #69
 
@@ -1686,6 +1704,7 @@ carry budget ledger.
 - Delete-when: upstream ships content-similarity-aware gating (or accepts
   this PR along with #68's gate).
 - Upstream status: none sent.
+- Sync 2026-09-11: kept on the re-expressed gate; `word_set`/`is_near_duplicate` are still exported by upstream's `tool_progress_middleware`.
 
 ## Patch #70
 
@@ -1721,6 +1740,8 @@ carry budget ledger.
 - Delete-when: upstream provides atomic same-file edit batches and general
   soft exploration/execution phase budgets with equivalent semantics.
 - Upstream status: none sent.
+- Sync 2026-09-11: `str_replace` re-expressed on upstream's signature (`path, old_str=None, new_str=None, description="", replace_all=False, replacements=None`; the async wrapper forwards all six). `backend/tests/test_tool_args_schema_no_pydantic_warning.py` (new upstream file) has two `str_replace` rows updated, marked `[argus patch #72]`. The four-line `CHANGELOG.md` entry this patch added is dropped: that file is upstream's release log.
+- Sync 2026-09-11, guidance budget: `backend/packages/harness/deerflow/sandbox/AGENTS.md` is 40,908 bytes upstream against a 40,960 soft budget enforced by `test_agent_guidance_check.py`, so this patch's paragraph there is now one clause, and the #81/#82 command-classification paragraph moved to `agents/middlewares/AGENTS.md`, which has room. Same cause in `backend/AGENTS.md` (#73's section condensed to one line) and `backend/app/gateway/AGENTS.md` (the #67 backend-half paragraph deleted with the patch half it described). Any fork sentence added to a near-budget upstream guidance file fails that gate.
 
 ## Patch #73
 
@@ -1740,6 +1761,8 @@ carry budget ledger.
   batch-tool coverage.
 - Delete-when: upstream provides equivalent independently configurable controls.
 - Upstream status: none sent.
+- Sync 2026-09-11: kept (`AdaptiveReasoningMiddleware`, `SkillAutoRoutingMiddleware`, `lead_model`/`routine_model`, `workspace_inspect_tool`/`workspace_patch_tool` still exported at module level for the 21 stack configs, input-sanitization tag names plus upstream's `background_task_event`, read-before-write mark refresh and non-blocking lock now inside upstream's `sandbox_authorization_scope` wrappers; upstream adopted the same read-before-write semantics in its own tests). DROPPED dead code that the 2026-08-15 rebase had re-added: `SubagentExecutor._load_skill_messages` (no caller at base, upstream or ours) and a duplicate `effective_user_id =` line in `client.py` (upstream hoisted it into the graph-cache-key block).
+- Sync 2026-09-11, behaviour decision recorded: `tool_result_meta._sync_message_status` keeps LangChain's public `ToolMessage.status` equal to our richer meta. Upstream's new `test_command_tool_result_semantics.py` asserts the opposite for command receipts ("producer did not set status=error", so the public field stays `success` while meta and receipt say `error`); both of its assertions are adapted, because `ReadBeforeWriteMiddleware` reads `message.status` to decide whether a write landed and a bash write that exits non-zero must not refresh the read mark. Both signals now agree rather than disagreeing.
 
 ## Patch #74
 
@@ -1761,6 +1784,7 @@ carry budget ledger.
 - Delete-when: upstream's default summary is a recursive execution ledger and
   its reinjection contract prevents completed-to-pending phase regression.
 - Upstream status: pending replay evidence before proposing upstream.
+- Sync 2026-09-11: kept; the ledger prompt now names the `<active_user_request>` block introduced by #75's re-expression.
 
 ## Patch #75
 
@@ -1779,6 +1803,7 @@ carry budget ledger.
 - Delete-when: the upstream summarizer receives the preserved current request
   or an equivalent durable objective independently of the compaction slice.
 - Upstream status: pending canary replay evidence.
+- Sync 2026-09-11: re-expressed. Upstream f8f6cde2 (#5248) trims `<new_messages>` with a budget and pins that the rescued request is not history; our inline "ACTIVE USER REQUEST ... MESSAGES BEING COMPACTED" prefix ate that budget and leaked into `<new_messages>`. Now an own `<active_user_request>` block, escaped, bounded separately, emitted ahead of `<existing_summary>`/`<new_messages>`, only when there is history to compact. Upstream tests adjusted: two `CURRENT_REQUEST not in prompts[0]` assertions in `test_summarization_summary_text.py` narrowed to the `<new_messages>` section; `active_user_request` added to `_EXEMPT_BLOCK_TAGS` in `test_input_sanitization_middleware.py`.
 
 ## Reverted patch #76
 
@@ -1892,46 +1917,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_artifacts_router.py` (EDITED: active content inline with the sandbox CSP, `download=true` still an attachment, markdown and csv as plain text inline, css kept), `frontend/tests/unit/components/workspace/workspace-header.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/workspace-nav-chat-list.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/artifacts/internalize-artifact-action.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/share-state-icon.dom.test.tsx` (NEW).
 - Delete-when: the brand mark, the Agora link and the sharing controls are Argus-specific and stay with the fork; the inline viewing policy could be offered upstream (an opt-in "sandboxed inline active content" setting) and dropped here if upstream adopts it.
 - Upstream status: n/a for the Atlas UI; the artifacts route change is upstreamable as a proposal.
-
-## Patch #80
-
-**Patch #80 - Sandbox hardening knobs: limits, capabilities, seccomp, no-new-privileges**
-
-- Class: generic-upstreamable (config-driven, off by default; upstream behaviour
-  is reproduced exactly when nothing is configured).
-- Intent: `LocalContainerBackend._start_container` launched every agent sandbox
-  with a single hard-coded `--security-opt seccomp=unconfined` and no resource
-  limits, so untrusted agent code ran as an unlimited container with the
-  kernel's syscall filter switched off (live on Argus 2026-09-03: `Memory=0
-  PidsLimit=0 CapDrop=[] SecurityOpt=[seccomp=unconfined]` on every
-  `argus-*-sandbox-*`; Cerberus `sandbox_unhardened` + `seccomp_unconfined`).
-  `SandboxConfig` gains `memory`, `pids_limit`, `cpus`, `cap_drop`, `cap_add`,
-  `seccomp_profile`, `no_new_privileges` and `extra_run_args`; the provider
-  forwards them and the backend renders them on the docker/podman path
-  (`_docker_hardening_args`). `seccomp_profile` unset keeps upstream's
-  `seccomp=unconfined`; `"default"` passes no seccomp option (the runtime's
-  own default filter); any other value is a profile path. Apple `container`
-  has none of these flags and is left untouched. Verified on the production
-  image (`all-in-one-sandbox@sha256:742062f9`) under `--memory 3g
-  --pids-limit 1024 --cpus 8 --security-opt no-new-privileges` with the
-  default seccomp filter: shell exec, cgroup limits visible inside, browser
-  info + screenshot (chromium renders) all fine.
-- Files: `backend/packages/harness/deerflow/config/sandbox_config.py`
-  (EDITED: eight fields + docstring),
-  `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py`
-  (EDITED: constructor kwargs, `_docker_hardening_args`, call site),
-  `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox_provider.py`
-  (EDITED: `_load_config` keys, `_create_backend` forwarding).
-- Tests: `backend/tests/test_aio_sandbox_local_backend.py` (seven new tests:
-  unconfigured == upstream, `default` omits seccomp, custom profile passed
-  through, limits/caps/no-new-privileges/extra args rendered before the
-  image, fractional cpus, blank knobs ignored, Apple runtime untouched);
-  `backend/tests/test_aio_sandbox_provider.py` (three new tests: defaults,
-  knobs carried by `_load_config`, `_create_backend` forwards them).
-- Delete-when: upstream exposes equivalent sandbox resource/security options
-  on `SandboxConfig` (none as of the 2026-08-15 base).
-- Upstream status: none sent yet; the shape is generic (every field maps to a
-  documented docker flag) and is a candidate for the next upstream batch.
+- Sync 2026-09-11: kept and merged with upstream #4864: both `FileResponse` branches now carry the SHA-256 ETag; inline active content keeps the CSP sandbox headers. Upstream's `test_get_artifact_large_active_content_skips_etag` adapted (attachment -> inline plus CSP, still no ETag); our inline test also asserts the ETag.
 
 ## Patch #81
 
@@ -1979,6 +1965,7 @@ carry budget ledger.
   `backend/tests/test_loop_detection_config.py` (added test for subcategory override validation).
 - Delete-when: upstream adopts unified shell command classification and efficiency tracking for shell inspection.
 - Upstream status: none sent yet.
+- Sync 2026-09-11: kept; state keyed by upstream's `(thread_id, run_id)` scope key; the dead `_bash_subcategory` helper (superseded by `_bash_classify` since #83, no references) was dropped.
 
 ## Patch #83
 
@@ -2000,8 +1987,7 @@ carry budget ledger.
   `backend/tests/test_loop_detection_middleware.py` (added tests for write progress resetting subcat counter, pure inspection hard stop, hard stop resetting counter, subcategory deque trimming to own limit, dotted MCP override window inflation, empty bash command write progress avoidance).
 - Delete-when: upstream adopts structured error classification and subcategory frequency window decay.
 - Upstream status: none sent yet.
-
-
+- Sync 2026-09-11: kept (`_clear_subcategory_locked(scope_key)`, own-limit trimming, resets); the `tool_result_meta.py` half auto-merged next to upstream's new `subagent_status` block.
 
 ## Patch #84
 
@@ -2073,6 +2059,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_file_signature.py` (EDITED, +2 cases: no-op rewrite + digest-only contract), `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: forward/backward-mtime no-op rewrite not stale).
 - Delete-when: upstream makes config-change detection content-digest-based instead of mtime/signature-tuple-based.
 - Upstream status: none sent yet (PR candidate).
+- Sync 2026-09-11: kept (`_signatures_differ` in `cache._is_cache_stale` and `app_config.get_app_config`).
 
 ## Patch #87
 
@@ -2085,6 +2072,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: stale-with-cache serves stale synchronously + refreshes in background; failed background refresh keeps serving old tools + retries).
 - Delete-when: upstream moves MCP tool re-discovery off the synchronous agent-construction path (background/stale-while-revalidate).
 - Upstream status: none sent yet (PR candidate).
+- Sync 2026-09-11: re-expressed. Upstream replaced the asyncio lock with a cross-loop `threading.Condition` plus generation counter and retires the session pool on every invalidation. Ours is now `_schedule_background_refresh_locked()` + `_refresh_mcp_tools_in_background()`, called from `get_cached_mcp_tools` under `_init_lock` only when tools are already cached AND a loop is running; the refresh retires the pool before discovery (wrappers bind the pool at build time) and closes it after the swap, honours `_cache_generation`/`_initializing_generation` (a mid-refresh reset wins), and on failure keeps the old tools while marking the cache uninitialized. `initialize_mcp_tools()` no longer has a `force` flag. Known limit: the retired pool is closed in `finally` even when the refresh fails, which drops idle sessions (wrappers recreate them on demand) rather than breaking tools.
 
 ## Patch #90
 
@@ -2096,8 +2084,72 @@ carry budget ledger.
 - Tests: `backend/tests/test_channels.py` (EDITED, +2 cases: `test_get_or_create_thread_reregisters_mapped_thread_missing_from_registry` (unknown thread re-created under the same id) and `test_get_or_create_thread_keeps_mapping_when_gateway_verification_fails` (a transient verification error keeps the stored mapping rather than splitting the conversation)). Not covered: the `ConflictError` race branch and the fresh-thread fallback when re-registration is refused outright -- both are fail-safe directions, but a sync that touches this method should add them rather than assume they are exercised.
 - Delete-when: upstream makes the Gateway create a thread row on demand for an id a channel already maps, or gives the channel store a registry-backed lookup that cannot go stale.
 - Upstream status: none sent yet (clean PR candidate -- the failure mode needs no Argus context).
+- Sync 2026-09-11: kept; `_ensure_thread_registered` now runs alongside upstream's `_load_thread_agent` (two `threads.get` per thread on first sight). `ConflictError` and fresh-thread branches remain untested.
+
+## Patch #91
+
+**Patch #91 - Graceful run stream options** (record back-filled 2026-09-11 at the upstream sync; landed 2026-08-15 as `aeb52487`, "accept stream_resumable and filter unsupported stream modes gracefully")
+
+- Class: generic-upstreamable (robustness of the SDK <-> Gateway contract).
+- Intent: the LangGraph SDK sends run options the Gateway does not implement.
+  Upstream rejected the whole request when any requested stream mode was
+  unsupported and when `stream_resumable` was `true`, so a client that asked
+  for one extra mode got no stream at all. This fork accepts
+  `stream_resumable` as a compatibility placeholder (`run_models.py`), keeps
+  the supported modes and drops the unsupported ones with one warning per
+  mode when at least one supported mode remains, and still refuses a request
+  whose modes are all unsupported (`runtime/stream_modes.py`, frontend
+  `core/api/stream-mode.ts`). The contract is documented in
+  `frontend/src/AGENTS.md` ("Run stream options").
+- Files: `backend/app/gateway/run_models.py`,
+  `backend/packages/harness/deerflow/runtime/stream_modes.py`,
+  `frontend/src/core/api/stream-mode.ts`.
+- Tests: `frontend/tests/unit/core/api/stream-mode.test.ts` (drop / all-
+  unsupported / `messages` cases), `backend/tests/test_run_request_validation.py`,
+  `backend/tests/test_gateway_services.py`.
+- Sync 2026-09-11: upstream #5159 added `forceChatRunStreamOptions` with a
+  test expecting a throw on `["messages-tuple", "events"]`; that test is
+  adapted to this contract (drops `events`, still throws on `["events"]`).
+- Delete-when: upstream stops rejecting mixed mode lists, or the SDK stops
+  sending modes the Gateway does not implement.
+- Upstream status: none sent (small PR candidate).
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
+
+**Dropped at the 2026-09-11 upstream sync (base `3a967d4f` -> `3f0b6ecc`):**
+
+- **#63 Summarization must not resurrect answered user turns**: a verbatim
+  backport of upstream `0a3c04eb` (#4882), which is now in the base.
+  `_prepare_compaction`/`_preserve_dynamic_context_reminders` merged
+  byte-identical and the four tests exist in upstream's suite and pass.
+- **#80 Sandbox hardening knobs** (`SandboxConfig.memory/pids_limit/cpus/
+  cap_drop/cap_add/seccomp_profile/no_new_privileges/extra_run_args`):
+  retired into upstream's own hardening (`9e2c1be6` #4986, `83cb6767` #5163,
+  `0f7d8709` #5152). Upstream now starts every sandbox with `--cap-drop=ALL`
+  plus CHOWN/FOWNER/SETUID/SETGID/DAC_OVERRIDE, `no-new-privileges`, memory
+  2g / cpus 2 / pids 512 defaults, and reads `DEER_FLOW_SANDBOX_MEMORY`,
+  `_CPUS`, `_PIDS_LIMIT`, `_SECCOMP_UNCONFINED=0` (sends `seccomp=builtin`),
+  `_SECCOMP_PROFILE`, `_IMAGE_STARTUP_CAPS`, `_CONTAINER_USER`, `_NETWORK`.
+  The config keys are inert now (`SandboxConfig` allows extra fields) and stay
+  in the stack configs because the Argus socket proxy reads `sandbox.memory/
+  pids_limit/cpus` as its policy input. The Argus stage A profile (3 GB, 1024
+  pids, 8 CPUs, no-new-privileges, the runtime's default seccomp filter)
+  therefore lives in the gateway environment plus the socket proxy: measured
+  on this host 2026-09-11 with the pinned image, upstream's capability set
+  starts and is ready in 4 s (effective caps exactly the five), a bare
+  `--cap-drop=ALL` does not start, Podman 5.8 rejects `seccomp=builtin`, and
+  Docker CLI 29 inlines a `seccomp=<path>` profile which Podman's compat API
+  rejects, so the proxy must map `seccomp=builtin` to the host's default
+  profile and allow exactly that capability set under `CapDrop: ALL`. That
+  rollout order is recorded in acropolis `docs/DEERFLOW-SYNC.md`.
+- **#67, backend half** (`cancel_on_disconnect` tristate on the join/stream
+  endpoints): subsumed by upstream `bf740ffa` (#5041), every join surface
+  passes `apply_on_disconnect=False`. Frontend half kept.
+- **Dead code removed while re-applying**: `SubagentExecutor._load_skill_messages`
+  (re-added by the 2026-08-15 rebase, never called), loop detection's
+  `_bash_subcategory` (superseded by `_bash_classify`), `threads.py`'s
+  duplicate `_CONTAINER_SANDBOX_ID_RE` block and `_is_pin_metadata_patch`,
+  the #20 `legacy_base64` checkpoint fallback, and #72's `CHANGELOG.md` entry.
 
 **Dropped as upstream-subsumed (verified during the 2026-06-29/30 rebase):**
 
@@ -2160,6 +2212,7 @@ design or move it behind an extension point).
 | 2026-07-02 | v2.0.0 -> #40 tip | 32 | 90 | +7433 / -668 | app-code excl. tests/docs: 1923 (776 in `app/channels/`, was 1099); tests: 1350. #40 cut `telegram.py` 574 -> 251 |
 | 2026-09-02 | bytedance/main 3a967d4f (2026-08-15) -> c58d6168 (#79) | 140 | 240 | +17512 / -1740 | app-code excl. tests/docs: 5957 (802 in `app/channels/`); tests: 3389. Measured against the merge-base with `bytedance/main` (v2.0.0 sits on `2.0.x-dev`, not `main`); over the 2,500 alarm, see acropolis docs/DEERFLOW-SYNC.md |
 | 2026-09-08 | bytedance/main 3a967d4f (2026-08-15) -> 00c5cd72 (#89 follow-up) | 131 | 288 | +24023 / -2022 | app-code excl. tests/docs: 7147 (802 in `app/channels/`); tests: 4585. Base 24 days old and upstream 211 commits past it: all three Cerberus `fork_drift` warnings tripping. 2.9x the 2,500 alarm; the sync is the next action, see acropolis docs/DEERFLOW-SYNC.md |
+| 2026-09-11 | bytedance/main 3f0b6ecc (2026-09-11) -> sync/upstream-20260911 | 169 + merge | 289 | +23857 / -1802 | app-code excl. tests/docs: **6,974** (872 in `app/channels/`); tests: 4,358. The sync moved the base 237 commits and retired #63, #80 and #67's backend half, but carry fell only 173 lines (7,147 -> 6,974): the retirements are offset by re-expressing #68/#69 onto upstream's larger middleware and by `app/channels/` growing 802 -> 872. Still 2.8x the 2,500 alarm, so the levers that matter next are upstreaming (#84, #68/#69, #66, #67, #78 and the two staged drafts) and `prompt.py`'s 350 lines (D-C3), not another sync |
 
 Methodology note (2026-07-02): the last column is now measured against the
 `v2.0.0` tag over files that exist at v2.0.0 (insertions+deletions), split

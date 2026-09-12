@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -16,29 +17,94 @@ from app.gateway.deps import (
     get_scheduled_task_service,
     get_thread_store,
 )
+from deerflow.config.agents_config import AGENT_NAME_PATTERN, load_agent_config
+from deerflow.persistence.scheduled_tasks import ActiveScheduledTaskMutationConflict
 from deerflow.scheduler.schedules import (
-    next_run_at as compute_next_run_at,
+    MAX_INTERVAL_SECONDS,
+    normalize_cron_expression,
+    parse_interval_seconds,
+    validate_timezone,
 )
 from deerflow.scheduler.schedules import (
-    normalize_cron_expression,
-    validate_timezone,
+    next_run_at as compute_next_run_at,
 )
 from deerflow.utils.thread_id import ThreadId
 
 router = APIRouter(prefix="/api", tags=["scheduled-tasks"])
 
+_DEFAULT_ASSISTANT_ID = "lead_agent"
 
-def _ensure_task_mutable(task: dict[str, Any]) -> None:
+
+def _active_occurrence_conflict_detail(status: str) -> str:
+    detail = f"Scheduled task has an active {status} occurrence; retry after it finishes"
+    if status == "queued":
+        detail += " or cancel the queued occurrence by pausing the task"
+    return detail
+
+
+def _validate_interval_seconds(schedule_spec: dict[str, Any], min_seconds: int) -> int:
+    every_seconds = parse_interval_seconds(schedule_spec)
+    if every_seconds < min_seconds:
+        raise HTTPException(
+            status_code=422,
+            detail=f"interval schedule must be at least {min_seconds} seconds",
+        )
+    if every_seconds > MAX_INTERVAL_SECONDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"interval schedule must be at most {MAX_INTERVAL_SECONDS} seconds",
+        )
+    return every_seconds
+
+
+async def resolve_scheduled_task_assistant_id(raw: str | None, *, user_id: str) -> str:
+    """Return a stored assistant id, defaulting to lead_agent.
+
+    Custom names are normalized the same way IM/run creation already does
+    (lowercase, underscore to hyphen) and must exist for this owner.
+    """
+    if raw is None:
+        return _DEFAULT_ASSISTANT_ID
+    value = raw.strip()
+    if not value:
+        raise HTTPException(status_code=422, detail="assistant_id must not be empty")
+    normalized = value.lower().replace("_", "-")
+    if normalized == _DEFAULT_ASSISTANT_ID.replace("_", "-"):
+        return _DEFAULT_ASSISTANT_ID
+    if not AGENT_NAME_PATTERN.fullmatch(normalized):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Invalid assistant_id {raw!r}. Use 'lead_agent' or a custom agent name containing only letters, digits, and hyphens."),
+        )
+    try:
+        config = await asyncio.to_thread(load_agent_config, normalized, user_id=user_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=f"Unknown assistant_id {raw!r}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if config is None:
+        raise HTTPException(status_code=422, detail=f"Unknown assistant_id {raw!r}")
+    return normalized
+
+
+async def _ensure_task_mutable(task: dict[str, Any], repo) -> None:
     if task.get("status") == "running":
         raise HTTPException(
             status_code=409,
             detail="Scheduled task is currently running; retry after the active execution finishes",
+        )
+    active_status = await repo.get_active_run_status(task["id"])
+    if active_status is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=_active_occurrence_conflict_detail(active_status),
         )
 
 
 class ScheduledTaskCreateRequest(BaseModel):
     thread_id: ThreadId | None = None
     context_mode: str = "fresh_thread_per_run"
+    assistant_id: str | None = Field(default=None, min_length=1)
     title: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
     schedule_type: str
@@ -49,6 +115,7 @@ class ScheduledTaskCreateRequest(BaseModel):
 class ScheduledTaskUpdateRequest(BaseModel):
     context_mode: str | None = None
     thread_id: ThreadId | None = None
+    assistant_id: str | None = Field(default=None, min_length=1)
     title: str | None = Field(default=None, min_length=1)
     prompt: str | None = Field(default=None, min_length=1)
     schedule_spec: dict[str, Any] | None = None
@@ -67,6 +134,7 @@ async def list_scheduled_tasks(request: Request):
 
 @router.post("/scheduled-tasks")
 @require_permission("threads", "write")
+@require_permission("runs", "create")
 async def create_scheduled_task(request: Request, body: ScheduledTaskCreateRequest):
     config = get_config()
     repo = get_scheduled_task_repo(request)
@@ -81,7 +149,7 @@ async def create_scheduled_task(request: Request, body: ScheduledTaskCreateReque
             raise HTTPException(status_code=422, detail="reuse_thread requires thread_id")
         if not await thread_store.check_access(body.thread_id, str(user.id), require_existing=True):
             raise HTTPException(status_code=404, detail="Thread not found")
-    if body.schedule_type not in {"once", "cron"}:
+    if body.schedule_type not in {"once", "cron", "interval"}:
         raise HTTPException(status_code=422, detail="Unsupported schedule_type")
 
     schedule_spec = dict(body.schedule_spec)
@@ -92,6 +160,8 @@ async def create_scheduled_task(request: Request, body: ScheduledTaskCreateReque
             if not isinstance(raw_cron, str):
                 raise HTTPException(status_code=422, detail="cron schedule requires schedule_spec.cron")
             schedule_spec["cron"] = normalize_cron_expression(raw_cron)
+        if body.schedule_type == "interval":
+            _validate_interval_seconds(schedule_spec, config.scheduler.min_once_delay_seconds)
         next_run_at = compute_next_run_at(
             body.schedule_type,
             schedule_spec,
@@ -109,12 +179,16 @@ async def create_scheduled_task(request: Request, body: ScheduledTaskCreateReque
             detail=(f"once schedule must be at least {config.scheduler.min_once_delay_seconds} seconds in the future"),
         )
 
+    assistant_id = await resolve_scheduled_task_assistant_id(
+        body.assistant_id,
+        user_id=str(user.id),
+    )
     return await repo.create(
         task_id=f"task-{uuid.uuid4().hex}",
         user_id=str(user.id),
         thread_id=body.thread_id,
         context_mode=body.context_mode,
-        assistant_id="lead_agent",
+        assistant_id=assistant_id,
         title=body.title,
         prompt=body.prompt,
         schedule_type=body.schedule_type,
@@ -139,6 +213,7 @@ async def get_scheduled_task(task_id: str, request: Request):
 
 @router.patch("/scheduled-tasks/{task_id}")
 @require_permission("threads", "write")
+@require_permission("runs", "create")
 async def update_scheduled_task(task_id: str, request: Request, body: ScheduledTaskUpdateRequest):
     config = get_config()
     repo = get_scheduled_task_repo(request)
@@ -148,9 +223,14 @@ async def update_scheduled_task(task_id: str, request: Request, body: ScheduledT
     existing = await repo.get(task_id, user_id=str(user.id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
-    _ensure_task_mutable(existing)
+    await _ensure_task_mutable(existing, repo)
 
     updates = body.model_dump(exclude_none=True)
+    if "assistant_id" in updates:
+        updates["assistant_id"] = await resolve_scheduled_task_assistant_id(
+            updates["assistant_id"],
+            user_id=str(user.id),
+        )
     if "context_mode" in updates:
         if updates["context_mode"] not in {"fresh_thread_per_run", "reuse_thread"}:
             raise HTTPException(status_code=422, detail="Unsupported context_mode")
@@ -184,12 +264,31 @@ async def update_scheduled_task(task_id: str, request: Request, body: ScheduledT
                         detail="cron schedule requires schedule_spec.cron",
                     )
                 schedule_spec["cron"] = normalize_cron_expression(raw_cron)
-            next_run_at = compute_next_run_at(
-                existing["schedule_type"],
-                schedule_spec,
-                timezone,
-                now=datetime.now(UTC),
-            )
+            if existing["schedule_type"] == "interval":
+                every_seconds = _validate_interval_seconds(
+                    schedule_spec,
+                    config.scheduler.min_once_delay_seconds,
+                )
+                try:
+                    previous_seconds = parse_interval_seconds(dict(existing["schedule_spec"]))
+                except ValueError:
+                    previous_seconds = None
+                if previous_seconds == every_seconds and existing.get("next_run_at") is not None:
+                    next_run_at = existing["next_run_at"]
+                else:
+                    next_run_at = compute_next_run_at(
+                        existing["schedule_type"],
+                        schedule_spec,
+                        timezone,
+                        now=datetime.now(UTC),
+                    )
+            else:
+                next_run_at = compute_next_run_at(
+                    existing["schedule_type"],
+                    schedule_spec,
+                    timezone,
+                    now=datetime.now(UTC),
+                )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if existing["schedule_type"] == "once" and next_run_at is None:
@@ -208,11 +307,20 @@ async def update_scheduled_task(task_id: str, request: Request, body: ScheduledT
         if next_run_at is not None and existing["status"] in {"completed", "failed", "cancelled"}:
             updates["status"] = "enabled"
 
-    updated = await repo.update(
-        task_id,
-        user_id=str(user.id),
-        updates=updates,
-    )
+    try:
+        updated = await repo.update(
+            task_id,
+            user_id=str(user.id),
+            updates=updates,
+            require_mutable=True,
+        )
+    except ActiveScheduledTaskMutationConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=_active_occurrence_conflict_detail(exc.status),
+        ) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Scheduled task not found")
     return updated
 
 
@@ -226,15 +334,30 @@ async def pause_scheduled_task(task_id: str, request: Request):
     existing = await repo.get(task_id, user_id=str(user.id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
-    _ensure_task_mutable(existing)
-    updated = await repo.update(task_id, user_id=str(user.id), updates={"status": "paused"})
-    if updated is None:
+    if existing.get("status") == "running":
+        raise HTTPException(
+            status_code=409,
+            detail="Scheduled task is currently running; retry after the active execution finishes",
+        )
+    result = await repo.pause_with_queue_cancellation(
+        task_id,
+        user_id=str(user.id),
+        error="scheduled task was paused while queued",
+        now=datetime.now(UTC),
+    )
+    if result == "not_found":
         raise HTTPException(status_code=404, detail="Scheduled task not found")
-    return updated
+    if result == "executing":
+        raise HTTPException(
+            status_code=409,
+            detail="Scheduled task is already launching or running; retry after the active execution finishes",
+        )
+    return await repo.get(task_id, user_id=str(user.id))
 
 
 @router.post("/scheduled-tasks/{task_id}/resume")
 @require_permission("threads", "write")
+@require_permission("runs", "create")
 async def resume_scheduled_task(task_id: str, request: Request):
     repo = get_scheduled_task_repo(request)
     user = await get_optional_user_from_request(request)
@@ -243,8 +366,19 @@ async def resume_scheduled_task(task_id: str, request: Request):
     existing = await repo.get(task_id, user_id=str(user.id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
-    _ensure_task_mutable(existing)
-    updated = await repo.update(task_id, user_id=str(user.id), updates={"status": "enabled"})
+    await _ensure_task_mutable(existing, repo)
+    try:
+        updated = await repo.update(
+            task_id,
+            user_id=str(user.id),
+            updates={"status": "enabled"},
+            require_mutable=True,
+        )
+    except ActiveScheduledTaskMutationConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=_active_occurrence_conflict_detail(exc.status),
+        ) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
     return updated
@@ -252,6 +386,7 @@ async def resume_scheduled_task(task_id: str, request: Request):
 
 @router.post("/scheduled-tasks/{task_id}/trigger")
 @require_permission("threads", "write")
+@require_permission("runs", "create")
 async def trigger_scheduled_task(task_id: str, request: Request):
     repo = get_scheduled_task_repo(request)
     service = get_scheduled_task_service(request)
@@ -262,6 +397,8 @@ async def trigger_scheduled_task(task_id: str, request: Request):
     if task is None:
         raise HTTPException(status_code=404, detail="Scheduled task not found")
     result = await service.dispatch_task(task, now=datetime.now(UTC), trigger="manual")
+    if result["outcome"] == "not_found":
+        raise HTTPException(status_code=404, detail=result["error"] or "Scheduled task not found")
     if result["outcome"] == "conflict":
         raise HTTPException(status_code=409, detail=result["error"] or "Scheduled task trigger conflicted with an active run")
     if result["outcome"] == "failed":
@@ -276,10 +413,20 @@ async def delete_scheduled_task(task_id: str, request: Request):
     user = await get_optional_user_from_request(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    deleted = await repo.delete(task_id, user_id=str(user.id))
-    if not deleted:
+    result = await repo.delete_with_queue_cancellation(
+        task_id,
+        user_id=str(user.id),
+        error="scheduled task was deleted while queued",
+        now=datetime.now(UTC),
+    )
+    if result == "not_found":
         raise HTTPException(status_code=404, detail="Scheduled task not found")
-    return {"id": task_id, "deleted": deleted}
+    if result == "executing":
+        raise HTTPException(
+            status_code=409,
+            detail="Scheduled task is already launching or running; retry after the active execution finishes",
+        )
+    return {"id": task_id, "deleted": True}
 
 
 @router.get("/scheduled-tasks/{task_id}/runs")

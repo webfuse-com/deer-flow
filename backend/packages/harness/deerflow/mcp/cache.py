@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 from pathlib import Path
 
 from langchain_core.tools import BaseTool
@@ -14,14 +15,10 @@ logger = logging.getLogger(__name__)
 
 _mcp_tools_cache: list[BaseTool] | None = None
 _cache_initialized = False
-_initialization_lock = asyncio.Lock()
-
-# Held by the single in-flight background refresh task, when one is running.
-# ``get_cached_mcp_tools`` serves the current (stale) tools immediately and
-# lets this task swap in freshly discovered tools when it finishes, so a run
-# that observes a config change never blocks on MCP server re-discovery. Only
-# one refresh runs at a time; concurrent calls piggyback on the same task.
-_background_refresh_task: "asyncio.Task | None" = None
+_init_lock = threading.RLock()  # Guards cache state transitions.
+_init_condition = threading.Condition(_init_lock)
+_initializing_generation: int | None = None
+_cache_generation = 0
 
 # Cache-invalidation key for the resolved extensions config file. We track the
 # resolved path *and* a ``(mtime, size, sha256)`` content signature — via the
@@ -127,84 +124,174 @@ def _is_cache_stale() -> bool:
     return False
 
 
-async def initialize_mcp_tools(force: bool = False) -> list[BaseTool]:
+def _wait_for_initialization(generation: int | None) -> None:
+    """Wait for an in-flight initialization without binding to any event loop."""
+    with _init_condition:
+        _init_condition.wait_for(lambda: _cache_initialized or _initializing_generation != generation)
+
+
+async def initialize_mcp_tools() -> list[BaseTool]:
     """Initialize and cache MCP tools.
 
-    This should be called once at application startup, or with ``force=True``
-    from the background-refresh task to re-discover tools after a config change
-    while the existing cache keeps serving its current tools.
-
-    Args:
-        force: When True, re-run discovery even if the cache is already
-            initialized, atomically replacing the cached tool list and the
-            recorded config signature on success. A failed forced refresh leaves
-            the prior tools in place and marks the cache uninitialized so the
-            next call retries.
+    This should be called once at application startup.
 
     Returns:
         List of LangChain tools from all enabled MCP servers.
     """
     global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature
+    global _initializing_generation, _cache_generation
 
-    async with _initialization_lock:
-        if _cache_initialized and not force:
-            logger.info("MCP tools already initialized")
-            return _mcp_tools_cache or []
+    while True:
+        with _init_condition:
+            if _cache_initialized:
+                logger.info("MCP tools already initialized")
+                return _mcp_tools_cache or []
 
-        from deerflow.mcp.tools import get_mcp_tools
+            if _initializing_generation is None:
+                pre_path, pre_sig = _current_config_state()
+                claim_generation = _cache_generation
+                _initializing_generation = claim_generation
+                break
 
+            waiting_generation = _initializing_generation
+
+        await asyncio.to_thread(_wait_for_initialization, waiting_generation)
+
+    from deerflow.mcp.tools import get_mcp_tools
+
+    loaded_tools = None
+    post_path = None
+    post_sig = None
+    init_succeeded = False
+    try:
         logger.info("Initializing MCP tools...")
+        loaded_tools = await get_mcp_tools()
+        post_path, post_sig = _current_config_state()
+        init_succeeded = True
+    finally:
+        if not init_succeeded:
+            with _init_condition:
+                if _initializing_generation == claim_generation:
+                    _initializing_generation = None
+                _init_condition.notify_all()
+
+    retired_pool = None
+    with _init_condition:
         try:
-            new_tools = await get_mcp_tools()
-        except Exception:
-            if force:
-                # A failed background refresh must not tear down the tools the
-                # cache is currently serving; mark uninitialized so a later
-                # call retries rather than pinning the stale signature.
-                _cache_initialized = False
-            raise
-        # Swap the cache + recorded signature only after a successful discovery,
-        # so a slow/failed refresh never leaves the cache empty.
-        _mcp_tools_cache = new_tools
-        _cache_initialized = True
-        _config_path, _config_signature = _current_config_state()  # Record config path + content signature
-        logger.info("MCP tools initialized: %d tool(s) loaded (config path: %s)", len(_mcp_tools_cache), _config_path)
+            if _cache_generation != claim_generation:
+                logger.info("MCP cache was reset during initialization; discarding stale result")
+                return []
 
-        return _mcp_tools_cache
+            if (pre_path, pre_sig) != (post_path, post_sig):
+                logger.warning("MCP config changed during initialization; discarding stale result")
+                retired_pool = _reset_mcp_tools_cache_state_and_retire_pool_locked()
+            else:
+                _mcp_tools_cache = loaded_tools
+                _cache_initialized = True
+                _config_path, _config_signature = post_path, post_sig
+                logger.info("MCP tools initialized: %d tool(s) loaded (config path: %s)", len(_mcp_tools_cache), _config_path)
+                return _mcp_tools_cache
+        finally:
+            if _initializing_generation == claim_generation:
+                _initializing_generation = None
+            _init_condition.notify_all()
+
+    if retired_pool is not None:
+        retired_pool.close_all_sync()
+    return []
 
 
-def _schedule_background_refresh() -> None:
-    """Refresh MCP tools in the background, serving the current cache meanwhile.
+# [argus patch #87] Held by the single in-flight background refresh task, when
+# one is running. ``get_cached_mcp_tools`` serves the current (stale) tools
+# immediately and lets this task swap in freshly discovered tools when it
+# finishes, so a run that observes a config change never blocks on MCP server
+# re-discovery. Only one refresh runs at a time; concurrent calls piggyback on
+# the same task.
+_background_refresh_task: "asyncio.Task | None" = None
 
-    Called when the extensions config changed but a tool list is already
-    cached. Rather than reset + re-initialize synchronously (which blocks the
-    caller — often a run's completion path — on re-discovering every MCP
-    server, up to ``session_init_timeout`` each), we keep serving the current
-    tools and swap in the fresh list when the background re-init finishes. The
-    caller's turn may use a one-revision-old tool list; the next call sees the
-    fresh one. Explicit config writes via the Gateway API take the synchronous
-    path instead (see ``reset_mcp_tools_cache``), so a user who edits config
-    and immediately sends a message still gets fresh tools.
 
-    Only one refresh runs at a time; concurrent calls reuse the in-flight task.
-    Requires a running event loop; callers without one fall back to the
-    synchronous path in ``get_cached_mcp_tools``.
+def _schedule_background_refresh_locked() -> bool:
+    """[argus patch #87] Refresh MCP tools in the background, serving the current cache meanwhile.
+
+    Called under ``_init_lock`` when the extensions config changed but a tool
+    list is already cached. Rather than reset + re-initialize synchronously
+    (which blocks the caller -- often a run's completion path -- on
+    re-discovering every MCP server, up to ``session_init_timeout`` each), keep
+    serving the current tools and swap in the fresh list when the background
+    re-discovery finishes. The caller's turn may use a one-revision-old tool
+    list; the next call sees the fresh one. Explicit config writes via the
+    Gateway API take the synchronous path instead (see
+    ``reset_mcp_tools_cache``), so a user who edits config and immediately
+    sends a message still gets fresh tools.
+
+    Returns True when a refresh is running (newly scheduled, or already in
+    flight and piggybacked) and the caller should serve the current tools;
+    False when there is no running event loop, in which case the caller falls
+    back to the synchronous re-initialization so the cache still converges.
     """
     global _background_refresh_task
 
     if _background_refresh_task is not None and not _background_refresh_task.done():
-        return
+        return True
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    _background_refresh_task = loop.create_task(_refresh_mcp_tools_in_background())
+    return True
 
-    async def _refresh() -> None:
-        global _background_refresh_task
+
+async def _refresh_mcp_tools_in_background() -> None:
+    """[argus patch #87] Re-discover MCP tools and swap them in atomically.
+
+    Mirrors ``initialize_mcp_tools`` but never empties the cache first: the
+    current tools keep being served until the fresh list is ready. The
+    session-pool singleton is retired before discovery (tool wrappers bind the
+    pool when they are built, so the fresh tools must not reuse sessions opened
+    under the old connection config) and closed only after the swap, so the
+    tools still being served keep their live sessions meanwhile. A failed
+    refresh keeps the current tools in memory and marks the cache uninitialized
+    so the next call retries rather than pinning the stale signature; a reset
+    that lands mid-refresh wins and the refreshed result is discarded.
+    """
+    global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature, _background_refresh_task
+
+    from deerflow.mcp.session_pool import reset_session_pool
+    from deerflow.mcp.tools import get_mcp_tools
+
+    retired_pool = None
+    try:
+        with _init_condition:
+            if not _cache_initialized or _initializing_generation is not None:
+                return
+            claim_generation = _cache_generation
+            retired_pool = reset_session_pool()
+        logger.info("Refreshing MCP tools in the background after a config change...")
         try:
-            await initialize_mcp_tools(force=True)
+            loaded_tools = await get_mcp_tools()
+            post_path, post_sig = _current_config_state()
         except Exception:
-            logger.exception("Background MCP tools refresh failed")
-        finally:
-            _background_refresh_task = None
-
-    _background_refresh_task = asyncio.get_running_loop().create_task(_refresh())
+            logger.exception("Background MCP tools refresh failed; keeping the current tools")
+            with _init_condition:
+                if _cache_generation == claim_generation:
+                    _cache_initialized = False
+                    _config_path = None
+                    _config_signature = None
+                _init_condition.notify_all()
+            return
+        with _init_condition:
+            if _cache_generation != claim_generation or _initializing_generation is not None:
+                logger.info("MCP cache was reset during the background refresh; discarding stale result")
+                return
+            _mcp_tools_cache = loaded_tools
+            _cache_initialized = True
+            _config_path, _config_signature = post_path, post_sig
+            _init_condition.notify_all()
+        logger.info("MCP tools refreshed in the background: %d tool(s) loaded (config path: %s)", len(loaded_tools), post_path)
+    finally:
+        if retired_pool is not None:
+            retired_pool.close_all_sync()
+        _background_refresh_task = None
 
 
 def get_cached_mcp_tools() -> list[BaseTool]:
@@ -217,51 +304,52 @@ def get_cached_mcp_tools() -> list[BaseTool]:
     and re-initializes if needed. This ensures that changes made through the
     Gateway API are reflected in the Gateway-embedded LangGraph runtime.
 
-    When a tool list is already cached, a detected config change is applied in
-    the background and the current (soon-to-be-replaced) tools are returned
-    immediately, so an observing run never stalls on re-discovery. Only the
-    cold-start path (no tools cached yet) initializes synchronously.
+    [argus patch #87] When a tool list is already cached, a detected config
+    change is applied in the background and the current (soon-to-be-replaced)
+    tools are returned immediately, so an observing run never stalls on
+    re-discovery. Only the cold-start path (no tools cached yet) initializes
+    synchronously.
 
     Returns:
         List of cached MCP tools.
     """
-    global _cache_initialized
+    while True:
+        retired_pool = None
+        with _init_lock:
+            if _is_cache_stale():
+                # [argus patch #87] With a tool list already cached, apply the
+                # config change in the background and serve the current tools
+                # now, so an observing run never stalls on re-discovery. Only
+                # the cold path (nothing cached yet, or no running loop) still
+                # re-initializes synchronously.
+                if _cache_initialized and _schedule_background_refresh_locked():
+                    logger.info("MCP cache is stale; refreshing in the background and serving current tools")
+                    return _mcp_tools_cache or []
+                logger.info("MCP cache is stale, resetting for re-initialization...")
+                retired_pool = _reset_mcp_tools_cache_state_and_retire_pool_locked()
 
-    # Check if cache is stale due to config file changes. When tools are
-    # already cached, refresh them in the background rather than blocking the
-    # caller on re-discovery of every MCP server.
-    if _is_cache_stale():
-        if _cache_initialized:
-            logger.info("MCP cache is stale; refreshing in the background and serving current tools")
-            try:
-                _schedule_background_refresh()
-            except RuntimeError:
-                # No running event loop: fall through to the synchronous
-                # re-init below so the cache still converges.
-                logger.info("No running event loop for background MCP refresh; re-initializing synchronously")
-                reset_mcp_tools_cache()
-        else:
-            logger.info("MCP cache is stale, resetting for re-initialization...")
-            reset_mcp_tools_cache()
+            if _cache_initialized:
+                return _mcp_tools_cache or []
 
-    if not _cache_initialized:
+            if _initializing_generation is not None:
+                _init_condition.wait_for(lambda: _initializing_generation is None or _cache_initialized)
+                continue
+
+        if retired_pool is not None:
+            retired_pool.close_all_sync()
+
         logger.info("MCP tools not initialized, performing lazy initialization...")
         try:
-            # Try to initialize in the current event loop
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # If loop is already running (e.g., in LangGraph Studio),
-                # we need to create a new loop in a thread
                 import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, initialize_mcp_tools())
                     future.result()
             else:
-                # If no loop is running, we can use the current loop
                 loop.run_until_complete(initialize_mcp_tools())
         except RuntimeError:
-            # No event loop exists, create one
             try:
                 asyncio.run(initialize_mcp_tools())
             except Exception:
@@ -271,7 +359,37 @@ def get_cached_mcp_tools() -> list[BaseTool]:
             logger.exception("Failed to lazy-initialize MCP tools")
             return []
 
-    return _mcp_tools_cache or []
+        with _init_lock:
+            if _cache_initialized:
+                return _mcp_tools_cache or []
+
+
+def _reset_mcp_tools_cache_state() -> None:
+    """Reset cache state under ``_init_condition`` / ``_init_lock``."""
+    global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature
+    global _cache_generation
+
+    _mcp_tools_cache = None
+    _cache_initialized = False
+    _config_path = None
+    _config_signature = None
+    _cache_generation += 1
+    _init_condition.notify_all()
+
+
+def _reset_mcp_tools_cache_state_and_retire_pool_locked():
+    """Retire the MCP session pool and reset cache state under one lock.
+
+    Tool wrappers close over the module-level session-pool singleton when they
+    are built. Any path that invalidates the tool cache must therefore swap the
+    singleton before waiters/fresh initializers can rebuild wrappers, including
+    automatic config-signature invalidation in ``get_cached_mcp_tools()``.
+    """
+    from deerflow.mcp.session_pool import reset_session_pool
+
+    retired_pool = reset_session_pool()
+    _reset_mcp_tools_cache_state()
+    return retired_pool
 
 
 def reset_mcp_tools_cache() -> None:
@@ -281,12 +399,6 @@ def reset_mcp_tools_cache() -> None:
     Also closes all persistent MCP sessions so they are recreated on
     the next tool load.
     """
-    global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature
-    _mcp_tools_cache = None
-    _cache_initialized = False
-    _config_path = None
-    _config_signature = None
-
     # Close persistent sessions – they will be recreated by the next
     # get_mcp_tools() call with the (possibly updated) connection config.
     #
@@ -300,13 +412,19 @@ def reset_mcp_tools_cache() -> None:
     # loop to finish teardown here: that is a self-deadlock (the loop can only
     # run the teardown after this synchronous call returns control to it).
     try:
-        from deerflow.mcp.session_pool import get_session_pool
+        from deerflow.mcp.session_pool import reset_session_pool
 
-        get_session_pool().close_all_sync()
+        with _init_condition:
+            # Retire the session-pool singleton before cache waiters can start a
+            # fresh initialization. Otherwise a concurrent initializer can build
+            # tool wrappers against the soon-to-be-detached pool and publish
+            # them after this reset replaces the singleton.
+            retired_pool = reset_session_pool()
+            _reset_mcp_tools_cache_state()
+
+        if retired_pool is not None:
+            retired_pool.close_all_sync()
     except Exception:
         logger.debug("Could not close MCP session pool on cache reset", exc_info=True)
 
-    from deerflow.mcp.session_pool import reset_session_pool
-
-    reset_session_pool()
     logger.info("MCP tools cache reset")

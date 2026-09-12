@@ -4,11 +4,11 @@ This document is the **top-level architecture overview** for DeerFlow. It explai
 "big picture" — how the services, layers, and cross-cutting subsystems fit together — and
 points to the module-level guides that own the depth:
 
-- Backend depth → [`backend/AGENTS.md`](backend/AGENTS.md) and [`backend/docs/ARCHITECTURE.md`](backend/docs/ARCHITECTURE.md)
-- Frontend depth → [`frontend/AGENTS.md`](frontend/AGENTS.md)
+- Backend depth → [`backend/AGENTS.md`](../backend/AGENTS.md) and [`backend/docs/ARCHITECTURE.md`](../backend/docs/ARCHITECTURE.md)
+- Frontend depth → [`frontend/AGENTS.md`](../frontend/AGENTS.md)
 
 DeerFlow 2.0 is a ground-up rewrite of the original Deep Research framework (see
-[`README.md`](README.md)); it shares no code with v1.
+[`README.md`](../README.md)); it shares no code with v1.
 
 ---
 
@@ -154,13 +154,13 @@ These span both layers and require reading multiple files to understand:
   tasks reuse the *same* Gateway run lifecycle (scheduler decides *when*, not *how*).
 - **Scheduled tasks** — workspace page `/workspace/scheduled-tasks` + a background scheduler
   gated by `config.yaml → scheduler.enabled`; non-interactive runs drop `ask_clarification`
-  and client-supplied `non_interactive`.
+  and client-supplied `non_interactive` (see the run-context trust boundary in §6).
 - **Long-running MCP** — a durable `McpTaskService` (leased rows, DB as source of truth)
   keeps remote task IDs/polling out of the agent loop.
 - **Version sources** — a release version must match in `backend/pyproject.toml`,
   `frontend/package.json`, and `deploy/helm/deer-flow/Chart.yaml` (`version` + `appVersion`);
   pushing a `v*` tag triggers CI that runs `scripts/verify_versions.sh` and blocks all
-  publishing on drift. See [`RELEASING.md`](RELEASING.md).
+  publishing on drift. See [`RELEASING.md`](../RELEASING.md).
 
 ---
 
@@ -172,18 +172,24 @@ These span both layers and require reading multiple files to understand:
   sandbox is dev-only direct execution.
 - **MCP isolation**: each MCP server runs in its own process with runtime env-var
   resolution; servers toggle independently.
+- **Run-context trust boundary**: run context reaches the agent from two client-writable
+  surfaces — `body.context` and the free-form `body.config` — so every server-produced key
+  is gated on both. `non_interactive`, `disable_clarification`, and `github_token` are
+  honored only for internally-authenticated callers (the scheduler and IM/webhook channel
+  policies) and scrubbed from a non-internal caller's config; identity and sandbox
+  lifecycle fields are cleared unconditionally and restamped from auth state.
 - **Loopback-by-default ingress**: nginx is the only published surface; the Gateway's `8001`
   is container-internal and never published. A bare `"${PORT}:2026"` bind (0.0.0.0) is
-  rejected by convention and CI. See the Security Notice in [`README.md`](README.md) before
+  rejected by convention and CI. See the Security Notice in [`README.md`](../README.md) before
   any non-loopback deployment.
 
 ---
 
 ## 7. Where to Go Next
 
-- System topology & component depth → [`backend/docs/ARCHITECTURE.md`](backend/docs/ARCHITECTURE.md)
-- Backend commands, TDD, harness/app boundary, config reload → [`backend/AGENTS.md`](backend/AGENTS.md)
-- Frontend commands, source layout, streaming data flow → [`frontend/AGENTS.md`](frontend/AGENTS.md)
-- Setup & install → [`Install.md`](Install.md), [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- Release process → [`RELEASING.md`](RELEASING.md)
-- User-facing features & deployment sizing → [`README.md`](README.md)
+- System topology & component depth → [`backend/docs/ARCHITECTURE.md`](../backend/docs/ARCHITECTURE.md)
+- Backend commands, TDD, harness/app boundary, config reload → [`backend/AGENTS.md`](../backend/AGENTS.md)
+- Frontend commands, source layout, streaming data flow → [`frontend/AGENTS.md`](../frontend/AGENTS.md)
+- Setup & install → [`Install.md`](../Install.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md)
+- Release process → [`RELEASING.md`](../RELEASING.md)
+- User-facing features & deployment sizing → [`README.md`](../README.md)

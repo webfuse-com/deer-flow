@@ -1,9 +1,74 @@
+import ipaddress
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SandboxOwnershipType = Literal["memory", "redis"]
 SandboxOverflowPolicy = Literal["wait", "reject", "burst"]
+SandboxNetworkMode = Literal["open", "isolated", "allowlist"]
+SandboxNetworkApproval = Literal["deny", "prompt"]
+
+
+class SandboxNetworkConfig(BaseModel):
+    """Outbound network policy for locally managed AIO sandboxes."""
+
+    mode: SandboxNetworkMode = Field(
+        default="open",
+        description="open keeps the current Docker networking behavior; isolated denies all egress; allowlist permits configured domains and optional runtime approval.",
+    )
+    allow_domains: list[str] = Field(
+        default_factory=list,
+        description="Exact domains or leading-wildcard domains (for example *.pythonhosted.org) allowed in allowlist mode.",
+    )
+    approval: SandboxNetworkApproval = Field(
+        default="prompt",
+        description="Whether a denied public HTTP(S) destination may ask an interactive user for a temporary or sandbox-lifetime grant.",
+    )
+    temporary_grant_ttl: int = Field(
+        default=300,
+        ge=30,
+        le=3600,
+        description="Lifetime in seconds for the temporary approval choice.",
+    )
+    proxy_image: str = Field(
+        default="ghcr.io/bytedance/deer-flow-sandbox-network-proxy:latest",
+        min_length=1,
+        description="Managed Python runtime image used for the trusted network-policy sidecar.",
+    )
+
+    @field_validator("allow_domains")
+    @classmethod
+    def _normalize_allow_domains(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in values:
+            value = raw.strip().lower().rstrip(".")
+            suffix = value[2:] if value.startswith("*.") else value
+            if not value or value == "*" or not suffix or "://" in value or "/" in value or ":" in value or "*" in suffix or suffix.startswith(".") or suffix.endswith("."):
+                raise ValueError(f"invalid sandbox network allowlist domain: {raw!r}")
+            try:
+                suffix.encode("idna")
+            except UnicodeError as exc:
+                raise ValueError(f"invalid sandbox network allowlist domain: {raw!r}") from exc
+            try:
+                ipaddress.ip_address(suffix)
+            except ValueError:
+                pass
+            else:
+                raise ValueError(f"invalid sandbox network allowlist domain: {raw!r}")
+            ascii_suffix = suffix.encode("idna").decode("ascii")
+            labels = ascii_suffix.split(".")
+            if (
+                len(labels) < 2
+                or len(ascii_suffix) > 253
+                or any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-") or any(not (char.isascii() and (char.isalnum() or char == "-")) for char in label) for label in labels)
+            ):
+                raise ValueError(f"invalid sandbox network allowlist domain: {raw!r}")
+            canonical = ("*." if value.startswith("*.") else "") + ascii_suffix
+            if canonical not in seen:
+                seen.add(canonical)
+                normalized.append(canonical)
+        return normalized
 
 
 class SandboxOwnershipConfig(BaseModel):
@@ -29,6 +94,7 @@ class SandboxOwnershipConfig(BaseModel):
     renewal_interval_seconds: float = Field(
         default=30.0,
         gt=0,
+        allow_inf_nan=False,
         description=(
             "How often an owning instance refreshes its leases. The lease TTL is derived from this (interval x ttl_multiplier), so ownership liveness is independent of sandbox.idle_timeout: "
             "renewal keeps running even when idle cleanup is disabled (idle_timeout: 0)."
@@ -37,6 +103,7 @@ class SandboxOwnershipConfig(BaseModel):
     ttl_multiplier: float = Field(
         default=4.0,
         ge=2,
+        allow_inf_nan=False,
         description="Lease TTL as a multiple of renewal_interval_seconds. At least 2, so a single missed renewal (slow host, brief Redis blip) cannot expire a live owner's lease. Default 4 tolerates three consecutive misses.",
     )
     key_prefix: str = Field(
@@ -74,8 +141,8 @@ class SandboxConfig(BaseModel):
         allow_host_bash: Enable host-side bash execution for LocalSandboxProvider.
             Dangerous and intended only for fully trusted local workflows.
 
-    AioSandboxProvider, BoxliteProvider, and E2BSandboxProvider shared options:
-        image: Sandbox image to use (Docker/AIO image or BoxLite OCI image)
+    AioSandboxProvider, BoxliteProvider, E2BSandboxProvider, and OpenSandboxProvider shared options:
+        image: Sandbox image to use (Docker/AIO, BoxLite OCI, or OpenSandbox image)
         replicas: Positive provider capacity. E2B shares it across Gateway
             workers when ownership uses Redis; other modes/providers keep
             process-local accounting.
@@ -91,13 +158,21 @@ class SandboxConfig(BaseModel):
         mounts: List of volume mounts to share directories with the container
         thread_data_mounts: Override whether thread data is already visible to
             the sandbox through shared mounts. Omit to auto-detect from the backend.
-        memory, pids_limit, cpus, cap_drop, cap_add, seccomp_profile,
-            no_new_privileges, extra_run_args: [argus] hardening knobs for the local
-            container backend (DeerFlow patch #80); all off by default.
+        container_network: [argus] Podman/Docker network the sandboxes join; the
+            gateway reaches them by container DNS name on port 8080 and no host
+            port is published (DeerFlow patch #33). Resource and security limits
+            are upstream's DEER_FLOW_SANDBOX_* environment knobs.
 
     AioSandboxProvider and E2BSandboxProvider shared options:
         ownership: Cross-instance sandbox ownership store (memory | redis). Multi-instance
             deployments sharing a sandbox backend need redis; see SandboxOwnershipConfig.
+
+    OpenSandboxProvider specific options:
+        api_key, domain, protocol, request_timeout, use_server_proxy: OpenSandbox
+            management and execd connection settings.
+        ready_timeout: Create/readiness deadline in seconds (default: 30).
+        sandbox_timeout: Remote lifetime in seconds (default: 14400); 0 requires
+            explicit provider cleanup.
     """
 
     use: str = Field(
@@ -110,7 +185,7 @@ class SandboxConfig(BaseModel):
     )
     image: str | None = Field(
         default=None,
-        description="Sandbox image to use (Docker/AIO image or BoxLite OCI image)",
+        description="Sandbox image to use (Docker/AIO, BoxLite OCI, or OpenSandbox image)",
     )
     port: int | None = Field(
         default=None,
@@ -138,57 +213,6 @@ class SandboxConfig(BaseModel):
     container_prefix: str | None = Field(
         default=None,
         description="Prefix for container names",
-    )
-    network: str | None = Field(
-        default=None,
-        description=(
-            "startup-only: [argus] Container network to attach sandbox containers to "
-            "(LocalContainerBackend only). When set, sandboxes join this network and are "
-            "reached by container DNS name on container port 8080 with NO host port "
-            "published. When unset, the legacy host-port publish path is used. Eliminates "
-            "the rootless-Podman port-bind race that wedged runs (DeerFlow patch #26)."
-        ),
-    )
-    # [argus] Hardening knobs for LocalContainerBackend (DeerFlow patch #80).
-    # Upstream starts every sandbox with `--security-opt seccomp=unconfined` and
-    # no resource limits. Every knob below is off by default, so a config that
-    # does not mention them keeps upstream's behaviour exactly.
-    memory: str | None = Field(
-        default=None,
-        description="startup-only: [argus] memory limit for a sandbox container (docker `--memory`, e.g. '3g'). LocalContainerBackend only.",
-    )
-    pids_limit: int | None = Field(
-        default=None,
-        description="startup-only: [argus] maximum number of processes in a sandbox (docker `--pids-limit`). LocalContainerBackend only.",
-    )
-    cpus: float | None = Field(
-        default=None,
-        description="startup-only: [argus] CPU quota for a sandbox, in cores (docker `--cpus`). LocalContainerBackend only.",
-    )
-    cap_drop: list[str] = Field(
-        default_factory=list,
-        description="startup-only: [argus] capabilities to drop (docker `--cap-drop`, e.g. ['ALL']). LocalContainerBackend only.",
-    )
-    cap_add: list[str] = Field(
-        default_factory=list,
-        description="startup-only: [argus] capabilities to add back after cap_drop (docker `--cap-add`). LocalContainerBackend only.",
-    )
-    seccomp_profile: str | None = Field(
-        default=None,
-        description=(
-            "startup-only: [argus] seccomp policy for sandboxes. Unset keeps upstream's "
-            "`seccomp=unconfined`; 'default' passes no seccomp option so the runtime's own "
-            "default filter applies; any other value is passed through as `seccomp=<value>` "
-            "(a profile path). LocalContainerBackend only."
-        ),
-    )
-    no_new_privileges: bool = Field(
-        default=False,
-        description="startup-only: [argus] start sandboxes with `--security-opt no-new-privileges`. LocalContainerBackend only.",
-    )
-    extra_run_args: list[str] = Field(
-        default_factory=list,
-        description="startup-only: [argus] extra arguments appended verbatim to the sandbox `run` command, before the image. LocalContainerBackend only.",
     )
     idle_timeout: int | None = Field(
         default=None,
@@ -218,6 +242,35 @@ class SandboxConfig(BaseModel):
         default_factory=dict,
         description="Environment variables to inject into the sandbox container. Values starting with $ will be resolved from host environment variables.",
     )
+    network: SandboxNetworkConfig = Field(
+        default_factory=SandboxNetworkConfig,
+        description="AioSandboxProvider outbound network isolation and approval policy.",
+    )
+    # [argus] DeerFlow patch #33, re-expressed at the 2026-09-11 upstream sync.
+    # The gateway shares a Podman network with its sandboxes and reaches them by
+    # container DNS name on port 8080; no host port is published (the socket
+    # proxy refuses PortBindings). Upstream's `network` key became the egress
+    # policy object above, so the network NAME lives here. The legacy string
+    # form `network: <name>` that every stack config uses is mapped onto this
+    # field by `_argus_legacy_network_name`, so no config has to change.
+    container_network: str | None = Field(
+        default=None,
+        description=(
+            "startup-only: [argus] Container network to attach sandbox containers to "
+            "(LocalContainerBackend, network.mode open only). When set, sandboxes join this "
+            "network and are reached by container DNS name on container port 8080 with NO "
+            "host port published. When unset, upstream's host-port publish path is used."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _argus_legacy_network_name(cls, data):
+        """[argus] Accept the legacy `network: <str>` form as `container_network`."""
+        if isinstance(data, dict) and isinstance(data.get("network"), str):
+            data = dict(data)
+            data["container_network"] = data.pop("network")
+        return data
 
     bash_output_max_chars: int = Field(
         default=20000,
@@ -248,8 +301,9 @@ class SandboxConfig(BaseModel):
         default=600,
         gt=0,
         description=(
-            "Maximum wall-clock seconds a host bash command may run before it is terminated, process group and all (LocalSandboxProvider). "
-            "Keeps a blocking foreground command (e.g. an un-backgrounded server) from hanging the turn; background `&` processes return immediately."
+            "Maximum wall-clock seconds a bash command may run before it is terminated. LocalSandboxProvider applies it to the host process group; "
+            "OpenSandboxProvider forwards it to the remote exec service when a call has no explicit timeout. Keeps a blocking foreground command "
+            "(e.g. an un-backgrounded server) from hanging the turn; background `&` processes return immediately."
         ),
     )
 
