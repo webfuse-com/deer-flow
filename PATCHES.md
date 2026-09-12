@@ -2126,8 +2126,8 @@ carry budget ledger.
   `backend/packages/harness/deerflow/subagents/registry.py` (EDITED),
   `backend/packages/harness/deerflow/config/subagents_config.py` (EDITED),
   `backend/docs/CONFIGURATION.md` (EDITED),
-  `config.example.yaml` (EDITED, `config_version` 41 -> 42),
-  `deploy/helm/deer-flow/values.yaml` (EDITED, `config_version` mirror).
+  `config.example.yaml` (EDITED, commented example field only; `config_version`
+  is upstream's counter and is deliberately NOT bumped).
 - Tests: `backend/tests/test_subagent_thinking_config.py` (NEW: resolution helper, config surface, registry plumbing, override precedence), `backend/tests/test_subagent_executor.py` (EDITED, +1 case: opt-in reaches `create_chat_model`; default stays off). Full `test_subagent_executor.py` (145), `test_subagent_timeout_config.py` + `test_managed_subagent_registry.py` (71), and `test_config_version.py`/`test_verification_config.py`/`test_subagents_router.py`/`test_app_config_reload.py` (59) pass.
 - Delete-when: upstream exposes per-subagent thinking/reasoning controls; then re-express on their field.
 - Upstream status: none sent yet (clean additive PR candidate).
