@@ -516,6 +516,71 @@ describe("MessageGroup", () => {
   });
 });
 
+it("renders the final answer after a failed correction and a successful repair", () => {
+  const messages = [
+    {
+      id: "call-bad",
+      type: "ai",
+      content: "",
+      tool_calls: [
+        {
+          id: "bad",
+          name: "atlas_knowledge",
+          args: { action: "correct", replacements: [{ new: "B" }] },
+        },
+      ],
+    },
+    {
+      id: "error",
+      type: "tool",
+      name: "atlas_knowledge",
+      tool_call_id: "bad",
+      status: "error",
+      content: JSON.stringify({
+        status: "failed",
+        reason_code: "invalid_arguments",
+        execution_state: "not_started",
+        next_action: "revise_arguments",
+      }),
+    },
+    {
+      id: "call-fixed",
+      type: "ai",
+      content: "",
+      tool_calls: [
+        {
+          id: "fixed",
+          name: "atlas_knowledge",
+          args: { action: "correct", replacements: [{ old: "A", new: "B" }] },
+        },
+      ],
+    },
+    {
+      id: "success",
+      type: "tool",
+      name: "atlas_knowledge",
+      tool_call_id: "fixed",
+      status: "success",
+      content: JSON.stringify({
+        status: "applied",
+        execution_state: "committed",
+        next_action: "report",
+      }),
+    },
+    {
+      id: "final",
+      type: "ai",
+      content: "The correction was saved and indexed.",
+    },
+  ] as Message[];
+  // Replay persisted history and the same completed streaming snapshot.
+  for (const isLoading of [false, true]) {
+    expect(
+      renderGroup(messages, { isLoading }).replace(/<[^>]*>/g, ""),
+    ).toContain("The correction was saved and indexed.");
+  }
+});
+
 /** Asserts every needle is present and that they appear in the given order. */
 function expectRenderedInOrder(html: string, needles: string[]) {
   const indices = needles.map((needle) => html.indexOf(needle));

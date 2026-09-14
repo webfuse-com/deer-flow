@@ -49,7 +49,9 @@ def _make_patches(*, interceptor_paths=None):
 def _get_interceptors(mock_cls):
     """Extract the tool_interceptors list passed to MultiServerMCPClient."""
     kw = mock_cls.call_args
-    return kw.kwargs.get("tool_interceptors") or kw[1].get("tool_interceptors", [])
+    interceptors = kw.kwargs.get("tool_interceptors") or kw[1].get("tool_interceptors", [])
+    assert interceptors[0].__qualname__ == "preserve_operation_errors.<locals>.intercept"
+    return interceptors[1:]
 
 
 def test_custom_interceptor_loaded_and_appended():

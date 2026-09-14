@@ -43,3 +43,11 @@ E2B output sync records remote file versions and actual host file metadata in a 
 - ACP results collect only `agent_message_chunk` text. Thought chunks remain internal and must not be concatenated into the tool result
 - Missing ACP executables now return an actionable error message instead of a raw `[Errno 2]`
 - Each ACP agent uses a per-thread workspace at `{base_dir}/users/{user_id}/threads/{thread_id}/acp-workspace/`. The workspace is accessible to the lead agent via the virtual path `/mnt/acp-workspace/` (read-only). In docker sandbox mode, the directory is volume-mounted into the container at `/mnt/acp-workspace` (read-only); in local sandbox mode, path translation is handled by `tools.py`
+
+**Operation receipts:** `operation_result.py` implements opt-in `operation/1`.
+Bind interpretation to the tool's declared metadata, never its name or arbitrary
+JSON content. Keep execution state distinct from transport success, preserve
+structured MCP `isError` payloads before either adapter converts them, and
+normalize before ToolProgress/receipt middleware. A valid operation error does
+not mean the tool is broken; retain availability for other arguments and status
+queries. The bounded invalid-call gate must never retry a write automatically.

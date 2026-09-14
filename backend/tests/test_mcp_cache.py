@@ -48,6 +48,8 @@ _TRACKED_GLOBALS = (
     "_initializing_generation",
     "_cache_generation",
     "_background_refresh_task",
+    "_catalog_refresh_after",
+    "_catalog_refreshing",
 )
 
 
@@ -816,3 +818,77 @@ def test_cancelled_initializer_releases_generation_claim(cache_globals, monkeypa
     assert cache_module._cache_initialized is True
     assert cache_module._initializing_generation is None
     assert calls == 2
+
+
+def test_catalog_refresh_replaces_schemas_and_preserves_failed_servers(cache_globals, monkeypatch, tmp_path):
+    from langchain_core.tools import StructuredTool
+
+    from deerflow.mcp.tools import ToolCatalog
+    from deerflow.tools.mcp_metadata import tag_mcp_tool
+
+    def make_tool(name, server, description):
+        tool = StructuredTool.from_function(lambda: "", name=name, description=description)
+        return tag_mcp_tool(tool, server_name=server, transport="http")
+
+    old = make_tool("server_fix", "server", "old schema")
+    new = make_tool("server_fix", "server", "new schema")
+    other = make_tool("other_search", "other", "unchanged")
+    cache_module._mcp_tools_cache = [old, other]
+
+    async def discover():
+        return ToolCatalog([new], failed_servers={"other"})
+
+    monkeypatch.setattr("deerflow.mcp.tools.get_mcp_tools", discover)
+    monkeypatch.setattr(cache_module, "_current_config_state", lambda: (None, None))
+    asyncio.run(cache_module._refresh_catalog(cache_module._cache_generation, (None, None)))
+    assert cache_module._mcp_tools_cache == [new, other]
+    assert cache_module._catalog_refresh_after > cache_module.time.monotonic()
+
+
+def test_catalog_refresh_discards_result_after_reset(cache_globals, monkeypatch):
+    cache_module._mcp_tools_cache = ["old"]
+
+    async def discover():
+        cache_module._cache_generation += 1
+        return ["stale"]
+
+    monkeypatch.setattr("deerflow.mcp.tools.get_mcp_tools", discover)
+    monkeypatch.setattr(cache_module, "_current_config_state", lambda: (None, None))
+    asyncio.run(cache_module._refresh_catalog(cache_module._cache_generation, (None, None)))
+    assert cache_module._mcp_tools_cache == ["old"]
+
+
+def test_catalog_refresh_exception_keeps_last_good_snapshot(cache_globals, monkeypatch):
+    cache_module._mcp_tools_cache = ["old"]
+
+    async def discover():
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("deerflow.mcp.tools.get_mcp_tools", discover)
+    asyncio.run(cache_module._refresh_catalog(cache_module._cache_generation, (None, None)))
+    assert cache_module._mcp_tools_cache == ["old"]
+
+
+@pytest.mark.asyncio
+async def test_catalog_ttl_coalesces_discovery_and_keeps_live_sessions(cache_globals, monkeypatch):
+    cache_module._cache_initialized = True
+    cache_module._mcp_tools_cache = ["old"]
+    cache_module._catalog_refresh_after = 0
+    monkeypatch.setattr(cache_module, "_current_config_state", lambda: (None, None))
+    monkeypatch.setattr("deerflow.mcp.session_pool.reset_session_pool", lambda: pytest.fail("schema refresh must not retire sessions"))
+    discovered = []
+    finish = asyncio.Event()
+
+    async def discover():
+        discovered.append(True)
+        await finish.wait()
+        return ["new"]
+
+    monkeypatch.setattr("deerflow.mcp.tools.get_mcp_tools", discover)
+    assert cache_module.get_cached_mcp_tools() == ["old"]
+    assert cache_module.get_cached_mcp_tools() == ["old"]
+    await asyncio.sleep(0)
+    assert discovered == [True]
+    finish.set()
+    await asyncio.sleep(0)
+    assert cache_module.get_cached_mcp_tools() == ["new"]
