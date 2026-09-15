@@ -47,6 +47,7 @@ half is upstreamable, the Argus behavior lives in project config).
 
 | Patch | Name | Class | Commit(s) |
 |---|---|---|---|
+| [#93](#patch-93) | operation receipts and MCP schema refresh | generic-upstreamable | this change |
 | [#1](#patch-1) | aio_sandbox `set +H` | generic-upstreamable | 9b025200 |
 | [#2](#patch-2) | sandbox command cap as `SandboxConfig.command_max_chars` | config-expressed | 12362d06 |
 | [#3](#patch-3) | loop-detection read_file bucket as config field | config-expressed | 8bf18954 |
@@ -2131,6 +2132,27 @@ carry budget ledger.
 - Tests: `backend/tests/test_subagent_thinking_config.py` (NEW: resolution helper, config surface, registry plumbing, override precedence), `backend/tests/test_subagent_executor.py` (EDITED, +1 case: opt-in reaches `create_chat_model`; default stays off). Full `test_subagent_executor.py` (145), `test_subagent_timeout_config.py` + `test_managed_subagent_registry.py` (71), and `test_config_version.py`/`test_verification_config.py`/`test_subagents_router.py`/`test_app_config_reload.py` (59) pass.
 - Delete-when: upstream exposes per-subagent thinking/reasoning controls; then re-express on their field.
 - Upstream status: none sent yet (clean additive PR candidate).
+
+## Patch #93
+
+**Declared operation receipts and periodic MCP schema discovery**
+
+- Class: generic-upstreamable.
+- Problem: structured `isError` details were discarded by the MCP adapter, and
+  JSON operation failures or pending writes could acquire success receipts.
+  A tool catalog also remained stale until its connection config changed.
+- Changes: opt-in `operation/1` result interpretation; lossless MCP error
+  interceptor for ordinary tools; two identical invalid submissions per user
+  turn before a local stop; background catalog refresh with last-good tools
+  retained for failed servers and config/generation fencing. Model-visible
+  catalog hashes include result-contract metadata. Durable task drivers keep
+  their existing separate lifecycle.
+- Tests: operation contract (including real adapters and compiled ToolNode),
+  MCP cache/interceptor tests, and frontend failed-call -> repaired-call ->
+  final-answer replay. No frontend behavior change was needed for the replay.
+- Exit: drop when upstream preserves structured errors, supports producer-bound
+  operation semantics and bounded invalid submission recovery, and refreshes
+  remote catalogs with equivalent session and snapshot safety.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

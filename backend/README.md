@@ -564,3 +564,21 @@ See the [LICENSE](../LICENSE) file in the project root.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+
+
+### Declared operation receipts and MCP catalogs
+
+Tools can opt into `deerflow_result_contract=operation/1` in native metadata
+or MCP catalog `_meta`. The runtime preserves structured MCP errors and
+interprets status, execution_state and next_action before stamping receipts.
+Failed operations stay errors; pending/index-pending operations stay partial.
+Document JSON from an undeclared tool keeps its existing interpretation.
+Two invalid submissions with identical arguments in a user turn prevent a
+third submission; changed arguments and status/read calls remain available.
+No automatic write retry is performed.
+
+Active workers refresh MCP catalogs every 4-5 minutes without retiring live
+sessions for schema-only changes. A failed server retains its prior tools and
+retries discovery in 30-45 seconds. Refresh snapshots are fenced by config and
+cache generation; explicit admin reset remains available. Deferred promotion
+hashes include catalog contract metadata as well as model-visible schemas.

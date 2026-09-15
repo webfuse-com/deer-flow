@@ -72,7 +72,7 @@ class DeferredToolCatalog:
 
     @cached_property
     def hash(self) -> str:
-        canon = [{"name": t.name, "schema": convert_to_openai_function(t)} for t in sorted(self.tools, key=lambda t: t.name)]
+        canon = [{"name": t.name, "schema": convert_to_openai_function(t), "contract": (t.metadata or {}).get("_meta", {})} for t in sorted(self.tools, key=lambda t: t.name)]
         blob = json.dumps(canon, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 

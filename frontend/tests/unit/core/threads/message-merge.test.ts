@@ -2379,3 +2379,30 @@ test("mergeMessages places a live message with seq inside the loaded window by p
     merged.map((message) => message.additional_kwargs?.deerflow_seq),
   ).toEqual([1, 2, 3, 5]);
 });
+
+test("reconnected history retains the final answer after an intermediate tool error", () => {
+  const failed = {
+    id: "failed",
+    type: "tool",
+    tool_call_id: "bad",
+    status: "error",
+    content: "invalid_arguments",
+  } as Message;
+  const repaired = {
+    id: "repaired",
+    type: "tool",
+    tool_call_id: "fixed",
+    status: "success",
+    content: "applied",
+  } as Message;
+  const final = {
+    id: "final",
+    type: "ai",
+    content: "Correction saved.",
+  } as Message;
+  expect(mergeMessages([failed, repaired, final], [failed], [])).toEqual([
+    failed,
+    repaired,
+    final,
+  ]);
+});

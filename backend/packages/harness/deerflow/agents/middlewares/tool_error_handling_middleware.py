@@ -21,6 +21,7 @@ from deerflow.agents.middlewares.tool_result_meta import (
     normalize_tool_result,
     stamp_exception_meta,
 )
+from deerflow.agents.middlewares.tool_transform_meta import append_tool_transform
 from deerflow.config.app_config import AppConfig
 from deerflow.config.summarization_config import DEFAULT_SKILL_FILE_READ_TOOL_NAMES
 from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
@@ -28,6 +29,7 @@ from deerflow.subagents.status_contract import (
     format_subagent_result_message,
     make_subagent_additional_kwargs,
 )
+from deerflow.tools.operation_result import repeated_invalid_call, stamp_operation
 
 if TYPE_CHECKING:
     from deerflow.tools.builtins.tool_search import DeferredToolSetup
@@ -65,6 +67,9 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         else:
             self._skill_read_tool_names = frozenset(app_config.summarization.skill_file_read_tool_names)
             self._skills_root = app_config.skills.container_path
+
+    def release_policy_parameters(self) -> dict[str, object]:
+        return {"operation_result_contract": "operation/1", "max_identical_invalid_submissions": 2}
 
     def _build_error_message(self, request: ToolCallRequest, exc: Exception) -> ToolMessage:
         tool_name = str(request.tool_call.get("name") or "unknown_tool")
@@ -117,6 +122,10 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         if not isinstance(result, ToolMessage):
             return result
         tool_name = str(request.tool_call.get("name") or "")
+        original_content = result.content
+        result = stamp_operation(result, getattr(getattr(request, "tool", None), "metadata", None))
+        if result.content != original_content:
+            append_tool_transform(result.additional_kwargs, "invalid_operation_receipt", by="ToolErrorHandlingMiddleware")
         return self._stamp_skill_read_metadata(result, request, tool_name=tool_name)
 
     @override
@@ -125,6 +134,9 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
+        blocked = repeated_invalid_call(request)
+        if blocked is not None:
+            return blocked
         try:
             result = handler(request)
         except GraphBubbleUp:
@@ -144,6 +156,9 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
+        blocked = repeated_invalid_call(request)
+        if blocked is not None:
+            return blocked
         try:
             result = await handler(request)
         except GraphBubbleUp:

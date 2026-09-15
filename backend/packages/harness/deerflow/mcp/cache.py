@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import random
 import threading
+import time
 from pathlib import Path
 
 from langchain_core.tools import BaseTool
@@ -19,6 +21,8 @@ _init_lock = threading.RLock()  # Guards cache state transitions.
 _init_condition = threading.Condition(_init_lock)
 _initializing_generation: int | None = None
 _cache_generation = 0
+_catalog_refresh_after = float("inf")
+_catalog_refreshing = False
 
 # Cache-invalidation key for the resolved extensions config file. We track the
 # resolved path *and* a ``(mtime, size, sha256)`` content signature — via the
@@ -139,7 +143,7 @@ async def initialize_mcp_tools() -> list[BaseTool]:
         List of LangChain tools from all enabled MCP servers.
     """
     global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature
-    global _initializing_generation, _cache_generation
+    global _initializing_generation, _cache_generation, _catalog_refresh_after
 
     while True:
         with _init_condition:
@@ -187,6 +191,7 @@ async def initialize_mcp_tools() -> list[BaseTool]:
                 retired_pool = _reset_mcp_tools_cache_state_and_retire_pool_locked()
             else:
                 _mcp_tools_cache = loaded_tools
+                _catalog_refresh_after = time.monotonic() + random.uniform(240, 300)
                 _cache_initialized = True
                 _config_path, _config_signature = post_path, post_sig
                 logger.info("MCP tools initialized: %d tool(s) loaded (config path: %s)", len(_mcp_tools_cache), _config_path)
@@ -329,6 +334,8 @@ def get_cached_mcp_tools() -> list[BaseTool]:
                 retired_pool = _reset_mcp_tools_cache_state_and_retire_pool_locked()
 
             if _cache_initialized:
+                if time.monotonic() >= _catalog_refresh_after:
+                    _schedule_catalog_refresh_locked()
                 return _mcp_tools_cache or []
 
             if _initializing_generation is not None:
@@ -428,3 +435,45 @@ def reset_mcp_tools_cache() -> None:
         logger.debug("Could not close MCP session pool on cache reset", exc_info=True)
 
     logger.info("MCP tools cache reset")
+
+
+def _schedule_catalog_refresh_locked() -> None:
+    """Bound schema age without blocking callers or retiring live sessions."""
+    global _catalog_refreshing
+    if _catalog_refreshing or (_background_refresh_task is not None and not _background_refresh_task.done()):
+        return
+    _catalog_refreshing = True
+    generation = _cache_generation
+    config_state = (_config_path, _config_signature)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        threading.Thread(target=lambda: asyncio.run(_refresh_catalog(generation, config_state)), daemon=True, name="mcp-catalog-refresh").start()
+    else:
+        loop.create_task(_refresh_catalog(generation, config_state))
+
+
+async def _refresh_catalog(generation, config_state) -> None:
+    global _mcp_tools_cache, _catalog_refresh_after, _catalog_refreshing
+    from deerflow.mcp.tools import get_mcp_tools
+    from deerflow.tools.mcp_metadata import get_mcp_source
+
+    try:
+        loaded = await get_mcp_tools()
+        current_state = _current_config_state()
+        with _init_lock:
+            if generation != _cache_generation or config_state != current_state or config_state != (_config_path, _config_signature):
+                return
+            failed = getattr(loaded, "failed_servers", frozenset())
+            retained = [tool for tool in (_mcp_tools_cache or []) if (get_mcp_source(tool) or {}).get("server_name") in failed]
+            _mcp_tools_cache = [*loaded, *retained]
+            _catalog_refresh_after = time.monotonic() + random.uniform(30, 45) if failed else time.monotonic() + random.uniform(240, 300)
+            logger.info("MCP catalog refreshed: tools=%d failed_servers=%d retained_tools=%d", len(_mcp_tools_cache), len(failed), len(retained))
+    except Exception:
+        logger.exception("MCP catalog refresh failed; retaining previous schemas")
+        with _init_lock:
+            if generation == _cache_generation:
+                _catalog_refresh_after = time.monotonic() + random.uniform(30, 45)
+    finally:
+        with _init_lock:
+            _catalog_refreshing = False

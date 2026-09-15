@@ -32,6 +32,7 @@ from deerflow.mcp.tasks.runtime import (
 from deerflow.reflection import resolve_variable
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.tools.mcp_metadata import tag_mcp_routing, tag_mcp_tool
+from deerflow.tools.operation_result import declared, preserve_operation_errors
 from deerflow.tools.sync import make_sync_tool_wrapper
 from deerflow.tools.types import Runtime
 
@@ -769,6 +770,14 @@ def _configure_task_tools_for_server(
     return configured
 
 
+class ToolCatalog(list):
+    """Discovery snapshot with explicit failures, distinct from an empty catalog."""
+
+    def __init__(self, tools=(), *, failed_servers=()):
+        super().__init__(tools)
+        self.failed_servers = frozenset(failed_servers)
+
+
 async def get_mcp_tools() -> list[BaseTool]:
     """Get all tools from enabled MCP servers.
 
@@ -823,11 +832,16 @@ async def get_mcp_tools() -> list[BaseTool]:
             target_logger=logger,
         )
 
+        operation_declarations: set[tuple[str, str]] = set()
+        tool_interceptors = [preserve_operation_errors(operation_declarations), *tool_interceptors]
+
         client = MultiServerMCPClient(
             servers_config,
             tool_interceptors=tool_interceptors,
             tool_name_prefix=True,
         )
+
+        failed_servers: set[str] = set()
 
         async def load_server_tools(server_name: str) -> list[BaseTool]:
             try:
@@ -864,6 +878,7 @@ async def get_mcp_tools() -> list[BaseTool]:
                     try:
                         return await asyncio.wait_for(discovery, timeout=session_init_timeout)
                     except TimeoutError:
+                        failed_servers.add(server_name)
                         # Only our own bound is logged as "timed out": the
                         # branch condition guarantees the value is not None, so
                         # the %.1f format cannot fail. A TimeoutError raised by
@@ -878,6 +893,7 @@ async def get_mcp_tools() -> list[BaseTool]:
                         return []
                 return await discovery
             except Exception as e:
+                failed_servers.add(server_name)
                 logger.warning(
                     f"Skipping MCP server '{server_name}' after tool discovery failed: {e}",
                     exc_info=True,
@@ -915,6 +931,8 @@ async def get_mcp_tools() -> list[BaseTool]:
                         _VALID_MCP_TOOL_NAME.pattern,
                     )
                     continue
+                if declared(tool.metadata):
+                    operation_declarations.add((source_name, _raw_mcp_tool_name(tool, server_name=source_name, tool_name_prefix=tool_name_prefix)))
                 tag_mcp_tool(tool, server_name=source_name, transport=transport)
                 prefix = f"{source_name}_"
                 original_name = tool.name[len(prefix) :] if tool_name_prefix and tool.name.startswith(prefix) else tool.name
@@ -958,10 +976,10 @@ async def get_mcp_tools() -> list[BaseTool]:
             if getattr(tool, "func", None) is None and getattr(tool, "coroutine", None) is not None:
                 tool.func = make_sync_tool_wrapper(tool.coroutine, tool.name)
 
-        return wrapped_tools
+        return ToolCatalog(wrapped_tools, failed_servers=failed_servers)
 
     except McpTaskConfigurationError:
         raise
     except Exception as e:
         logger.error(f"Failed to load MCP tools: {e}", exc_info=True)
-        return []
+        return ToolCatalog(failed_servers=servers_config)
