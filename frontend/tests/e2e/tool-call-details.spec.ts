@@ -31,6 +31,10 @@ for (const { debug, content, status, label } of [
   },
 ] as const) {
   test(`generic tool details: ${label}`, async ({ page }) => {
+    // [argus patch #65] The simplified workspace removes the token-usage
+    // dropdown and per-message totals, so the "step_debug" inline mode that
+    // gates these expandable tool details is unreachable in this UI.
+    test.skip(debug, "argus patch #65: token-usage debug mode is not rendered");
     await page.addInitScript((enabled) => {
       localStorage.setItem(
         "deerflow.local-settings",

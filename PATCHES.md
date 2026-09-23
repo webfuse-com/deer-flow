@@ -850,6 +850,7 @@ carry budget ledger.
   and joins fire-and-forget stage tasks before final delivery.
 - Upstream status: Telegram serialization is a generic bug-fix candidate; the
   navigation/header choices are Argus-specific.
+- Sync 2026-09-23: upstream #5309's expandable generic tool details render only in the token-usage `step_debug` inline mode, which this patch's UI never reaches; `tests/e2e/tool-call-details.spec.ts` skips its three debug cases (the debug-off case still runs).
 
 ## Patch #61
 
