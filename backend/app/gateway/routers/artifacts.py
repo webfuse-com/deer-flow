@@ -25,17 +25,19 @@ from deerflow.config.paths import make_safe_user_id
 from deerflow.runtime import ConflictError, ThreadOperationKind
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.sandbox.sandbox_provider import get_sandbox_provider
+from deerflow.utils.file_io import await_drained
+from deerflow.utils.text_detection import _is_active_content_mime_type, is_text_file_by_content
 from deerflow.utils.thread_id import ThreadId
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
 
-ACTIVE_CONTENT_MIME_TYPES = {
-    "text/html",
-    "application/xhtml+xml",
-    "image/svg+xml",
-}
+# Active-content MIME classification (``_is_active_content_mime_type``) lives
+# in ``deerflow.utils.text_detection``, shared with the project-document shelf.
+# It covers HTML, every XML type (a ``+xml`` subtype, ``text/xml``,
+# ``application/xml``), SVG including Windows' ``image/svg`` alias, and
+# ``text/xsl``: any of them can run script when a browser renders it.
 
 # ``mimetypes`` consults the platform MIME database; a minimal host without
 # mailcap has no ``.xhtml`` mapping, which would let active content slip
@@ -48,22 +50,21 @@ mimetypes.add_type("application/xhtml+xml", ".xhtml")
 # as a download, which is not what "open in new window" means. Those are served
 # as ``text/plain`` unless the caller asked for ``download=true``, when the real
 # type and an attachment disposition are kept so the saved file is named and
-# typed correctly.
+# typed correctly. ``text/xml`` is active content and never reaches this list.
 INLINE_TEXT_MIME_TYPES = {
     "text/plain",
     "text/css",
     "text/javascript",
-    "text/xml",
 }
 INLINE_TEXT_MEDIA_TYPE = "text/plain; charset=utf-8"
 
-# Active content (HTML, XHTML, SVG) used to be forced to an attachment so a
-# generated page could never run scripts on the application origin. Since
-# patch #89 it is displayed inline inside a CSP sandbox instead: the
-# ``sandbox`` directive without ``allow-same-origin`` gives the document an
-# opaque origin (no cookies, no storage, no same-origin fetches to the
-# gateway), which is the containment the attachment stood in for, while the
-# page itself renders. ``download=true`` still returns the attachment.
+# Upstream forces active content to an attachment so a generated page can never
+# run scripts on the application origin. Patch #89 displays it inline inside a
+# CSP sandbox instead: the ``sandbox`` directive without ``allow-same-origin``
+# gives the document an opaque origin (no cookies, no storage, no same-origin
+# fetches to the gateway), which is the containment the attachment stood in
+# for, while the page itself renders. ``download=true`` still returns the
+# attachment.
 ACTIVE_CONTENT_INLINE_HEADERS = {
     "Content-Security-Policy": "sandbox allow-scripts",
     "X-Content-Type-Options": "nosniff",
@@ -195,13 +196,43 @@ def _sync_artifact_to_sandbox(sandbox, virtual_path: str, content: bytes) -> Non
     sandbox.update_file(virtual_path, content)
 
 
+async def _commit_artifact_update(
+    *,
+    sandbox,
+    virtual_path: str,
+    actual_path: Path,
+    current: bytes,
+    updated: bytes,
+    file_stat: os.stat_result,
+) -> None:
+    """Keep remote/local artifact mutation ownership until commit or rollback."""
+    try:
+        if sandbox is not None:
+            await asyncio.to_thread(_sync_artifact_to_sandbox, sandbox, virtual_path, updated)
+        await asyncio.to_thread(_replace_artifact_atomically, actual_path, updated, file_stat)
+    except Exception:
+        # Non-cancelled failures are logged again by the outer route handler.
+        # Keep this inner log because await_drained re-raises caller cancellation
+        # after consuming the drained task's exception, which would otherwise make
+        # a cancelled-then-failed commit silent.
+        logger.exception("Failed to commit artifact update before rollback: %s", virtual_path)
+        if sandbox is not None:
+            try:
+                await asyncio.to_thread(_sync_artifact_to_sandbox, sandbox, virtual_path, current)
+            except Exception:
+                logger.exception("Failed to roll back remote artifact after artifact update failure: %s", virtual_path)
+        raise
+
+
 def _build_content_disposition(disposition_type: str, filename: str) -> str:
     """Build an RFC 5987 encoded Content-Disposition header value."""
     return f"{disposition_type}; filename*=UTF-8''{quote(filename)}"
 
 
 def _build_attachment_headers(filename: str, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
-    headers = {"Content-Disposition": _build_content_disposition("attachment", filename)}
+    # nosniff: a declared binary/document type must never be reinterpreted as
+    # HTML — the transport-level guarantee behind unsandboxed PDF preview.
+    headers = {"Content-Disposition": _build_content_disposition("attachment", filename), "X-Content-Type-Options": "nosniff"}
     if extra_headers:
         headers.update(extra_headers)
     return headers
@@ -250,17 +281,6 @@ def _slice_byte_range(content: bytes, range_header: str | None) -> tuple[bytes, 
         }
     )
     return ranged_content, 206, headers
-
-
-def is_text_file_by_content(path: Path, sample_size: int = 8192) -> bool:
-    """Check if file is text by examining content for null bytes."""
-    try:
-        with open(path, "rb") as f:
-            chunk = f.read(sample_size)
-            # Text files shouldn't contain null bytes
-            return b"\x00" not in chunk
-    except Exception:
-        return False
 
 
 def _read_skill_archive_member(zip_ref: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
@@ -350,7 +370,7 @@ def _read_artifact_payload(actual_path: Path, path: str, download: bool) -> tupl
     if download:
         return ("file", mime_type, {})
     # Active content renders inline inside a CSP sandbox (patch #89).
-    if mime_type in ACTIVE_CONTENT_MIME_TYPES:
+    if _is_active_content_mime_type(mime_type):
         return ("inline_file", mime_type, dict(ACTIVE_CONTENT_INLINE_HEADERS))
     if mime_type and mime_type.startswith("text/"):
         return ("inline_file", _inline_media_type(mime_type), {})
@@ -404,7 +424,7 @@ async def get_artifact(thread_id: ThreadId, path: str, request: Request, downloa
 
     Returns:
         The file content as a FileResponse with appropriate content type:
-        - Active content (HTML/XHTML/SVG): Served as download attachment
+        - Active content (HTML and XML documents, including XHTML/SVG): Served as download attachment
         - Text files: Plain text with proper MIME type
         - Binary files: Inline display with download option
 
@@ -417,8 +437,9 @@ async def get_artifact(thread_id: ThreadId, path: str, request: Request, downloa
     Query Parameters:
         download (bool): If true, forces an attachment download under the file's real
             media type. Otherwise the file is served inline: text types a browser cannot
-            render (markdown, csv, ...) as plain text, and active HTML/XHTML/SVG content
-            inside a CSP sandbox (opaque origin, no access to the application origin).
+            render (markdown, csv, ...) as plain text, and active HTML/XHTML/SVG/XML
+            content inside a CSP sandbox (opaque origin, no access to the application
+            origin).
 
     Example:
         - Get text file inline: `/api/threads/abc123/artifacts/mnt/user-data/outputs/notes.txt`
@@ -453,7 +474,7 @@ async def get_artifact(thread_id: ThreadId, path: str, request: Request, downloa
         download_name = Path(internal_path).name or actual_skill_path.stem
         if download:
             return Response(content=content, media_type=mime_type or "application/octet-stream", headers=_build_attachment_headers(download_name, cache_headers))
-        if mime_type in ACTIVE_CONTENT_MIME_TYPES:
+        if _is_active_content_mime_type(mime_type):
             # Inline inside a CSP sandbox, same containment as the regular branch (patch #89).
             return Response(content=content, media_type=mime_type, headers={**cache_headers, **ACTIVE_CONTENT_INLINE_HEADERS})
 
@@ -466,6 +487,7 @@ async def get_artifact(thread_id: ThreadId, path: str, request: Request, downloa
         inline_headers = {
             **cache_headers,
             **range_headers,
+            "X-Content-Type-Options": "nosniff",
             # Real SHA-256 so the browser can skip crypto.subtle (unavailable on
             # non-secure contexts) when previewing / editing artifacts (#4864).
             "ETag": f'"{hashlib.sha256(content).hexdigest()}"',
@@ -518,7 +540,7 @@ async def get_artifact(thread_id: ThreadId, path: str, request: Request, downloa
         # FileResponse honors byte-Range requests for large text previews and
         # media seeking without buffering the full artifact in the Gateway.
         # Active content carries the CSP sandbox headers (patch #89).
-        headers = {"Content-Disposition": _build_content_disposition("inline", actual_path.name), **extra_headers}
+        headers = {"Content-Disposition": _build_content_disposition("inline", actual_path.name), "X-Content-Type-Options": "nosniff", **extra_headers}
         file_size = await asyncio.to_thread(lambda: actual_path.stat().st_size)
         if file_size <= MAX_EDITABLE_ARTIFACT_BYTES:
             # Real SHA-256 so the browser can skip crypto.subtle (unavailable
@@ -551,11 +573,11 @@ async def update_artifact(
 ) -> ArtifactUpdateResponse:
     """Update an existing text artifact while the thread has no active run.
 
-    The host-side artifact file is updated first; when the sandbox provider is
-    not thread-mounted, the new content is also synced into the thread's
-    sandbox. Under ``authorization.enabled``, a caller denied
-    ``sandbox:execute`` skips that sandbox sync (the host-side update still
-    completes).
+    For non-mounted providers, the sandbox copy is written before the host file
+    so a local replacement failure can restore the previous remote bytes. The
+    complete remote/local mutation is drained across caller cancellation before
+    either reservation is released. Under ``authorization.enabled``, a caller
+    denied ``sandbox:execute`` skips sandbox sync and updates only the host file.
     """
     virtual_path = _normalize_editable_artifact_path(path)
     raw_owner_user_id = get_trusted_internal_owner_user_id(request)
@@ -597,21 +619,20 @@ async def update_artifact(
                 if not sandbox_lease.denied and sandbox is None:
                     raise RuntimeError("Failed to acquire sandbox for artifact update")
 
-            try:
-                if sandbox is not None:
-                    await asyncio.to_thread(_sync_artifact_to_sandbox, sandbox, virtual_path, updated)
-                await asyncio.to_thread(_replace_artifact_atomically, actual_path, updated, file_stat)
-                # Invalidate any cached digest for this path so a subsequent GET
-                # serves the fresh SHA-256. The (path, mtime_ns, size) LRU key can
-                # collide on a same-size, sub-nanosecond re-write (review nit).
-                _sha256_of_file_cached.cache_clear()
-            except Exception:
-                if sandbox is not None:
-                    try:
-                        await asyncio.to_thread(_sync_artifact_to_sandbox, sandbox, virtual_path, current)
-                    except Exception:
-                        logger.exception("Failed to roll back remote artifact after artifact update failure: %s", virtual_path)
-                raise
+            # A cancelled request must not release the thread-operation reservation
+            # or sandbox request lease while either mutation is still running in a
+            # worker thread. Drain the complete remote/local transaction so it
+            # reaches a coherent commit or rollback before cancellation propagates.
+            await await_drained(
+                _commit_artifact_update(
+                    sandbox=sandbox,
+                    virtual_path=virtual_path,
+                    actual_path=actual_path,
+                    current=current,
+                    updated=updated,
+                    file_stat=file_stat,
+                )
+            )
     except ConflictError:
         raise HTTPException(status_code=409, detail="Thread has a run in flight. Save after the run finishes.") from None
     except HTTPException:

@@ -15,9 +15,10 @@ a #7/#8 collision between the prompt blocks and the todo middleware). This
 file is now canonical; where older documents disagree, the section notes the
 alias. Baseline facts:
 
-- Upstream base: `3f0b6ecc` (`bytedance/main`, 2026-09-11), reached by the
-  merge-based sync of 2026-09-11 (acropolis `docs/DEERFLOW-SYNC.md`; previous
-  base `3a967d4f` of 2026-08-15, 237 upstream commits behind). The 2026-07-02
+- Upstream base: `fc26204d` (`bytedance/main`, 2026-09-23), reached by the
+  merge-based sync of 2026-09-23 (acropolis `docs/DEERFLOW-SYNC.md`; previous
+  base `3f0b6ecc` of 2026-09-11, 265 upstream commits behind; before that
+  `3a967d4f` of 2026-08-15). The 2026-07-02
   rebuild was against tag `v2.0.0` (`7e7f0410`), fork tip `2df36c99` (29
   commits, ~26 logical patches). Deployed pin: `/opt/argus/VERSIONS.md`.
 - Sync 2026-09-11 in one line: retired #63 (its upstream original is now in
@@ -26,6 +27,17 @@ alias. Baseline facts:
   backend half of #67 (upstream #5041); re-expressed #20, #22, #33, #66,
   #68/#69, #75, #87 onto upstream's new designs. Each section carries a
   "Sync 2026-09-11" bullet; retired items are under "Dropped".
+- Sync 2026-09-23 in one line: retired #3 (upstream keys read_file loop
+  detection on the exact line window, #5578), #78 (upstream #5403) and the
+  frontend half of #67 (upstream active-run recovery, #5536), so #67 is now
+  only the `owningRunIsActive` subtask fallback; re-expressed #49's compact
+  clarification into upstream's `RunInteractionPolicy`, #89 onto upstream's
+  wider active-content classifier, #73's lock fast path into upstream's
+  cancellation-safe `_acquire_gate_lock`, #75 onto `is_genuine_user_message`,
+  and the Settings > Tools system-tools list into the Capability Center.
+  Fixed on the merge: upstream #5581's download Bot returned None in webhook
+  mode, which would have marked every inbound Telegram file unavailable on
+  webhook stacks. Each touched section carries a "Sync 2026-09-23" bullet.
 - Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
   `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
 
@@ -50,7 +62,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#93](#patch-93) | operation receipts and MCP schema refresh | generic-upstreamable | this change |
 | [#1](#patch-1) | aio_sandbox `set +H` | generic-upstreamable | 9b025200 |
 | [#2](#patch-2) | sandbox command cap as `SandboxConfig.command_max_chars` | config-expressed | 12362d06 |
-| [#3](#patch-3) | loop-detection read_file bucket as config field | config-expressed | 8bf18954 |
+| [#3](#patch-3) | ~~loop-detection read_file bucket as config field~~ RETIRED 2026-09-23 (upstream #5578) | config-expressed | 8bf18954 |
 | [#4](#patch-4) | checkpointer `AsyncPostgresSaver.aprune` | generic-upstreamable | ef280bbb |
 | [#5](#patch-5) | per-event-loop httpx client for ChatOpenAI | generic-upstreamable | 86dcc0b2 |
 | [#6](#patch-6) | lead-agent prompt residual blocks | argus-edit | 2262cd29 |
@@ -101,7 +113,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#64](#patch-64) | Config-gated subagent delegation posture | config-expressed | 09af0482 |
 | [#65](#patch-65) | Simplified shared UI + serialized Telegram stage cleanup | argus-edit | this PR |
 | [#66](#patch-66) | Salvage partial subagent work on timeout + per-run wall-clock deadline | generic-upstreamable | this PR |
-| [#67](#patch-67) | Rejoin in-flight run on WebUI reload (frontend; the backend disconnect half was subsumed by upstream #5041 at the 2026-09-11 sync) | generic-upstreamable | this PR |
+| [#67](#patch-67) | Pending-subtask fallback for a rejoined active run (the rejoin itself retired into upstream #5536 on 2026-09-23; the backend disconnect half into upstream #5041 on 2026-09-11) | generic-upstreamable | this PR |
 | [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
 | [#69](#patch-69) | Loop-detection: near-duplicate SUCCESS downgrades (content Jaccard) | argus-edit | this PR |
 | [#70](#patch-70) | surface missing durable run-event storage (back-filled) | generic-upstreamable | 477d652a |
@@ -112,7 +124,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#75](#patch-75) | Preserve active user request in compaction input | argus-edit | this PR |
 | [#76](#reverted-patch-76) | reduce multi-file work-cycle churn (REVERTED 2026-08-31) | argus-edit | d29c414d, fb89651a |
 | [#77](#reverted-patch-77) | optional write-file narration (REVERTED 2026-08-31) | argus-edit | 187d7e28, 8f1d49cb |
-| [#78](#patch-78) | Merge model profile and runtime constructor kwargs | generic-upstreamable | this PR |
+| [#78](#patch-78) | ~~Merge model profile and runtime constructor kwargs~~ RETIRED 2026-09-23 (upstream #5403) | generic-upstreamable | this PR |
 | [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
@@ -190,6 +202,14 @@ carry budget ledger.
   this in config alone.
 - Upstream status: none (PR candidate; default equals upstream).
 - Sync 2026-09-11: kept, re-threaded; upstream still hardcodes `bucket_size = 200`.
+- Sync 2026-09-23: RETIRED. Upstream #5578 keys read_file on the exact
+  normalized line window instead of 200-line buckets, which is the collision
+  this patch worked around. The middleware plumbing is gone; the config field
+  stays as an accepted, ignored key (documented DEPRECATED) because every
+  atlas stack config still sets `read_file_bucket_size_lines: 40`. Delete-when
+  for the field: atlas-template drops the key and `make atlas-update-all` has
+  rolled it out. The #3 tests are replaced by one pinning that distinct
+  sections hash apart and one pinning that the key loads but is ignored.
 
 ## Patch #4
 
@@ -253,6 +273,7 @@ carry budget ledger.
 - Upstream status: subsumed-watch (upstream absorbs pillars piecemeal, #3195
   precedent).
 - Sync 2026-09-11: upstream re-expanded `<clarification_system>` (ea9b7014, "no sibling tool calls"); kept our one-paragraph form plus one sentence carrying that rule ("Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped"). The other residual blocks auto-merged.
+- Sync 2026-09-23: upstream moved clarification guidance into `agents/interaction_policy.py` (`RunInteractionPolicy`: interactive vs scheduled vs webhook runs). The prompt template now renders `{interaction_thinking_guidance}`, `{clarification_system}` and `{clarification_reminder}`; our one-paragraph `<clarification_system>` and the two compact "ask only when material" lines are the policy's INTERACTIVE strings, and the autonomous variants are upstream's, so scheduled and webhook runs gain the "assume, record, or BLOCK" guidance. `test_interaction_policy.py` and `test_lead_agent_prompt.py` assert our wording.
 
 ## Patch #7/#18
 
@@ -334,6 +355,7 @@ carry budget ledger.
   `test_telegram_sender_seam.py`).
 - Upstream status: none.
 - See also: patch #40 (send-path extraction).
+- Sync 2026-09-23: upstream #5581 moved inbound downloads onto a dedicated loop-bound `_get_download_bot()`, which returned None without a Telegram loop. Webhook mode (every Atlas stack) runs PTB on the gateway loop and has none, so every inbound photo, document and voice note would have been "download unavailable". Fixed: with no Telegram loop the Application's own Bot is used (already bound to the gateway loop). Pinned by `test_receive_file_downloads_on_gateway_loop_when_webhook_has_no_tg_loop`. Upstream #5470's plain-vs-rich tests target `_upstream_send_superseded`/`_upstream_send_running_reply_superseded` (#40 fence). Found while there, NOT fixed: the live `_telegram_sender` HTML renderer turns spaced asterisks (`2 * 3 * 4`) into italics.
 
 ## Patch #10
 
@@ -828,6 +850,7 @@ carry budget ledger.
   and joins fire-and-forget stage tasks before final delivery.
 - Upstream status: Telegram serialization is a generic bug-fix candidate; the
   navigation/header choices are Argus-specific.
+- Sync 2026-09-23: upstream #5309's expandable generic tool details render only in the token-usage `step_debug` inline mode, which this patch's UI never reaches; `tests/e2e/tool-call-details.spec.ts` skips its three debug cases (the debug-off case still runs).
 
 ## Patch #61
 
@@ -914,6 +937,7 @@ carry budget ledger.
   rest), or upstream makes runtime-context key whitelisting configurable.
 - Upstream status: subsumed-watch (one of four keys absorbed in v2.0.0).
 - Sync 2026-09-11: upstream's `_resolve_run_params` now sets `run_context_identity["channel_name"]` natively (two of the four keys absorbed). Carried: `channel_id`/`thread_ts` in the manager plus the `services.py` whitelist for all four (upstream still whitelists none of them).
+- Sync 2026-09-23: `channel_name` is removed from the general context-override allowlist. Upstream made it internal-only and context-only (`_CONTEXT_RUNTIME_ONLY_KEYS`) because it now selects the run interaction policy (a client claiming `github` would switch clarification off). Channel runs arrive over the internal channel, so `runtime.context["channel_name"]` (read by `argus_knowledge_tools`) is unchanged.
 
 ## Patch #22
 
@@ -1432,6 +1456,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_empty_final_retry.py`, `backend/tests/test_unattended_silence.py`.
 - Delete-when: upstream grows an unattended (scheduled) turn notion that suppresses blank-final retries and narration, and logs httpx at WARNING by default.
 - Upstream status: none sent; the httpx logging pin is a generic candidate.
+- Sync 2026-09-23: kept. Upstream now also redacts httpx request URLs to scheme + host (`UrlRedactionFilter`); the WARNING pin stays as defense in depth and log-volume control. Two upstream WeCom/WeChat redaction tests raise the `httpx` logger to INFO locally, since the pin made them order-dependent.
 
 ## Patch #45
 
@@ -1606,6 +1631,15 @@ carry budget ledger.
   approach by fixing the root cause (rejoin) plus a scoped fallback; #42's
   commit is not in argus history.
 - Sync 2026-09-11: the BACKEND half is DROPPED as subsumed. Upstream bf740ffa (#5041) makes every join surface (`join_run`, `_stream_existing_run`) call `sse_consumer(..., apply_on_disconnect=False)`, so an observer disconnect can never cancel a run; that is strictly stronger than our tristate `cancel_on_disconnect` override. Removed: the query param, `_should_cancel_on_disconnect`, and its two tests in `test_gateway_services.py`. The frontend half (rejoin on reload, `owningRunIsActive` fallback) is kept unchanged.
+- Sync 2026-09-23: the REJOIN is DROPPED as subsumed. Upstream #5536 adds the
+  same recovery inside `useThreadStream` (lists the thread's runs, joins the
+  newest active one, writes the reconnect pointer, bounded retries, remembers
+  SDK-completed run ids). Keeping both would have joined every reopened run
+  twice. Removed: `core/threads/active-run-rejoin.ts`, its hook call and both
+  test files (the `.dom` test path now holds upstream's). Kept: the
+  `owningRunIsActive` fallback in `derivePendingSubtaskStatus`, now fed by
+  upstream's `activeRunId`, and the `activeRunId` prop threading to
+  `MessageList`/sidecar.
 
 ## Patch #68
 
@@ -1707,6 +1741,7 @@ carry budget ledger.
   this PR along with #68's gate).
 - Upstream status: none sent.
 - Sync 2026-09-11: kept on the re-expressed gate; `word_set`/`is_near_duplicate` are still exported by upstream's `tool_progress_middleware`.
+- Sync 2026-09-23: kept. Upstream refactored audit recording onto `resolve_audit_recorder()`, which returns `agent_id`; the #68 downgrade `changes` dict now uses it (it referenced an undefined `context`).
 
 ## Patch #70
 
@@ -1765,6 +1800,8 @@ carry budget ledger.
 - Upstream status: none sent.
 - Sync 2026-09-11: kept (`AdaptiveReasoningMiddleware`, `SkillAutoRoutingMiddleware`, `lead_model`/`routine_model`, `workspace_inspect_tool`/`workspace_patch_tool` still exported at module level for the 21 stack configs, input-sanitization tag names plus upstream's `background_task_event`, read-before-write mark refresh and non-blocking lock now inside upstream's `sandbox_authorization_scope` wrappers; upstream adopted the same read-before-write semantics in its own tests). DROPPED dead code that the 2026-08-15 rebase had re-added: `SubagentExecutor._load_skill_messages` (no caller at base, upstream or ours) and a duplicate `effective_user_id =` line in `client.py` (upstream hoisted it into the graph-cache-key block).
 - Sync 2026-09-11, behaviour decision recorded: `tool_result_meta._sync_message_status` keeps LangChain's public `ToolMessage.status` equal to our richer meta. Upstream's new `test_command_tool_result_semantics.py` asserts the opposite for command receipts ("producer did not set status=error", so the public field stays `success` while meta and receipt say `error`); both of its assertions are adapted, because `ReadBeforeWriteMiddleware` reads `message.status` to decide whether a write landed and a bash write that exits non-zero must not refresh the read mark. Both signals now agree rather than disagreeing.
+- Sync 2026-09-23, guidance budget: upstream's inherited chains now sit within 16 bytes of the 98,304 hard limit (`scripts/check_agent_guidance.py`), so `backend/AGENTS.md` carries NO fork text (the #73 one-liner is removed; this section is the reference) and `agents/middlewares/AGENTS.md` keeps a single pointer line to #72-#85.
+- Sync 2026-09-23: the ReadBeforeWrite uncontended `acquire(blocking=False)` fast path now lives inside upstream's cancellation-safe `_acquire_gate_lock` (#5528 family). The cancellation tests' lock doubles model a held lock for the non-blocking try.
 
 ## Patch #74
 
@@ -1806,6 +1843,7 @@ carry budget ledger.
   or an equivalent durable objective independently of the compaction slice.
 - Upstream status: pending canary replay evidence.
 - Sync 2026-09-11: re-expressed. Upstream f8f6cde2 (#5248) trims `<new_messages>` with a budget and pins that the rescued request is not history; our inline "ACTIVE USER REQUEST ... MESSAGES BEING COMPACTED" prefix ate that budget and leaked into `<new_messages>`. Now an own `<active_user_request>` block, escaped, bounded separately, emitted ahead of `<existing_summary>`/`<new_messages>`, only when there is history to compact. Upstream tests adjusted: two `CURRENT_REQUEST not in prompts[0]` assertions in `test_summarization_summary_text.py` narrowed to the `<new_messages>` section; `active_user_request` added to `_EXEMPT_BLOCK_TAGS` in `test_input_sanitization_middleware.py`.
+- Sync 2026-09-23: `_active_user_request_text` uses `is_genuine_user_message` (upstream #5416), so a Human Input Card reply counts as the active request, matching upstream's preserved-request anchor.
 
 ## Reverted patch #76
 
@@ -1853,6 +1891,15 @@ carry budget ledger.
   branch Argus next rebases onto.
 - Upstream status: prior upstream fix regressed; send the regression test and
   restoration upstream.
+- Sync 2026-09-23: RETIRED. Upstream #5403 pops the per-request
+  `reasoning_effort` from kwargs and layers it into the profile settings, so a
+  key never reaches the constructor twice. One precedence change comes with
+  it: a `when_thinking_disabled.reasoning_effort` profile now wins over an
+  explicit per-request effort when thinking is off (upstream: "user-provided
+  disable settings take full precedence"). That matches what the Argus GLM
+  profiles intend (they reason either way). `factory.py`,
+  `test_model_factory.py` and `models/AGENTS.md` equal upstream; the README
+  note is removed.
 
 ## Patch #79
 
@@ -1920,6 +1967,7 @@ carry budget ledger.
 - Delete-when: the brand mark, the Agora link and the sharing controls are Argus-specific and stay with the fork; the inline viewing policy could be offered upstream (an opt-in "sandboxed inline active content" setting) and dropped here if upstream adopts it.
 - Upstream status: n/a for the Atlas UI; the artifacts route change is upstreamable as a proposal.
 - Sync 2026-09-11: kept and merged with upstream #4864: both `FileResponse` branches now carry the SHA-256 ETag; inline active content keeps the CSP sandbox headers. Upstream's `test_get_artifact_large_active_content_skips_etag` adapted (attachment -> inline plus CSP, still no ETag); our inline test also asserts the ETag.
+- Sync 2026-09-23: upstream now forces every active type to an attachment and widened the classifier (`deerflow.utils.text_detection._is_active_content_mime_type`: any `+xml`, `text/xml`, `application/xml`, `text/xsl`, Windows `image/svg`). We adopt the classifier and keep the sandboxed-inline rendering; `text/xml` left `INLINE_TEXT_MIME_TYPES`. This closes a gap: before, `.xml` was served inline WITHOUT the CSP sandbox. Upstream's XML attachment tests assert the sandbox instead.
 
 ## Patch #81
 
@@ -2156,6 +2204,21 @@ carry budget ledger.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
+**Dropped at the 2026-09-23 upstream sync (base `3f0b6ecc` -> `fc26204d`):**
+
+- **#3 read_file loop-detection bucket**: upstream #5578 (exact line window).
+  Config key kept as a deprecated no-op until atlas-template drops it.
+- **#78 profile/runtime kwarg merge**: upstream #5403. Precedence note in the
+  #78 section.
+- **#67 frontend rejoin hook** (`active-run-rejoin.ts`): upstream #5536. The
+  `owningRunIsActive` fallback stays under #67.
+- **Settings > Tools page** (`tool-settings-page.tsx`, fork commit 5312b012,
+  never had its own number): upstream #5468 moved tool management into the
+  Capability Center and deleted the page. The read-only system-tools list now
+  renders under the plugin gallery from the fork-owned
+  `capabilities/system-tools-list.tsx`; `/api/mcp/system-tools` and
+  `useSystemTools` are unchanged.
+
 **Dropped at the 2026-09-11 upstream sync (base `3a967d4f` -> `3f0b6ecc`):**
 
 - **#63 Summarization must not resurrect answered user turns**: a verbatim
@@ -2253,6 +2316,7 @@ design or move it behind an extension point).
 | 2026-09-02 | bytedance/main 3a967d4f (2026-08-15) -> c58d6168 (#79) | 140 | 240 | +17512 / -1740 | app-code excl. tests/docs: 5957 (802 in `app/channels/`); tests: 3389. Measured against the merge-base with `bytedance/main` (v2.0.0 sits on `2.0.x-dev`, not `main`); over the 2,500 alarm, see acropolis docs/DEERFLOW-SYNC.md |
 | 2026-09-08 | bytedance/main 3a967d4f (2026-08-15) -> 00c5cd72 (#89 follow-up) | 131 | 288 | +24023 / -2022 | app-code excl. tests/docs: 7147 (802 in `app/channels/`); tests: 4585. Base 24 days old and upstream 211 commits past it: all three Cerberus `fork_drift` warnings tripping. 2.9x the 2,500 alarm; the sync is the next action, see acropolis docs/DEERFLOW-SYNC.md |
 | 2026-09-11 | bytedance/main 3f0b6ecc (2026-09-11) -> sync/upstream-20260911 | 169 + merge | 289 | +23857 / -1802 | app-code excl. tests/docs: **6,974** (872 in `app/channels/`); tests: 4,358. The sync moved the base 237 commits and retired #63, #80 and #67's backend half, but carry fell only 173 lines (7,147 -> 6,974): the retirements are offset by re-expressing #68/#69 onto upstream's larger middleware and by `app/channels/` growing 802 -> 872. Still 2.8x the 2,500 alarm, so the levers that matter next are upstreaming (#84, #68/#69, #66, #67, #78 and the two staged drafts) and `prompt.py`'s 350 lines (D-C3), not another sync |
+| 2026-09-23 | bytedance/main fc26204d (2026-09-23) -> sync/upstream-20260923 | 143 + merge | 299 | +24503 / -1821 | app-code excl. tests/docs: **7,242** (880 in `app/channels/`); tests: 4,516. Up 268 from 6,974 although #3, #78 and #67's rejoin retired: the 09-11..09-23 carry (#93 operation receipts, the extension api bump) landed in between, and re-expressing onto upstream's larger designs (interaction policy, artifact classifier, gate lock) costs lines. The base is 0 days old. Still 2.9x the 2,500 alarm; the levers are unchanged (upstream #84, #68/#69, #66, #67's fallback, prompt.py) |
 
 Methodology note (2026-07-02): the last column is now measured against the
 `v2.0.0` tag over files that exist at v2.0.0 (insertions+deletions), split

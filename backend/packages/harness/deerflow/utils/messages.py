@@ -40,6 +40,15 @@ def is_blank_text(content: Any) -> bool:
     return len(stripped) <= 3 and re.search(r"\w", stripped) is None
 
 
+#: Server-owned mark the Gateway stamps on an untrusted caller's message when it
+#: carries a framework marker (``hide_from_ui``, a ``summary`` name) that would
+#: otherwise make the input guardrail skip it.  The marker keeps doing its
+#: presentation job — those messages stay hidden from the transcript — while this
+#: tells :func:`requires_input_sanitization` the content still came from outside
+#: the trust boundary.  Stripping the marker instead would unhide three
+#: legitimate frontend senders (quoted context, sidecar context, agent save).
+UNTRUSTED_INPUT_KEY = "untrusted_input"
+
 #: Suffix ``DynamicContextMiddleware``'s ID-swap gives the real user message; the
 #: reminder SystemMessage takes the original id so ``add_messages`` can replace it
 #: in place.  It lives here rather than beside the middleware because the message
@@ -65,6 +74,11 @@ def strip_injected_user_message_id_suffix(message_id: str | None) -> str | None:
 
 def message_content_to_text(content: Any) -> str:
     """Extract text from LangChain message content shapes."""
+    if content is None:
+        # ``str(None)`` is the truthy literal ``"None"``, so a content-less message
+        # would survive every downstream ``text if text else ...`` fallback and be
+        # reported as a real answer.
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
