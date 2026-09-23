@@ -129,7 +129,6 @@ import threading
 import uuid
 from collections import Counter, OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, override
 
@@ -140,9 +139,13 @@ from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
-from deerflow.agents.middlewares.audit_context import LOOP_DETECTION_RECORDER_CONTEXT_KEY
 from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
+from deerflow.agents.middlewares.audit_context import (
+    LOOP_DETECTION_RECORDER_CONTEXT_KEY,
+    resolve_audit_recorder,
+)
+from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
 from deerflow.runtime.events.catalog import MIDDLEWARE_LOOP_DETECTION_TAG
 from deerflow.sandbox.command_classify import classify_bash_command
 
@@ -165,9 +168,11 @@ _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU limit for tracked thread/run scopes
 _DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
 _DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
-_DEFAULT_READ_FILE_BUCKET_SIZE = 200  # [argus] read_file line-range bucket (upstream default)
 _DEFAULT_RECOVERABLE_RETRY_LIMIT = 24  # [argus patch #68] identical recoverable retries before terminal stop
 _MAX_PENDING_WARNINGS_PER_RUN = 4
+# Stands in for ``read_file``'s omitted ``end_line`` in a call key: the read
+# runs to the last line, which is not the same window as any numbered bound.
+_OPEN_ENDED_READ = "end"
 
 # [argus patch #83] Tool names whose invocation represents write progress,
 # clearing bash.inspection accumulated counts (mirrors ToolProgressMiddleware).
@@ -211,34 +216,50 @@ def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     return {}, json.dumps(raw_args, sort_keys=True, default=str)
 
 
-def _stable_tool_key(name: str, args: dict, fallback_key: str | None, read_file_bucket_size: int = _DEFAULT_READ_FILE_BUCKET_SIZE) -> str:
-    """Derive a stable key from salient args without overfitting to noise.
+def _coerce_line_number(value: object) -> int | None:
+    """Parse one ``read_file`` line bound, or ``None`` when absent or unusable."""
+    try:
+        line = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return max(line, 1)
 
-    ``read_file_bucket_size`` ([argus] patch #3) controls how coarsely
-    read_file line ranges are bucketed; defaults to 200 (upstream) so bare
-    callers and the existing unit tests are unaffected.
+
+def _normalized_read_range(args: dict) -> tuple[int, int | None]:
+    """Normalize ``read_file``'s line range into one comparable window.
+
+    Omitting ``end_line`` reads through the last line, so it normalizes to
+    ``None`` (open-ended) rather than collapsing onto ``start_line``: that keeps
+    ``read_file(path)`` and ``read_file(path, start_line=1)`` — the same read,
+    written two ways — on a single key. A reversed range is ordered, so one
+    window written either way also produces a single key.
+
+    The window is otherwise kept exact. Quantizing it into 200-line buckets (the
+    original heuristic) collapsed every read shorter than a bucket onto its
+    neighbours, so an agent paging a file in 40-line chunks tripped the hard
+    stop on its fifth *distinct* read — while ``read_file``'s own truncation
+    notice tells the model to page with ``start_line``/``end_line``. Bucketing
+    cannot separate progress from repetition in general: equality keys can only
+    approximate range overlap, and the approximation was erasing the offset that
+    distinguishes the two. An exact window still catches the loop this layer
+    exists for — the same read emitted over and over — and a loop that jitters
+    its bounds is what Layer 2's per-tool frequency window covers.
     """
+    start_line = _coerce_line_number(args.get("start_line"))
+    end_line = _coerce_line_number(args.get("end_line"))
+    if start_line is None:
+        start_line = 1
+    if end_line is not None and end_line < start_line:
+        start_line, end_line = end_line, start_line
+    return start_line, end_line
+
+
+def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
+    """Derive a stable key from salient args without overfitting to noise."""
     if name == "read_file" and fallback_key is None:
         path = args.get("path") or ""
-        start_line = args.get("start_line")
-        end_line = args.get("end_line")
-
-        bucket_size = read_file_bucket_size
-        try:
-            start_line = int(start_line) if start_line is not None else 1
-        except (TypeError, ValueError):
-            start_line = 1
-        try:
-            end_line = int(end_line) if end_line is not None else start_line
-        except (TypeError, ValueError):
-            end_line = start_line
-
-        start_line, end_line = sorted((start_line, end_line))
-        bucket_start = max(start_line, 1)
-        bucket_end = max(end_line, 1)
-        bucket_start = (bucket_start - 1) // bucket_size
-        bucket_end = (bucket_end - 1) // bucket_size
-        return f"{path}:{bucket_start}-{bucket_end}"
+        start_line, end_line = _normalized_read_range(args)
+        return f"{path}:{start_line}-{end_line if end_line is not None else _OPEN_ENDED_READ}"
 
     # write_file / str_replace are content-sensitive: same path may be updated
     # with different payloads during iteration. Using only salient fields (path)
@@ -259,22 +280,18 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None, read_file_
     return json.dumps(args, sort_keys=True, default=str)
 
 
-def _hash_tool_calls(tool_calls: list[dict], read_file_bucket_size: int = _DEFAULT_READ_FILE_BUCKET_SIZE) -> str:
+def _hash_tool_calls(tool_calls: list[dict]) -> str:
     """Deterministic hash of a set of tool calls (name + stable key).
 
     This is intended to be order-independent: the same multiset of tool calls
     should always produce the same hash, regardless of their input order.
-
-    ``read_file_bucket_size`` ([argus] patch #3) is forwarded to
-    ``_stable_tool_key``; it defaults to 200 so bare callers keep upstream's
-    behavior.
     """
     # Normalize each tool call to a stable (name, key) structure.
     normalized: list[str] = []
     for tc in tool_calls:
         name = tc.get("name", "")
         args, fallback_key = _normalize_tool_call_args(tc.get("args", {}))
-        key = _stable_tool_key(name, args, fallback_key, read_file_bucket_size)
+        key = _stable_tool_key(name, args, fallback_key)
 
         normalized.append(f"{name}:{key}")
 
@@ -427,8 +444,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             high-frequency tools (e.g. ``bash`` in batch pipelines) without
             weakening protection on all other tools. Default: ``None``
             (no overrides).
-        read_file_bucket_size_lines: Line-range bucket used when hashing
-            ``read_file`` calls ([argus] patch #3). Default: 200 (upstream).
         no_hard_stop_tools: Tools exempt from hard stops on both layers
             ([argus] patch #68). Warnings still fire, but repeated calls to
             these tools never force-stop the run — cost stays bounded by the
@@ -448,7 +463,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         tool_freq_warn: int = _DEFAULT_TOOL_FREQ_WARN,
         tool_freq_hard_limit: int = _DEFAULT_TOOL_FREQ_HARD_LIMIT,
         tool_freq_overrides: dict[str, tuple[int, int]] | None = None,
-        read_file_bucket_size_lines: int = _DEFAULT_READ_FILE_BUCKET_SIZE,
         no_hard_stop_tools: list[str] | None = None,
         recoverable_retry_limit: int = _DEFAULT_RECOVERABLE_RETRY_LIMIT,
     ):
@@ -459,7 +473,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self.max_tracked_threads = max_tracked_threads
         self.tool_freq_warn = tool_freq_warn
         self.tool_freq_hard_limit = tool_freq_hard_limit
-        self.read_file_bucket_size_lines = read_file_bucket_size_lines
         self.recoverable_retry_limit = recoverable_retry_limit
         self._no_hard_stop_tools: frozenset[str] = frozenset(no_hard_stop_tools or ())
         self._default_tool_freq_thresholds = (tool_freq_warn, tool_freq_hard_limit)
@@ -543,8 +556,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             "tool_freq_warn": self.tool_freq_warn,
             "tool_freq_hard_limit": self.tool_freq_hard_limit,
             "tool_freq_overrides": self._tool_freq_overrides,
-            # [argus] patches #3 and #68: behaviour-affecting, so part of the identity.
-            "read_file_bucket_size_lines": self.read_file_bucket_size_lines,
+            # [argus] patch #68: behaviour-affecting, so part of the identity.
             "no_hard_stop_tools": sorted(self._no_hard_stop_tools),
             "recoverable_retry_limit": self.recoverable_retry_limit,
         }
@@ -560,7 +572,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             tool_freq_warn=config.tool_freq_warn,
             tool_freq_hard_limit=config.tool_freq_hard_limit,
             tool_freq_overrides={name: (o.warn, o.hard_limit) for name, o in config.tool_freq_overrides.items()},
-            read_file_bucket_size_lines=config.read_file_bucket_size_lines,
             no_hard_stop_tools=list(config.no_hard_stop_tools),
             recoverable_retry_limit=config.recoverable_retry_limit,
         )
@@ -757,7 +768,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         scope_key = self._run_scope_key(runtime)
         thread_id, run_id = scope_key
-        call_hash = _hash_tool_calls(tool_calls, self.read_file_bucket_size_lines)
+        call_hash = _hash_tool_calls(tool_calls)
 
         # [argus patch #82/#83] Precompute the shell classification outside the
         # lock (classify_bash_command is pure CPU). Nothing is tracked unless the
@@ -1251,45 +1262,22 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # Fallback: coerce unexpected types to str to avoid TypeError
         return str(content) + f"\n\n{text}"
 
-    @staticmethod
-    def _build_hard_stop_update(last_msg, content: str | list) -> dict:
-        """Clear tool-call metadata so forced-stop messages serialize as plain assistant text."""
-        update = {
-            "tool_calls": [],
-            "content": content,
-        }
-
-        additional_kwargs = dict(getattr(last_msg, "additional_kwargs", {}) or {})
-        for key in ("tool_calls", "function_call"):
-            additional_kwargs.pop(key, None)
-        update["additional_kwargs"] = additional_kwargs
-
-        response_metadata = deepcopy(getattr(last_msg, "response_metadata", {}) or {})
-        if response_metadata.get("finish_reason") == "tool_calls":
-            response_metadata["finish_reason"] = "stop"
-        update["response_metadata"] = response_metadata
-
-        return update
-
     def _record_audit_event(
         self,
         decision: _LoopDecision,
         runtime: Runtime,
     ) -> None:
         """Persist a loop-detection transition without sensitive tool data."""
-        context = getattr(runtime, "context", None)
-        is_subagent = isinstance(context, dict) and context.get("is_subagent") is True
-        recorder = context.get(LOOP_DETECTION_RECORDER_CONTEXT_KEY) if isinstance(context, dict) else None
-        if recorder is None and isinstance(context, dict):
-            # Lead-agent runs expose the ordinary RunJournal. Native task-tool
-            # subagents receive only the narrow, loop-safe recorder key above.
-            recorder = context.get("__run_journal")
+        recorder, is_subagent, agent_id = resolve_audit_recorder(
+            getattr(runtime, "context", None),
+            recorder_key=LOOP_DETECTION_RECORDER_CONTEXT_KEY,
+        )
         if recorder is None:
             return
 
         changes: dict[str, object] = {
             "is_subagent": is_subagent,
-            "agent_id": context.get("agent_id") if is_subagent else None,
+            "agent_id": agent_id,
             "detection_layer": decision.detection_layer,
             "tool_names": list(decision.tool_names),
             "count": decision.count,
@@ -1342,14 +1330,15 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             ctx = getattr(runtime, "context", None)
             if isinstance(ctx, dict):
                 ctx["stop_reason"] = "loop_capped"
-            # Strip tool_calls from the last AIMessage to force text output.
-            # Once tool_calls are stripped, the AIMessage no longer requires
-            # matching ToolMessage responses, so mutating it in place here
-            # is safe for OpenAI/Moonshot pairing validators.
+            # Strip tool calls from every provider surface of the last
+            # AIMessage (structured, raw, and content blocks) to force text
+            # output. With no call left on any surface, the AIMessage no
+            # longer requires matching ToolMessage responses, so replacing it
+            # here is safe for strict provider pairing validators.
             messages = state.get("messages", [])
             last_msg = messages[-1]
             content = self._append_text(last_msg.content, warning or _HARD_STOP_MSG)
-            stripped_msg = last_msg.model_copy(update=self._build_hard_stop_update(last_msg, content))
+            stripped_msg = clone_ai_message_with_tool_calls(last_msg, [], content=content)
             return {"messages": [stripped_msg]}
 
         if decision.action == "warn":
@@ -1417,8 +1406,26 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             self._pending_warning_touch_order.pop(pending_key, None)
         return warnings
 
-    def _augment_request(self, request: ModelRequest) -> ModelRequest:
-        """Append queued loop warnings (if any) to the outgoing message list.
+    def _restore_pending_warnings(self, runtime: Runtime, warnings: list[str]) -> None:
+        """Requeue warnings taken for a model call that raised.
+
+        LLMErrorHandlingMiddleware sits outside this middleware and retries a
+        failed call by running this wrap again, so the retry must still find
+        the warning. It would not be queued again: it is already marked warned.
+        """
+        if not warnings:
+            return
+        pending_key = self._pending_key(runtime)
+        with self._lock:
+            queued = self._pending_warnings[pending_key]
+            queued[:0] = [warning for warning in warnings if warning not in queued]
+            # Keep the restored warnings at the front; trim what came after them.
+            del queued[_MAX_PENDING_WARNINGS_PER_RUN:]
+            self._touch_pending_warning_key_locked(pending_key)
+            self._prune_pending_warning_state_locked(protected_key=pending_key)
+
+    def _inject_warnings(self, request: ModelRequest, warnings: list[str]) -> ModelRequest:
+        """Append *warnings* to the outgoing message list.
 
         The warning is placed *after* every existing message, including the
         ToolMessage responses to the previous AIMessage(tool_calls). This
@@ -1427,7 +1434,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         restriction (we use HumanMessage), and never mutates an existing
         AIMessage.
         """
-        warnings = self._drain_pending_warnings(request.runtime)
         if not warnings:
             return request
         new_messages = [
@@ -1442,7 +1448,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        return handler(self._augment_request(request))
+        warnings = self._drain_pending_warnings(request.runtime)
+        try:
+            return handler(self._inject_warnings(request, warnings))
+        except Exception:
+            self._restore_pending_warnings(request.runtime, warnings)
+            raise
 
     @override
     async def awrap_model_call(
@@ -1450,7 +1461,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        return await handler(self._augment_request(request))
+        warnings = self._drain_pending_warnings(request.runtime)
+        try:
+            return await handler(self._inject_warnings(request, warnings))
+        except Exception:
+            self._restore_pending_warnings(request.runtime, warnings)
+            raise
 
     def reset(self, thread_id: str | None = None) -> None:
         """Clear tracking state. If thread_id given, clear only that thread."""

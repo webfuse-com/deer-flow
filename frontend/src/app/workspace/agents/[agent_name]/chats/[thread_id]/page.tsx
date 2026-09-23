@@ -20,6 +20,7 @@ import {
   type InputBoxSubmitOptions,
 } from "@/components/workspace/input-box";
 import { InternalizeTrigger } from "@/components/workspace/internalize-trigger";
+import { KnowledgeScopeSelector } from "@/components/workspace/knowledge-scope-selector";
 import {
   MessageList,
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
@@ -31,14 +32,26 @@ import {
 } from "@/components/workspace/sidecar";
 import { ThreadArchiveStatus } from "@/components/workspace/thread-archive-status";
 import { ThreadBackgroundTasks } from "@/components/workspace/thread-background-tasks";
+import { ThreadExtensionActions } from "@/components/workspace/thread-extension-actions";
 import { ThreadSubagentBatches } from "@/components/workspace/thread-subagent-batches";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { useAgent } from "@/core/agents";
-import { useBrowserControlEnabled } from "@/core/features";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
+import {
+  useBrowserControlEnabled,
+  useKnowledgeBaseEnabled,
+} from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
+import {
+  knowledgeScopeToSelection,
+  buildKnowledgeScopeSnapshot,
+  KNOWLEDGE_SCOPE_KEY,
+  type KnowledgeScopeSelection,
+} from "@/core/knowledge";
 import {
   buildHumanInputResponseText,
   hasOpenHumanInputRequest,
@@ -48,6 +61,7 @@ import {
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useNotification } from "@/core/notification/hooks";
 import { useThreadSettings } from "@/core/settings";
+import { resolveThreadContext } from "@/core/settings/store";
 import {
   useThreadMetadata,
   useThreadStream,
@@ -61,13 +75,16 @@ import { cn } from "@/lib/utils";
 
 export default function AgentChatPage() {
   const { t } = useI18n();
+  const { user } = useAuth();
+  const canStopStreaming = hasPermission(user, PERMISSIONS.RUNS_CANCEL);
+  const canCreateRuns = hasPermission(user, PERMISSIONS.RUNS_CREATE);
   const router = useRouter();
 
   const { agent_name } = useParams<{
     agent_name: string;
   }>();
 
-  const { agent } = useAgent(agent_name);
+  const { agent, isLoading: agentSkillsLoading } = useAgent(agent_name);
 
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
@@ -84,6 +101,7 @@ export default function AgentChatPage() {
     update: updateQueuedMessage,
   } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
+  const { scopeSelectionEnabled } = useKnowledgeBaseEnabled();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
     { enabled: !isMock },
@@ -95,6 +113,51 @@ export default function AgentChatPage() {
   const contextUsage = selectContextUsage(threadTokenUsage.data);
 
   const { showNotification } = useNotification();
+  const selectorVisible =
+    scopeSelectionEnabled && env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true";
+  const agentKnowledgeEnabled =
+    agent !== null &&
+    (agent.tool_groups == null || agent.tool_groups.includes("knowledge"));
+  const [knowledgeScopeOverride, setKnowledgeScope] =
+    useState<KnowledgeScopeSelection | null>(null);
+  const previousConversationRef = useRef({
+    agentName: agent_name,
+    threadId,
+    isNewThread,
+  });
+
+  const knowledgeScope = useMemo(
+    () =>
+      knowledgeScopeOverride ??
+      knowledgeScopeToSelection(agent?.knowledge_scope),
+    [knowledgeScopeOverride, agent?.knowledge_scope],
+  );
+
+  useEffect(() => {
+    const previous = previousConversationRef.current;
+    if (previous.agentName !== agent_name || previous.threadId !== threadId) {
+      const isNewThreadRouteReplacement =
+        previous.agentName === agent_name &&
+        previous.isNewThread &&
+        !isNewThread;
+      if (!isNewThreadRouteReplacement) {
+        setKnowledgeScope(null);
+      }
+    }
+    previousConversationRef.current = {
+      agentName: agent_name,
+      threadId,
+      isNewThread,
+    };
+  }, [agent_name, isNewThread, selectorVisible, threadId]);
+
+  const currentKnowledgeScopeSnapshot = useMemo(
+    () =>
+      selectorVisible && agentKnowledgeEnabled && knowledgeScope
+        ? buildKnowledgeScopeSnapshot(knowledgeScope)
+        : null,
+    [agentKnowledgeEnabled, knowledgeScope, selectorVisible],
+  );
 
   const {
     thread,
@@ -109,6 +172,7 @@ export default function AgentChatPage() {
   } = useThreadStream({
     threadId: isNewThread ? undefined : threadId,
     displayThreadId: threadId,
+    assistantId: agent_name,
     context: { ...settings.context, agent_name: agent_name },
     isMock,
     onSend: () => {
@@ -204,18 +268,27 @@ export default function AgentChatPage() {
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage, options?: InputBoxSubmitOptions) => {
+      const scopedOptions = currentKnowledgeScopeSnapshot
+        ? {
+            ...options,
+            additionalKwargs: {
+              ...options?.additionalKwargs,
+              [KNOWLEDGE_SCOPE_KEY]: currentKnowledgeScopeSnapshot,
+            },
+          }
+        : options;
       const sendPromise = sendMessage(
         threadId,
         message,
         { agent_name },
-        options,
+        scopedOptions,
       );
       if (message.files.length > 0) {
         return sendPromise;
       }
       void sendPromise;
     },
-    [sendMessage, threadId, agent_name],
+    [currentKnowledgeScopeSnapshot, sendMessage, threadId, agent_name],
   );
 
   const handleSubmitHumanInput = useCallback(
@@ -232,6 +305,9 @@ export default function AgentChatPage() {
           additionalKwargs: {
             hide_from_ui: true,
             human_input_response: response,
+            ...(currentKnowledgeScopeSnapshot
+              ? { [KNOWLEDGE_SCOPE_KEY]: currentKnowledgeScopeSnapshot }
+              : {}),
           },
           onSent: () => {
             sent = true;
@@ -240,7 +316,7 @@ export default function AgentChatPage() {
       );
       return sent;
     },
-    [agent_name, sendMessage, threadId],
+    [agent_name, currentKnowledgeScopeSnapshot, sendMessage, threadId],
   );
 
   const handleStop = useCallback(async () => {
@@ -253,8 +329,15 @@ export default function AgentChatPage() {
   );
   const handleEditAndRegenerate = useCallback(
     (messageId: string, replacementText: string) =>
-      editAndRegenerateMessage(threadId, messageId, replacementText),
-    [editAndRegenerateMessage, threadId],
+      editAndRegenerateMessage(
+        threadId,
+        messageId,
+        replacementText,
+        currentKnowledgeScopeSnapshot
+          ? { [KNOWLEDGE_SCOPE_KEY]: currentKnowledgeScopeSnapshot }
+          : undefined,
+      ),
+    [currentKnowledgeScopeSnapshot, editAndRegenerateMessage, threadId],
   );
 
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
@@ -298,7 +381,9 @@ export default function AgentChatPage() {
               <div className="flex min-w-0 shrink-0 items-center gap-1.5 rounded-md border px-2 py-1">
                 <BotIcon className="text-primary h-3.5 w-3.5" />
                 <span className="hidden max-w-24 truncate text-xs font-medium sm:inline sm:max-w-none">
-                  {agent?.name ?? agent_name}
+                  {agent?.display_name?.length
+                    ? agent.display_name
+                    : (agent?.name ?? agent_name)}
                 </span>
               </div>
 
@@ -348,6 +433,7 @@ export default function AgentChatPage() {
                 {!isNewThread && !isMock && (
                   <InternalizeTrigger threadId={threadId} />
                 )}
+                <ThreadExtensionActions threadId={threadId} />
                 <ArtifactTrigger />
               </div>
             </header>
@@ -449,7 +535,24 @@ export default function AgentChatPage() {
                     threadId={threadId}
                     draftThreadId={isNewThread ? "new" : threadId}
                     draftAgentName={agent_name}
+                    agentSkillNames={agent?.skills}
+                    agentSkillsLoading={agentSkillsLoading}
                     defaultModelName={agent?.model}
+                    knowledgeScopeControl={
+                      selectorVisible && knowledgeScope ? (
+                        <KnowledgeScopeSelector
+                          agentName={agent_name}
+                          disabled={thread.isLoading || isUploading}
+                          selection={knowledgeScope}
+                          unavailableReason={
+                            agentKnowledgeEnabled
+                              ? undefined
+                              : t.knowledge.scope.agentUnavailable
+                          }
+                          onChange={setKnowledgeScope}
+                        />
+                      ) : undefined
+                    }
                     autoFocus={isWelcomeMode}
                     status={
                       thread.error
@@ -469,15 +572,20 @@ export default function AgentChatPage() {
                     disabled={
                       env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
                       isUploading ||
+                      (selectorVisible && agent === null) ||
                       (!isNewThread && isHistoryLoading)
                     }
-                    onContextChange={(context) =>
-                      setSettings("context", context)
-                    }
+                    onContextChange={(context, options) => {
+                      if (options?.automatic)
+                        resolveThreadContext(threadId, context);
+                      else setSettings("context", context);
+                    }}
                     onGoalChange={setLocalGoal}
                     onSubmit={handleSubmit}
                     onQueue={(msg, opts) => enqueueMessage(msg, opts)}
                     onStop={handleStop}
+                    canStopStreaming={canStopStreaming}
+                    canCreateRuns={canCreateRuns}
                   />
                   {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
                     <div className="text-muted-foreground/67 w-full translate-y-12 text-center text-xs">

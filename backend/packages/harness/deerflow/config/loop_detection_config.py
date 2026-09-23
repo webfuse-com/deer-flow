@@ -74,10 +74,9 @@ class LoopDetectionConfig(BaseModel):
         default=200,
         ge=1,
         description=(
-            "[argus] Line-range bucket size used when hashing read_file calls for loop detection. "
-            "read_file calls whose start/end lines fall in the same bucket are treated as the same "
-            "call. Smaller values (e.g. 50) stop a model that surgically reads distinct sections of "
-            "one long file from tripping the identical-call detector. Default 200 matches upstream."
+            "[argus] DEPRECATED, ignored. Upstream now keys read_file loop detection on the exact "
+            "line window (#5578), which retired the bucket this knob sized (patch #3). Kept only so "
+            "stack configs that still set it keep loading; drop it from atlas-template, then here."
         ),
     )
     no_hard_stop_tools: list[str] = Field(

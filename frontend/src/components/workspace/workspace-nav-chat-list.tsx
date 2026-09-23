@@ -2,6 +2,7 @@
 
 import {
   BookOpenTextIcon,
+  BlocksIcon,
   BotIcon,
   Clock3Icon,
   LandmarkIcon,
@@ -132,6 +133,20 @@ export function WorkspaceNavChatList() {
               <LightbulbIcon className="text-muted-foreground" />
               <span>Feature Requests</span>
             </a>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            isActive={pathname.startsWith("/workspace/capabilities")}
+            asChild
+          >
+            <Link
+              className="text-muted-foreground"
+              href="/workspace/capabilities"
+            >
+              <BlocksIcon />
+              <span>{t.capabilities.title}</span>
+            </Link>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>

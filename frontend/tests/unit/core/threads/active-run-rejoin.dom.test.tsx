@@ -1,123 +1,351 @@
 import type { Run } from "@langchain/langgraph-sdk";
-import { expect, rs, test } from "@rstest/core";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, rs, test } from "@rstest/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
-import { useActiveRunRejoin } from "@/core/threads/active-run-rejoin";
+import { I18nContext } from "@/core/i18n/context";
+import { enUS } from "@/core/i18n/locales/en-US";
+import { DEFAULT_LOCAL_SETTINGS } from "@/core/settings/local";
+import { useThreadStream } from "@/core/threads/hooks";
 
-const clientMock = rs.hoisted(() => ({
-  runsList: rs.fn(async () => [] as Run[]),
-  remember: rs.fn(),
-  joinStream: rs.fn(async () => undefined),
+type StreamOptions = {
+  onError?: (error: unknown) => void;
+  onFinish?: (
+    state: {
+      values: { artifacts: never[]; messages: never[]; title: string };
+    },
+    run?: { thread_id: string; run_id: string },
+  ) => void;
+};
+
+const apiMockState = rs.hoisted(() => ({
+  listRuns: rs.fn(async () => [] as Run[]),
 }));
 
-// getAPIClient + rememberReconnectRun are imported by the hook from this module.
-rs.mock("@/core/api/api-client", () => ({
-  getAPIClient: () => ({ runs: { list: clientMock.runsList } }),
-  rememberReconnectRun: clientMock.remember,
+const streamMockState = rs.hoisted(() => ({
+  isLoading: false,
+  joinStream: rs.fn(async (_runId: string) => undefined),
+  options: undefined as StreamOptions | undefined,
 }));
 
-function run(status: Run["status"], runId = `run-${status}`): Run {
-  return {
-    run_id: runId,
-    thread_id: "t",
-    assistant_id: "lead_agent",
-    status,
-    metadata: {},
-    kwargs: {},
-    multitask_strategy: "reject",
-    created_at: "",
-    updated_at: "",
-    total_input_tokens: 0,
-    total_output_tokens: 0,
-    total_tokens: 0,
-    llm_call_count: 0,
-    lead_agent_tokens: 0,
-    subagent_tokens: 0,
-    middleware_tokens: 0,
-    message_count: 0,
-    stop_reason: null,
-  } as Run;
+rs.mock("@/core/api", () => ({
+  getAPIClient: () => ({
+    runs: { list: apiMockState.listRuns },
+  }),
+}));
+
+rs.mock("@langchain/langgraph-sdk/react", () => ({
+  useStream: (options: StreamOptions) => {
+    streamMockState.options = options;
+    return {
+      isLoading: streamMockState.isLoading,
+      joinStream: streamMockState.joinStream,
+      messages: [],
+      stop: async () => undefined,
+      submit: async () => undefined,
+      values: {
+        artifacts: [],
+        messages: [],
+        title: "",
+        todos: [],
+      },
+    };
+  },
+}));
+
+const ACTIVE_RUN = {
+  run_id: "run-active",
+  status: "running",
+} as Run;
+
+function createWrapper(queryClient: QueryClient) {
+  return function ActiveRunRejoinTestWrapper({
+    children,
+  }: {
+    children: ReactNode;
+  }) {
+    return createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      createElement(
+        I18nContext.Provider,
+        {
+          value: {
+            locale: "en-US",
+            setLocale: () => undefined,
+            t: enUS,
+          },
+        },
+        children,
+      ),
+    );
+  };
 }
 
-function renderRejoin(
-  overrides: Partial<Parameters<typeof useActiveRunRejoin>[0]> = {},
-) {
-  return renderHook(
-    (props: Parameters<typeof useActiveRunRejoin>[0]) =>
-      useActiveRunRejoin(props),
+async function flushFrames() {
+  for (let index = 0; index < 6; index += 1) {
+    await act(async () => {
+      await rs.advanceTimersByTimeAsync(0);
+    });
+  }
+}
+
+function renderThread(threadId = "thread-1") {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const rendered = renderHook(
+    ({ activeThreadId }: { activeThreadId: string }) =>
+      useThreadStream({
+        context: DEFAULT_LOCAL_SETTINGS.context,
+        threadId: activeThreadId,
+      }),
     {
-      initialProps: {
-        threadId: "thread-1",
-        joinStream: clientMock.joinStream,
-        isLoading: false,
-        isMock: false,
-        ...overrides,
-      },
+      initialProps: { activeThreadId: threadId },
+      wrapper: createWrapper(queryClient),
     },
   );
+  return { queryClient, ...rendered };
 }
 
-test("rejoins the discovered active run and surfaces its id", async () => {
-  const active = run("running", "run-active");
-  clientMock.runsList.mockResolvedValue([active]);
-
-  const { result } = renderRejoin();
-
-  await waitFor(() => {
-    expect(clientMock.joinStream).toHaveBeenCalledWith("run-active");
-  });
-  expect(clientMock.remember).toHaveBeenCalledWith("thread-1", "run-active");
-  expect(result.current).toBe("run-active");
-});
-
-test("does nothing when the thread is idle (no active run)", async () => {
-  clientMock.runsList.mockResolvedValue([run("success")]);
-  clientMock.joinStream.mockClear();
-  clientMock.remember.mockClear();
-
-  const { result } = renderRejoin();
-
-  // Let the discovery fetch settle (one macro task is enough).
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-  expect(clientMock.joinStream).not.toHaveBeenCalled();
-  expect(clientMock.remember).not.toHaveBeenCalled();
-  expect(result.current).toBeNull();
-});
-
-test("skips discovery while a stream is already loading", async () => {
-  clientMock.runsList.mockClear();
-
-  renderRejoin({ isLoading: true });
-
-  await act(async () => {
-    await Promise.resolve();
-  });
-  expect(clientMock.runsList).not.toHaveBeenCalled();
-});
-
-test("skips discovery when the SDK same-tab reconnect key is present", async () => {
-  clientMock.runsList.mockClear();
-  window.sessionStorage.setItem("lg:stream:thread-1", "known-run");
-
-  renderRejoin();
-
-  await act(async () => {
-    await Promise.resolve();
-  });
-  expect(clientMock.runsList).not.toHaveBeenCalled();
+beforeEach(() => {
+  rs.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   window.sessionStorage.clear();
+  apiMockState.listRuns.mockReset();
+  apiMockState.listRuns.mockResolvedValue([ACTIVE_RUN]);
+  streamMockState.isLoading = false;
+  streamMockState.joinStream.mockReset();
+  streamMockState.joinStream.mockResolvedValue(undefined);
+  streamMockState.options = undefined;
+  rs.stubGlobal(
+    "fetch",
+    rs.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ data: [], has_more: false, next_before_seq: null }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    ),
+  );
 });
 
-test("skips discovery for mock clients", async () => {
-  clientMock.runsList.mockClear();
+afterEach(() => {
+  rs.useRealTimers();
+  rs.unstubAllGlobals();
+});
 
-  renderRejoin({ isMock: true });
+test("joins the newest active run when a reopened tab has no reconnect pointer", async () => {
+  const { unmount } = renderThread();
+  await flushFrames();
 
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+  expect(streamMockState.joinStream).toHaveBeenCalledWith("run-active");
+  expect(window.sessionStorage.getItem("lg:stream:thread-1")).toBe(
+    "run-active",
+  );
+
+  unmount();
+  expect(window.sessionStorage.getItem("lg:stream:thread-1")).toBeNull();
+});
+
+test("leaves a matching reconnect pointer to the SDK without joining twice", async () => {
+  window.sessionStorage.setItem("lg:stream:thread-1", "run-active");
+  const { unmount } = renderThread();
+  await flushFrames();
+
+  expect(streamMockState.joinStream).not.toHaveBeenCalled();
+  expect(window.sessionStorage.getItem("lg:stream:thread-1")).toBe(
+    "run-active",
+  );
+
+  unmount();
+});
+
+test("retries a failed recovered stream twice with bounded backoff", async () => {
+  const { unmount } = renderThread();
+  await flushFrames();
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+
+  act(() => streamMockState.options?.onError?.(new Error("disconnected")));
   await act(async () => {
-    await Promise.resolve();
+    await rs.advanceTimersByTimeAsync(999);
   });
-  expect(clientMock.runsList).not.toHaveBeenCalled();
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(1);
+  });
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(2);
+
+  act(() => streamMockState.options?.onError?.(new Error("disconnected")));
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(1_999);
+  });
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(1);
+  });
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(3);
+
+  act(() => streamMockState.options?.onError?.(new Error("disconnected")));
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(10_000);
+  });
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(3);
+
+  unmount();
+});
+
+test("does not retry after the recovered run finishes", async () => {
+  const { unmount } = renderThread();
+  await flushFrames();
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+
+  act(() =>
+    streamMockState.options?.onFinish?.({
+      values: { artifacts: [], messages: [], title: "Done" },
+    }),
+  );
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(10_000);
+  });
+
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+  unmount();
+});
+
+test("cancels a pending retry when the recovered stream unmounts", async () => {
+  const { unmount } = renderThread();
+  await flushFrames();
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+
+  act(() => streamMockState.options?.onError?.(new Error("disconnected")));
+  unmount();
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(10_000);
+  });
+
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+  expect(window.sessionStorage.getItem("lg:stream:thread-1")).toBeNull();
+});
+
+test("clears the old retry when the active run changes", async () => {
+  const { queryClient, unmount } = renderThread();
+  await flushFrames();
+  expect(streamMockState.joinStream).toHaveBeenCalledWith("run-active");
+
+  act(() => streamMockState.options?.onError?.(new Error("disconnected")));
+  act(() => {
+    queryClient.setQueryData(
+      ["thread", "thread-1"],
+      [{ ...ACTIVE_RUN, run_id: "run-next", status: "pending" }],
+    );
+  });
+  await flushFrames();
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(10_000);
+  });
+
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(2);
+  expect(streamMockState.joinStream).toHaveBeenLastCalledWith("run-next");
+  expect(window.sessionStorage.getItem("lg:stream:thread-1")).toBe("run-next");
+  unmount();
+});
+
+test.each(["submitted", "same-tab reconnect"])(
+  "does not rejoin a finished %s run while the runs cache is stale",
+  async (kind) => {
+    if (kind === "same-tab reconnect") {
+      window.sessionStorage.setItem("lg:stream:thread-1", "run-active");
+    }
+    streamMockState.isLoading = true;
+    const { rerender, unmount } = renderThread();
+    await flushFrames();
+    expect(streamMockState.joinStream).not.toHaveBeenCalled();
+
+    // The SDK removes its pointer before onFinish. Keep the runs refetch
+    // pending so the effect still sees the previous "running" snapshot.
+    apiMockState.listRuns.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the cached running snapshot until the hook unmounts.
+        }),
+    );
+    act(() => {
+      window.sessionStorage.removeItem("lg:stream:thread-1");
+      streamMockState.options?.onFinish?.(
+        { values: { artifacts: [], messages: [], title: "Done" } },
+        { thread_id: "thread-1", run_id: "run-active" },
+      );
+      streamMockState.isLoading = false;
+    });
+    rerender({ activeThreadId: "thread-1" });
+    await flushFrames();
+
+    expect(streamMockState.joinStream).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("lg:stream:thread-1")).toBeNull();
+    unmount();
+  },
+);
+
+test("does not rejoin a finished run discovered by a delayed initial runs read", async () => {
+  let resolveRuns!: (runs: Run[]) => void;
+  apiMockState.listRuns.mockImplementation(
+    () =>
+      new Promise<Run[]>((resolve) => {
+        resolveRuns = resolve;
+      }),
+  );
+  streamMockState.isLoading = true;
+  const { rerender, unmount } = renderThread();
+  await flushFrames();
+
+  act(() => {
+    streamMockState.options?.onFinish?.(
+      { values: { artifacts: [], messages: [], title: "Done" } },
+      { thread_id: "thread-1", run_id: "run-active" },
+    );
+    streamMockState.isLoading = false;
+    resolveRuns([ACTIVE_RUN]);
+  });
+  rerender({ activeThreadId: "thread-1" });
+  await flushFrames();
+
+  expect(streamMockState.joinStream).not.toHaveBeenCalled();
+  unmount();
+});
+
+test("still recovers a different active run after an earlier run finishes", async () => {
+  streamMockState.isLoading = true;
+  const { queryClient, rerender, unmount } = renderThread();
+  await flushFrames();
+
+  apiMockState.listRuns.mockImplementation(
+    () =>
+      new Promise(() => {
+        // Keep the cached running snapshot until the hook unmounts.
+      }),
+  );
+  act(() => {
+    streamMockState.options?.onFinish?.(
+      { values: { artifacts: [], messages: [], title: "Done" } },
+      { thread_id: "thread-1", run_id: "run-active" },
+    );
+    streamMockState.isLoading = false;
+  });
+  rerender({ activeThreadId: "thread-1" });
+  await flushFrames();
+  expect(streamMockState.joinStream).not.toHaveBeenCalled();
+
+  act(() => {
+    queryClient.setQueryData(
+      ["thread", "thread-1"],
+      [{ ...ACTIVE_RUN, run_id: "run-next", status: "pending" }],
+    );
+  });
+  await flushFrames();
+
+  expect(streamMockState.joinStream).toHaveBeenCalledTimes(1);
+  expect(streamMockState.joinStream).toHaveBeenCalledWith("run-next");
+  unmount();
 });

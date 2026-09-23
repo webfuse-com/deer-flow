@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from deerflow.config import get_app_config
 from deerflow.reflection import resolve_class
+from deerflow.sandbox.lease import run_sync_lifecycle_operation
 from deerflow.sandbox.sandbox import Sandbox
 
 if TYPE_CHECKING:
@@ -62,8 +63,8 @@ class SandboxProvider(ABC):
         user_id: str,
         projection: "SkillProjectionPaths",
     ) -> None:
-        """Async wrapper for upload-based skill synchronization."""
-        await asyncio.to_thread(
+        """Async wrapper that keeps lifecycle ownership until sync finishes."""
+        await run_sync_lifecycle_operation(
             self.sync_agent_skills,
             sandbox_id,
             thread_id=thread_id,
@@ -79,6 +80,22 @@ class SandboxProvider(ABC):
             sandbox_id: The ID of the sandbox environment to retain.
         """
         pass
+
+    def get_scoped(
+        self,
+        sandbox_id: str,
+        *,
+        thread_id: str,
+        user_id: str,
+    ) -> Sandbox | None:
+        """Return an active sandbox only when it belongs to this identity.
+
+        This hook must remain a non-blocking in-memory lookup. Providers that
+        do not implement identity-aware lookup fail closed; the caller then
+        resolves the canonical sandbox through ``acquire``.
+        """
+        del sandbox_id, thread_id, user_id
+        return None
 
     @abstractmethod
     def release(self, sandbox_id: str) -> None:
