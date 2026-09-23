@@ -781,7 +781,11 @@ def test_get_artifact_forces_download_for_any_xml_subtype(tmp_path, monkeypatch,
 
     response = asyncio.run(call_unwrapped(artifacts_router.get_artifact, "thread-1", path, _make_request()))
 
-    assert response.headers.get("content-disposition", "").startswith("attachment;")
+    # [argus patch #89] Active XML renders inline inside the CSP sandbox (an
+    # opaque origin) instead of being forced to an attachment.
+    assert "attachment" not in response.headers.get("content-disposition", "")
+    assert response.headers["content-security-policy"] == "sandbox allow-scripts"
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.parametrize(
@@ -815,8 +819,8 @@ def test_is_active_content_mime_type_keeps_passive_types_inline(mime_type: str |
 
 
 def test_get_artifact_xml_download_supports_bounded_range_requests(tmp_path, monkeypatch) -> None:
-    # The artifacts panel previews .xml as code through a Range fetch, so
-    # forcing the attachment disposition must keep the bounded preview.
+    # The artifacts panel previews .xml as code through a Range fetch; the
+    # sandboxed inline response (argus patch #89) must keep the bounded preview.
     payload = ('<?xml version="1.0"?><items>' + "<item>0123456789</item>" * 50_000 + "</items>").encode()
     artifact_path = tmp_path / "large.xml"
     artifact_path.write_bytes(payload)
@@ -833,7 +837,8 @@ def test_get_artifact_xml_download_supports_bounded_range_requests(tmp_path, mon
     assert preview.status_code == 206
     assert preview.content == payload[:1_048_576]
     assert preview.headers["content-range"] == f"bytes 0-1048575/{len(payload)}"
-    assert preview.headers["content-disposition"].startswith("attachment;")
+    assert preview.headers["content-disposition"].startswith("inline;")
+    assert preview.headers["content-security-policy"] == "sandbox allow-scripts"
     assert preview.headers["x-content-type-options"] == "nosniff"
 
 

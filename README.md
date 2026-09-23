@@ -253,8 +253,6 @@ It is disabled by default; see the linked guide to enable it.
 
    OpenRouter and similar OpenAI-compatible gateways should be configured with `langchain_openai:ChatOpenAI` plus `base_url`. If you prefer a provider-specific environment variable name, point `api_key` at that variable explicitly (for example `api_key: $OPENROUTER_API_KEY`).
 
-   Runtime model options override matching profile defaults. This lets a model profile provide a fallback such as `when_thinking_disabled.reasoning_effort` while still allowing the Web UI or another caller to select an explicit reasoning effort for that run.
-
    To route OpenAI models through `/v1/responses`, keep using `langchain_openai:ChatOpenAI` and set `use_responses_api: true` with `output_version: responses/v1`.
 
    The setup wizard includes a Z.AI GLM-5.3-Flash profile. Because that model requires thinking and only accepts its own restricted effort levels, the compatibility profile keeps thinking enabled for every foreground and background call and temporarily suppresses DeerFlow's generic effort selector. See `config.example.yaml` for the equivalent manual configuration.

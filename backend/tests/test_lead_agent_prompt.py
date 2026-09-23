@@ -148,11 +148,13 @@ def test_apply_prompt_template_preserves_interactive_clarification_guidance(monk
 
     prompt = prompt_module.apply_prompt_template(app_config=config)
 
-    assert "**WORKFLOW PRIORITY: CLARIFY → PLAN → ACT**" in prompt
-    assert "DO NOT call any other tool in the same turn as ask_clarification" in prompt
-    assert "❌ DO NOT make assumptions when information is missing - ALWAYS ask" in prompt
-    assert '**Example:**\nUser: "Deploy the application"' in prompt
-    assert 'User: "staging"\nYou: "Deploying to staging..." [proceed]' in prompt
+    # [argus] The fork's compact interactive clarification replaces upstream's
+    # ask-first block and its worked example (fork PR #49).
+    assert "Call `ask_clarification` before action only for a missing required input" in prompt
+    assert "Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped." in prompt
+    assert "Ask only when missing information would materially change the result" in prompt
+    assert "Clarify only material missing inputs, product choices, or risky effects" in prompt
+    assert "WORKFLOW PRIORITY: CLARIFY" not in prompt
 
 
 def test_apply_prompt_template_includes_memory_tool_guidance_only_in_tool_mode(monkeypatch):

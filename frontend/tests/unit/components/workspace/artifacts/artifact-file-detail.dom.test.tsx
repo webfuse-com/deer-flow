@@ -26,6 +26,12 @@ rs.mock("@/components/workspace/messages/context", () => ({
   useThread: () => ({ thread: { isLoading: false }, isMock: false }),
 }));
 
+// [argus patch #88] The Internalize action reads ThreadContext, which the
+// messages/context mock above does not export; it is not under test here.
+rs.mock("@/components/workspace/artifacts/internalize-artifact-action", () => ({
+  InternalizeArtifactAction: () => null,
+}));
+
 rs.mock("@/components/workspace/artifacts/context", () => ({
   useArtifacts: () => ({
     artifacts: [],

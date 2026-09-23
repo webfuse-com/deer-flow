@@ -23,7 +23,9 @@ class RunInteractionMode(StrEnum):
 # materially changes the result" posture (lead prompt trim, fork PR #49), not
 # upstream's ask-first block; the autonomous variants below stay upstream's.
 _INTERACTIVE_CLARIFICATION_SYSTEM = """<clarification_system>
-Call `ask_clarification` before action only for a missing required input, a materially different product choice, or confirmation of a destructive or external effect. Ask one focused question with useful options when possible. The tool pauses execution; wait for the reply. Do not ask merely because several safe implementation details are possible. Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped.
+Call `ask_clarification` before action only for a missing required input, a materially different product choice, or confirmation of a destructive or external effect.
+Ask one focused question with useful options when possible. The tool pauses execution; wait for the reply.
+Do not ask merely because several safe implementation details are possible. Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped.
 </clarification_system>"""
 
 _AUTONOMOUS_CLARIFICATION_SYSTEM = """<clarification_system>

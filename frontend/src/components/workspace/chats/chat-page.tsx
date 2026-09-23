@@ -601,57 +601,57 @@ export default function ChatPage() {
                         onUpdate={updateQueuedMessage}
                       />
                       <InputBox
-                      className={cn(
-                        "bg-background/5 w-full",
-                        isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
-                      )}
-                      isWelcomeMode={isWelcomeMode}
-                      threadId={threadId}
-                      draftThreadId={isNewThread ? "new" : threadId}
-                      knowledgeScopeControl={
-                        selectorVisible && knowledgeScope ? (
-                          <KnowledgeScopeSelector
-                            agentName="lead_agent"
-                            disabled={thread.isLoading || isUploading}
-                            selection={knowledgeScope}
-                            onChange={setKnowledgeScope}
-                          />
-                        ) : undefined
-                      }
-                      autoFocus={isWelcomeMode}
-                      status={
-                        thread.error
-                          ? "error"
-                          : thread.isLoading
-                            ? "streaming"
-                            : "ready"
-                      }
-                      context={settings.context}
-                      extraHeader={
-                        isWelcomeMode &&
-                        !hasGoal &&
-                        !hasTodos && <Welcome mode={settings.context.mode} />
-                      }
-                      disabled={
-                        isMock ||
-                        env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                        isUploading ||
-                        (!isNewThread && isHistoryLoading)
-                      }
-                      onContextChange={(context, options) => {
-                        if (options?.automatic)
-                          resolveThreadContext(threadId, context);
-                        else setSettings("context", context);
-                      }}
-                      onGoalChange={setLocalGoal}
-                      onPrepareThread={ensureProjectThread}
-                      onSubmit={handleSubmit}
-  onQueue={(msg, opts) => enqueueMessage(msg, opts)}
-                      onStop={handleStop}
-                      canStopStreaming={canStopStreaming}
-                      canCreateRuns={canCreateRuns}
-                    />
-</>
+                        className={cn(
+                          "bg-background/5 w-full",
+                          isWelcomeMode && "-translate-y-2 sm:-translate-y-4",
+                        )}
+                        isWelcomeMode={isWelcomeMode}
+                        threadId={threadId}
+                        draftThreadId={isNewThread ? "new" : threadId}
+                        knowledgeScopeControl={
+                          selectorVisible && knowledgeScope ? (
+                            <KnowledgeScopeSelector
+                              agentName="lead_agent"
+                              disabled={thread.isLoading || isUploading}
+                              selection={knowledgeScope}
+                              onChange={setKnowledgeScope}
+                            />
+                          ) : undefined
+                        }
+                        autoFocus={isWelcomeMode}
+                        status={
+                          thread.error
+                            ? "error"
+                            : thread.isLoading
+                              ? "streaming"
+                              : "ready"
+                        }
+                        context={settings.context}
+                        extraHeader={
+                          isWelcomeMode &&
+                          !hasGoal &&
+                          !hasTodos && <Welcome mode={settings.context.mode} />
+                        }
+                        disabled={
+                          isMock ||
+                          env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+                          isUploading ||
+                          (!isNewThread && isHistoryLoading)
+                        }
+                        onContextChange={(context, options) => {
+                          if (options?.automatic)
+                            resolveThreadContext(threadId, context);
+                          else setSettings("context", context);
+                        }}
+                        onGoalChange={setLocalGoal}
+                        onPrepareThread={ensureProjectThread}
+                        onSubmit={handleSubmit}
+                        onQueue={(msg, opts) => enqueueMessage(msg, opts)}
+                        onStop={handleStop}
+                        canStopStreaming={canStopStreaming}
+                        canCreateRuns={canCreateRuns}
+                      />
+                    </>
                   ) : (
                     <div
                       aria-hidden="true"

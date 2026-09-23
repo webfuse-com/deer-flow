@@ -371,10 +371,6 @@ Automatic conversation summarization when approaching token limits:
 
 See [docs/summarization.md](docs/summarization.md) for details.
 
-### Argus carry (PATCHES.md #73)
-
-- `skills.auto_route`, `adaptive_reasoning.enabled`, `run_limits` (wall-clock and model-call caps, counted across goal-continuation invocations), `workspace_inspect`/`workspace_patch` batch tools.
-
 ### Vision Support
 
 For models with `supports_vision: true`:

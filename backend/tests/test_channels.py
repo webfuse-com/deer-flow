@@ -11497,12 +11497,15 @@ class TestTelegramStreaming:
         survive. The text deliberately carries a bracketed-pipe token
         ([condition|clear]) to prove the construct detector stays well-formed."""
 
+        # [argus patch #40] upstream's send path is kept but unreachable; the
+        # live path is _telegram_sender. Exercise the superseded method directly.
+
         async def go():
             ch, bot = self._make_channel_with_bot()
             ch.config["rich_messages"] = True
             help_text = "Available commands:\n/goal [condition|clear] — Set or clear a goal\n/agent use <name> — Start with an agent"
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=help_text, is_final=True))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=help_text, is_final=True))
 
             assert bot.rich == []
             assert [message["text"] for message in bot.sent] == [help_text]
@@ -11514,12 +11517,15 @@ class TestTelegramStreaming:
         signature separators) must stay plain: a table-separator row needs a
         pipe, so a bare ``--verbose`` line is not a GFM delimiter row."""
 
+        # [argus patch #40] upstream's send path is kept but unreachable; the
+        # live path is _telegram_sender. Exercise the superseded method directly.
+
         async def go():
             ch, bot = self._make_channel_with_bot()
             ch.config["rich_messages"] = True
             flag_list = "Options:\n--verbose\n--help"
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=flag_list, is_final=True))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=flag_list, is_final=True))
 
             assert bot.rich == []
             assert [message["text"] for message in bot.sent] == [flag_list]
@@ -11531,12 +11537,15 @@ class TestTelegramStreaming:
         must stay plain: italic emphasis needs tight, non-space delimiters, so
         the spans between the asterisks are not handed to the rich parser."""
 
+        # [argus patch #40] upstream's send path is kept but unreachable; the
+        # live path is _telegram_sender. Exercise the superseded method directly.
+
         async def go():
             ch, bot = self._make_channel_with_bot()
             ch.config["rich_messages"] = True
             arithmetic = "Compute: 2 * 3 * 4 = 24"
 
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=arithmetic, is_final=True))
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text=arithmetic, is_final=True))
 
             assert bot.rich == []
             assert [message["text"] for message in bot.sent] == [arithmetic]
@@ -11547,13 +11556,16 @@ class TestTelegramStreaming:
         """A streamed-then-final plain reply (no rich construct) must not be
         replaced by a rich edit of the in-flight placeholder."""
 
+        # [argus patch #40] upstream's send path is kept but unreachable; the
+        # live path is _telegram_sender. Exercise the superseded method directly.
+
         async def go():
             ch, bot = self._make_channel_with_bot()
             ch.config["rich_messages"] = True
             monkeypatch.setattr("app.channels.telegram._monotonic", lambda: 1000.0)
 
-            await ch._send_running_reply("12345", 42)
-            await ch.send(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Available commands:\n/new — new", is_final=True, thread_ts="42"))
+            await ch._upstream_send_running_reply_superseded("12345", 42)
+            await ch._upstream_send_superseded(OutboundMessage(channel_name="telegram", chat_id="12345", thread_id="t1", text="Available commands:\n/new — new", is_final=True, thread_ts="42"))
 
             assert bot.rich == []
             # Final text is applied as a plain edit of the streamed placeholder.

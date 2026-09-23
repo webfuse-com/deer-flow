@@ -37,7 +37,11 @@ class _BlockingAcquireLock:
         self.release_calls = 0
         self._guard = threading.Lock()
 
-    def acquire(self) -> bool:
+    def acquire(self, blocking: bool = True) -> bool:
+        # [argus #73] The gate tries a non-blocking acquire first; model a held
+        # lock so the test still exercises the worker-thread acquisition.
+        if not blocking:
+            return False
         self.acquire_started.set()
         assert self.allow_acquire.wait(timeout=5), "test did not unblock gate-lock acquisition"
         with self._guard:
@@ -57,8 +61,10 @@ class _TrackingLock:
         self.release_calls = 0
         self._guard = threading.Lock()
 
-    def acquire(self) -> bool:
+    def acquire(self, blocking: bool = True) -> bool:
         with self._guard:
+            if self.acquired and not blocking:
+                return False
             assert not self.acquired
             self.acquired = True
         return True

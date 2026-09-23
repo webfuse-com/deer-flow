@@ -14,7 +14,8 @@ def test_interactive_policy_keeps_clarification_available():
     assert policy.mode is RunInteractionMode.INTERACTIVE
     assert policy.allows_clarification
     assert policy.disabled_tool_names == frozenset()
-    assert "MUST call ask_clarification" in policy.clarification_system
+    # [argus] compact interactive wording (fork PR #49), not upstream's ask-first block.
+    assert "Call `ask_clarification` before action only for a missing required input" in policy.clarification_system
 
 
 def test_scheduled_policy_disables_tool_and_uses_autonomous_guidance():

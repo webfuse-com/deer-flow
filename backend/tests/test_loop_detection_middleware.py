@@ -231,44 +231,27 @@ class TestHashToolCalls:
 
         assert _hash_tool_calls([forward_call]) == _hash_tool_calls([reversed_call])
 
-    def test_read_file_distinct_sections_collide_at_default_bucket(self):
-        """[argus] At the upstream 200-line default, surgical reads of distinct
-        sections of one file collapse into the same bucket (the false-positive
-        this patch exists to avoid)."""
+    def test_read_file_distinct_sections_hash_apart(self):
+        """[argus] Retired patch #3 existed so surgical reads of distinct
+        sections of one file stop colliding; upstream's exact line window
+        (#5578) now guarantees that without a knob."""
 
         def call(start, end):
             return {"name": "read_file", "args": {"path": "/tmp/big.py", "start_line": start, "end_line": end}}
 
-        # 1-30, 145, 170 all land in bucket 0 at size 200 -> identical hashes.
-        assert _hash_tool_calls([call(1, 30)]) == _hash_tool_calls([call(145, 145)])
-        assert _hash_tool_calls([call(145, 145)]) == _hash_tool_calls([call(170, 170)])
+        h1 = _hash_tool_calls([call(1, 30)])
+        h2 = _hash_tool_calls([call(145, 145)])
+        h3 = _hash_tool_calls([call(170, 170)])
+        assert len({h1, h2, h3}) == 3
 
-    def test_read_file_distinct_sections_separate_at_bucket_50(self):
-        """[argus] With read_file_bucket_size=50, distinct sections hash apart."""
-
-        def call(start, end):
-            return {"name": "read_file", "args": {"path": "/tmp/big.py", "start_line": start, "end_line": end}}
-
-        h1 = _hash_tool_calls([call(1, 30)], 50)
-        h2 = _hash_tool_calls([call(145, 145)], 50)
-        h3 = _hash_tool_calls([call(170, 170)], 50)
-        assert h1 != h2 != h3 and h1 != h3
-
-    def test_read_file_close_lines_share_bucket_at_50(self):
-        """[argus] Small drift (145 vs 150) still buckets together at size 50."""
-
-        def call(start, end):
-            return {"name": "read_file", "args": {"path": "/tmp/big.py", "start_line": start, "end_line": end}}
-
-        assert _hash_tool_calls([call(145, 145)], 50) == _hash_tool_calls([call(150, 150)], 50)
-
-    def test_config_bucket_size_flows_through_from_config(self):
-        """[argus] LoopDetectionConfig.read_file_bucket_size_lines reaches the
-        instance via from_config and changes read_file hashing."""
+    def test_deprecated_bucket_size_config_is_accepted_and_ignored(self):
+        """[argus] Stack configs still set read_file_bucket_size_lines; the key
+        must keep loading while it no longer changes hashing."""
         from deerflow.config.loop_detection_config import LoopDetectionConfig
 
-        mw = LoopDetectionMiddleware.from_config(LoopDetectionConfig(read_file_bucket_size_lines=50))
-        assert mw.read_file_bucket_size_lines == 50
+        mw = LoopDetectionMiddleware.from_config(LoopDetectionConfig(read_file_bucket_size_lines=40))
+        assert not hasattr(mw, "read_file_bucket_size_lines")
+        assert "read_file_bucket_size_lines" not in mw.release_policy_parameters()
 
     def test_stringified_non_dict_args_do_not_crash(self):
         non_dict_json_call = {"name": "bash", "args": '"echo hello"'}

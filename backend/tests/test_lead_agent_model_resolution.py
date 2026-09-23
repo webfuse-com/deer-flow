@@ -789,7 +789,7 @@ def test_build_middlewares_custom_agent_memory_opt_out_keeps_dynamic_date_only(m
         "_create_summarization_middleware",
         lambda **kwargs: summarization_kwargs.update(kwargs) or None,
     )
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
 
     middlewares = lead_agent_module.build_middlewares(
         {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},

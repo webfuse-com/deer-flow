@@ -1072,7 +1072,9 @@ class TestWecomMediaUrlGate:
             finally:
                 await client.aclose()
 
-        with caplog.at_level(_logging.INFO):
+        # [argus patch #44] app.gateway.app pins httpx to WARNING at import;
+        # raise it here so upstream's redaction is tested whatever ran first.
+        with caplog.at_level(_logging.INFO), caplog.at_level(_logging.INFO, logger="httpx"):
             result = _run(go())
 
         assert result == b"ok"
@@ -1111,7 +1113,9 @@ class TestWecomMediaUrlGate:
             finally:
                 await channel._client.aclose()
 
-        with caplog.at_level(_logging.INFO):
+        # [argus patch #44] app.gateway.app pins httpx to WARNING at import;
+        # raise it here so upstream's redaction is tested whatever ran first.
+        with caplog.at_level(_logging.INFO), caplog.at_level(_logging.INFO, logger="httpx"):
             result = _run(go())
 
         assert result == b"ok"

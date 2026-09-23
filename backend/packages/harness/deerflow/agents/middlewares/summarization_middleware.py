@@ -737,9 +737,13 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
 
     @staticmethod
     def _active_user_request_text(messages: list[AnyMessage]) -> str | None:
-        """[argus patch #75] The latest real user message, for the summary input."""
+        """[argus patch #75] The latest real user message, for the summary input.
+
+        Uses the same predicate as upstream's preserved-request anchor (#5416),
+        so a Human Input Card reply counts as the current request here too.
+        """
         for message in reversed(messages):
-            if is_real_user_message(message):
+            if is_genuine_user_message(message):
                 return get_buffer_string([message])
         return None
 

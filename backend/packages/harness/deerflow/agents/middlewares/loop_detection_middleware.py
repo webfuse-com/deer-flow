@@ -139,13 +139,13 @@ from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
-from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
-from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
 from deerflow.agents.middlewares.audit_context import (
     LOOP_DETECTION_RECORDER_CONTEXT_KEY,
     resolve_audit_recorder,
 )
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
+from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
+from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
 from deerflow.runtime.events.catalog import MIDDLEWARE_LOOP_DETECTION_TAG
 from deerflow.sandbox.command_classify import classify_bash_command
 

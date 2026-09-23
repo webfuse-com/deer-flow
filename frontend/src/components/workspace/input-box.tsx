@@ -1429,6 +1429,7 @@ export function InputBox({
       canCreateRuns,
       handleCompactCommand,
       handleGoalCommand,
+      handleStopStreaming,
       onPrepareThread,
       onQueue,
       projectAttachments.length,
