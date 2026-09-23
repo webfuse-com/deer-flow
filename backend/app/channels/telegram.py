@@ -623,7 +623,13 @@ class TelegramChannel(Channel):
             return self._download_bot
         telegram_loop = self._tg_loop
         if telegram_loop is None:
-            return None
+            # [argus] Webhook mode has no Telegram loop: PTB is initialized and
+            # started on the gateway loop, so the Application's own Bot is
+            # already bound to the loop that performs the download. Returning
+            # None here marked every inbound photo/document/voice note
+            # "download unavailable" on webhook stacks (upstream #5581 only
+            # models polling mode).
+            return self._application.bot if self._application is not None else None
 
         async def _init() -> Any:
             if self._download_bot is not None:
