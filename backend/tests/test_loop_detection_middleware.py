@@ -1742,6 +1742,22 @@ class TestToolFrequencyDetection:
         assert "read_file" in queued[0]
         assert "LOOP DETECTED" in queued[0]
 
+    def test_freq_warn_is_a_checkpoint_not_a_stop_order(self):
+        """[argus patch #94] The warning names the hard limit and must not order
+        the model to stop, or the warn threshold becomes the real ceiling."""
+        mw = LoopDetectionMiddleware(tool_freq_warn=3, tool_freq_hard_limit=7)
+        runtime = _make_runtime()
+
+        for i in range(3):
+            mw._apply(_make_state(tool_calls=[self._read_call(f"/file_{i}.py")]), runtime)
+
+        queued = mw._pending_warnings.get(_pending_key(), [])
+        assert len(queued) == 1
+        assert "called read_file 3 times" in queued[0]
+        assert "force-stopped at 7 calls" in queued[0]
+        assert "Stop calling tools" not in queued[0]
+        assert "final answer now" not in queued[0]
+
     def test_freq_warn_only_queued_once(self):
         mw = LoopDetectionMiddleware(tool_freq_warn=3, tool_freq_hard_limit=10)
         runtime = _make_runtime()

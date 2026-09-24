@@ -18,6 +18,8 @@ export interface FeaturesResponse {
   knowledge_base?: {
     scope_selection_enabled?: boolean;
   };
+  // [argus patch #95] Absent on gateways that predate the flag: shown.
+  capability_center?: { enabled: boolean };
 }
 
 export interface ConversationReferencesCapability {
@@ -83,4 +85,8 @@ export async function fetchKnowledgeBaseFeature(): Promise<{
   return {
     scopeSelectionEnabled: feature?.scope_selection_enabled ?? false,
   };
+}
+
+export async function fetchCapabilityCenterEnabled(): Promise<boolean> {
+  return (await fetchFeatures()).capability_center?.enabled ?? true;
 }

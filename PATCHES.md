@@ -138,6 +138,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
 | [#91](#patch-91) | Graceful run stream options: accept `stream_resumable`, drop unsupported stream modes while one remains (back-filled) | generic-upstreamable | aeb52487 |
 | [#92](#patch-92) | Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides | argus-additive | this PR |
+| [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
+| [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2201,6 +2203,55 @@ carry budget ledger.
 - Exit: drop when upstream preserves structured errors, supports producer-bound
   operation semantics and bounded invalid submission recovery, and refreshes
   remote catalogs with equivalent session and snapshot safety.
+
+## Patch #94
+
+**Patch #94 - Loop-detection frequency warning is a checkpoint, not a stop order**
+
+- Class: argus-edit (one message constant in upstream's middleware plus the
+  `hard_limit` it formats in); generic-upstreamable.
+- Intent: Layer 2's warning said "Stop calling tools and produce your final
+  answer now". Models obey it, so `tool_freq_overrides.<tool>.warn` was the
+  real ceiling and `hard_limit` was never reached: deep research on
+  atlas-nicholas stopped at exactly 4 web searches per researcher with
+  `warn: 4 / hard_limit: 12`, then at exactly 12 with `warn: 12 / hard_limit:
+  30` (thread 0d59647c, 2026-09-24). The warning now asks the model to take
+  stock, continue only for gaps it can name, change approach if calls stopped
+  adding information, and states the force-stop count. The hard stop is
+  unchanged and still enforces the ceiling. The identical-call warnings and
+  the #82 subcategory messages are unchanged.
+- Files: `backend/packages/harness/deerflow/agents/middlewares/loop_detection_middleware.py` (EDITED)
+- Tests: `backend/tests/test_loop_detection_middleware.py`
+  (`test_freq_warn_is_a_checkpoint_not_a_stop_order`)
+- Delete-when: upstream's frequency warning stops ordering a final answer, or
+  upstream makes the warning text configurable.
+
+## Patch #95
+
+**Patch #95 - `capability_center.enabled` hides the Capability Center**
+
+- Class: argus-additive (new config model and feature field; two small
+  frontend edits); config-expressed, upstream default unchanged (shown).
+- Intent: on Argus stacks the MCP config is rendered from the fork on every
+  deploy and mounted read-only, so the Capability Center offers setup a user
+  cannot keep. Stacks set `capability_center.enabled: false`; `/api/features`
+  reports it per request (config hot-reload) and the frontend hides the
+  sidebar entry and sends a deep link to `/workspace/capabilities` back to
+  chats. An older gateway that does not report the field reads as shown. The
+  entry is hidden while `/api/features` loads or fails, so it never flashes.
+  Presentation only: the capabilities, plugins and managed-models routes keep
+  their own gates.
+- Files: `backend/packages/harness/deerflow/config/capability_center_config.py` (NEW),
+  `backend/packages/harness/deerflow/config/app_config.py` (EDITED, one field),
+  `backend/app/gateway/routers/features.py` (EDITED),
+  `frontend/src/core/features/{api,hooks}.ts` (EDITED),
+  `frontend/src/components/workspace/workspace-nav-chat-list.tsx` (EDITED),
+  `frontend/src/components/workspace/capabilities/capability-center-gate.tsx` (NEW),
+  `frontend/src/app/workspace/capabilities/page.tsx` (EDITED),
+  `config.example.yaml` (EDITED)
+- Tests: `backend/tests/test_features_router.py` (flag on/off, default on)
+- Delete-when: upstream ships a config switch for the Capability Center, or
+  Argus stacks make its saves durable.
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 

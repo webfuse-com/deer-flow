@@ -2395,6 +2395,15 @@ agents_api:
   enabled: false
 
 # ============================================================================
+# Capability Center
+# ============================================================================
+# Whether the frontend shows the Capability Center (sidebar entry and page).
+# Presentation only: the capabilities/plugins routes keep their own gates.
+# Turn it off where tools and MCP servers are managed outside the UI.
+capability_center:
+  enabled: true
+
+# ============================================================================
 # Skill Self-Evolution Configuration
 # ============================================================================
 # Allow the agent to autonomously create and improve skills in skills/custom/.

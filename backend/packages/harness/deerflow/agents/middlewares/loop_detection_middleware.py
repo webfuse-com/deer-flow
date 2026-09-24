@@ -319,8 +319,16 @@ _TOOL_EXEMPT_RETRY_MSG = (
     "[LOOP DETECTED] {tools} has been called with identical arguments {count} times. This tool is exempt from the loop hard stop, but an identical call cannot produce a different result: vary the arguments or conclude with what you have."
 )
 
+# [argus patch #94] A frequency warning is a checkpoint, not a stop order.
+# Models obey "stop calling tools" literally, so the old wording made the warn
+# threshold the real ceiling and hard_limit unreachable (deep research ended
+# at exactly warn searches per researcher, 2026-09-24). The hard stop still
+# enforces the ceiling; this message names it so the model can budget.
 _TOOL_FREQ_WARNING_MSG = (
-    "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
+    "[LOOP DETECTED] You have called {tool_name} {count} times in this task. Take stock before the next call: "
+    "save or summarize what you have found so far, then continue only to close specific gaps you can name, "
+    "and change approach if recent calls stopped adding new information. {tool_name} is force-stopped at "
+    "{hard_limit} calls, after which you must answer with what you have."
 )
 
 _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."
@@ -989,7 +997,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     freq_warned = self._tool_freq_warned[scope_key]
                     if warning is None and name not in freq_warned:
                         warning = _LoopDecision(
-                            message=_TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=freq_count),
+                            message=_TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=freq_count, hard_limit=eff_hard),
                             action="warn",
                             detection_layer="tool_frequency",
                             tool_names=(name,),

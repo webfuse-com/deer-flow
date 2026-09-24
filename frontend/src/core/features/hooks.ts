@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import {
   fetchBrowserControlEnabled,
+  fetchCapabilityCenterEnabled,
   fetchConversationReferencesCapability,
   fetchKnowledgeBaseFeature,
   fetchMcpTasksEnabled,
@@ -79,6 +80,22 @@ export function useKnowledgeBaseEnabled() {
   });
   return {
     scopeSelectionEnabled: data?.scopeSelectionEnabled ?? false,
+    isLoading: isPending,
+  };
+}
+
+// [argus patch #95] Hidden while loading and when /api/features fails, so a
+// deployment that turned the Capability Center off never flashes its entry.
+export function useCapabilityCenterEnabled() {
+  const { data, isPending } = useQuery({
+    queryKey: ["features", "capability_center"],
+    queryFn: fetchCapabilityCenterEnabled,
+    staleTime: 0,
+    refetchOnMount: true,
+    retry: false,
+  });
+  return {
+    enabled: data ?? false,
     isLoading: isPending,
   };
 }

@@ -21,6 +21,7 @@ def _app_with_config(
     knowledge_base_enabled: bool = False,
     scope_selection_enabled: bool = False,
     knowledge_search_provider: str | None = None,
+    capability_center_enabled: bool = True,
 ) -> FastAPI:
     app = FastAPI()
     app.state.mcp_tasks_available = mcp_tasks_available
@@ -42,6 +43,7 @@ def _app_with_config(
             enabled=knowledge_base_enabled,
             scope_selection_enabled=scope_selection_enabled,
         ),
+        capability_center=SimpleNamespace(enabled=capability_center_enabled),
     )
     search_tool = SimpleNamespace(use=knowledge_search_provider) if knowledge_search_provider is not None else None
     fake_config.get_tool_config = lambda name: search_tool if name == "knowledge_search" else None
@@ -67,6 +69,7 @@ def test_features_reports_agents_api_enabled() -> None:
         "knowledge_base": {
             "scope_selection_enabled": False,
         },
+        "capability_center": {"enabled": True},
     }
 
 
@@ -88,6 +91,7 @@ def test_features_reports_agents_api_disabled() -> None:
         "knowledge_base": {
             "scope_selection_enabled": False,
         },
+        "capability_center": {"enabled": True},
     }
 
 
@@ -216,3 +220,17 @@ def test_features_reports_browser_control_disabled_for_unguarded_cdp() -> None:
         response = client.get("/api/features")
     assert response.status_code == 200
     assert response.json()["browser_control"] == {"enabled": False}
+
+
+def test_features_reports_capability_center_disabled_by_config() -> None:
+    """[argus patch #95] config.capability_center.enabled drives the flag."""
+    with TestClient(_app_with_config(agents_api_enabled=True, capability_center_enabled=False)) as client:
+        response = client.get("/api/features")
+    assert response.status_code == 200
+    assert response.json()["capability_center"] == {"enabled": False}
+
+
+def test_capability_center_defaults_to_enabled() -> None:
+    from deerflow.config.app_config import AppConfig
+
+    assert AppConfig.model_fields["capability_center"].default_factory().enabled is True
