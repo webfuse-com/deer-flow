@@ -24,12 +24,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentsApiEnabled } from "@/core/agents";
+import { useCapabilityCenterEnabled } from "@/core/features/hooks";
 import { useI18n } from "@/core/i18n/hooks";
 
 export function WorkspaceNavChatList() {
   const { t } = useI18n();
   const pathname = usePathname();
   const { enabled: agentsEnabled } = useAgentsApiEnabled();
+  const { enabled: capabilityCenterEnabled } = useCapabilityCenterEnabled();
   return (
     <SidebarGroup className="pt-1">
       <SidebarMenu>
@@ -135,20 +137,23 @@ export function WorkspaceNavChatList() {
             </a>
           </SidebarMenuButton>
         </SidebarMenuItem>
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            isActive={pathname.startsWith("/workspace/capabilities")}
-            asChild
-          >
-            <Link
-              className="text-muted-foreground"
-              href="/workspace/capabilities"
+        {/* [argus patch #95] config.capability_center.enabled */}
+        {capabilityCenterEnabled && (
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={pathname.startsWith("/workspace/capabilities")}
+              asChild
             >
-              <BlocksIcon />
-              <span>{t.capabilities.title}</span>
-            </Link>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
+              <Link
+                className="text-muted-foreground"
+                href="/workspace/capabilities"
+              >
+                <BlocksIcon />
+                <span>{t.capabilities.title}</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        )}
       </SidebarMenu>
     </SidebarGroup>
   );

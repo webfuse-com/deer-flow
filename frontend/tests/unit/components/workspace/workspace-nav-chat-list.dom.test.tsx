@@ -15,6 +15,15 @@ rs.mock("@/core/agents", () => ({
   useAgentsApiEnabled: () => ({ enabled: false, isLoading: false }),
 }));
 
+// [argus patch #95] Mutable so each test picks the flag /api/features reports.
+const capabilityCenter = rs.hoisted(() => ({ enabled: true }));
+rs.mock("@/core/features/hooks", () => ({
+  useCapabilityCenterEnabled: () => ({
+    enabled: capabilityCenter.enabled,
+    isLoading: false,
+  }),
+}));
+
 function renderNav() {
   return render(
     <I18nContext.Provider
@@ -27,7 +36,10 @@ function renderNav() {
   );
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  capabilityCenter.enabled = true;
+});
 
 describe("WorkspaceNavChatList (DOM)", () => {
   it("links to the Agora knowledge page in a new tab, after Chronos", () => {
@@ -43,5 +55,20 @@ describe("WorkspaceNavChatList (DOM)", () => {
       .getAllByRole("link")
       .map((link) => link.textContent?.trim() ?? "");
     expect(labels.indexOf("Agora")).toBe(labels.indexOf("Chronos") + 1);
+  });
+
+  it("shows the Capability Center when the feature flag is on", () => {
+    renderNav();
+    expect(
+      screen.getByRole("link", { name: enUS.capabilities.title }),
+    ).toBeTruthy();
+  });
+
+  it("hides the Capability Center when the feature flag is off", () => {
+    capabilityCenter.enabled = false;
+    renderNav();
+    expect(
+      screen.queryByRole("link", { name: enUS.capabilities.title }),
+    ).toBeNull();
   });
 });
