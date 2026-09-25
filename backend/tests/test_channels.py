@@ -2558,6 +2558,64 @@ class TestChannelManager:
 
         _run(go())
 
+    @pytest.mark.parametrize("fail", [False, True])
+    def test_unattended_stream_reports_outcome_once(self, monkeypatch, fail):
+        """[argus patch #45] A clean unattended streaming turn reports
+        "delivered"; a captured stream error reports "failed". The delivered
+        report was once nested under the stream-error branch and never fired."""
+        from app.channels.manager import ChannelManager
+
+        monkeypatch.setattr("app.channels.manager.STREAM_UPDATE_MIN_INTERVAL_SECONDS", 0.0)
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            reports = []
+
+            async def fake_report(msg, *, status, message_text=None, error=None):
+                reports.append(status)
+
+            manager._report_unattended_outcome = fake_report
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+
+            async def _stream():
+                yield _make_stream_part(
+                    "values",
+                    {"messages": [{"type": "human", "content": "go"}, {"type": "ai", "content": "Your briefing: three meetings today."}], "artifacts": []},
+                )
+                if fail:
+                    raise ConnectionError("stream broken")
+
+            mock_client = _make_mock_langgraph_client()
+            mock_client.runs.stream = MagicMock(return_value=_stream())
+            manager._client = mock_client
+
+            await manager.start()
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel_name="feishu",
+                    chat_id="chat1",
+                    user_id="user1",
+                    text="go",
+                    thread_ts="om-source-1",
+                    unattended=True,
+                    report_url="http://argus-scheduler:8000/api/runs/1/output",
+                )
+            )
+            await _wait_for(lambda: bool(reports))
+            await manager.stop()
+
+            assert reports == (["failed"] if fail else ["delivered"])
+            assert any(m.is_final for m in outbound_received)
+
+        _run(go())
+
     def test_handle_feishu_stream_conflict_sends_busy_message(self, monkeypatch):
         import httpx
         from langgraph_sdk.errors import ConflictError

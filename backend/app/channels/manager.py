@@ -3166,10 +3166,13 @@ class ChannelManager:
                 await self._release_inbound_dedupe_key(msg)
                 # [argus patch #45] a captured stream error was delivered to the
                 # chat as an error message; the run itself still failed.
-                if stream_error:
-                    await self._report_unattended_outcome(msg, status="failed", error=repr(stream_error))
-                else:
-                    await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
+                await self._report_unattended_outcome(msg, status="failed", error=repr(stream_error))
+            elif not suppress_final:
+                # [argus patch #45] a clean turn's reply went out. This must sit
+                # outside the stream_error block: nested inside it, no clean
+                # streaming fire ever reported and Chronos closed every one as
+                # unreported after its timeout (2026-09-23..25, whole fleet).
+                await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
 
     # -- command handling --------------------------------------------------
 
