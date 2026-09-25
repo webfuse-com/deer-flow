@@ -1470,6 +1470,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_delivery_report.py`, `backend/tests/test_playbook_fire.py` (report_url flow-through, default None).
 - Delete-when: upstream's scheduled-tasks MVP (4fc08b4f) grows a completion callback; reconcile together with #30/#43.
 - Upstream status: none sent.
+- 2026-09-25: the streaming `delivered` report had been nested under `if stream_error is not None:` (the upstream #4287 dedupe-release block), so clean streaming fires never reported. It now sits beside that block; `test_unattended_stream_reports_outcome_once` covers both outcomes.
 
 ## Patch #46
 
