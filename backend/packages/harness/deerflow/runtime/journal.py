@@ -425,8 +425,20 @@ class RunJournal(BaseCallbackHandler):
             [len(batch) for batch in messages],
         )
 
-        # Capture the first user message sent to the lead agent in this run.
         caller = self._identify_caller(tags)
+        # [argus patch #96] A middleware-short-circuited tool result (e.g. a
+        # ReadBeforeWrite block) never fires on_tool_end. It is already in the
+        # model's input here, so persist it now, in order: after the AI message
+        # that made the call, before the next response. Reconciling only at
+        # on_chain_end appended such results after the final answer, so three
+        # recovered blocks rendered as errors below "Done".
+        if caller == "lead_agent":
+            for batch in messages:
+                for m in batch:
+                    if isinstance(m, ToolMessage) and self._should_reconcile_tool_message(m):
+                        self._persist_tool_result_message(m)
+
+        # Capture the first user message sent to the lead agent in this run.
         if caller == "lead_agent" and not self._first_human_msg and messages:
             for batch in reversed(messages):
                 for m in reversed(batch):
