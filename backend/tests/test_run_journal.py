@@ -774,6 +774,51 @@ class TestFinalToolMessageReconciliation:
         assert tool_results[0]["content"]["name"] == "write_file"
 
 
+class TestShortCircuitedToolResultOrder:
+    @pytest.mark.anyio
+    async def test_blocked_result_is_persisted_before_the_next_response(self, journal_setup):
+        """[argus patch #96] A ReadBeforeWrite block never fires on_tool_end.
+        Reconciling it only at chain end put it after the final answer, so the
+        feed showed recovered blocks as errors below the reply. It must land
+        right after the call that caused it, and exactly once."""
+        from langchain_core.messages import HumanMessage, ToolMessage
+
+        j, store = journal_setup
+        j.on_llm_end(
+            _make_llm_response("", tool_calls=[{"id": "call_w", "name": "str_replace", "args": {"path": "/mnt/p/STATE.md"}}]),
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
+        )
+        blocked = ToolMessage(content="Error: str_replace blocked", tool_call_id="call_w", name="str_replace", status="error")
+        j.on_chat_model_start({}, [[HumanMessage(content="rename it"), blocked]], run_id=uuid4(), tags=["lead_agent"])
+        j.on_llm_end(_make_llm_response("Done."), run_id=uuid4(), parent_run_id=None, tags=["lead_agent"])
+        j.on_chain_end({"messages": [blocked]}, run_id=uuid4())
+        await j.flush()
+
+        kinds = [(m["event_type"], (m["content"].get("content") if isinstance(m["content"], dict) else None)) for m in await store.list_messages("t1")]
+        tool_idx = [i for i, (t, _) in enumerate(kinds) if t == "llm.tool.result"]
+        done_idx = [i for i, (t, c) in enumerate(kinds) if t == "llm.ai.response" and c == "Done."]
+        assert len(tool_idx) == 1, kinds
+        assert tool_idx[0] < done_idx[0], kinds
+
+    @pytest.mark.anyio
+    async def test_subagent_model_start_does_not_reconcile(self, journal_setup):
+        from langchain_core.messages import ToolMessage
+
+        j, store = journal_setup
+        j.on_llm_end(
+            _make_llm_response("", tool_calls=[{"id": "call_x", "name": "write_file", "args": {}}]),
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
+        )
+        blocked = ToolMessage(content="Error: blocked", tool_call_id="call_x", name="write_file")
+        j.on_chat_model_start({}, [[blocked]], run_id=uuid4(), tags=["subagent:researcher"])
+        await j.flush()
+        assert not [m for m in await store.list_messages("t1") if m["event_type"] == "llm.tool.result"]
+
+
 class TestCustomEvents:
     @pytest.mark.anyio
     async def test_on_custom_event_not_implemented(self, journal_setup):

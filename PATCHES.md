@@ -140,6 +140,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#92](#patch-92) | Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides | argus-additive | this PR |
 | [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
+| [#96](#patch-96) | Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2382,3 +2383,13 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Numbering: opened 2026-08-27 as #69, while the ledger backfill of 2026-09-02 assigned
   #69 to the loop-detection near-duplicate downgrade; renumbered to #84 when merged
   on 2026-09-04 (security wave 2, S-2.6).
+
+## Patch #96
+
+**Patch #96 - Short-circuited tool results journaled in order** (2026-09-25)
+
+- Class: argus-edit (`deerflow/runtime/journal.py`, `RunJournal.on_chat_model_start`).
+- Intent: a tool result a middleware answers itself (a ReadBeforeWrite block, an ask_clarification) never fires `on_tool_end`. Upstream #4666 persists those in `_reconcile_final_tool_messages`, but only at `on_chain_end`, so they got `seq` numbers after the final answer and the thread feed rendered recovered blocks as errors below the reply (atlas-nicholas thread f6fbf21f, three `str_replace blocked` rows under "Done, all three"). The result is already in the next lead-agent model input, so `on_chat_model_start` now persists unrecorded current-run tool results there, using the same `_should_reconcile_tool_message` predicate. `_put` commits the pending AI response first, so the order is call, result, next response. The chain-end reconcile stays as the backstop; identity dedupe keeps it at one row. Subagent and middleware model calls are skipped.
+- Tests: `TestShortCircuitedToolResultOrder` in `backend/tests/test_run_journal.py`.
+- Delete-when: upstream journals middleware-returned ToolMessages at the point they are produced.
+- Upstream status: candidate for an upstream PR (a small, general ordering fix to #4666).
