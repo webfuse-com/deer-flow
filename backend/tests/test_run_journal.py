@@ -786,7 +786,9 @@ class TestShortCircuitedToolResultOrder:
         j, store = journal_setup
         j.on_llm_end(
             _make_llm_response("", tool_calls=[{"id": "call_w", "name": "str_replace", "args": {"path": "/mnt/p/STATE.md"}}]),
-            run_id=uuid4(), parent_run_id=None, tags=["lead_agent"],
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
         )
         blocked = ToolMessage(content="Error: str_replace blocked", tool_call_id="call_w", name="str_replace", status="error")
         j.on_chat_model_start({}, [[HumanMessage(content="rename it"), blocked]], run_id=uuid4(), tags=["lead_agent"])
@@ -794,8 +796,7 @@ class TestShortCircuitedToolResultOrder:
         j.on_chain_end({"messages": [blocked]}, run_id=uuid4())
         await j.flush()
 
-        kinds = [(m["event_type"], (m["content"].get("content") if isinstance(m["content"], dict) else None))
-                 for m in await store.list_messages("t1")]
+        kinds = [(m["event_type"], (m["content"].get("content") if isinstance(m["content"], dict) else None)) for m in await store.list_messages("t1")]
         tool_idx = [i for i, (t, _) in enumerate(kinds) if t == "llm.tool.result"]
         done_idx = [i for i, (t, c) in enumerate(kinds) if t == "llm.ai.response" and c == "Done."]
         assert len(tool_idx) == 1, kinds
@@ -808,7 +809,9 @@ class TestShortCircuitedToolResultOrder:
         j, store = journal_setup
         j.on_llm_end(
             _make_llm_response("", tool_calls=[{"id": "call_x", "name": "write_file", "args": {}}]),
-            run_id=uuid4(), parent_run_id=None, tags=["lead_agent"],
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
         )
         blocked = ToolMessage(content="Error: blocked", tool_call_id="call_x", name="write_file")
         j.on_chat_model_start({}, [[blocked]], run_id=uuid4(), tags=["subagent:researcher"])
