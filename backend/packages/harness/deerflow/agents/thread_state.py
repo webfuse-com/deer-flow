@@ -113,8 +113,12 @@ def merge_viewed_images(existing: dict[str, ViewedImageData] | None, new: dict[s
     # Special case: empty dict means clear all viewed images
     if len(new) == 0:
         return {}
-    # Merge dictionaries, new values override existing ones for same keys
-    return {**existing, **new}
+    # Merge dictionaries, new values override existing ones for same keys.
+    # [argus patch #97] A re-viewed image moves to the end, so the dict stays in
+    # view order and ViewImageMiddleware's most-recent cap keeps it.
+    merged = {key: value for key, value in existing.items() if key not in new}
+    merged.update(new)
+    return merged
 
 
 def merge_todos(existing: list | None, new: list | None) -> list | None:
