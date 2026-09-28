@@ -141,6 +141,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
 | [#96](#patch-96) | Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end | argus-edit | this PR |
+| [#97](#patch-97) | view_image context fits the many-image limits: images downscaled to a 2000 px long edge, only the 20 most recent re-sent | argus-edit | this PR |
 | [#98](#patch-98) | A lead-agent hard stop (loop, deadline, token budget) is replaced by one tool-free answer turn instead of a bare notice | argus-additive | this PR |
 | [#99](#patch-99) | `AioSandbox.grep` falls back to one shell `grep` when the sandbox has no `/v1/file/grep` endpoint | argus-edit | this PR |
 | [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
