@@ -2397,6 +2397,17 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Delete-when: upstream journals middleware-returned ToolMessages at the point they are produced.
 - Upstream status: candidate for an upstream PR (a small, general ordering fix to #4666).
 
+## Patch #97
+
+**Patch #97 - view_image: fit the many-image limits** (2026-09-28)
+
+- Class: argus-edit (`view_image_middleware.py`, two helpers and three call-site lines; `merge_viewed_images` in `thread_state.py`); generic-upstreamable.
+- Intent: `ViewImageMiddleware` re-sends every image the thread has ever viewed on each `view_image` call, and Anthropic rejects a request carrying more than 20 images when any is over 2000 px on a side (Bedrock 2000, Vertex 2576). A visual-review thread crossed 20 and then failed with a 400 on every later view (atlas-nicholas thread 0e223809, 22 viewed images, seven 1600x2036..2239 screenshots and a 1600x3648 infographic). Now each injected image is downscaled so its long edge is at most 2000 px (opaque results as JPEG q85, because resampling defeats PNG compression; transparent ones stay PNG), and the description line gives the original size. Only the 20 most recent viewed images are re-sent, with a line saying how many earlier ones were left out. The reducer moves a re-viewed image to the end, so dict order is view recency. Size and SHA-256 checks still run on the original bytes, before the downscale. The patch #20 describe path gets the same cap and downscale. Replayed on the failing thread's images through LiteLLM: unpatched 400, patched accepted, payload 8.3 MB to 4.4 MB.
+- Pillow is transitive (markitdown[all] via pdfplumber and python-pptx). If it disappears, images pass through unchanged and `TestManyImageLimits` fails.
+- Tests: `TestManyImageLimits` in `backend/tests/test_view_image_middleware.py` (downscale and label, unchanged under the limit, JPEG vs transparent PNG, most-recent cap, re-view order, describe path).
+- Delete-when: upstream caps or resizes view_image context (watch upstream #5799/#5824, which touch the same reader).
+- Upstream status: candidate for an upstream PR.
+
 ## Patch #98
 
 **Patch #98 - A lead-agent hard stop ends with a tool-free answer turn** (2026-09-30)
