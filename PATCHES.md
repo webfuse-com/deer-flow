@@ -141,6 +141,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
 | [#96](#patch-96) | Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end | argus-edit | this PR |
+| [#97](#patch-97) | view_image context fits the many-image limits: images downscaled to a 2000 px long edge, only the 20 most recent re-sent | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
