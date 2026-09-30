@@ -21,6 +21,7 @@ Covered behavior:
   checkpoint retains it, even if the run is interrupted mid-call.
 """
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -747,21 +748,30 @@ def _data_url_size(url: str) -> tuple[int, int]:
 class TestManyImageLimits:
     """[argus patch #97] Anthropic rejects >20-image requests with any side over
     2000 px, and every view_image call re-sends every viewed image, so a long
-    visual-review thread 400'd on every later view (atlas-nicholas 0e223809)."""
+    visual-review thread 400'd on every later view (atlas-nicholas 0e223809);
+    on local-qwen the same thread shape outlived the request timeout
+    (atlas-nicholas 60e3181f). Limits: the ``_MAX_*`` constants."""
+
+    @staticmethod
+    def _scaled(width, height):
+        from deerflow.agents.middlewares.view_image_middleware import _MAX_IMAGE_EDGE_PX as edge
+
+        scale = edge / max(width, height)
+        return (edge, round(height * scale)) if width >= height else (round(width * scale), edge)
 
     def test_tall_image_is_downscaled_and_labelled(self, tmp_path):
+        from deerflow.agents.middlewares.view_image_middleware import _MAX_IMAGE_EDGE_PX
+
         meta = _make_viewed_image(tmp_path, "tall.png", data=_png_bytes(1600, 7391))
         blocks = ViewImageMiddleware()._create_image_details_message({"viewed_images": {"/tall.png": meta}})
 
         image_blocks = [b for b in blocks if b.get("type") == "image_url"]
         assert len(image_blocks) == 1
-        width, height = _data_url_size(image_blocks[0]["image_url"]["url"])
-        assert max(width, height) == 2000
-        assert width == round(1600 * 2000 / 7391)
-        assert "downscaled from 1600x7391" in blocks[1]["text"]
+        assert _data_url_size(image_blocks[0]["image_url"]["url"]) == self._scaled(1600, 7391)
+        assert f"downscaled from 1600x7391 to fit {_MAX_IMAGE_EDGE_PX} px" in blocks[1]["text"]
 
     def test_image_within_limit_is_sent_unchanged(self, tmp_path):
-        data = _png_bytes(1600, 1200)
+        data = _png_bytes(1200, 900)
         meta = _make_viewed_image(tmp_path, "ok.png", data=data)
         blocks = ViewImageMiddleware()._create_image_details_message({"viewed_images": {"/ok.png": meta}})
 
@@ -775,7 +785,7 @@ class TestManyImageLimits:
 
         url = next(b for b in blocks if b.get("type") == "image_url")["image_url"]["url"]
         assert url.startswith("data:image/jpeg;base64,")
-        assert _data_url_size(url) == (240, 2000)
+        assert _data_url_size(url) == self._scaled(300, 2500)
 
     def test_transparent_downscale_stays_png(self, tmp_path):
         meta = _make_viewed_image(tmp_path, "t.png", data=_png_bytes(2400, 300, mode="RGBA"))
@@ -783,17 +793,19 @@ class TestManyImageLimits:
 
         url = next(b for b in blocks if b.get("type") == "image_url")["image_url"]["url"]
         assert url.startswith("data:image/png;base64,")
-        assert _data_url_size(url) == (2000, 250)
+        assert _data_url_size(url) == self._scaled(2400, 300)
 
     def test_only_the_most_recent_images_are_resent(self, tmp_path):
-        viewed = {f"/img{i}.png": _make_viewed_image(tmp_path, f"img{i}.png", data=_png_bytes(8, 8)) for i in range(25)}
+        from deerflow.agents.middlewares.view_image_middleware import _MAX_CONTEXT_IMAGES as cap
+
+        viewed = {f"/img{i}.png": _make_viewed_image(tmp_path, f"img{i}.png", data=_png_bytes(8, 8)) for i in range(24)}
         blocks = ViewImageMiddleware()._create_image_details_message({"viewed_images": viewed})
 
         assert blocks[0] == {"type": "text", "text": "Here are the images you've viewed:"}
-        assert blocks[1]["text"].startswith("(5 earlier viewed image(s) not re-sent")
-        assert sum(1 for b in blocks if b.get("type") == "image_url") == 20
+        assert blocks[1]["text"].startswith(f"({24 - cap} earlier viewed image(s) not re-sent")
+        assert sum(1 for b in blocks if b.get("type") == "image_url") == cap
         named = [b["text"] for b in blocks if b.get("type") == "text" and "**/img" in b["text"]]
-        assert "**/img5.png**" in named[0] and "**/img24.png**" in named[-1]
+        assert f"**/img{24 - cap}.png**" in named[0] and "**/img23.png**" in named[-1]
 
     def test_reviewing_an_image_moves_it_to_the_recent_end(self):
         from deerflow.agents.thread_state import merge_viewed_images
@@ -803,11 +815,87 @@ class TestManyImageLimits:
         assert merged["/a"] == {"size": 3}
 
     def test_describe_path_gets_downscaled_recent_images(self, tmp_path):
+        from deerflow.agents.middlewares.view_image_middleware import _MAX_CONTEXT_IMAGES as cap
+
         viewed = {f"/img{i}.png": _make_viewed_image(tmp_path, f"img{i}.png", data=_png_bytes(8, 8)) for i in range(21)}
         viewed["/tall.png"] = _make_viewed_image(tmp_path, "tall.png", data=_png_bytes(500, 4000))
         inputs = ViewImageMiddleware(vision_model_name="local-qwen")._describe_inputs({"viewed_images": viewed})
 
-        assert len(inputs) == 20
+        assert len(inputs) == cap
         path, mime_type, _, b64_data = inputs[-1]
         assert path == "/tall.png" and mime_type == "image/jpeg"
-        assert _data_url_size(f"data:{mime_type};base64,{b64_data}") == (250, 2000)
+        assert _data_url_size(f"data:{mime_type};base64,{b64_data}") == self._scaled(500, 4000)
+
+
+class TestTimeoutRetryWithoutImages:
+    """[argus patch #97] A timed-out call that carried images is retried once without them."""
+
+    class APITimeoutError(Exception):
+        pass
+
+    @staticmethod
+    def _request_with_images():
+        mw = ViewImageMiddleware()
+        image_msg = mw._create_image_context_message([{"type": "text", "text": "Here are the images you've viewed:"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}])
+        request = MagicMock()
+        request.messages = [HumanMessage(content="hi"), image_msg]
+        request.override = lambda **kw: SimpleNamespace(messages=kw["messages"])
+        return mw, request
+
+    def test_timeout_retries_once_without_images(self):
+        mw, request = self._request_with_images()
+        calls = []
+
+        def handler(req):
+            calls.append(req)
+            if len(calls) == 1:
+                raise self.APITimeoutError("Request timed out.")
+            return "ok"
+
+        mw._inject = lambda r: r
+        assert mw.wrap_model_call(request, handler) == "ok"
+        retried = calls[1].messages
+        assert not any(isinstance(b, dict) and b.get("type") == "image_url" for m in retried for b in (m.content if isinstance(m.content, list) else []))
+        assert "1 viewed image(s) were not sent" in retried[-1].content[0]["text"]
+
+    def test_async_timeout_wrapped_in_another_error_retries(self):
+        mw, request = self._request_with_images()
+        calls = []
+
+        async def handler(req):
+            calls.append(req)
+            if len(calls) == 1:
+                try:
+                    raise self.APITimeoutError("Request timed out.")
+                except Exception as exc:
+                    raise RuntimeError("wrapped") from exc
+            return "ok"
+
+        mw._inject = lambda r: r
+        assert asyncio.run(mw.awrap_model_call(request, handler)) == "ok"
+        assert len(calls) == 2
+
+    def test_non_timeout_error_is_not_retried(self):
+        mw, request = self._request_with_images()
+        mw._inject = lambda r: r
+
+        def handler(req):
+            raise ValueError("400 bad request")
+
+        with pytest.raises(ValueError):
+            mw.wrap_model_call(request, handler)
+
+    def test_timeout_without_images_is_not_retried(self):
+        mw = ViewImageMiddleware()
+        request = MagicMock()
+        request.messages = [HumanMessage(content="hi")]
+        mw._inject = lambda r: r
+        calls = []
+
+        def handler(req):
+            calls.append(req)
+            raise self.APITimeoutError("Request timed out.")
+
+        with pytest.raises(self.APITimeoutError):
+            mw.wrap_model_call(request, handler)
+        assert len(calls) == 1

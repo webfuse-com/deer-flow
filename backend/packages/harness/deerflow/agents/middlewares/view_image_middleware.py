@@ -32,8 +32,33 @@ _IMAGE_CONTEXT_MESSAGE_MARKER_KEY = "deerflow_view_image_context"
 # visual-review thread crosses both lines and then fails on every later view.
 # Images are downscaled to this edge when injected, and only the most recent
 # ones are re-sent (``merge_viewed_images`` keeps the dict in view order).
-_MAX_IMAGE_EDGE_PX = 2000
-_MAX_CONTEXT_IMAGES = 20
+# Both limits are tighter than Anthropic's: atlas-nicholas thread 60e3181f
+# (2026-09-30) re-sent 24 screenshots (35 MP, ~37k vision tokens) on local-qwen,
+# whose SGLang CPU image preprocessing then outlived the 600 s request timeout
+# on every call, so each new user message timed out the same way. 1568 px is
+# Anthropic's recommended long edge (larger images are downscaled server-side
+# anyway), and four images cover "the one just viewed plus the few before it";
+# older ones are listed and can be viewed again.
+_MAX_IMAGE_EDGE_PX = 1568
+_MAX_CONTEXT_IMAGES = 4
+
+# [argus patch #97] A model call that carried image context and timed out is
+# retried once without the images, so an oversized image context degrades to a
+# text note instead of repeating the same timeout (and LLMErrorHandling's
+# retries of it) on every later turn.
+_TIMEOUT_ERROR_NAMES = frozenset({"APITimeoutError", "ReadTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException", "StreamChunkTimeoutError", "TimeoutError"})
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """[argus patch #97] True when *exc*, or an exception it wraps, is a request timeout."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in _TIMEOUT_ERROR_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _recent_viewed_images(viewed_images: dict) -> tuple[list[tuple[str, dict]], int]:
@@ -573,7 +598,14 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         # Sync injection executes inline on this call stack. There is no detached
         # worker to drain: an outer sandbox lease cannot reach its finally/release
         # boundary until this blocking read returns or raises.
-        return handler(self._inject(request))
+        injected_request = self._inject(request)
+        try:
+            return handler(injected_request)
+        except Exception as exc:
+            fallback = self._without_images_after_timeout(injected_request, exc)
+            if fallback is None:
+                raise
+            return handler(fallback)
 
     @override
     async def awrap_model_call(
@@ -588,4 +620,33 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         if self._vision_model_name:
             return await handler(await self._ainject_described(request))
         injected_request = await run_sync_lifecycle_operation(self._inject, request)
-        return await handler(injected_request)
+        try:
+            return await handler(injected_request)
+        except Exception as exc:
+            fallback = self._without_images_after_timeout(injected_request, exc)
+            if fallback is None:
+                raise
+            return await handler(fallback)
+
+    def _without_images_after_timeout(self, request: ModelRequest, exc: BaseException) -> ModelRequest | None:
+        """[argus patch #97] The retry request for a timed-out call that carried images, else None.
+
+        Only a timeout qualifies, and only when this middleware put image
+        blocks into the request; the replacement carries a text note in place
+        of the images so the model knows why it cannot see them.
+        """
+        if not _is_timeout(exc):
+            return None
+        image_count = 0
+        kept: list = []
+        for message in request.messages:
+            if self._is_image_context_message(message):
+                content = message.content if isinstance(message.content, list) else []
+                image_count += sum(1 for block in content if isinstance(block, dict) and block.get("type") == "image_url")
+            else:
+                kept.append(message)
+        if image_count == 0:
+            return None
+        logger.warning("Model call carrying %d viewed image(s) timed out; retrying once without them", image_count)
+        note = f"({image_count} viewed image(s) were not sent: the request carrying them timed out. Continue from what you already know; to look again, view one image at a time or crop to the region you need.)"
+        return request.override(messages=[*kept, self._create_image_context_message([{"type": "text", "text": note}])])
