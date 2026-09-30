@@ -56,6 +56,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
+from deerflow.agents.middlewares.forced_stop_synthesis_middleware import is_forced_stop_synthesis, mark_forced_stop
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
 from deerflow.config.token_budget_config import TokenBudgetConfig
 
@@ -238,6 +239,8 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
     def _build_hard_stop_update(self, msg: AIMessage, stop_msg: str) -> dict[str, Any]:
         """Build the state update dictionary for a hard stop."""
         stopped_msg = clone_ai_message_with_tool_calls(msg, [], content=self._append_text(msg.content, stop_msg))
+        # [argus patch #98] stamp the stub so the lead's synthesis turn can replace it.
+        stopped_msg = mark_forced_stop(stopped_msg, reason="token_capped", notice=stop_msg)
         return {"messages": [stopped_msg]}
 
     def _apply(self, state: AgentState, runtime: Runtime) -> dict | None:
@@ -250,6 +253,9 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
 
         last_msg = messages[-1]
         if not isinstance(last_msg, AIMessage):
+            return None
+        # [argus patch #98] the tool-free answer to an earlier hard stop is not stopped again.
+        if is_forced_stop_synthesis(last_msg):
             return None
 
         run_id = self._get_run_id(runtime)

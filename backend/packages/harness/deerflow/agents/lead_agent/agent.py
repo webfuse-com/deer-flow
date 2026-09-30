@@ -806,6 +806,17 @@ def build_middlewares(
     # LoopDetection so a retried final still flows through loop/safety after_model
     # accounting; its wrap_model_call retries only a genuine empty final (a blank
     # turn carrying tool_calls is a normal intermediate step and is left alone).
+    # [argus patch #98] ForcedStopSynthesisMiddleware — a loop/deadline/token hard
+    # stop strips the turn's tool calls and appends a notice, which left users
+    # with the notice alone. Registered before the stoppers so reverse-order
+    # after_model dispatch runs it after them: it removes the stamped stub and
+    # jumps back to the model once with no tools bound. Its wrap_model_call is
+    # outer to EmptyFinalRetryMiddleware, so a blank synthesis gets that retry.
+    if resolved_app_config.forced_stop_synthesis.enabled:
+        from deerflow.agents.middlewares.forced_stop_synthesis_middleware import ForcedStopSynthesisMiddleware
+
+        middlewares.append(ForcedStopSynthesisMiddleware())
+
     middlewares.append(EmptyFinalRetryMiddleware())
 
     # LoopDetectionMiddleware — detect and break repetitive tool call loops

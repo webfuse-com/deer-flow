@@ -24,6 +24,7 @@ from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.file_signature import ConfigSignature as _ConfigSignature
 from deerflow.config.file_signature import get_config_signature as _get_config_signature
 from deerflow.config.file_signature import signatures_differ as _signatures_differ
+from deerflow.config.forced_stop_synthesis_config import ForcedStopSynthesisConfig
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
 from deerflow.config.input_polish_config import InputPolishConfig
 from deerflow.config.knowledge_base_config import KnowledgeBaseConfig
@@ -287,6 +288,8 @@ class AppConfig(BaseModel):
     agents_api: AgentsApiConfig = Field(default_factory=AgentsApiConfig, description="Custom-agent management API configuration")
     # [argus patch #95] Frontend visibility of the Capability Center.
     capability_center: CapabilityCenterConfig = Field(default_factory=CapabilityCenterConfig, description="Capability Center visibility in the frontend")
+    # [argus patch #98] One tool-free answer turn after a lead-agent hard stop.
+    forced_stop_synthesis: ForcedStopSynthesisConfig = Field(default_factory=ForcedStopSynthesisConfig, description="Tool-free answer turn after a hard stop")
     acp_agents: dict[str, ACPAgentConfig] = Field(default_factory=dict, description="ACP-compatible agent configuration")
     subagents: SubagentsAppConfig = Field(default_factory=SubagentsAppConfig, description="Subagent runtime configuration")
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig, description="Guardrail middleware configuration")

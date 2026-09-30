@@ -314,6 +314,13 @@ class TodoMiddleware(TodoListMiddleware):
         if (last_ai.additional_kwargs or {}).get("model_length_termination"):
             return None
 
+        # [argus patch #98] a hard stop (and the tool-free answer that follows
+        # it) is terminal: a todo reminder would send the run straight back
+        # into the limit that just stopped it.
+        kwargs = last_ai.additional_kwargs or {}
+        if kwargs.get("deerflow_forced_stop") or kwargs.get("deerflow_forced_stop_synthesis"):
+            return None
+
         # 3. Allow exit when all todos are completed or there are no todos.
         todos: list[Todo] = state.get("todos") or []  # type: ignore[assignment]
         if not todos or all(t.get("status") == "completed" for t in todos):

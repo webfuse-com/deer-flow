@@ -143,6 +143,7 @@ from deerflow.agents.middlewares.audit_context import (
     LOOP_DETECTION_RECORDER_CONTEXT_KEY,
     resolve_audit_recorder,
 )
+from deerflow.agents.middlewares.forced_stop_synthesis_middleware import mark_forced_stop
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
 from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
@@ -1347,6 +1348,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             last_msg = messages[-1]
             content = self._append_text(last_msg.content, warning or _HARD_STOP_MSG)
             stripped_msg = clone_ai_message_with_tool_calls(last_msg, [], content=content)
+            # [argus patch #98] stamp the stub so the lead's synthesis turn can replace it.
+            stripped_msg = mark_forced_stop(stripped_msg, reason="loop_capped", notice=warning or _HARD_STOP_MSG)
             return {"messages": [stripped_msg]}
 
         if decision.action == "warn":

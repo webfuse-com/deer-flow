@@ -141,6 +141,9 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
 | [#96](#patch-96) | Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end | argus-edit | this PR |
+| [#98](#patch-98) | A lead-agent hard stop (loop, deadline, token budget) is replaced by one tool-free answer turn instead of a bare notice | argus-additive | this PR |
+| [#99](#patch-99) | `AioSandbox.grep` falls back to one shell `grep` when the sandbox has no `/v1/file/grep` endpoint | argus-edit | this PR |
+| [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2393,3 +2396,32 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `TestShortCircuitedToolResultOrder` in `backend/tests/test_run_journal.py`.
 - Delete-when: upstream journals middleware-returned ToolMessages at the point they are produced.
 - Upstream status: candidate for an upstream PR (a small, general ordering fix to #4666).
+
+## Patch #98
+
+**Patch #98 - A lead-agent hard stop ends with a tool-free answer turn** (2026-09-30)
+
+- Class: argus-additive (new middleware + config model) plus small argus-edits in the three stoppers and the todo completion guard.
+- Intent: loop detection, the run deadline and the token budget stop a run by stripping the tool calls off the turn that crossed the limit and appending a notice that promises "a final answer with results collected so far". No further model call happened, so the stripped tool-calling turn was the answer: its text is usually empty (local-qwen emits `"\n\n"`) and the user got the notice alone. atlas-ajoy thread e870a301 was stopped at the 12th distinct `code_search_code` call, one call after it had found the answer; in the 30 days to 2026-09-30, 19 of 32 `loop_capped` and 8 of 29 `time_capped` runs ended that way. The stoppers now stamp the stub (`deerflow_forced_stop`: reason + notice). `ForcedStopSynthesisMiddleware`, registered before them so reverse-order `after_model` runs it last, removes the stub (`RemoveMessage`) and jumps back to the model once. That call has no tools bound (not `tool_choice="none"`: LiteLLM `gpt-5.6-luna` with reasoning effort rejects it, while every route tested accepts tool history with no tools) and a non-persisted instruction to answer from what was gathered and say what is unfinished. The response is stamped `deerflow_forced_stop_synthesis`, which the token budget and deadline skip (both re-fire on every turn while over their limit), and which the todo guard treats as terminal. One synthesis per run. A raising or blank synthesis (after `EmptyFinalRetryMiddleware`'s one retry, which it wraps) returns the stored notice: the pre-patch outcome. Lead agent only; subagent banners go to the lead, which synthesizes, and the subagent turn budget treats jumping hooks as unbounded. `stop_reason` is unchanged. Kill switch: `forced_stop_synthesis.enabled` (default true).
+- Files: `backend/packages/harness/deerflow/agents/middlewares/forced_stop_synthesis_middleware.py` (NEW), `backend/packages/harness/deerflow/config/forced_stop_synthesis_config.py` (NEW), `backend/packages/harness/deerflow/config/app_config.py` (one field), `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (registration), `backend/packages/harness/deerflow/agents/middlewares/{loop_detection,run_deadline,token_budget,todo}_middleware.py` (EDITED)
+- Tests: `backend/tests/test_forced_stop_synthesis.py` (real `create_agent` graphs, incl. the `ThreadState` reducer; fallback on raise and on blank; no `run_id`; stoppers skip the synthesis; todo guard), `backend/tests/test_lead_agent_model_resolution.py` (placement before the stoppers, kill switch)
+- Delete-when: upstream's hard stops make a synthesis call of their own.
+- Upstream status: candidate (the promise in upstream's own notice text is the bug).
+
+## Patch #99
+
+**Patch #99 - `AioSandbox.grep` falls back to shell grep when `/v1/file/grep` is missing** (2026-09-30)
+
+- Class: argus-edit (`community/aio_sandbox/aio_sandbox.py`, `AioSandbox.grep` plus two helpers).
+- Intent: upstream #4512 (`d455a181`) moved `AioSandbox.grep` onto `file.grep_files` (`POST /v1/file/grep`). The pinned sandbox digest (`742062f9`, a 1.0.0.x build from 2026-01) has no such endpoint (nor `/v1/file/glob`), so every `grep` tool call returned `ApiError 404` from 2026-08-26: 505 of 505 calls, 260 threads, 17 stacks. Models fell back to `bash grep`, so it only showed as wasted calls that also counted toward loop limits. On a 404 the sandbox now remembers the endpoint is missing and runs one GNU `grep -rnHIZ` through its shell: `-P` for regexes (the image's ripgrep has no PCRE2 and rejects the lookarounds the tool accepts), `-F` for literals, `-i` unless case-sensitive, `--exclude-dir` for the exact names in `IGNORE_PATTERNS`, output capped with `head`. The file-name NUL becomes a newline (the shell output path strips control characters), so names containing `:` still parse. Both paths share one filter/cap helper, so root-boundary, ignore, glob and truncation semantics are identical. Other `ApiError`s still raise; a shell `Error:` reply raises instead of reading as "no matches". Verified live against the pinned image (colons in names, lookahead, single-file path, glob, cap, quoting).
+- Tests: `backend/tests/test_sandbox_search_tools.py` (404 fallback, remembered endpoint, literal/case/quoting, truncation, shell error, non-404 re-raise)
+- Delete-when: the pinned sandbox image serves `/v1/file/grep` (bump the digest in VERSIONS.md and drop this).
+
+## Patch #100
+
+**Patch #100 - Layer 2 frequency stop stretches while a search tool keeps finding new results** (2026-09-30)
+
+- Class: argus-edit (`loop_detection_middleware.py`) + two config fields (`loop_detection_config.py`); upstream default unchanged (empty list).
+- Intent: all 24 loop-detection hard stops in the 30 days to 2026-09-30 were Layer 2 volume caps on read-only search tools (`code_search_code` 11, `atlas_knowledge` 6, `web_search` 3, `bq_query` 3, `web_search_exa` 1); none were Layer 1 identical-call loops. Patches #68/#69 gate only Layer 1 on result meta. Tools listed in `fresh_result_extension_tools` now downgrade the Layer 2 hard stop to an escalating warning (`downgrade="fresh_results"`, never marked warned) while the tool's latest result is `success` with at least 10 words and is not a near-duplicate of its recent results (same Jaccard helpers/threshold as #69), up to `fresh_result_extension_factor` x the hard limit (default 2.0; 1.0 disables). A no-results reply (`partial_success`), an error, a ToolProgress block, missing meta, a short or near-duplicate result all keep the stop. Opt-in per tool because fresh output is new information for a search tool but not for `bash`. The frequency window is sized to the ceiling so it is reachable.
+- Tests: `TestFreshResultExtension` in `backend/tests/test_loop_detection_middleware.py`
+- Delete-when: upstream makes Layer 2 result-aware.
