@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import io
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -24,6 +25,79 @@ logger = logging.getLogger(__name__)
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _IMAGE_CONTEXT_MESSAGE_ID_PREFIX = "view-image-context:"
 _IMAGE_CONTEXT_MESSAGE_MARKER_KEY = "deerflow_view_image_context"
+
+# [argus patch #97] Anthropic models reject a request carrying more than 20
+# images when any of them is over 2000 px on a side (Bedrock 2000, Vertex 2576),
+# and each view_image call re-sends every image the thread has viewed. A long
+# visual-review thread crosses both lines and then fails on every later view.
+# Images are downscaled to this edge when injected, and only the most recent
+# ones are re-sent (``merge_viewed_images`` keeps the dict in view order).
+# Both limits are tighter than Anthropic's: atlas-nicholas thread 60e3181f
+# (2026-09-30) re-sent 24 screenshots (35 MP, ~37k vision tokens) on local-qwen,
+# whose SGLang CPU image preprocessing then outlived the 600 s request timeout
+# on every call, so each new user message timed out the same way. 1568 px is
+# Anthropic's recommended long edge (larger images are downscaled server-side
+# anyway), and four images cover "the one just viewed plus the few before it";
+# older ones are listed and can be viewed again.
+_MAX_IMAGE_EDGE_PX = 1568
+_MAX_CONTEXT_IMAGES = 4
+
+# [argus patch #97] A model call that carried image context and timed out is
+# retried once without the images, so an oversized image context degrades to a
+# text note instead of repeating the same timeout (and LLMErrorHandling's
+# retries of it) on every later turn.
+_TIMEOUT_ERROR_NAMES = frozenset({"APITimeoutError", "ReadTimeout", "WriteTimeout", "PoolTimeout", "TimeoutException", "StreamChunkTimeoutError", "TimeoutError"})
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """[argus patch #97] True when *exc*, or an exception it wraps, is a request timeout."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in _TIMEOUT_ERROR_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _recent_viewed_images(viewed_images: dict) -> tuple[list[tuple[str, dict]], int]:
+    """[argus patch #97] Return the most recently viewed images and how many were left out."""
+    items = list(viewed_images.items())
+    omitted = max(0, len(items) - _MAX_CONTEXT_IMAGES)
+    return items[omitted:], omitted
+
+
+def _fit_image_edge(data_url: str) -> tuple[str, tuple[int, int] | None]:
+    """[argus patch #97] Downscale an image data URL so neither side exceeds ``_MAX_IMAGE_EDGE_PX``.
+
+    Returns the data URL to send and, when it was downscaled, the original
+    size. An image Pillow cannot read or re-encode passes through unchanged.
+    """
+    _, _, payload = data_url.partition(",")
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(base64.b64decode(payload))) as image:
+            original_size = image.size
+            if max(original_size) <= _MAX_IMAGE_EDGE_PX:
+                return data_url, None
+            resized = image.convert("RGBA") if image.mode in ("P", "PA") else image.copy()
+        resized.thumbnail((_MAX_IMAGE_EDGE_PX, _MAX_IMAGE_EDGE_PX), Image.Resampling.LANCZOS)
+        # Resampling defeats PNG compression (a 1600x2238 screenshot re-encodes
+        # from 1.2 MB to 1.6 MB), so opaque images go out as JPEG (~0.36 MB);
+        # only real transparency keeps PNG.
+        transparent = resized.mode in ("RGBA", "LA") and resized.getchannel("A").getextrema()[0] < 255
+        image_format = "PNG" if transparent else "JPEG"
+        if not transparent and resized.mode not in ("RGB", "L"):
+            resized = resized.convert("RGB")
+        buffer = io.BytesIO()
+        resized.save(buffer, format=image_format, **({} if transparent else {"quality": 85}))
+    except Exception as exc:
+        logger.warning("Could not downscale a viewed image, sending it unchanged: %s", exc)
+        return data_url, None
+    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return f"data:image/{image_format.lower()};base64,{encoded}", original_size
 
 
 class ViewImageMiddlewareState(ThreadState):
@@ -302,16 +376,16 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
 
         # Build the message with image information
         content_blocks: list[str | dict] = [{"type": "text", "text": "Here are the images you've viewed:"}]
+        recent_images, omitted = _recent_viewed_images(viewed_images)
+        if omitted:
+            content_blocks.append({"type": "text", "text": f"({omitted} earlier viewed image(s) not re-sent; call view_image again to see one.)"})
 
-        for image_path, image_data in viewed_images.items():
+        for image_path, image_data in recent_images:
             mime_type = image_data.get("mime_type", "unknown")
             actual_path = image_data.get("actual_path", "")
             expected_size = image_data.get("size", 0)
             expected_sha256 = image_data.get("sha256")
             source_sandbox_id = image_data.get("source_sandbox_id")
-
-            # Add text description
-            content_blocks.append({"type": "text", "text": f"\n- **{image_path}** ({mime_type})"})
 
             # Read the image file on-demand and encode as base64 for the model
             data_url = self._read_image_as_data_url(
@@ -323,6 +397,16 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
                 expected_sha256 if isinstance(expected_sha256, str) else None,
                 source_sandbox_id if isinstance(source_sandbox_id, str) else None,
             )
+            original_size = None
+            if data_url:
+                data_url, original_size = _fit_image_edge(data_url)
+
+            # Add text description
+            description = f"\n- **{image_path}** ({mime_type})"
+            if original_size:
+                description += f", downscaled from {original_size[0]}x{original_size[1]} to fit {_MAX_IMAGE_EDGE_PX} px; crop a region and view it for detail"
+            content_blocks.append({"type": "text", "text": description})
+
             if data_url:
                 content_blocks.append(
                     {
@@ -416,7 +500,8 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         actual_path, base64 | None)`` per viewed image.
         """
         inputs: list[tuple[str, str, str, str | None]] = []
-        for image_path, image_data in state.get("viewed_images", {}).items():
+        recent_images, _ = _recent_viewed_images(state.get("viewed_images", {}))
+        for image_path, image_data in recent_images:
             mime_type = image_data.get("mime_type", "unknown")
             actual_path = image_data.get("actual_path", "")
             expected_size = image_data.get("size", 0)
@@ -431,6 +516,9 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
                 expected_sha256 if isinstance(expected_sha256, str) else None,
                 source_sandbox_id if isinstance(source_sandbox_id, str) else None,
             )
+            if data_url:
+                data_url, _ = _fit_image_edge(data_url)
+                mime_type = data_url.partition(";")[0].removeprefix("data:") or mime_type
             b64_data = data_url.split(",", 1)[1] if data_url and "," in data_url else None
             inputs.append((image_path, mime_type, actual_path, b64_data))
         return inputs
@@ -510,7 +598,14 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         # Sync injection executes inline on this call stack. There is no detached
         # worker to drain: an outer sandbox lease cannot reach its finally/release
         # boundary until this blocking read returns or raises.
-        return handler(self._inject(request))
+        injected_request = self._inject(request)
+        try:
+            return handler(injected_request)
+        except Exception as exc:
+            fallback = self._without_images_after_timeout(injected_request, exc)
+            if fallback is None:
+                raise
+            return handler(fallback)
 
     @override
     async def awrap_model_call(
@@ -525,4 +620,33 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         if self._vision_model_name:
             return await handler(await self._ainject_described(request))
         injected_request = await run_sync_lifecycle_operation(self._inject, request)
-        return await handler(injected_request)
+        try:
+            return await handler(injected_request)
+        except Exception as exc:
+            fallback = self._without_images_after_timeout(injected_request, exc)
+            if fallback is None:
+                raise
+            return await handler(fallback)
+
+    def _without_images_after_timeout(self, request: ModelRequest, exc: BaseException) -> ModelRequest | None:
+        """[argus patch #97] The retry request for a timed-out call that carried images, else None.
+
+        Only a timeout qualifies, and only when this middleware put image
+        blocks into the request; the replacement carries a text note in place
+        of the images so the model knows why it cannot see them.
+        """
+        if not _is_timeout(exc):
+            return None
+        image_count = 0
+        kept: list = []
+        for message in request.messages:
+            if self._is_image_context_message(message):
+                content = message.content if isinstance(message.content, list) else []
+                image_count += sum(1 for block in content if isinstance(block, dict) and block.get("type") == "image_url")
+            else:
+                kept.append(message)
+        if image_count == 0:
+            return None
+        logger.warning("Model call carrying %d viewed image(s) timed out; retrying once without them", image_count)
+        note = f"({image_count} viewed image(s) were not sent: the request carrying them timed out. Continue from what you already know; to look again, view one image at a time or crop to the region you need.)"
+        return request.override(messages=[*kept, self._create_image_context_message([{"type": "text", "text": note}])])
