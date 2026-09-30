@@ -1187,6 +1187,10 @@ class AioSandbox(Sandbox):
                     return matches[:max_results], True
         return matches, False
 
+    # [argus patch #99] Set once a sandbox answers 404 on /v1/file/grep, so
+    # later searches go straight to the shell path instead of paying the 404.
+    _grep_endpoint_missing = False
+
     def grep(
         self,
         path: str,
@@ -1205,24 +1209,41 @@ class AioSandbox(Sandbox):
         # generic remote API error.
         _re.compile(regex_source, 0 if case_sensitive else _re.IGNORECASE)
         total_cap = max(max_results * 4, max_results + 50)
-        result = self._client.file.grep_files(
-            path=path,
-            pattern=pattern,
-            case_insensitive=not case_sensitive,
-            fixed_strings=literal,
-            max_results=total_cap,
-            max_file_size="1M",
-            recursive=True,
-        )
-        data = result.data
-        provider_matches = data.matches if data and data.matches else []
+        if not self._grep_endpoint_missing:
+            try:
+                result = self._client.file.grep_files(
+                    path=path,
+                    pattern=pattern,
+                    case_insensitive=not case_sensitive,
+                    fixed_strings=literal,
+                    max_results=total_cap,
+                    max_file_size="1M",
+                    recursive=True,
+                )
+            except ApiError as error:
+                # [argus patch #99] Sandbox images built before the grep
+                # endpoint (the pinned 1.0.0.x digest) answer 404 here; every
+                # grep call failed from 2026-08-26 until this fallback.
+                if getattr(error, "status_code", None) != 404:
+                    raise
+                logger.warning("Sandbox %s has no /v1/file/grep endpoint; using shell grep", self.id)
+                self._grep_endpoint_missing = True
+            else:
+                data = result.data
+                provider_matches = data.matches if data and data.matches else []
+                rows = ((match.file, match.line_number, match.line_content) for match in provider_matches)
+                return self._collect_grep_matches(rows, path, glob, max_results, bool(data and data.truncated))
+
+        rows, truncated = self._shell_grep(path, pattern, literal=literal, case_sensitive=case_sensitive, cap=total_cap)
+        return self._collect_grep_matches(rows, path, glob, max_results, truncated)
+
+    @staticmethod
+    def _collect_grep_matches(rows, path: str, glob: str | None, max_results: int, truncated: bool) -> tuple[list[GrepMatch], bool]:
         root = path.rstrip("/") or "/"
         root_prefix = root if root == "/" else f"{root}/"
 
         matches: list[GrepMatch] = []
-        truncated = bool(data and data.truncated)
-        for match in provider_matches:
-            file_path = match.file
+        for file_path, line_number, line_content in rows:
             if should_ignore_path(file_path):
                 continue
             if file_path == root:
@@ -1236,8 +1257,8 @@ class AioSandbox(Sandbox):
             matches.append(
                 GrepMatch(
                     path=file_path,
-                    line_number=match.line_number,
-                    line=truncate_line(match.line_content),
+                    line_number=line_number,
+                    line=truncate_line(line_content),
                 )
             )
             # Look one match past the cap before deciding, as ``glob`` above
@@ -1248,6 +1269,44 @@ class AioSandbox(Sandbox):
                 return matches[:max_results], True
 
         return matches, truncated
+
+    def _shell_grep(self, path: str, pattern: str, *, literal: bool, case_sensitive: bool, cap: int) -> tuple[list[tuple[str, int, str]], bool]:
+        """[argus patch #99] One GNU grep through the sandbox shell.
+
+        GNU grep rather than ripgrep: the image's rg has no PCRE2, so it
+        rejects the Python-style lookarounds the tool accepts, while
+        ``grep -P`` takes them. ``-Z`` ends each file name with NUL, which
+        ``tr`` turns into a newline, so every match arrives as a file-name
+        line followed by a ``<n>:<text>`` line and names containing ``:``
+        still split cleanly. (The shell output path strips control
+        characters, so NUL or U+001F cannot be the separator on the wire.)
+        ``-I`` skips binary files.
+        """
+        import shlex
+
+        from deerflow.sandbox.search import IGNORE_PATTERNS
+
+        flags = ["-rnHIZ", "--color=never", "-m", str(cap), "-F" if literal else "-P"]
+        if not case_sensitive:
+            flags.append("-i")
+        flags += [f"--exclude-dir={shlex.quote(name)}" for name in IGNORE_PATTERNS if not any(c in name for c in "*?[")]
+        command = f"grep {' '.join(flags)} -e {shlex.quote(pattern)} -- {shlex.quote(path)} 2>/dev/null | head -n {cap + 1} | tr '\\000' '\\n'"
+        output = self.execute_command(command, timeout=60)
+        if output.startswith("Error:"):
+            raise RuntimeError(output)
+
+        rows: list[tuple[str, int, str]] = []
+        pending_file: str | None = None
+        for line in output.splitlines():
+            if pending_file is not None:
+                number, sep, content = line.partition(":")
+                if sep and number.isdigit():
+                    rows.append((pending_file, int(number), content))
+                    pending_file = None
+                    continue
+            pending_file = line
+        truncated = len(rows) > cap
+        return rows[:cap], truncated
 
     def update_file(self, path: str, content: bytes) -> None:
         """Update a file with binary content in the sandbox.
