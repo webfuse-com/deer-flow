@@ -49,6 +49,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
+from deerflow.agents.middlewares.forced_stop_synthesis_middleware import is_forced_stop_synthesis, mark_forced_stop
 from deerflow.config.run_limits_config import RunLimitsConfig
 
 logger = logging.getLogger(__name__)
@@ -179,7 +180,7 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
             return new_content
         return f"{content}\n\n{stop_msg}"
 
-    def _build_hard_stop_update(self, msg: AIMessage, stop_msg: str) -> dict[str, Any]:
+    def _build_hard_stop_update(self, msg: AIMessage, stop_msg: str, reason: str) -> dict[str, Any]:
         """Strip tool calls so the agent loop terminates with a final answer."""
         updated_content = self._append_text(msg.content, stop_msg)
         kwargs = dict(msg.additional_kwargs) if msg.additional_kwargs else {}
@@ -198,7 +199,8 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
                 "response_metadata": response_metadata,
             }
         )
-        return {"messages": [stopped_msg]}
+        # [argus patch #98] stamp the stub so the lead's synthesis turn can replace it.
+        return {"messages": [mark_forced_stop(stopped_msg, reason=reason, notice=stop_msg)]}
 
     def _apply(self, state: AgentState, runtime: Runtime) -> dict | None:
         if not self._config.enabled:
@@ -210,6 +212,9 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
 
         last_msg = messages[-1]
         if not isinstance(last_msg, AIMessage):
+            return None
+        # [argus patch #98] the tool-free answer to an earlier hard stop is not stopped again.
+        if is_forced_stop_synthesis(last_msg):
             return None
 
         run_id = self._get_run_id(runtime)
@@ -225,7 +230,7 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
                 ctx = getattr(runtime, "context", None)
                 if isinstance(ctx, dict):
                     ctx["stop_reason"] = "model_calls_capped"
-                return self._build_hard_stop_update(last_msg, _CALL_EXCEEDED_MSG.format(budget=self._config.max_model_calls))
+                return self._build_hard_stop_update(last_msg, _CALL_EXCEEDED_MSG.format(budget=self._config.max_model_calls), "model_calls_capped")
 
             if elapsed >= budget:
                 logger.warning(
@@ -241,7 +246,7 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
                 if isinstance(ctx, dict):
                     ctx["stop_reason"] = "time_capped"
                 stop_text = _DEADLINE_EXCEEDED_MSG.format(budget=_format_duration(budget))
-                return self._build_hard_stop_update(last_msg, stop_text)
+                return self._build_hard_stop_update(last_msg, stop_text, "time_capped")
 
             if elapsed >= self._config.warn_at_seconds and not self._warned.get(run_id, False):
                 self._warned[run_id] = True

@@ -1033,3 +1033,99 @@ def test_ls_tool_does_not_surface_disabled_custom_skill(tmp_path, monkeypatch) -
 
     assert "secret-custom" not in result
     assert "open-custom" in result
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #99] AioSandbox.grep falls back to shell grep on a 404
+# ---------------------------------------------------------------------------
+
+
+def _sandbox_without_grep_endpoint(monkeypatch, shell_output: str):
+    from agent_sandbox.core.api_error import ApiError
+
+    with patch("deerflow.community.aio_sandbox.aio_sandbox.AioSandboxClient"):
+        sandbox = AioSandbox(id="test-sandbox", base_url="http://localhost:8080")
+    endpoint_calls: list[dict] = []
+    commands: list[str] = []
+
+    def grep_files(**kwargs):
+        endpoint_calls.append(kwargs)
+        raise ApiError(status_code=404, body={"success": False, "message": "Not Found", "data": None})
+
+    monkeypatch.setattr(sandbox._client.file, "grep_files", grep_files)
+    monkeypatch.setattr(sandbox, "execute_command", lambda command, env=None, timeout=None: commands.append(command) or shell_output)
+    return sandbox, endpoint_calls, commands
+
+
+_SHELL_OUTPUT = "/mnt/user-data/workspace/a.txt\n1:alpha consent\n/mnt/user-data/workspace/we:ird.md\n3:has:colon consent\n/mnt/user-data/workspace/node_modules/x.js\n1:consent\n"
+
+
+def test_aio_sandbox_grep_404_falls_back_to_shell_grep(monkeypatch) -> None:
+    sandbox, endpoint_calls, commands = _sandbox_without_grep_endpoint(monkeypatch, _SHELL_OUTPUT)
+
+    matches, truncated = sandbox.grep("/mnt/user-data/workspace", "consent")
+
+    assert matches == [
+        GrepMatch(path="/mnt/user-data/workspace/a.txt", line_number=1, line="alpha consent"),
+        GrepMatch(path="/mnt/user-data/workspace/we:ird.md", line_number=3, line="has:colon consent"),
+    ]
+    assert truncated is False
+    assert len(endpoint_calls) == 1
+    command = commands[0]
+    assert " -P " in command and " -i" in command
+    assert "--exclude-dir=node_modules" in command
+    assert "-e consent -- /mnt/user-data/workspace " in command
+
+
+def test_aio_sandbox_grep_remembers_the_missing_endpoint(monkeypatch) -> None:
+    sandbox, endpoint_calls, commands = _sandbox_without_grep_endpoint(monkeypatch, _SHELL_OUTPUT)
+
+    sandbox.grep("/mnt/user-data/workspace", "consent")
+    sandbox.grep("/mnt/user-data/workspace", "alpha")
+
+    assert len(endpoint_calls) == 1
+    assert len(commands) == 2
+
+
+def test_aio_sandbox_shell_grep_literal_case_sensitive_and_quoted(monkeypatch) -> None:
+    sandbox, _, commands = _sandbox_without_grep_endpoint(monkeypatch, "")
+
+    matches, truncated = sandbox.grep("/mnt/user-data/my dir", "it's $(x)", literal=True, case_sensitive=True)
+
+    assert (matches, truncated) == ([], False)
+    command = commands[0]
+    assert " -F " in command and " -P " not in command and " -i" not in command
+    assert "-e 'it'\"'\"'s $(x)' -- '/mnt/user-data/my dir' " in command
+
+
+def test_aio_sandbox_shell_grep_reports_truncation(monkeypatch) -> None:
+    lines = "".join(f"/mnt/user-data/workspace/f{i}.py\n{i + 1}:TODO\n" for i in range(3))
+    sandbox, _, _ = _sandbox_without_grep_endpoint(monkeypatch, lines)
+
+    matches, truncated = sandbox.grep("/mnt/user-data/workspace", "TODO", max_results=2)
+
+    assert [m.path for m in matches] == ["/mnt/user-data/workspace/f0.py", "/mnt/user-data/workspace/f1.py"]
+    assert truncated is True
+
+
+def test_aio_sandbox_shell_grep_surfaces_shell_errors(monkeypatch) -> None:
+    sandbox, _, _ = _sandbox_without_grep_endpoint(monkeypatch, "Error: sandbox shell unavailable")
+
+    with pytest.raises(RuntimeError, match="sandbox shell unavailable"):
+        sandbox.grep("/mnt/user-data/workspace", "TODO")
+
+
+def test_aio_sandbox_grep_other_api_errors_still_raise(monkeypatch) -> None:
+    from agent_sandbox.core.api_error import ApiError
+
+    with patch("deerflow.community.aio_sandbox.aio_sandbox.AioSandboxClient"):
+        sandbox = AioSandbox(id="test-sandbox", base_url="http://localhost:8080")
+
+    def grep_files(**kwargs):
+        raise ApiError(status_code=500, body={"message": "boom"})
+
+    monkeypatch.setattr(sandbox._client.file, "grep_files", grep_files)
+
+    with pytest.raises(ApiError):
+        sandbox.grep("/mnt/user-data/workspace", "TODO")
+    assert sandbox._grep_endpoint_missing is False

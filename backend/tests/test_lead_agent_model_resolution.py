@@ -1585,3 +1585,40 @@ def test_make_lead_agent_no_agent_settings_passes_none_overrides(monkeypatch):
     lead_agent_module._make_lead_agent({"context": {"model_name": "safe-model"}}, app_config=app_config)
 
     assert captured["model_overrides"] is None
+
+
+def _build_for_forced_stop(monkeypatch, app_config):
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda *, app_config, lazy_init=True: [])
+    monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **kwargs: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
+    return lead_agent_module.build_middlewares(
+        {"configurable": {"is_plan_mode": False, "subagent_enabled": False}},
+        model_name="safe-model",
+        app_config=app_config,
+    )
+
+
+def test_build_middlewares_places_forced_stop_synthesis_before_the_stoppers(monkeypatch):
+    """[argus patch #98] reverse-order after_model must run it after every stopper."""
+    from deerflow.agents.middlewares.empty_final_retry_middleware import EmptyFinalRetryMiddleware
+    from deerflow.agents.middlewares.forced_stop_synthesis_middleware import ForcedStopSynthesisMiddleware
+
+    app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
+    middlewares = _build_for_forced_stop(monkeypatch, app_config)
+
+    types = [type(m) for m in middlewares]
+    synthesis_idx = types.index(ForcedStopSynthesisMiddleware)
+    assert synthesis_idx < types.index(EmptyFinalRetryMiddleware)
+    assert synthesis_idx < types.index(LoopDetectionMiddleware)
+
+
+def test_build_middlewares_omits_forced_stop_synthesis_when_disabled(monkeypatch):
+    from deerflow.agents.middlewares.forced_stop_synthesis_middleware import ForcedStopSynthesisMiddleware
+    from deerflow.config.forced_stop_synthesis_config import ForcedStopSynthesisConfig
+
+    app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
+    app_config.forced_stop_synthesis = ForcedStopSynthesisConfig(enabled=False)
+    middlewares = _build_for_forced_stop(monkeypatch, app_config)
+
+    assert not any(isinstance(m, ForcedStopSynthesisMiddleware) for m in middlewares)

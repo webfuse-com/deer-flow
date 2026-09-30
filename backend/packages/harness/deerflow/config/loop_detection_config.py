@@ -102,6 +102,23 @@ class LoopDetectionConfig(BaseModel):
         ),
     )
 
+    fresh_result_extension_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "[argus patch #100] Tools whose Layer 2 frequency hard stop is downgraded to an escalating "
+            "warning while their most recent result was a success with fresh content (not a "
+            "near-duplicate of that tool's recent results). Meant for read-only search tools, where a "
+            "new result is new information; a no-results reply, an error, a near-duplicate or a "
+            "result too short to judge keeps the stop. Not for bash, whose output is always new."
+        ),
+    )
+    fresh_result_extension_factor: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=10.0,
+        description=("[argus patch #100] Ceiling for fresh_result_extension_tools as a multiple of the tool's hard limit; at that count the hard stop fires regardless of freshness. 1.0 disables."),
+    )
+
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":
         """Ensure hard stop cannot happen before the warning threshold."""
