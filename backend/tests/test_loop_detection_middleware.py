@@ -22,6 +22,7 @@ from deerflow.agents.middlewares.loop_detection_middleware import (
     _hash_tool_calls,
 )
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
+from deerflow.config.loop_detection_config import LoopDetectionConfig
 
 
 def _make_runtime(thread_id="test-thread", run_id="test-run"):
@@ -3083,3 +3084,88 @@ class TestLoopDetectionSubcategoryFrequency:
         # Execution bash command -> execution -> SHOULD reset inspection counter
         mw._apply(_make_state(tool_calls=[_bash_call("rm /tmp/foo.txt")]), runtime)
         assert mw._subcat_name_counter[scope]["bash.inspection"] == 0
+
+
+class TestFreshResultExtension:
+    """[argus patch #100] Layer 2 stretches for search tools still finding new results."""
+
+    @staticmethod
+    def _search(i: int) -> dict:
+        return {"name": "code_search_code", "id": f"call_s{i}", "args": {"query": f"q{i}"}}
+
+    @staticmethod
+    def _drive(mw, results):
+        """Run one search per entry in *results* and return each call's decision.
+
+        ``results[i]`` is ``(meta, content)`` for the ToolMessage answering call
+        ``i``; decision ``i`` is what after_model returned for call ``i``, so it
+        sees the results of calls ``0..i-1``.
+        """
+        runtime = _make_runtime()
+        msgs: list = [HumanMessage(content="find it")]
+        decisions = []
+        for i, (meta, content) in enumerate(results):
+            call = TestFreshResultExtension._search(i)
+            msgs.append(AIMessage(content="", tool_calls=[call]))
+            decisions.append(mw._track_and_check({"messages": list(msgs)}, runtime))
+            kwargs = {TOOL_META_KEY: meta} if meta is not None else {}
+            msgs.append(ToolMessage(content=content, tool_call_id=call["id"], name="code_search_code", additional_kwargs=kwargs))
+        return decisions
+
+    @staticmethod
+    def _mw(**kwargs) -> LoopDetectionMiddleware:
+        kwargs.setdefault("fresh_result_extension_tools", ["code_search_code"])
+        return LoopDetectionMiddleware(tool_freq_overrides={"code_search_code": (2, 3)}, **kwargs)
+
+    def test_fresh_results_extend_to_the_ceiling(self):
+        fresh = [(_result_meta("success"), _distinct_content(i)) for i in range(8)]
+        decisions = self._drive(self._mw(), fresh)
+
+        actions = [d.action if d else None for d in decisions]
+        # warn at 2, extended (escalating warn) at 3..5, stop at the 2x ceiling 6.
+        assert actions[:6] == [None, "warn", "warn", "warn", "warn", "hard_stop"]
+        assert decisions[2].downgrade == "fresh_results"
+        assert "force-stopped at 6 calls" in decisions[2].message
+        assert decisions[5].downgrade is None
+
+    def test_no_results_reply_keeps_the_stop(self):
+        results = [(_result_meta("success"), _distinct_content(0)), (_result_meta("partial_success"), "No code matches for 'consent' (type fixed).")]
+        decisions = self._drive(self._mw(), results + [(_result_meta("success"), _distinct_content(9))])
+
+        assert decisions[2].action == "hard_stop"
+
+    def test_near_duplicate_success_keeps_the_stop(self):
+        same = _kb_content("A")
+        results = [(_result_meta("success"), same), (_result_meta("success"), _kb_content("B")), (_result_meta("success"), same)]
+        decisions = self._drive(self._mw(), results)
+
+        assert decisions[2].action == "hard_stop"
+
+    def test_blocked_or_missing_meta_keeps_the_stop(self):
+        blocked = _result_meta("success", source="progress_middleware")
+        for meta in (blocked, None):
+            results = [(_result_meta("success"), _distinct_content(0)), (meta, _distinct_content(1)), (None, _distinct_content(2))]
+            assert self._drive(self._mw(), results)[2].action == "hard_stop"
+
+    def test_short_result_keeps_the_stop(self):
+        results = [(_result_meta("success"), _distinct_content(0)), (_result_meta("success"), "No threads matched query: x"), (None, "")]
+        assert self._drive(self._mw(), results)[2].action == "hard_stop"
+
+    def test_unlisted_tool_is_not_extended(self):
+        fresh = [(_result_meta("success"), _distinct_content(i)) for i in range(4)]
+        assert self._drive(self._mw(fresh_result_extension_tools=[]), fresh)[2].action == "hard_stop"
+
+    def test_factor_one_disables(self):
+        fresh = [(_result_meta("success"), _distinct_content(i)) for i in range(4)]
+        assert self._drive(self._mw(fresh_result_extension_factor=1.0), fresh)[2].action == "hard_stop"
+
+    def test_window_holds_the_ceiling(self):
+        mw = LoopDetectionMiddleware(tool_freq_overrides={"code_search_code": (4, 12)}, fresh_result_extension_tools=["code_search_code"])
+        assert mw._tool_freq_window >= 24
+
+    def test_from_config(self):
+        config = LoopDetectionConfig(fresh_result_extension_tools=["web_search"], fresh_result_extension_factor=3.0)
+        mw = LoopDetectionMiddleware.from_config(config)
+        assert mw._fresh_extension_tools == frozenset({"web_search"})
+        assert mw.fresh_result_extension_factor == 3.0
+        assert mw._fresh_extension_ceiling(12) == 36

@@ -125,6 +125,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import threading
 import uuid
 from collections import Counter, OrderedDict, defaultdict, deque
@@ -188,7 +189,7 @@ _SUBCATEGORY_NAMES: frozenset[str] = frozenset({"bash.inspection"})
 _BASH_INSPECTION = "bash.inspection"
 
 type _RunScopeKey = tuple[str, str | None]
-type _Downgrade = Literal["recoverable_retry", "exempt_tool"]
+type _Downgrade = Literal["recoverable_retry", "exempt_tool", "fresh_results"]
 
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
@@ -342,6 +343,14 @@ _TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG = (
     "[FORCED STOP] Repeated shell micro-reads exceeded the safety limit ({count} inspection-only bash calls). Use read_file / workspace_inspect for file inspection. Producing final answer with results collected so far."
 )
 
+# [argus patch #100] Layer 2 downgrade while a search tool keeps finding new results.
+_TOOL_FREQ_FRESH_MSG = (
+    "[LOOP DETECTED] You have called {tool_name} {count} times. Its last result still added new "
+    "information, so the stop at {hard_limit} calls is extended, but only while results stay new: "
+    "{tool_name} is force-stopped at {ceiling} calls, or at the next call after one that returns "
+    "nothing new. Narrow each call to the specific gap you are closing, then answer."
+)
+
 _TOOL_FREQ_EXEMPT_MSG = (
     "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. "
     "This tool is exempt from the hard stop, but this volume usually means no new progress is being "
@@ -474,6 +483,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         tool_freq_overrides: dict[str, tuple[int, int]] | None = None,
         no_hard_stop_tools: list[str] | None = None,
         recoverable_retry_limit: int = _DEFAULT_RECOVERABLE_RETRY_LIMIT,
+        fresh_result_extension_tools: list[str] | None = None,
+        fresh_result_extension_factor: float = 2.0,
     ):
         super().__init__()
         self.warn_threshold = warn_threshold
@@ -486,6 +497,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._no_hard_stop_tools: frozenset[str] = frozenset(no_hard_stop_tools or ())
         self._default_tool_freq_thresholds = (tool_freq_warn, tool_freq_hard_limit)
         self._tool_freq_overrides: dict[str, tuple[int, int]] = tool_freq_overrides or {}
+        # [argus patch #100] Search tools whose volume cap stretches while results stay new.
+        self._fresh_extension_tools: frozenset[str] = frozenset(fresh_result_extension_tools or ())
+        self.fresh_result_extension_factor = fresh_result_extension_factor
         # Layer 2's windowed frequency count can never exceed the deque length,
         # so the deque MUST be at least as long as the largest hard limit it is
         # compared against — otherwise the hard-stop branch is dead code. Do NOT
@@ -502,10 +516,13 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # trimmed to their own hard limit, so they must not inflate the global
         # one. Dotted MCP tool names (e.g. "github.search_issues") are NOT
         # subcategories and still inflate it so their hard stops stay reachable.
+        # [argus patch #100] An extended tool must be able to reach its ceiling,
+        # so its ceiling (not its hard limit) sizes the window.
         self._tool_freq_window = max(
             self.window_size,
             self.tool_freq_hard_limit,
             *(hard for name, (_, hard) in self._tool_freq_overrides.items() if name not in _SUBCATEGORY_NAMES),
+            *(self._fresh_extension_ceiling(self._tool_freq_overrides.get(name, self._default_tool_freq_thresholds)[1]) for name in self._fresh_extension_tools),
         )
         self._lock = threading.Lock()
         # LangGraph replaces Runtime per graph node but retains one RunControl
@@ -568,6 +585,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             # [argus] patch #68: behaviour-affecting, so part of the identity.
             "no_hard_stop_tools": sorted(self._no_hard_stop_tools),
             "recoverable_retry_limit": self.recoverable_retry_limit,
+            # [argus] patch #100
+            "fresh_result_extension_tools": sorted(self._fresh_extension_tools),
+            "fresh_result_extension_factor": self.fresh_result_extension_factor,
         }
 
     @classmethod
@@ -583,6 +603,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             tool_freq_overrides={name: (o.warn, o.hard_limit) for name, o in config.tool_freq_overrides.items()},
             no_hard_stop_tools=list(config.no_hard_stop_tools),
             recoverable_retry_limit=config.recoverable_retry_limit,
+            fresh_result_extension_tools=list(config.fresh_result_extension_tools),
+            fresh_result_extension_factor=config.fresh_result_extension_factor,
         )
 
     def _get_thread_id(self, runtime: Runtime) -> str:
@@ -976,6 +998,24 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                                 threshold=eff_hard,
                                 downgrade="exempt_tool",
                             )
+                    elif freq_count < self._fresh_extension_ceiling(eff_hard) and name in self._fresh_extension_tools and self._latest_result_is_fresh(messages, name):
+                        # [argus patch #100] Still finding new results: warn
+                        # (escalating, never marked warned) up to the ceiling.
+                        ceiling = self._fresh_extension_ceiling(eff_hard)
+                        logger.info(
+                            "Tool frequency hard limit reached — latest result is fresh, extending",
+                            extra={"thread_id": thread_id, "run_id": run_id, "tool_name": name, "count": freq_count, "ceiling": ceiling},
+                        )
+                        if warning is None:
+                            warning = _LoopDecision(
+                                message=_TOOL_FREQ_FRESH_MSG.format(tool_name=name, count=freq_count, hard_limit=eff_hard, ceiling=ceiling),
+                                action="warn",
+                                detection_layer="tool_frequency",
+                                tool_names=(name,),
+                                count=freq_count,
+                                threshold=eff_hard,
+                                downgrade="fresh_results",
+                            )
                     else:
                         logger.error(
                             "Tool frequency hard limit reached — forcing stop",
@@ -1156,6 +1196,33 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 return message, "recoverable_retry"
 
         return None
+
+    def _fresh_extension_ceiling(self, hard_limit: int) -> int:
+        """[argus patch #100] Call count at which an extended tool stops regardless."""
+        return max(hard_limit, math.ceil(hard_limit * self.fresh_result_extension_factor))
+
+    def _latest_result_is_fresh(self, messages: list, name: str) -> bool:
+        """[argus patch #100] True when *name*'s latest result was a success
+        that is not a near-duplicate of its recent results.
+
+        Conservative like the Layer 1 gate: missing meta, a result stamped by
+        ToolProgressMiddleware (tool BLOCKED), any non-success status (a
+        no-results body is ``partial_success``), content too short to judge,
+        and a near-duplicate all keep the stop.
+        """
+        metas = self._latest_result_meta_per_tool(messages, {name})
+        if metas is None:
+            return False
+        meta = metas[name]
+        if meta.get("source") == "progress_middleware" or meta.get("status") != "success":
+            return False
+        contents = self._recent_contents_per_tool(messages, {name}).get(name, [])
+        if not contents:
+            return False
+        latest = word_set(contents[0])
+        if len(latest) < _SIMILARITY_MIN_WORDS:
+            return False
+        return not is_near_duplicate(latest, [word_set(c) for c in contents[1:]], _SIMILARITY_THRESHOLD, _SIMILARITY_MIN_WORDS)
 
     @staticmethod
     def _latest_result_meta_per_tool(messages: list, names: set[str]) -> dict[str, dict] | None:
