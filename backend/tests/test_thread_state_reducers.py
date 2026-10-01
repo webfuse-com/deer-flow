@@ -14,6 +14,7 @@ from deerflow.agents.thread_state import (
     _SKILL_CONTEXT_MAX_ENTRIES,
     TERMINAL_STATUSES,
     THREAD_STATE_REDUCER_FIELDS,
+    SandboxState,
     SkillEntry,
     ThreadState,
     merge_artifacts,
@@ -53,6 +54,46 @@ class TestMergeSandbox:
         existing = {}
         new = {}
         assert merge_sandbox(existing, new) == existing
+
+    def test_replacement_of_the_current_id_is_accepted_and_unmarked(self):
+        existing = {"sandbox_id": "old"}
+        new = {"sandbox_id": "fresh", "replaces": "old"}
+        assert merge_sandbox(existing, new) == {"sandbox_id": "fresh"}
+
+    def test_replacement_of_a_different_id_raises(self):
+        existing = {"sandbox_id": "other"}
+        with pytest.raises(ValueError, match="Conflicting sandbox state updates"):
+            merge_sandbox(existing, {"sandbox_id": "fresh", "replaces": "old"})
+
+    def test_replacement_into_empty_state_is_unmarked(self):
+        assert merge_sandbox(None, {"sandbox_id": "fresh", "replaces": "old"}) == {"sandbox_id": "fresh"}
+
+    def test_parallel_reacquires_in_one_step_reduce_to_one_value(self):
+        """Two tool calls of one super-step each re-acquired the thread's sandbox.
+
+        As Overwrite values this raised InvalidUpdateError and killed the run
+        (atlas-thomas, 2026-09-30); as replacements it reduces cleanly.
+        """
+        from langgraph.channels.binop import BinaryOperatorAggregate
+
+        channel = BinaryOperatorAggregate(SandboxState | None, merge_sandbox)
+        channel.key = "sandbox"
+        channel.update([{"sandbox_id": "old"}])
+        write = {"sandbox_id": "fresh", "replaces": "old"}
+        channel.update([dict(write), dict(write)])
+        assert channel.get() == {"sandbox_id": "fresh"}
+
+    def test_parallel_overwrites_in_one_step_still_raise_upstream(self):
+        """Pins why the replacement form exists: two Overwrites cannot share a step."""
+        from langgraph.channels.binop import BinaryOperatorAggregate
+        from langgraph.errors import InvalidUpdateError
+        from langgraph.types import Overwrite
+
+        channel = BinaryOperatorAggregate(SandboxState | None, merge_sandbox)
+        channel.key = "sandbox"
+        channel.update([{"sandbox_id": "old"}])
+        with pytest.raises(InvalidUpdateError):
+            channel.update([Overwrite({"sandbox_id": "fresh"}), Overwrite({"sandbox_id": "fresh"})])
 
     def test_conflicting_sandbox_ids_raise(self):
         existing = {"sandbox_id": "sandbox-1"}

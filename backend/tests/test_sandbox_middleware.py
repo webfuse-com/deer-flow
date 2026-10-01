@@ -603,7 +603,7 @@ def test_wrap_tool_call_passthrough_when_sandbox_already_in_state() -> None:
     assert result is original
 
 
-def test_wrap_tool_call_overwrites_a_repaired_checkpoint_sandbox() -> None:
+def test_wrap_tool_call_replaces_a_repaired_checkpoint_sandbox() -> None:
     middleware = SandboxMiddleware()
     state: dict = {"sandbox": {"sandbox_id": "foreign"}}
     request = _make_tool_call_request(state)
@@ -616,11 +616,12 @@ def test_wrap_tool_call_overwrites_a_repaired_checkpoint_sandbox() -> None:
 
     assert isinstance(result, Command)
     assert isinstance(result.update, dict)
-    assert isinstance(result.update["sandbox"], Overwrite)
-    assert result.update["sandbox"].value == {"sandbox_id": "canonical"}
+    # A replacement names what it replaces; never an Overwrite, which a
+    # parallel sibling tool call in the same step would collide with.
+    assert result.update["sandbox"] == {"sandbox_id": "canonical", "replaces": "foreign"}
 
 
-def test_network_prompt_preserves_repaired_checkpoint_overwrite() -> None:
+def test_network_prompt_preserves_repaired_checkpoint_replacement() -> None:
     provider = _NetworkPolicyProvider()
     provider.events = [{"request_id": "req-1", "host": "example.com", "port": 443, "method": "CONNECT"}]
     state: dict = {"sandbox": {"sandbox_id": "foreign"}}
@@ -639,8 +640,7 @@ def test_network_prompt_preserves_repaired_checkpoint_overwrite() -> None:
     assert isinstance(result, Command)
     assert result.goto == END
     assert isinstance(result.update, dict)
-    assert isinstance(result.update["sandbox"], Overwrite)
-    assert result.update["sandbox"].value == {"sandbox_id": "canonical"}
+    assert result.update["sandbox"] == {"sandbox_id": "canonical", "replaces": "foreign"}
 
 
 @pytest.mark.parametrize("async_path", [False, True])

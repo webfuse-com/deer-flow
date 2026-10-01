@@ -518,7 +518,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         result: ToolMessage | Command,
         sandbox_id: str,
         *,
-        overwrite: bool = False,
+        replaces: str | None = None,
     ) -> ToolMessage | Command:
         """Wrap or merge ``result`` so that ``sandbox.sandbox_id`` is persisted.
 
@@ -528,9 +528,13 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         - ``Command`` with non-dict / None update -> leave it untouched to
           avoid silent data loss on unknown update shapes.
         """
-        sandbox_value: object = {"sandbox_id": sandbox_id}
-        if overwrite:
-            sandbox_value = Overwrite(sandbox_value)
+        # A replacement names the id it replaces instead of wrapping the value
+        # in Overwrite: parallel tool calls of one step can each re-acquire
+        # the thread's sandbox, and LangGraph rejects a second Overwrite in a
+        # super-step (merge_sandbox explains the reduction).
+        sandbox_value: dict = {"sandbox_id": sandbox_id}
+        if replaces is not None:
+            sandbox_value["replaces"] = replaces
         sandbox_update = {"sandbox": sandbox_value}
 
         if isinstance(result, ToolMessage):
@@ -563,7 +567,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             result = self._attach_sandbox_update(
                 result,
                 curr_sandbox_id,
-                overwrite=prev_sandbox_id is not None,
+                replaces=prev_sandbox_id,
             )
         return self._maybe_request_network_approval(request, result, curr_sandbox_id or prev_sandbox_id)
 
@@ -580,7 +584,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             result = self._attach_sandbox_update(
                 result,
                 curr_sandbox_id,
-                overwrite=prev_sandbox_id is not None,
+                replaces=prev_sandbox_id,
             )
         sandbox_id = curr_sandbox_id or prev_sandbox_id
         if sandbox_id is None:

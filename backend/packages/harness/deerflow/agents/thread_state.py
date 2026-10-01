@@ -35,6 +35,9 @@ def _resolve_snapshot_frequency(snapshot_frequency: int | None) -> int:
 
 class SandboxState(TypedDict):
     sandbox_id: NotRequired[str | None]
+    # Write-only marker: the sandbox id this write replaces. ``merge_sandbox``
+    # consumes it and never stores it (see there).
+    replaces: NotRequired[str | None]
 
 
 class ThreadDataState(TypedDict):
@@ -74,9 +77,21 @@ def merge_sandbox(existing: SandboxState | None, new: SandboxState | None) -> Sa
     explicit reducer for that shared state key. Different sandbox ids in the
     same thread indicate a lifecycle/isolation bug, so fail closed instead of
     choosing one silently.
+
+    A replacement (a lazily re-acquired sandbox, or a repaired checkpoint
+    whose sandbox was foreign) names the id it replaces in ``replaces``. It is
+    accepted only while the channel still holds that id, so several tool calls
+    of one step that each re-acquired the thread's sandbox reduce to one value:
+    the first replaces, the rest repeat the new id and are idempotent. These
+    writes used to be ``Overwrite`` values, and LangGraph refuses a second
+    ``Overwrite`` in one super-step, which killed the run
+    (``InvalidUpdateError``) whenever parallel tool calls re-acquired together.
     """
     if new is None:
         return existing
+    replaces = new.get("replaces")
+    if replaces is not None:
+        new = {k: v for k, v in new.items() if k != "replaces"}
     if existing is None:
         return new
 
@@ -84,6 +99,8 @@ def merge_sandbox(existing: SandboxState | None, new: SandboxState | None) -> Sa
     new_id = new.get("sandbox_id")
     if existing_id == new_id:
         return existing
+    if replaces is not None and replaces == existing_id:
+        return new
     raise ValueError(f"Conflicting sandbox state updates: {existing_id!r} != {new_id!r}")
 
 
