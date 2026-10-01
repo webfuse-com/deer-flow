@@ -145,6 +145,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#98](#patch-98) | A lead-agent hard stop (loop, deadline, token budget) is replaced by one tool-free answer turn instead of a bare notice | argus-additive | this PR |
 | [#99](#patch-99) | `AioSandbox.grep` falls back to one shell `grep` when the sandbox has no `/v1/file/grep` endpoint | argus-edit | this PR |
 | [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
+| [#101](#patch-101) | Parallel tool calls that re-acquire the thread's sandbox in one step no longer crash the run (`replaces` marker instead of `Overwrite`) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2437,3 +2438,13 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Intent: all 24 loop-detection hard stops in the 30 days to 2026-09-30 were Layer 2 volume caps on read-only search tools (`code_search_code` 11, `atlas_knowledge` 6, `web_search` 3, `bq_query` 3, `web_search_exa` 1); none were Layer 1 identical-call loops. Patches #68/#69 gate only Layer 1 on result meta. Tools listed in `fresh_result_extension_tools` now downgrade the Layer 2 hard stop to an escalating warning (`downgrade="fresh_results"`, never marked warned) while the tool's latest result is `success` with at least 10 words and is not a near-duplicate of its recent results (same Jaccard helpers/threshold as #69), up to `fresh_result_extension_factor` x the hard limit (default 2.0; 1.0 disables). A no-results reply (`partial_success`), an error, a ToolProgress block, missing meta, a short or near-duplicate result all keep the stop. Opt-in per tool because fresh output is new information for a search tool but not for `bash`. The frequency window is sized to the ceiling so it is reachable.
 - Tests: `TestFreshResultExtension` in `backend/tests/test_loop_detection_middleware.py`
 - Delete-when: upstream makes Layer 2 result-aware.
+
+## Patch #101
+
+**Patch #101 - Parallel sandbox re-acquires in one step reduce instead of crashing the run** (2026-10-01)
+
+- Class: argus-edit (`merge_sandbox` and `SandboxState` in `thread_state.py`; `_attach_sandbox_update` and its two call sites in `sandbox/middleware.py`); generic-upstreamable.
+- Intent: when a thread's recorded sandbox is gone (idle-reaped overnight, or a repaired checkpoint whose sandbox was foreign), each sandbox tool call lazily re-acquires one and `SandboxMiddleware.wrap_tool_call` persisted it as `Overwrite({"sandbox_id": new})`. Parallel tool calls are separate tasks in one super-step, and LangGraph's `BinaryOperatorAggregate` refuses a second `Overwrite` in a super-step, so the whole run died with `InvalidUpdateError: Can receive only one Overwrite value per super-step` (atlas-thomas, 2026-09-30, twice in 14 days). The tool-call path now writes `{"sandbox_id": new, "replaces": old}`; `merge_sandbox` accepts it only while the channel still holds `old`, strips the marker, and treats the siblings' identical writes as idempotent. Any other conflict still raises (fail closed). The `before_agent` paths keep `Overwrite`: they run once per step and cannot collide.
+- Tests: `test_replacement_*` and `test_parallel_reacquires_in_one_step_reduce_to_one_value` (a real `BinaryOperatorAggregate` channel, plus `test_parallel_overwrites_in_one_step_still_raise_upstream` pinning why) in `backend/tests/test_thread_state_reducers.py`; `test_wrap_tool_call_replaces_a_repaired_checkpoint_sandbox` and `test_network_prompt_preserves_repaired_checkpoint_replacement` in `backend/tests/test_sandbox_middleware.py`.
+- Delete-when: upstream stops using `Overwrite` for tool-call sandbox writes, or LangGraph accepts identical `Overwrite` values in one super-step.
+- Upstream status: candidate for an upstream PR (the bug is upstream's; the fix is self-contained).
