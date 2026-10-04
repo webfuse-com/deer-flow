@@ -146,6 +146,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#99](#patch-99) | `AioSandbox.grep` falls back to one shell `grep` when the sandbox has no `/v1/file/grep` endpoint | argus-edit | this PR |
 | [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
 | [#101](#patch-101) | Parallel tool calls that re-acquire the thread's sandbox in one step no longer crash the run (`replaces` marker instead of `Overwrite`) | argus-edit | this PR |
+| [#102](#patch-102) | Telegram `/f/` report links name the thread's storage bucket (`/f/<user>/<thread>/<file>`) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2448,3 +2449,13 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `test_replacement_*` and `test_parallel_reacquires_in_one_step_reduce_to_one_value` (a real `BinaryOperatorAggregate` channel, plus `test_parallel_overwrites_in_one_step_still_raise_upstream` pinning why) in `backend/tests/test_thread_state_reducers.py`; `test_wrap_tool_call_replaces_a_repaired_checkpoint_sandbox` and `test_network_prompt_preserves_repaired_checkpoint_replacement` in `backend/tests/test_sandbox_middleware.py`.
 - Delete-when: upstream stops using `Overwrite` for tool-call sandbox writes, or LangGraph accepts identical `Overwrite` values in one super-step.
 - Upstream status: candidate for an upstream PR (the bug is upstream's; the fix is self-contained).
+
+## Patch #102
+
+**Patch #102 - Telegram /f/ report links name the thread's storage bucket** (2026-10-04)
+
+- Class: argus-edit (`_file_url` and `present_artifacts` in `app/channels/_artifact_presenter.py`; the presenter call in `_prepare_artifact_delivery`, `app/channels/manager.py`). Extends #10.
+- Intent: the presenter minted `https://<stack>/f/<thread>/<file>`. The Argus stack nginx maps that two-segment form to the pre-isolation `users/default/threads/` bucket, while Telegram threads live under the chat id's bucket, so every auto-minted Telegram report link 404'd with the file on disk (atlas-nicholas, 2026-10-04). `_prepare_artifact_delivery` now passes the storage user id it resolved the attachments with (falling back to the effective user, as `_resolve_attachments` does), and the presenter builds the three-segment `/f/<user>/<thread>/<file>` link. The two-segment form remains only for a caller that passes no user.
+- Tests: `test_telegram_link_with_user_has_three_segments`, `test_delivery_telegram_link_names_the_storage_bucket`, `test_delivery_telegram_without_user_uses_effective_user` (and the updated `test_delivery_telegram_produces_remote_link`) in `backend/tests/test_artifact_presenter.py`.
+- Delete-when: #10 is retired.
+- Upstream status: none (Argus-only, the `/f/` fileserver is Argus nginx).

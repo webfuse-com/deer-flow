@@ -99,12 +99,18 @@ def _relpath(virtual_path: str) -> str | None:
     return virtual_path[len(_OUTPUTS_VIRTUAL_PREFIX) :].lstrip("/")
 
 
-def _file_url(host: str, thread_id: str, relpath: str) -> str:
-    # The /f/ nginx route maps /f/<thread_id>/<rel> → that thread's outputs dir.
-    # quote each segment but keep the slashes.
+def _file_url(host: str, thread_id: str, relpath: str, user_id: str | None = None) -> str:
+    # The /f/ nginx route maps /f/<user>/<thread_id>/<rel> → that thread's
+    # outputs dir under the user's storage bucket. [argus patch #102] The
+    # two-segment /f/<thread_id>/<rel> form only resolves threads in the
+    # "default" bucket, so a link minted without the user 404s for every
+    # Telegram thread (bucket = the chat id). Keep it only as a fallback when
+    # no user is known. Quote each segment but keep the slashes.
     from urllib.parse import quote
 
     safe_rel = "/".join(quote(seg, safe="") for seg in relpath.split("/"))
+    if user_id:
+        return f"https://{host}/f/{quote(user_id, safe='')}/{quote(thread_id, safe='')}/{safe_rel}"
     return f"https://{host}/f/{quote(thread_id, safe='')}/{safe_rel}"
 
 
@@ -115,6 +121,7 @@ def present_artifacts(
     attachments: list[ResolvedAttachment],
     *,
     project: str | None = None,
+    user_id: str | None = None,
 ) -> tuple[str, list[ResolvedAttachment]]:
     """Produce the channel-appropriate (text_block, attachments_to_send).
 
@@ -156,7 +163,7 @@ def present_artifacts(
             if att:
                 keep.append(att)
             continue
-        url = _file_url(host, thread_id, rel)
+        url = _file_url(host, thread_id, rel, user_id)
         mime = att.mime_type if att else ""
         if mime in _WEB_VIEWABLE:
             # Link only — the rendered page IS the presentation.

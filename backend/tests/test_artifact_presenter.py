@@ -44,6 +44,12 @@ def test_telegram_binary_is_link_and_attached():
     assert keep == [att]  # pdf still attached
 
 
+def test_telegram_link_with_user_has_three_segments():
+    vpath = "/mnt/user-data/outputs/report.html"
+    text, _ = present_artifacts("telegram", "thread-1", [vpath], [_att(vpath, "text/html")], user_id="8726302666")
+    assert "https://atlas-nicholas.acro.surfly.com/f/8726302666/thread-1/report.html" in text
+
+
 def test_telegram_nested_path_link():
     vpath = "/mnt/user-data/outputs/sub dir/page.html"
     text, _ = present_artifacts("telegram", "t3", [vpath], [_att(vpath, "text/html")])
@@ -128,9 +134,42 @@ def test_delivery_telegram_produces_remote_link(monkeypatch):
     monkeypatch.setattr(manager, "_resolve_attachments", lambda *a, **k: [_att(vpath, "text/html")])
 
     text, keep = manager._prepare_artifact_delivery("thread-9", "Here is the report.", [vpath], "telegram", user_id="u1")
-    # A viewable /f/ link, and the raw HTML is NOT re-attached.
-    assert "https://atlas-nicholas.acro.surfly.com/f/thread-9/report.html" in text
+    # A viewable /f/ link into the user's bucket, and the raw HTML is NOT
+    # re-attached.
+    assert "https://atlas-nicholas.acro.surfly.com/f/u1/thread-9/report.html" in text
     assert keep == []
+
+
+def test_delivery_telegram_link_names_the_storage_bucket(monkeypatch):
+    # [argus patch #102] A Telegram thread lives under the chat id's bucket,
+    # and nginx serves the two-segment /f/<thread>/ form from the "default"
+    # bucket only, so a link without the user 404'd on every Telegram report.
+    from app.channels import manager
+
+    vpath = "/mnt/user-data/outputs/plan.md"
+    seen = {}
+
+    def _resolve(thread_id, artifacts, *, user_id=None):
+        seen["user_id"] = user_id
+        return [_att(vpath, "text/plain")]
+
+    monkeypatch.setattr(manager, "_resolve_attachments", _resolve)
+
+    text, _ = manager._prepare_artifact_delivery("thread-11", "", [vpath], "telegram", user_id="8726302666")
+    assert seen["user_id"] == "8726302666"
+    assert "/f/8726302666/thread-11/plan.md" in text
+    assert "/f/thread-11/" not in text
+
+
+def test_delivery_telegram_without_user_uses_effective_user(monkeypatch):
+    from app.channels import manager
+
+    vpath = "/mnt/user-data/outputs/report.html"
+    monkeypatch.setattr(manager, "_resolve_attachments", lambda *a, **k: [_att(vpath, "text/html")])
+    monkeypatch.setattr(manager, "get_effective_user_id", lambda: "default")
+
+    text, _ = manager._prepare_artifact_delivery("thread-12", "", [vpath], "telegram")
+    assert "/f/default/thread-12/report.html" in text
 
 
 def test_delivery_non_telegram_keeps_filename_fallback(monkeypatch):
