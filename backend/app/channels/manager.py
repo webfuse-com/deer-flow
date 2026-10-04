@@ -1247,7 +1247,10 @@ def _prepare_artifact_delivery(
     if channel_name == "telegram":
         from app.channels._artifact_presenter import present_artifacts
 
-        block, attachments = present_artifacts(channel_name, thread_id, artifacts, attachments)
+        # [argus patch #102] The link must name the same storage bucket
+        # _resolve_attachments read the files from, or /f/ looks in the wrong
+        # user's directory.
+        block, attachments = present_artifacts(channel_name, thread_id, artifacts, attachments, user_id=user_id or get_effective_user_id())
         if block:
             response_text = (response_text + "\n\n" + block) if response_text else block
         return response_text, attachments
