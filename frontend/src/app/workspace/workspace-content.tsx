@@ -11,6 +11,7 @@ import { WorkspaceSettingsDeepLink } from "@/components/workspace/workspace-sett
 import { WorkspaceSidebar } from "@/components/workspace/workspace-sidebar";
 import { ExtensionPageBootstrap } from "@/core/extensions/hooks";
 import { UserPreferencesBoundary } from "@/core/settings/user-preferences-boundary";
+import { ThreadActivityBridge } from "@/core/threads/activity";
 
 function parseSidebarOpenCookie(
   value: string | undefined,
@@ -36,6 +37,8 @@ export async function WorkspaceContent({
     <QueryClientProvider>
       <UserPreferencesBoundary>
         <ExtensionPageBootstrap />
+        {/* [argus patch #103] runs started elsewhere reach this tab live */}
+        {!gatewayUnavailable && <ThreadActivityBridge />}
         <SidebarProvider className="h-screen" defaultOpen={initialSidebarOpen}>
           <WorkspaceSidebar />
           <SidebarInset className="min-w-0">

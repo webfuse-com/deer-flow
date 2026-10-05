@@ -147,6 +147,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
 | [#101](#patch-101) | Parallel tool calls that re-acquire the thread's sandbox in one step no longer crash the run (`replaces` marker instead of `Overwrite`) | argus-edit | this PR |
 | [#102](#patch-102) | Telegram `/f/` report links name the thread's storage bucket (`/f/<user>/<thread>/<file>`) | argus-edit | this PR |
+| [#103](#patch-103) | Open tabs stream runs they did not start: `GET /api/threads/activity` + the workspace subscribes and rejoins | argus-new | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2459,3 +2460,14 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `test_telegram_link_with_user_has_three_segments`, `test_delivery_telegram_link_names_the_storage_bucket`, `test_delivery_telegram_without_user_uses_effective_user` (and the updated `test_delivery_telegram_produces_remote_link`) in `backend/tests/test_artifact_presenter.py`.
 - Delete-when: #10 is retired.
 - Upstream status: none (Argus-only, the `/f/` fileserver is Argus nginx).
+
+## Patch #103
+
+**Patch #103 - Open tabs stream runs they did not start** (2026-10-05)
+
+- Class: argus-new (`backend/packages/harness/deerflow/runtime/runs/activity.py`, `backend/app/gateway/routers/thread_activity.py`, `frontend/src/core/threads/activity.ts`) plus two hook lines in `RunManager.create_or_reject` and `RunManager.set_status` (`runtime/runs/manager.py`), the router registration in `app/gateway/app.py`, and the bridge mounted in `frontend/src/app/workspace/workspace-content.tsx`.
+- Intent: a tab streamed only the runs it started, or one it found active when it loaded (the `activeRunId` rejoin). A run started anywhere else (a build wake-up from the Argus host, a Telegram message, a scheduled playbook) never reached a tab that already had the thread open; the reply appeared only after a reload, and the sidebar missed new threads and titles the same way. The run manager now publishes `{thread_id, run_id, status, user_id, updated_at}` on admission and on every status change to an in-process hub (one gateway worker per stack sees every run). `GET /api/threads/activity` streams those as Server-Sent Events, filtered to runs stamped with the viewer's id or on threads the viewer owns, with a heartbeat every 25 s (under nginx's 600 s timeout) and no content and no replay. The workspace mounts one subscriber per visible tab: a run event invalidates `["thread", id]` (the runs list, so the existing rejoin effect joins and streams the reply), a terminal one also the thread's message history, and a debounced sidebar refresh. A hidden tab closes its stream and resyncs when shown; errors back off from 2 s to 5 min, so an older gateway without the route is not polled every 3 s. A subscriber that falls 256 events behind gets one `resync` instead of blocking the run path.
+- Tests: `backend/tests/test_thread_activity.py` (fan-out and unsubscribe, a slow subscriber resyncs without blocking, the run manager publishes pending/running/success, events carry no content, visibility by stamp or thread owner, `/activity` routed before `/{thread_id}`), `frontend/tests/unit/core/threads/activity.dom.test.tsx` (invalidations per status, a foreign run refetches the runs and the sidebar, hidden tab closes and resyncs, back-off).
+- Delete-when: upstream offers a thread- or user-level run activity stream.
+- Upstream status: candidate (generic: any multi-client or background-run deployment hits it).
+

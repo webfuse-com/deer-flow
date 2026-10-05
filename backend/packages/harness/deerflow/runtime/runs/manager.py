@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from deerflow.runtime.runs.activity import publish_run as publish_run_activity
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, get_current_user, resolve_user_id
 from deerflow.utils.time import is_lease_expired
 from deerflow.utils.time import now_iso as _now_iso
@@ -1027,6 +1028,8 @@ class RunManager:
         if record.ownership_lost:
             return
         logger.info("Run %s -> %s", run_id, status.value)
+        # [argus patch #103] Open tabs learn about runs they did not start.
+        publish_run_activity(record)
 
     async def persist_current_status(self, run_id: str) -> bool:
         """Persist the status already staged on the in-memory run record."""
@@ -1509,7 +1512,7 @@ class RunManager:
         idempotency_key: str | None = None,
     ) -> RunRecord:
         """Atomically admit a normal agent run for a thread."""
-        return await self._admit_thread_operation(
+        record = await self._admit_thread_operation(
             thread_id,
             assistant_id,
             operation_kind=ThreadOperationKind.run,
@@ -1521,6 +1524,9 @@ class RunManager:
             user_id=user_id,
             idempotency_key=idempotency_key,
         )
+        # [argus patch #103] A new run (pending) is visible to open tabs at once.
+        publish_run_activity(record)
+        return record
 
     async def _close_cancelled_admission(self, record: RunRecord) -> None:
         """Terminalize an unseen replacement and confirm its durable state."""
