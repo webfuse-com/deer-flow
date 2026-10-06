@@ -2175,6 +2175,9 @@ def bash_tool(runtime: Runtime, command: str, description: str = "") -> str:
       output redirected, e.g. `your-command > /mnt/user-data/workspace/server.log 2>&1 &`, then check
       the log file or poll the port. A long-lived process run in the foreground blocks the turn until
       it is killed at the command timeout.
+    - The sandbox shell stops waiting for a command after about 120 s without new output (the command
+      keeps running). Never `sleep` longer than about 100 s in one call: poll in separate short calls.
+    - Nothing can answer a prompt: use `rm -f`, `-y`/`--yes` and other non-interactive flags.
 
     Args:
         command: The bash command to execute. Always use absolute paths for files and directories.
