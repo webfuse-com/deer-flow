@@ -147,6 +147,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
 | [#101](#patch-101) | Parallel tool calls that re-acquire the thread's sandbox in one step no longer crash the run (`replaces` marker instead of `Overwrite`) | argus-edit | this PR |
 | [#102](#patch-102) | Telegram `/f/` report links name the thread's storage bucket (`/f/<user>/<thread>/<file>`) | argus-edit | this PR |
+| [#104](#patch-104) | Sandbox shell commands run with stdin from `/dev/null`; a no-change timeout and the bash tool say what the pinned image's ~120 s silence limit means | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2459,3 +2460,14 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `test_telegram_link_with_user_has_three_segments`, `test_delivery_telegram_link_names_the_storage_bucket`, `test_delivery_telegram_without_user_uses_effective_user` (and the updated `test_delivery_telegram_produces_remote_link`) in `backend/tests/test_artifact_presenter.py`.
 - Delete-when: #10 is retired.
 - Upstream status: none (Argus-only, the `/f/` fileserver is Argus nginx).
+
+## Patch #104
+
+**Patch #104 - Sandbox shell commands never wait on a prompt, and a silence stop says what it means** (2026-10-06)
+
+- Class: argus-edit (`AioSandbox._noninteractive`, `_exec_shell` and the `no_change_timeout` branch of `_render_shell_output` in `community/aio_sandbox/aio_sandbox.py`; two bullets in the `bash` tool docstring, `sandbox/tools.py`).
+- Intent: atlas-nicholas thread a8946aaf (2026-10-06), six `bash` calls in one morning ended "no output change for 605 seconds". Two causes in the pinned sandbox image (`742062f9`): its `/v1/shell/exec` drops `no_change_timeout`/`hard_timeout` and uses its own 120 s no-change limit (so `sleep 150` or `sleep 200` in one call always trips, and the 605 in the notice is wrong for this image), and the shell is a tmux pane whose stdin is a terminal (so `rm` on a write-protected file waited for a `y` nobody typed). Each command on the legacy shell path now runs as `{ <cmd>\n} </dev/null`: a brace group, so `cd` and exports still persist, with the newline keeping a trailing heredoc terminator on its own line; comment-only commands and a trailing line continuation pass unchanged. The `bash.exec` path already does `exec < /dev/null` upstream (#6117). The no-change notice keeps upstream's sentence and adds what this image does (stops waiting after about 120 s, does not kill the command) and what to do (waits under 100 s, background plus short polls); the `bash` docstring says the same and asks for non-interactive flags.
+- Tests: `TestNoninteractiveShell` in `backend/tests/test_aio_sandbox.py` (grouping, heredoc, pass-through cases, a real `bash` run of a wrapped `rm`, the notice); three scoped-session tests and `test_aio_sandbox_no_env_leaves_command_unchanged` (`backend/tests/test_github_token_plumbing.py`) compare against the wrapped command.
+- Delete-when: the pinned sandbox image honours `no_change_timeout` and runs shell commands without a terminal stdin (bump the digest in acropolis VERSIONS.md, re-check, then drop the wrapper and the guidance).
+- Upstream status: none (the wrapper works around our pinned image; upstream's own fix is the newer image).
+

@@ -1340,7 +1340,7 @@ class TestScopedShellSessions:
         for thread in threads:
             thread.join()
 
-        assert sorted(outputs) == ["subagent-a", "subagent-b"]
+        assert sorted(outputs) == sorted(_noninteractive(c) for c in ("subagent-a", "subagent-b"))
         assert max_active == 2
         assert len(set(session_ids)) == 2
 
@@ -1538,7 +1538,7 @@ class TestScopedShellSessions:
         assert not teardown_thread.is_alive()
         assert queued_results == ["Error: sandbox command scope is no longer active"]
         assert len(created_ids) == 1
-        assert executed_commands == ["initial"]
+        assert executed_commands == [_noninteractive("initial")]
         assert cleaned_ids == created_ids
 
     def test_queued_command_cannot_restart_session_while_sandbox_closes(self, sandbox):
@@ -1574,7 +1574,7 @@ class TestScopedShellSessions:
         assert not teardown_thread.is_alive()
         assert queued_results == ["Error: sandbox command scope is no longer active"]
         assert len(created_ids) == 1
-        assert executed_commands == ["initial"]
+        assert executed_commands == [_noninteractive("initial")]
         assert cleaned_ids == created_ids
 
     def test_scoped_unknown_status_is_ambiguous_without_replay(self, sandbox):
@@ -2717,3 +2717,49 @@ def test_list_dir_preserves_trailing_space_in_filename(sandbox):
     sandbox._client.shell.exec_command = MagicMock(return_value=SimpleNamespace(data=SimpleNamespace(output="/test/notes.txt \n/test/sub\n\n__DF_FIND_STATUS__:0\n", exit_code=0)))
 
     assert sandbox.list_dir("/test") == ["/test/notes.txt ", "/test/sub"]
+
+
+class TestNoninteractiveShell:
+    """[argus patch #104] Commands run with stdin from /dev/null in the persistent shell."""
+
+    def test_commands_are_grouped_with_stdin_from_dev_null(self):
+        assert _noninteractive("rm check.sh") == "{ rm check.sh\n} </dev/null"
+        # A brace group, not a subshell: cd and exports persist in the session.
+        assert _noninteractive("cd /tmp && export X=1").startswith("{ cd /tmp")
+
+    def test_a_trailing_heredoc_terminator_stays_on_its_own_line(self):
+        cmd = "cat > f <<'EOF'\nhello\nEOF\n"
+        assert _noninteractive(cmd) == "{ cat > f <<'EOF'\nhello\nEOF\n} </dev/null"
+
+    def test_comment_only_and_continued_commands_are_sent_as_is(self):
+        assert _noninteractive("# just a note") == "# just a note"
+        assert _noninteractive("echo a \\") == "echo a \\"
+        assert _noninteractive("") == ""
+
+    def test_the_wrapped_command_runs_and_never_waits_on_a_prompt(self, tmp_path):
+        import subprocess
+
+        target = tmp_path / "ro.txt"
+        target.write_text("x")
+        target.chmod(0o444)
+        # rm prompts on a write-protected file only when stdin is a terminal;
+        # with the wrapper it must decide without reading (and with -f it never asks).
+        cmd = _noninteractive(f"cd {tmp_path} && rm -f ro.txt && echo gone")
+        out = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=10)
+        assert out.stdout.strip() == "gone" and not target.exists()
+
+    def test_a_no_change_timeout_explains_the_sandbox_limit(self):
+        out = _render_shell_output("partial", None, status="no_change_timeout", timeout=600)
+        assert "about 120 s" in out and "background" in out and "may still be running" in out
+
+
+def _noninteractive(command):
+    from deerflow.community.aio_sandbox.aio_sandbox import AioSandbox
+
+    return AioSandbox._noninteractive(command)
+
+
+def _render_shell_output(*args, **kwargs):
+    from deerflow.community.aio_sandbox.aio_sandbox import AioSandbox
+
+    return AioSandbox._render_shell_output(*args, **kwargs)

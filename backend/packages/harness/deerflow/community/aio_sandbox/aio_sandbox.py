@@ -390,6 +390,26 @@ class AioSandbox(Sandbox):
             self._recovery_session_id = self._create_shell_session(client)
         return self._recovery_session_id
 
+    @staticmethod
+    def _noninteractive(command: str) -> str:
+        """[argus patch #104] Run one command with stdin from /dev/null.
+
+        The legacy shell is a persistent tmux pane, so stdin is a terminal:
+        `rm` on a write-protected file, `cp -i`, `apt` without `-y` or a git
+        credential prompt waits for an answer nobody gives, until the sandbox
+        stops waiting (atlas-nicholas 2026-10-06: `rm check.sh` on a
+        root-owned file). A brace group, not a subshell, so `cd` and
+        exported variables still persist in the session; the newline before
+        `}` keeps a trailing heredoc terminator on its own line. A command
+        that is only comments, or ends in a line continuation, is sent as is.
+        """
+        body = command.rstrip()
+        if not body or body.endswith("\\"):
+            return command
+        if all(not line.strip() or line.lstrip().startswith("#") for line in body.splitlines()):
+            return command
+        return "{ " + body + "\n} </dev/null"
+
     def _exec_shell(
         self,
         client,
@@ -399,7 +419,7 @@ class AioSandbox(Sandbox):
         timeout: float,
     ) -> tuple[str, int | None, str | None]:
         kwargs = {
-            "command": command,
+            "command": self._noninteractive(command),
             "no_change_timeout": self._effective_no_change_timeout(timeout),
             "hard_timeout": timeout,
             "request_options": self._command_request_options(timeout),
@@ -658,6 +678,9 @@ class AioSandbox(Sandbox):
         if status == "no_change_timeout":
             effective_no_change_timeout = cls._effective_no_change_timeout(timeout)
             notice = f"Command produced no output change for {effective_no_change_timeout} seconds; it may still be running. Command outcome is unknown and was not retried."
+            # [argus patch #104] The pinned sandbox image ignores that limit and
+            # stops waiting after about 120 s without new output.
+            notice += f" {cls._SILENCE_GUIDANCE}"
             return f"{output}\n{notice}" if output else notice
 
         if status == "terminated":
@@ -684,6 +707,12 @@ class AioSandbox(Sandbox):
     # The per-command effective value is max(600, ceil(T + 5)); at the default
     # T=600, the value sent to the sandbox is therefore 605, not 600.
     _DEFAULT_NO_CHANGE_TIMEOUT = 600
+
+    # [argus patch #104] What a no-change timeout means on the pinned sandbox
+    # image, whose shell API drops `no_change_timeout`/`hard_timeout` and uses
+    # its own 120 s no-change limit: the command was not killed and keeps
+    # running in the abandoned session.
+    _SILENCE_GUIDANCE = "This sandbox stops waiting after about 120 s without new output, without killing the command. Keep any single wait under 100 s; run long work in the background (`cmd > log 2>&1 &`) and check it with short commands."
 
     # Fallback command hard timeout for both the legacy shell path and
     # env-bearing commands routed through bash.exec when no provider default is set.

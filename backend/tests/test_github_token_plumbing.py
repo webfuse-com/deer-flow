@@ -177,7 +177,8 @@ def test_aio_sandbox_no_env_leaves_command_unchanged() -> None:
 
     sbx.execute_command("echo hello")
 
-    assert captured["command"] == "echo hello"
+    # No token env prefix; only the [argus patch #104] stdin wrapper.
+    assert captured["command"] == "{ echo hello\n} </dev/null"
 
 
 # ---------------------------------------------------------------------------
