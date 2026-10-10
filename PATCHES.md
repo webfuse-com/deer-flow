@@ -163,6 +163,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#103](#patch-103) | Open tabs stream runs they did not start: `GET /api/threads/activity` + the workspace subscribes and rejoins | argus-new | this PR |
 | [#104](#patch-104) | Sandbox shell commands run with stdin from `/dev/null`; a no-change timeout and the bash tool say what the pinned image's ~120 s silence limit means | argus-edit | this PR |
 | [#105](#patch-105) | IM chat-to-thread bindings stay in `channels/store.json` on every database backend (`channels.binding_store: json`, the fork default) | argus-edit | this PR |
+| [#106](#patch-106) | The Jev memory pre-screen in `shadow` judges batches while staleness review or consolidation is on (only `enforce` can skip) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2298,6 +2299,18 @@ carry budget ledger.
 - Tests: `backend/tests/test_argus_channel_binding_store.py`.
 - Delete-when: the acropolis host tooling reads the bindings through the table or a gateway endpoint; then set `binding_store: auto` on one stack, verify the import, and drop the patch.
 - Upstream status: none (deployment-specific).
+
+---
+
+## Patch #106
+
+**Patch #106 - Shadow memory pre-screen judges while maintenance review is on** (2026-10-10)
+
+- Class: argus-edit (`MemoryJudgingCoordinator._prescreen_eligibility`, `agents/memory/signals/coordinator.py`).
+- Intent: upstream's rule L8 makes a batch ineligible for the TypeSafe (Jev) pre-screen while `staleness_review_enabled` (DeerMem's default) or `consolidation_enabled` is on, because a skip would also skip that batch's maintenance review. Only `enforce` ever skips (the effective skip requires `MODE_ENFORCE`), so in `shadow` the rule only stops the measurement: with Argus's defaults shadow judged nothing. L8 now applies to `enforce` only; shadow judges, records and still extracts.
+- Tests: `test_shadow_judges_with_maintenance_review_on` in `backend/tests/test_memory_prescreen.py`; the enforce case (`test_maintenance_review_disables_skipping`) is unchanged.
+- Delete-when: upstream applies L8 to `enforce` only, or Argus moves the pre-screen to `enforce` with maintenance off.
+- Upstream status: none sent (generic-upstreamable: the rule's own rationale names skipping).
 
 ---
 
