@@ -32,7 +32,9 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { PluginSurfaces } from "@/components/workspace/plugin-surfaces";
 import { ProjectDocumentsSection } from "@/components/workspace/projects/project-documents-section";
+import { useProjectPluginTabs } from "@/components/workspace/projects/project-plugin-tabs";
 import { ProjectThreadsSection } from "@/components/workspace/projects/project-threads-section";
 import {
   WorkspaceBody,
@@ -75,6 +77,8 @@ export default function ProjectPage() {
   });
   const projectThreads = threadsQuery.data?.pages.flatMap((page) => page) ?? [];
   const [tab, setTab] = useState("chats");
+  // Plugins can add tabs after Settings (`project-tab` surfaces).
+  const pluginTabs = useProjectPluginTabs();
 
   useEffect(() => {
     document.title = project?.name
@@ -120,6 +124,11 @@ export default function ProjectPage() {
                     <TabsTrigger value="settings">
                       {t.projects.settings}
                     </TabsTrigger>
+                    {pluginTabs.map(({ surface, value }) => (
+                      <TabsTrigger key={value} value={value}>
+                        {surface.title}
+                      </TabsTrigger>
+                    ))}
                   </TabsList>
                   <TabsContent value="chats">
                     <ProjectThreadsSection query={threadsQuery} />
@@ -152,6 +161,20 @@ export default function ProjectPage() {
                       project={project}
                     />
                   </TabsContent>
+                  {pluginTabs.map(({ contribution, surface, value }) => (
+                    <TabsContent key={value} value={value}>
+                      <PluginSurfaces
+                        slot="project-tab"
+                        namespace={contribution.namespace}
+                        surfaceId={surface.id}
+                        project={{
+                          id: project.id,
+                          name: project.name,
+                          status: project.status,
+                        }}
+                      />
+                    </TabsContent>
+                  ))}
                 </Tabs>
               </>
             )}

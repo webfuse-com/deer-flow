@@ -288,3 +288,25 @@ for (const field of ["mentionProviders", "surfaces"] as const) {
     ]);
   });
 }
+
+test("accepts project-tab surfaces and rejects unknown slots and project-tab navigation", async () => {
+  const assets = {
+    ...entry,
+    transport: "assets-v1" as const,
+    entry: `/api/plugins/${entry.namespace}/assets/${"b".repeat(64)}/index.mjs`,
+  };
+  const mount = () => ({ dispose: () => undefined });
+  const tab = { id: "details", slot: "project-tab", title: "Details", mount };
+  for (const [surfaces, ok] of [
+    [[tab], true],
+    [[{ ...tab, slot: "panel" }], false],
+    [[{ ...tab, navigation: { label: "Details" } }], false],
+  ] as const) {
+    const importer = rs
+      .fn()
+      .mockResolvedValue({ default: { ...extension, surfaces } });
+    const [loaded] = await loadFrontendExtensions([assets], rs.fn(), importer);
+    if (ok) expect(loaded?.extension?.surfaces).toEqual([tab]);
+    else expect(loaded?.error).toBeTruthy();
+  }
+});

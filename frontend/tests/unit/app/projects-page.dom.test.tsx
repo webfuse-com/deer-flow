@@ -22,6 +22,11 @@ const mocks = rs.hoisted(() => ({
   patchMutate: rs.fn(),
   patchPending: false,
   patchSuccess: false,
+  pluginTabs: [] as {
+    contribution: { namespace: string };
+    surface: { id: string; title: string };
+    value: string;
+  }[],
 }));
 
 rs.mock("next/navigation", () => ({
@@ -84,6 +89,21 @@ rs.mock("@/components/workspace/projects/project-documents-section", () => ({
 rs.mock("@/components/workspace/projects/project-threads-section", () => ({
   ProjectThreadsSection: () => <div />,
 }));
+rs.mock("@/components/workspace/projects/project-plugin-tabs", () => ({
+  useProjectPluginTabs: () => mocks.pluginTabs,
+}));
+rs.mock("@/components/workspace/plugin-surfaces", () => ({
+  PluginSurfaces: (props: {
+    slot: string;
+    namespace: string;
+    surfaceId: string;
+    project: { id: string; name: string; status: string };
+  }) => (
+    <div data-testid="plugin-surface">
+      {`${props.slot}|${props.namespace}|${props.surfaceId}|${props.project.id}|${props.project.name}|${props.project.status}`}
+    </div>
+  ),
+}));
 
 import ProjectPage from "@/app/workspace/projects/[id]/page";
 import { I18nProvider } from "@/core/i18n/context";
@@ -110,6 +130,7 @@ function openInstructionsTab() {
 }
 
 beforeEach(() => {
+  mocks.pluginTabs = [];
   mocks.project = makeProject("");
   mocks.projectsConfig = undefined;
   mocks.patchPending = false;
@@ -335,5 +356,29 @@ describe("ProjectPage rename reconciliation", () => {
 
     expect(nameInput()).toHaveProperty("value", "Alpha");
     expect(screen.getByRole("button", { name: "Restore" })).toBeDefined();
+  });
+});
+
+describe("ProjectPage plugin tabs", () => {
+  it("renders a plugin's project tab after Settings and mounts it with the project", () => {
+    mocks.pluginTabs = [
+      {
+        contribution: { namespace: "argus" },
+        surface: { id: "details", title: "Details" },
+        value: "plugin:argus:details",
+      },
+    ];
+    render(<ProjectPage />, { wrapper: Wrapper });
+    const names = screen.getAllByRole("tab").map((t) => t.textContent);
+    expect(names.slice(-2)).toEqual(["Settings", "Details"]);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Details" }));
+    expect(screen.getByTestId("plugin-surface").textContent).toBe(
+      "project-tab|argus|details|proj-1|Alpha|active",
+    );
+  });
+
+  it("shows only the host tabs when no plugin contributes one", () => {
+    render(<ProjectPage />, { wrapper: Wrapper });
+    expect(screen.getAllByRole("tab")).toHaveLength(4);
   });
 });

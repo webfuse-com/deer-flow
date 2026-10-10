@@ -551,6 +551,9 @@ export interface Translations {
     shelfNameLabel: string;
     viewTrash: string;
     documentsLoadFailed: string;
+    documentOpenFullScreen: string;
+    documentExitFullScreen: string;
+    documentSaved: string;
     threadFilesLoadFailed: string;
     interimMemoryNotice: string;
   };

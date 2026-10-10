@@ -4,7 +4,10 @@ import {
   Archive,
   FileText,
   LoaderIcon,
+  Maximize2,
+  Minimize2,
   Paperclip,
+  Pencil,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -36,6 +39,7 @@ import {
   ArtifactFilePreview,
   formatArtifactBytes,
 } from "@/components/workspace/artifacts/artifact-file-preview";
+import { CodeEditor } from "@/components/workspace/code-editor";
 import { getTabularDelimiter } from "@/core/artifacts/preview";
 import {
   resolveArtifactOpenURL,
@@ -52,6 +56,7 @@ import {
   useProjectsConfig,
   useInfiniteProjectThreadFiles,
   usePromoteThreadFile,
+  useSaveProjectDocumentVersion,
   useUploadProjectDocument,
   type Project,
   type ProjectDocument,
@@ -342,6 +347,7 @@ function ProjectDocumentShelf({
         project={project}
         document={previewDoc}
         onClose={() => setPreviewDoc(null)}
+        onSaved={setPreviewDoc}
       />
       <AttachToThreadDialog
         document={attachDoc}
@@ -494,14 +500,21 @@ function DocumentPreviewDialog({
   project,
   document,
   onClose,
+  onSaved,
 }: {
   project: Project;
   document: ProjectDocument | null;
   onClose: () => void;
+  /** [argus patch #108] The dialog moves to the saved version. */
+  onSaved?: (document: ProjectDocument) => void;
 }) {
   const { t } = useI18n();
   const [preview, setPreview] = useState<ProjectDocumentPreview | null>(null);
   const [failed, setFailed] = useState(false);
+  // [argus patch #108] Full-screen view and editing text as a new version.
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const saveVersion = useSaveProjectDocumentVersion(project.id);
 
   useEffect(() => {
     if (!document) {
@@ -510,6 +523,7 @@ function DocumentPreviewDialog({
     let cancelled = false;
     setPreview(null);
     setFailed(false);
+    setDraft(null);
     fetchProjectDocumentPreview(project.id, document.id)
       .then((result) => {
         if (!cancelled) {
@@ -543,15 +557,103 @@ function DocumentPreviewDialog({
   const downloadUrl = document
     ? urlOfProjectDocumentContent(project.id, document.id, { download: true })
     : "";
+  // Only a fully loaded text preview on an active shelf can be edited.
+  const editable =
+    preview?.kind === "text" &&
+    !preview.truncated &&
+    project.status === "active";
+  const editing = editable && draft !== null;
+  const save = () => {
+    if (!document || draft === null || saveVersion.isPending) return;
+    saveVersion.mutate(
+      { documentId: document.id, content: draft },
+      {
+        onSuccess: (result) => {
+          setDraft(null);
+          toast.success(t.projects.documentSaved);
+          if (result.document.id !== document.id) onSaved?.(result.document);
+        },
+        onError: (error) => toast.error(error.message),
+      },
+    );
+  };
 
   return (
     <Dialog
       open={document !== null}
-      onOpenChange={(open) => !open && onClose()}
+      onOpenChange={(open) => {
+        if (!open) {
+          setExpanded(false);
+          setDraft(null);
+          onClose();
+        }
+      }}
     >
-      <DialogContent className="flex h-[70vh] flex-col sm:max-w-[720px]">
-        <DialogHeader>
-          <DialogTitle className="truncate">{document?.name ?? ""}</DialogTitle>
+      <DialogContent
+        className={cn(
+          "flex flex-col",
+          expanded
+            ? "h-[100dvh] w-screen max-w-none rounded-none sm:max-w-none"
+            : "h-[70vh] sm:max-w-[720px]",
+        )}
+        data-testid="project-document-preview-dialog"
+        data-expanded={expanded ? "true" : "false"}
+      >
+        <DialogHeader className="flex-row items-center gap-2 pr-8">
+          <DialogTitle className="min-w-0 flex-1 truncate">
+            {document?.name ?? ""}
+          </DialogTitle>
+          {editable && !editing && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                setDraft(preview?.kind === "text" ? preview.content : "")
+              }
+            >
+              <Pencil className="size-4" />
+              {t.common.edit}
+            </Button>
+          )}
+          {editing && (
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={saveVersion.isPending}
+                onClick={() => setDraft(null)}
+              >
+                {t.common.cancel}
+              </Button>
+              <Button size="sm" disabled={saveVersion.isPending} onClick={save}>
+                {saveVersion.isPending && (
+                  <LoaderIcon className="size-4 animate-spin" />
+                )}
+                {t.common.save}
+              </Button>
+            </>
+          )}
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            aria-label={
+              expanded
+                ? t.projects.documentExitFullScreen
+                : t.projects.documentOpenFullScreen
+            }
+            title={
+              expanded
+                ? t.projects.documentExitFullScreen
+                : t.projects.documentOpenFullScreen
+            }
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? (
+              <Minimize2 className="size-4" />
+            ) : (
+              <Maximize2 className="size-4" />
+            )}
+          </Button>
         </DialogHeader>
         {preview?.kind === "text" && preview.truncated && (
           <div
@@ -572,7 +674,17 @@ function DocumentPreviewDialog({
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-auto rounded-md border">
-          {failed ? (
+          {editing ? (
+            <CodeEditor
+              className="size-full resize-none rounded-none border-none"
+              value={draft ?? ""}
+              language={language}
+              disabled={saveVersion.isPending}
+              autoFocus
+              onChange={setDraft}
+              onSave={save}
+            />
+          ) : failed ? (
             <div className="text-muted-foreground p-4 text-sm">
               {t.projects.documentsLoadFailed}
             </div>

@@ -27,6 +27,7 @@ import {
   PROJECTS_QUERY_KEY,
   promoteThreadFile,
   restoreProject,
+  saveProjectDocumentVersion,
   uploadProjectDocument,
   type ProjectDocumentListResponse,
   type ProjectDocumentUploadResponse,
@@ -285,6 +286,22 @@ export function useUploadProjectDocument(projectId: string) {
     { file: File; name?: string }
   >({
     mutationFn: (input) => uploadProjectDocument(projectId, input),
+    onSettled() {
+      invalidateProjectCaches(queryClient);
+    },
+  });
+}
+
+/** [argus patch #108] Save an edited text document as a new version. */
+export function useSaveProjectDocumentVersion(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<
+    ProjectDocumentUploadResponse,
+    Error,
+    { documentId: string; content: string }
+  >({
+    mutationFn: ({ documentId, content }) =>
+      saveProjectDocumentVersion(projectId, documentId, content),
     onSettled() {
       invalidateProjectCaches(queryClient);
     },

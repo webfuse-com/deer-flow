@@ -12,6 +12,11 @@ export const ThreadContext = createContext<ThreadContextType | undefined>(
   undefined,
 );
 
+/** [argus patch #108] The thread, or undefined outside a chat (e.g. the project page). */
+export function useOptionalThread() {
+  return useContext(ThreadContext);
+}
+
 export function useThread() {
   const context = useContext(ThreadContext);
   if (context === undefined) {

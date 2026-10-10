@@ -8,6 +8,7 @@ import {
   pluginPages,
   pluginPageTitle,
   pluginPagePath,
+  pluginProjectTabs,
 } from "@/core/extensions/pages";
 import {
   loadFrontendExtensions,
@@ -98,5 +99,30 @@ describe("plugin-owned pages", () => {
       expect(result[0]?.error).toBeTruthy();
       expect(pluginPages(result)).toEqual([]);
     }
+  });
+});
+
+describe("plugin project tabs", () => {
+  test("only enabled project-tab surfaces become namespaced tabs, never pages", () => {
+    const tab: PluginSurface = {
+      id: "details",
+      title: "Details",
+      slot: "project-tab",
+      mount: () => ({ dispose: () => undefined }),
+    };
+    const withTab: LoadedContribution = {
+      ...entry,
+      extension: { ...entry.extension!, surfaces: [library, tab] },
+    };
+    const tabs = pluginProjectTabs([
+      withTab,
+      { ...withTab, namespace: "off", settings: { enabled: false } },
+    ]);
+    expect(tabs.map(({ value }) => value)).toEqual([
+      "plugin:community.bookmarks:details",
+    ]);
+    expect(pluginPages([withTab]).map(({ surface }) => surface.id)).toEqual([
+      "library",
+    ]);
   });
 });

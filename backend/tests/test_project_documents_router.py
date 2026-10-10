@@ -601,3 +601,83 @@ class TestDeleteScopesToTheUrlProject:
             assert client.delete(f"/api/projects/{project_a['id']}/documents/{doc['id']}").status_code == 404
             assert client.get(f"/api/projects/{project_b['id']}/documents/{doc['id']}/content").status_code == 200
             assert client.delete(f"/api/projects/{project_b['id']}/documents/{doc['id']}").status_code == 204
+
+
+class TestDocumentVersions:
+    """[argus patch #108] Saving an edited text document as a new version."""
+
+    def _version(self, client: TestClient, pid: str, doc_id: str, content: str, **kwargs) -> Any:
+        return client.post(f"/api/projects/{pid}/documents/{doc_id}/versions", json={"content": content}, **kwargs)
+
+    def test_new_version_replaces_the_old_one_with_provenance(self, tmp_path):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            pid = _create_project(client)["id"]
+            first = _upload(client, pid, "notes.md", b"# v1").json()["document"]
+
+            saved = self._version(client, pid, first["id"], "# v2")
+            assert saved.status_code == 201
+            doc = saved.json()["document"]
+            assert doc["name"] == "notes.md" and doc["source_kind"] == "edit"
+            assert doc["source_name"] == first["id"]
+            assert client.get(f"/api/projects/{pid}/documents/{doc['id']}/content").text == "# v2"
+            listed = client.get(f"/api/projects/{pid}/documents").json()
+            assert [d["id"] for d in listed["documents"]] == [doc["id"]]
+
+            # A chain keeps the first provenance key.
+            third = self._version(client, pid, doc["id"], "# v3").json()["document"]
+            assert third["source_name"] == first["id"]
+
+    def test_a_mirrored_document_keeps_its_source_name(self, tmp_path):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            pid = _create_project(client)["id"]
+            first = _upload(client, pid, "PLAN.md", b"plan").json()["document"]
+
+            async def _mark_mirrored() -> None:
+                from sqlalchemy import update
+
+                from deerflow.persistence.projects.model import ProjectDocumentRow
+
+                async with get_session_factory()() as session:
+                    await session.execute(update(ProjectDocumentRow).where(ProjectDocumentRow.id == first["id"]).values(source_kind="mirror", source_name="PLAN.md"))
+                    await session.commit()
+
+            anyio.run(_mark_mirrored)
+            doc = self._version(client, pid, first["id"], "plan v2").json()["document"]
+            assert doc["source_kind"] == "edit" and doc["source_name"] == "PLAN.md"
+
+    def test_unchanged_text_and_dedup_hits_trash_nothing(self, tmp_path):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            pid = _create_project(client)["id"]
+            a = _upload(client, pid, "a.md", b"same").json()["document"]
+            b = _upload(client, pid, "b.md", b"other").json()["document"]
+
+            unchanged = self._version(client, pid, a["id"], "same")
+            assert unchanged.status_code == 200 and unchanged.json()["document"]["id"] == a["id"]
+
+            # b's new text equals a's bytes: the shelf returns a, b stays.
+            dedup = self._version(client, pid, b["id"], "same")
+            assert dedup.status_code == 200 and dedup.json()["deduplicated"] is True
+            ids = {d["id"] for d in client.get(f"/api/projects/{pid}/documents").json()["documents"]}
+            assert ids == {a["id"], b["id"]}
+
+    def test_fail_closed_empty_and_size_limit(self, tmp_path):
+        app = _build_app(tmp_path)
+        with TestClient(app) as client:
+            pid = _create_project(client)["id"]
+            doc = _upload(client, pid, "a.md", b"a").json()["document"]
+            assert self._version(client, pid, "nope", "x").status_code == 404
+            assert self._version(client, "nope", doc["id"], "x").status_code == 404
+            assert self._version(client, pid, doc["id"], "x", headers=_as_user("user-b")).status_code == 404
+            assert self._version(client, pid, doc["id"], "").status_code == 400
+
+            small = MagicMock()
+            small.uploads = {"max_file_size": 4}
+            app.dependency_overrides[get_config] = lambda: small
+            assert self._version(client, pid, doc["id"], "12345").status_code == 413
+
+            app.dependency_overrides[get_config] = lambda: MagicMock(uploads={})
+            assert client.post(f"/api/projects/{pid}/archive").status_code == 200
+            assert self._version(client, pid, doc["id"], "b").status_code == 404

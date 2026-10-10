@@ -40,7 +40,16 @@ export type ProjectThread = {
   updated_at?: string;
 };
 
-export type ProjectDocumentSourceKind = "upload" | "output";
+/**
+ * ``edit``: a new version saved from the document dialog ([argus patch #108]).
+ * Deployments may add their own kinds (e.g. a mirror); unknown values render
+ * like an upload.
+ */
+export type ProjectDocumentSourceKind =
+  | "upload"
+  | "output"
+  | "edit"
+  | (string & {});
 
 /**
  * One active shelf row as returned by the project documents API

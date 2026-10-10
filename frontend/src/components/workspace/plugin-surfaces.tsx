@@ -4,7 +4,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/core/auth/AuthProvider";
-import type { PluginSurface, SurfaceSlot } from "@/core/extensions/contracts";
+import type {
+  PluginSurface,
+  SurfaceProject,
+  SurfaceSlot,
+} from "@/core/extensions/contracts";
 import {
   useFrontendExtensions,
   useFrontendServices,
@@ -24,10 +28,12 @@ function Surface({
   entry,
   surface,
   threadId,
+  project,
 }: {
   entry: LoadedContribution;
   surface: PluginSurface;
   threadId?: string;
+  project?: SurfaceProject;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -37,6 +43,9 @@ function Surface({
   const currentServices = useRef(services);
   currentServices.current = services;
   const [failed, setFailed] = useState(false);
+  const projectId = project?.id;
+  const projectName = project?.name;
+  const projectStatus = project?.status;
   useEffect(() => {
     if (!ref.current) return;
     const abort = new AbortController();
@@ -48,6 +57,14 @@ function Surface({
         locale,
         settings: entry.settings,
         threadId,
+        project:
+          projectId !== undefined
+            ? {
+                id: projectId,
+                name: projectName ?? "",
+                status: projectStatus ?? "",
+              }
+            : undefined,
         openConversation: (id, signal) =>
           openConversation(id, (path) => router.push(path), signal),
         callBackend: bindFrontendServices(
@@ -62,7 +79,17 @@ function Surface({
       abort.abort();
       cleanup();
     };
-  }, [entry, surface, locale, threadId, user?.id, router]);
+  }, [
+    entry,
+    surface,
+    locale,
+    threadId,
+    projectId,
+    projectName,
+    projectStatus,
+    user?.id,
+    router,
+  ]);
   return (
     <section aria-label={surface.title}>
       {failed && <p role="alert">{t.extensions.viewFailed}</p>}
@@ -76,11 +103,13 @@ export function PluginSurfaces({
   namespace,
   surfaceId,
   threadId,
+  project,
 }: {
   slot: SurfaceSlot;
   namespace?: string;
   surfaceId?: string;
   threadId?: string;
+  project?: SurfaceProject;
 }) {
   const query = useFrontendExtensions();
   const { user } = useAuth();
@@ -96,10 +125,11 @@ export function PluginSurfaces({
         )
         .map((surface) => (
           <Surface
-            key={`${user?.id}:${threadId}:${entry.namespace}:${surface.id}`}
+            key={`${user?.id}:${threadId}:${project?.id}:${entry.namespace}:${surface.id}`}
             entry={entry}
             surface={surface}
             threadId={threadId}
+            project={project}
           />
         )),
     );
