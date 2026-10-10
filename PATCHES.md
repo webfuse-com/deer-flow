@@ -2337,6 +2337,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_project_documents_router.py::TestDocumentVersions` (new version + trash + provenance chain, mirrored `source_name` kept, unchanged and dedup no-ops, 404/400/413, archived 404); `frontend/tests/unit/components/workspace/projects/project-documents-section.dom.test.tsx` (full-screen toggle, edit and save, no edit when archived or truncated).
 - Delete-when: upstream ships document versions or editing.
 - Upstream status: none sent (generic-upstreamable).
+- The versions route is on the personal-access-token allow list next to document upload (`app/gateway/auth/pat.py`); `test_pat_projects_policy_admits_exactly_the_mounted_routes` requires every mounted project route to be classified.
 
 ---
 

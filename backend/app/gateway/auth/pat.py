@@ -82,6 +82,8 @@ _PAT_ROUTE_RULES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
     (frozenset({"GET", "POST"}), re.compile(r"^/api/projects/[^/]+/documents$")),
     (frozenset({"GET"}), re.compile(r"^/api/projects/[^/]+/documents/[^/]+/content$")),
     (frozenset({"DELETE"}), re.compile(r"^/api/projects/[^/]+/documents/[^/]+$")),
+    # [argus patch #108] save an edited text document as a new version (as upload)
+    (frozenset({"POST"}), re.compile(r"^/api/projects/[^/]+/documents/[^/]+/versions$")),
     # Promotion and the conversation-files view (Phase 2 Slice C): save a
     # thread file to the shelf, attach a shelf document to a thread, and the
     # read-only member-thread file aggregation. Scope narrowing
