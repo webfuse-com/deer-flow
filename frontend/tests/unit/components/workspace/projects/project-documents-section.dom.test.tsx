@@ -40,6 +40,7 @@ const mocks = rs.hoisted(() => {
     deleteMutate: rs.fn(),
     attachMutate: rs.fn(),
     promoteMutate: rs.fn(),
+    saveMutate: rs.fn(),
     fetchPreview:
       rs.fn<
         (
@@ -129,6 +130,10 @@ rs.mock("@/core/projects", () => {
       mutate: mocks.promoteMutate,
       isPending: false,
     }),
+    useSaveProjectDocumentVersion: () => ({
+      mutate: mocks.saveMutate,
+      isPending: false,
+    }),
     fetchProjectDocumentPreview: mocks.fetchPreview,
     ProjectDocumentContentMissingError: mocks.MockContentMissingError,
     urlOfProjectDocumentContent: (
@@ -172,6 +177,23 @@ rs.mock("@/components/workspace/artifacts/artifact-file-preview", () => ({
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
   },
+}));
+
+// CodeMirror is heavy and irrelevant here: a textarea stands in for the editor.
+rs.mock("@/components/workspace/code-editor", () => ({
+  CodeEditor: ({
+    value,
+    onChange,
+  }: {
+    value: string;
+    onChange?: (value: string) => void;
+  }) => (
+    <textarea
+      aria-label="Document editor"
+      value={value}
+      onChange={(event) => onChange?.(event.target.value)}
+    />
+  ),
 }));
 
 rs.mock("next/link", () => {
@@ -714,4 +736,74 @@ describe("ProjectDocumentsSection", () => {
       expect(screen.getByText("Untitled")).toBeDefined();
     },
   );
+});
+
+describe("[argus patch #108] document dialog: full screen and editing", () => {
+  const textPreview = {
+    kind: "text" as const,
+    content: "# v1",
+    truncated: false,
+    previewBytes: 4,
+    totalBytes: 4,
+  };
+
+  async function openPreview(project = makeProject()) {
+    mocks.documents = [makeDocument({ id: "doc-md", name: "notes.md" })];
+    mocks.fetchPreview.mockResolvedValue(textPreview);
+    render(<ProjectDocumentsSection project={project} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    return screen.findByTestId("project-document-preview-dialog");
+  }
+
+  it("toggles full screen", async () => {
+    const dialog = await openPreview();
+    expect(dialog.getAttribute("data-expanded")).toBe("false");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Open full screen" }),
+    );
+    expect(dialog.getAttribute("data-expanded")).toBe("true");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Exit full screen" }),
+    );
+    expect(dialog.getAttribute("data-expanded")).toBe("false");
+  });
+
+  it("edits a text document and saves it as a new version", async () => {
+    const dialog = await openPreview();
+    fireEvent.click(
+      await within(dialog).findByRole("button", { name: "Edit" }),
+    );
+    const editor = within(dialog).getByRole("textbox", {
+      name: "Document editor",
+    });
+    expect((editor as HTMLTextAreaElement).value).toBe("# v1");
+    fireEvent.change(editor, { target: { value: "# v2" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(mocks.saveMutate).toHaveBeenCalledWith(
+      { documentId: "doc-md", content: "# v2" },
+      expect.anything(),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(
+      within(dialog).queryByRole("textbox", { name: "Document editor" }),
+    ).toBeNull();
+  });
+
+  it("offers no editing on an archived project or a truncated preview", async () => {
+    let dialog = await openPreview(makeProject("archived"));
+    await waitFor(() => expect(mocks.fetchPreview).toHaveBeenCalled());
+    expect(within(dialog).queryByRole("button", { name: "Edit" })).toBeNull();
+    cleanup();
+    mocks.fetchPreview.mockResolvedValue({ ...textPreview, truncated: true });
+    mocks.documents = [makeDocument({ id: "doc-md", name: "notes.md" })];
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    dialog = await screen.findByTestId("project-document-preview-dialog");
+    await screen.findByTestId("project-document-preview-truncated");
+    expect(within(dialog).queryByRole("button", { name: "Edit" })).toBeNull();
+  });
 });

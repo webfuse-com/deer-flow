@@ -730,6 +730,9 @@ export const enUS: Translations = {
     shelfNameLabel: "Shelf name",
     viewTrash: "Trash",
     documentsLoadFailed: "Couldn't load project documents",
+    documentOpenFullScreen: "Open full screen",
+    documentExitFullScreen: "Exit full screen",
+    documentSaved: "Saved as a new version",
     threadFilesLoadFailed: "Couldn't load conversation files",
     interimMemoryNotice:
       "Memory stays global for now: anything discussed in a project may enter your global memory until per-project memory arrives in Phase 3.",

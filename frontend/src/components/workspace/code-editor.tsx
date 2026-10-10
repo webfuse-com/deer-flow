@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import { loadCodeEditorExtensions } from "./code-editor-extensions";
-import { useThread } from "./messages/context";
+import { useOptionalThread } from "./messages/context";
 
 export function CodeEditor({
   className,
@@ -33,9 +33,8 @@ export function CodeEditor({
   settings?: unknown;
   language?: string;
 }) {
-  const {
-    thread: { isLoading },
-  } = useThread();
+  // Outside a chat (project documents) there is no thread to wait for.
+  const isLoading = useOptionalThread()?.thread.isLoading ?? false;
   const { resolvedTheme } = useTheme();
   const [loaded, setLoaded] = useState<
     Awaited<ReturnType<typeof loadCodeEditorExtensions>> | undefined
