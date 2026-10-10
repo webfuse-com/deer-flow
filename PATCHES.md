@@ -2288,6 +2288,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_features_router.py` (flag on/off, default on)
 - Delete-when: upstream ships a config switch for the Capability Center, or
   Argus stacks make its saves durable.
+- 2026-10-10: `CapabilityCenterGate` renders nothing until hydration completes (`useSyncExternalStore` server snapshot false). The server never has the flag, and the page's Suspense boundary can hydrate after the sidebar already fetched it into the shared query cache, so rendering children then was a hydration mismatch (React #418; upstream's capability-center e2e after the bookmark-plugin e2e, deterministic locally, on CI for fork PR #89).
 
 ## Patch #105
 
