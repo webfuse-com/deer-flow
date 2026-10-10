@@ -53,7 +53,8 @@ def _make_service(*, channel_running: bool = True, chats: list[dict] | None = No
     service.get_channel.return_value = MagicMock() if channel_running else None
     if chats is None:
         chats = [{"channel_name": "telegram", "chat_id": "8726302666", "user_id": "8726302666"}]
-    service.store.list_entries.return_value = chats
+    # The channel store is async since the 2026-10-10 sync (upstream ChannelStore protocol).
+    service.store.list_entries = AsyncMock(return_value=chats)
     service.bus.publish_inbound = AsyncMock()
     return service
 

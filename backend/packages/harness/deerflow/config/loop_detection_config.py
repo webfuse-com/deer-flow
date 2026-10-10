@@ -1,6 +1,8 @@
 """Configuration for loop detection middleware."""
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+
+from deerflow.config._boolean_guards import reject_boolean
 
 
 class ToolFreqOverride(BaseModel):
@@ -13,6 +15,11 @@ class ToolFreqOverride(BaseModel):
 
     warn: int = Field(ge=1)
     hard_limit: int = Field(ge=1)
+
+    @field_validator("warn", "hard_limit", mode="before")
+    @classmethod
+    def reject_boolean_thresholds(cls, value: object, info: ValidationInfo) -> object:
+        return reject_boolean(value, info, kind="an integer")
 
     @model_validator(mode="after")
     def _validate(self) -> "ToolFreqOverride":
@@ -118,6 +125,19 @@ class LoopDetectionConfig(BaseModel):
         le=10.0,
         description=("[argus patch #100] Ceiling for fresh_result_extension_tools as a multiple of the tool's hard limit; at that count the hard stop fires regardless of freshness. 1.0 disables."),
     )
+
+    @field_validator(
+        "warn_threshold",
+        "hard_limit",
+        "window_size",
+        "max_tracked_threads",
+        "tool_freq_warn",
+        "tool_freq_hard_limit",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_thresholds(cls, value: object, info: ValidationInfo) -> object:
+        return reject_boolean(value, info, kind="an integer")
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":

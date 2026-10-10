@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from deerflow.config.prompt_overlay import PromptOverlay
+
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
 
@@ -37,6 +39,7 @@ class SubagentConfig:
             subagent. ``None`` preserves the historical default (thinking off).
             Only meaningful when the resolved model profile advertises
             ``supports_thinking``; ignored otherwise by the model factory.
+        prompt_overlay: Operator instructions around the complete system message.
     """
 
     name: str
@@ -49,6 +52,7 @@ class SubagentConfig:
     max_turns: int = 50
     timeout_seconds: int = 900
     thinking_enabled: bool | None = None
+    prompt_overlay: PromptOverlay = field(default_factory=PromptOverlay)
 
 
 def _default_model_name(app_config: "AppConfig") -> str:
@@ -64,7 +68,8 @@ def resolve_subagent_thinking(config: SubagentConfig) -> bool:
     honored as-is; the model factory ignores True for models whose profile does
     not advertise ``supports_thinking``.
     """
-    return bool(config.thinking_enabled) if config.thinking_enabled is not None else False
+    thinking = getattr(config, "thinking_enabled", None)  # duck-typed configs may predate the field
+    return bool(thinking) if thinking is not None else False
 
 
 def resolve_subagent_model_name(config: SubagentConfig, parent_model: str | None, *, app_config: "AppConfig | None" = None) -> str:

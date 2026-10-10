@@ -14,7 +14,6 @@ Two layers:
   2. @auth.on — returns metadata filter so each user only sees own threads
 """
 
-import secrets
 from contextvars import ContextVar
 from uuid import uuid4
 
@@ -25,6 +24,7 @@ from app.gateway.auth.errors import TokenError
 from app.gateway.auth.jwt import decode_token
 from app.gateway.auth_disabled import AUTH_DISABLED_USER_ID, is_auth_disabled
 from app.gateway.deps import get_local_provider
+from app.gateway.utils import constant_time_equals
 from deerflow.mcp_scope import (
     THREAD_INCARNATION_CONTEXT_KEY,
     THREAD_INCARNATION_METADATA_GUARD_KEY,
@@ -101,6 +101,7 @@ async def _read_standalone_thread(thread_id, ctx) -> dict | None:
 
 async def _ensure_standalone_thread_incarnation(
     thread_id,
+    assistant_id,
     ctx,
     *,
     create_if_missing: bool,
@@ -124,12 +125,26 @@ async def _ensure_standalone_thread_incarnation(
             raise RuntimeError("Standalone LangGraph thread has an invalid incarnation")
         return stored
 
+    from langgraph_api.utils import AuthContext as RuntimeAuthContext
     from langgraph_runtime.database import connect
-    from langgraph_runtime.ops import Threads
+    from langgraph_runtime.ops import Assistants, Threads
 
     token = _allow_thread_incarnation_write.set(True)
     try:
         async with connect() as conn:
+            auth_token = RuntimeAuthContext.set(None)
+            try:
+                assistant_rows = await Assistants.get(conn, assistant_id, ctx=None)
+                assistant = await anext(assistant_rows, None)
+            finally:
+                RuntimeAuthContext.reset(auth_token)
+            if assistant is None:
+                raise HTTPException(status_code=404, detail="Assistant not found")
+            if assistant.get("metadata", {}).get("created_by") != "system":
+                authorized_rows = await Assistants.get(conn, assistant_id, ctx=ctx)
+                if await anext(authorized_rows, None) is None:
+                    raise HTTPException(status_code=404, detail="Assistant not found")
+
             rows = await Threads.put(
                 conn,
                 thread_id,
@@ -173,6 +188,7 @@ async def _bind_standalone_run_incarnation(ctx, value: dict) -> None:
         }
         incarnation = await _ensure_standalone_thread_incarnation(
             thread_id,
+            value["assistant_id"],
             ctx,
             create_if_missing=value.get("if_not_exists") == "create",
             creation_metadata=creation_metadata,
@@ -218,7 +234,7 @@ def _check_csrf(request) -> None:
             detail="CSRF token missing. Include X-CSRF-Token header.",
         )
 
-    if not secrets.compare_digest(cookie_token, header_token):
+    if not constant_time_equals(cookie_token, header_token):
         raise Auth.exceptions.HTTPException(
             status_code=403,
             detail="CSRF token mismatch.",
@@ -260,10 +276,17 @@ async def authenticate(request):
             status_code=401,
             detail="User not found",
         )
-    if user.token_version != payload.ver:
+    # Same post-lookup verdicts as every other JWT surface — including
+    # account suspension, so a disabled user's still-valid cookie is
+    # rejected here exactly as the Gateway's HTTP dependency rejects it.
+    from app.gateway.auth.errors import AuthErrorCode
+    from app.gateway.deps import validate_resolved_session_user
+
+    failure = validate_resolved_session_user(user, payload)
+    if failure is not None:
         raise Auth.exceptions.HTTPException(
             status_code=401,
-            detail="Token revoked (password changed)",
+            detail="Token revoked (password changed)" if failure is AuthErrorCode.TOKEN_INVALID else "Account disabled",
         )
 
     return payload.sub

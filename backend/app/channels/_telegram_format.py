@@ -237,8 +237,37 @@ def _split_oversized_block(block: str, limit: int) -> list[str]:
     return pieces
 
 
+def _utf16_units(text: str) -> int:
+    """Length in UTF-16 code units, the unit Telegram's 4096 limit counts."""
+    return len(text) + sum(1 for ch in text if ord(ch) > 0xFFFF)
+
+
 def chunk_html(html: str, limit: int = TELEGRAM_MAX) -> list[str]:
-    """Split HTML into <= limit-sized chunks where every chunk is valid HTML.
+    """Split HTML into valid-HTML chunks of at most ``limit`` UTF-16 code units.
+
+    The splitter below counts Python characters; an emoji outside the BMP is
+    one character but two UTF-16 units, so an emoji-heavy reply could pass it
+    and still be rejected by Telegram as too long. A chunk that is too wide is
+    split again with a proportionally smaller character limit until it fits.
+    """
+    out: list[str] = []
+    for chunk in _chunk_html_chars(html, limit):
+        width = _utf16_units(chunk)
+        if width <= limit:
+            out.append(chunk)
+            continue
+        char_limit = max(1, (limit * len(chunk)) // width)
+        while True:
+            parts = _chunk_html_chars(chunk, char_limit)
+            if all(_utf16_units(part) <= limit for part in parts) or char_limit == 1:
+                out.extend(parts)
+                break
+            char_limit = max(1, char_limit - max(1, char_limit // 16))
+    return out
+
+
+def _chunk_html_chars(html: str, limit: int = TELEGRAM_MAX) -> list[str]:
+    """Split HTML into <= limit-character chunks where every chunk is valid HTML.
 
     Strategy: tokenize into block elements (<pre>, <pre><code>, <blockquote>)
     and the plain runs between them, then greedily pack whole tokens into

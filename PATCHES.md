@@ -15,10 +15,10 @@ a #7/#8 collision between the prompt blocks and the todo middleware). This
 file is now canonical; where older documents disagree, the section notes the
 alias. Baseline facts:
 
-- Upstream base: `fc26204d` (`bytedance/main`, 2026-09-23), reached by the
-  merge-based sync of 2026-09-23 (acropolis `docs/DEERFLOW-SYNC.md`; previous
-  base `3f0b6ecc` of 2026-09-11, 265 upstream commits behind; before that
-  `3a967d4f` of 2026-08-15). The 2026-07-02
+- Upstream base: `65a18618` (`bytedance/main`, 2026-10-10), reached by the
+  merge-based sync of 2026-10-10 (acropolis `docs/DEERFLOW-SYNC.md`; previous
+  base `fc26204d` of 2026-09-23, 537 upstream commits behind; before that
+  `3f0b6ecc` of 2026-09-11 and `3a967d4f` of 2026-08-15). The 2026-07-02
   rebuild was against tag `v2.0.0` (`7e7f0410`), fork tip `2df36c99` (29
   commits, ~26 logical patches). Deployed pin: `/opt/argus/VERSIONS.md`.
 - Sync 2026-09-11 in one line: retired #63 (its upstream original is now in
@@ -38,6 +38,19 @@ alias. Baseline facts:
   Fixed on the merge: upstream #5581's download Bot returned None in webhook
   mode, which would have marked every inbound Telegram file unavailable on
   webhook stacks. Each touched section carries a "Sync 2026-09-23" bullet.
+- Sync 2026-10-10 in one line: retired #96 (upstream #5671 journals
+  middleware-answered tool results at the next model start), #87 and the MCP
+  half of #86 (upstream compares only the MCP part of the config, so a
+  byte-identical rewrite keeps cached tools and sessions), and #73's
+  uncontended-lock shortcut (upstream #6511); added #105 (chat bindings stay in
+  `channels/store.json`); re-expressed #20/#97 onto upstream's blob-backed,
+  authorized view_image path, #49's omitted-item index under upstream's new
+  early return (a silent textual stomp), #93 on upstream's MCP reconciliation,
+  #30's agent override into `_resolve_message_assistant_id`. Fixed on the
+  merge: the playbook fire did not await the now-async channel store (every
+  Chronos fire would have 500'd), Telegram chunks are measured in UTF-16 units,
+  `strip_asyncpg_only_options` lost its imports, disabled accounts are refused
+  on the SSO path. Each touched section carries a "Sync 2026-10-10" bullet.
 - Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
   `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
 
@@ -132,7 +145,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#84](#patch-84) | SandboxAudit: redact credentials and hard-cap the audited command | argus-edit | this PR |
 | [#85](#patch-85) | Config-gated line-numbered code outline in tool output synopsis | config-expressed | this PR |
 | [#86](#patch-86) | Digest-only config-change detection so no-op rewrites don't stall run completion | argus-edit | this PR |
-| [#87](#patch-87) | Async MCP cache refresh so config changes never stall run completion | argus-edit | this PR |
+| [#87](#patch-87) | ~~Async MCP cache refresh so config changes never stall run completion~~ RETIRED 2026-10-10 (upstream MCP-only config comparison) | argus-edit | this PR |
 | [#88](#patch-88) | Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend | argus-additive | this PR |
 | [#89](#patch-89) | UI round 2: star brand mark, Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
 | [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
@@ -140,7 +153,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#92](#patch-92) | Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides | argus-additive | this PR |
 | [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
-| [#96](#patch-96) | Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end | argus-edit | this PR |
+| [#96](#patch-96) | ~~Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end~~ RETIRED 2026-10-10 (upstream #5671) | argus-edit | this PR |
 | [#97](#patch-97) | view_image context fits the many-image limits: images downscaled to a 1568 px long edge, only the 4 most recent re-sent; a timed-out image call retries once without images | argus-edit | this PR |
 | [#98](#patch-98) | A lead-agent hard stop (loop, deadline, token budget) is replaced by one tool-free answer turn instead of a bare notice | argus-additive | this PR |
 | [#99](#patch-99) | `AioSandbox.grep` falls back to one shell `grep` when the sandbox has no `/v1/file/grep` endpoint | argus-edit | this PR |
@@ -148,6 +161,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#101](#patch-101) | Parallel tool calls that re-acquire the thread's sandbox in one step no longer crash the run (`replaces` marker instead of `Overwrite`) | argus-edit | this PR |
 | [#102](#patch-102) | Telegram `/f/` report links name the thread's storage bucket (`/f/<user>/<thread>/<file>`) | argus-edit | this PR |
 | [#104](#patch-104) | Sandbox shell commands run with stdin from `/dev/null`; a no-change timeout and the bash tool say what the pinned image's ~120 s silence limit means | argus-edit | this PR |
+| [#105](#patch-105) | IM chat-to-thread bindings stay in `channels/store.json` on every database backend (`channels.binding_store: json`, the fork default) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -490,6 +504,7 @@ carry budget ledger.
   for every SSO-fronted stack. Surface: the gateway auth ladder (rewritten
   once already in v2.0.0; expect to re-place the branch each major sync).
 - Upstream status: none.
+- Sync 2026-10-10: an operator-disabled account (upstream `users.disabled`, migration 0039) is refused on the SSO path with a 403 (`ACCOUNT_DISABLED`), as upstream refuses it on cookie, bearer and internal-owner paths; 403 because a 401 would loop the browser through Google. Test: `test_sso_disabled_account_is_refused`.
 
 ## Patch #55
 
@@ -861,6 +876,7 @@ carry budget ledger.
 - Upstream status: Telegram serialization is a generic bug-fix candidate; the
   navigation/header choices are Argus-specific.
 - Sync 2026-09-23: upstream #5309's expandable generic tool details render only in the token-usage `step_debug` inline mode, which this patch's UI never reaches; `tests/e2e/tool-call-details.spec.ts` skips its three debug cases (the debug-off case still runs).
+- Sync 2026-10-10: upstream's new chat-header scheduled-tasks button is shipped; it hides itself when the chat has no tasks. The sidebar still links Chronos.
 
 ## Patch #61
 
@@ -923,6 +939,7 @@ carry budget ledger.
   before deleting).
 - Upstream status: none.
 - Sync 2026-09-11: re-expressed onto upstream's `wrap_model_call` design (cb24bc26 #5014 stops checkpointing base64 payloads, 3a6e681d #5306 reads active-sandbox images). `_describe_inputs` now reuses upstream's provenance-checked `_read_image_as_data_url`, so the replacement-sandbox/sha rules apply to the describe path too; the sync path sweeps stranded context and defers as before. DROPPED inside #20: the `legacy_base64` fallback for pre-#4138 checkpoints (upstream removed that read path; such images render as "file unavailable or changed"). Tests rewritten to the `ModelRequest` harness, +1 case (unreadable image -> placeholder). Carry is now additive only (103/0).
+- Sync 2026-10-10: the describe path goes through upstream's async authorization and `_describe_inputs` takes the request, so it reads blob refs and request-bound host copies like the raw-image path (otherwise it always answered "file unavailable").
 
 ## Patch #21/#24
 
@@ -1069,6 +1086,7 @@ carry budget ledger.
   `_CONTEXT_CONFIGURABLE_KEYS` whitelist, and the two memory-write paths.
 - Upstream status: none.
 - Sync 2026-09-11: `msg.agent_name` now feeds upstream's `explicit_agent_choice` path (`_apply_explicit_agent_choice`), so a playbook's agent is SET in all three Gateway carriers and outranks the metadata override, the new `/agent` thread pin and every session layer for that fire only (the documented precedence). Router, CSRF exemption, memory-policy seams unchanged; `effective_memory_mode` still sits at the first-turn injection site, which upstream e59ee482 (#4667) now targets at the latest user message (verified).
+- Sync 2026-10-10: the playbook `msg.agent_name` override moved into upstream's shared `_resolve_message_assistant_id()`, ahead of the metadata override, so the run path and the new `/model` status reply resolve the same agent. The fire endpoint awaits the now-async channel store (`await service.store.list_entries`), without which every Chronos fire would have failed.
 
 ## Patch #31/#32
 
@@ -1351,6 +1369,7 @@ carry budget ledger.
   already provides; deleting the override would shave ~9 more carried lines
   but is a real (if tiny) behavior delta - out of scope for a zero-behavior
   patch.
+- Sync 2026-10-10: `chunk_html` measures chunks in UTF-16 code units (Telegram's unit): a chunk wider than the limit is split again at a proportionally smaller character limit. Upstream's `test_send_splits_an_emoji_heavy_final_reply_into_sendable_chunks` covers it.
 
 ## Patch #41
 
@@ -1532,6 +1551,7 @@ carry budget ledger.
 - Delete-when: upstream's preview builder indexes omitted spans.
 - Upstream status: none sent; generic candidate.
 - Sync 2026-09-11: kept, wrapped in upstream's new `(preview, "externalized")` tuple return.
+- Sync 2026-10-10: upstream's new early `return _keep_exit_marker_last(...)` had left the omitted-item index as dead code after a clean textual merge; the index is appended first and the exit marker kept last. `_budget_content` returns upstream's three-field `_BudgetedContent`.
 
 ## Patch #50
 
@@ -1578,6 +1598,7 @@ carry budget ledger.
 - Delete-when: upstream ships an agent-level allowed-tools ceiling (watch the PR #2626 line).
 - Upstream status: none sent; generic candidate.
 - Sync 2026-09-11: kept; `parent_agent_allowed_tools` sits next to upstream's new `execution_capacity`/`acceptance_criteria`/recorder kwargs, `tool_policy` next to upstream's new `verification` field; upstream's `DeferredToolPromotionAuditMiddleware` is registered before `SkillToolPolicyMiddleware` as upstream requires.
+- Sync 2026-10-10: found while merging: the subagent half has been dead since upstream #4497 (2026-07-28) removed the only call to `_apply_skill_allowed_tools`, so under `tool_policy.source: agent` subagents do not receive the parent's tool ceiling. Kept as is (its tests call the method directly); re-wire or drop is an open decision.
 
 ## Patch #54
 
@@ -1651,6 +1672,7 @@ carry budget ledger.
   `owningRunIsActive` fallback in `derivePendingSubtaskStatus`, now fed by
   upstream's `activeRunId`, and the `activeRunId` prop threading to
   `MessageList`/sidecar.
+- Sync 2026-10-10: the `owningRunIsActive` fallback now lives in upstream's `core/tasks/subtask-render.ts` (`collectRenderedSubtasks(..., activeRunId)`), which moved subtask collection out of `message-list.tsx`.
 
 ## Patch #68
 
@@ -1813,6 +1835,7 @@ carry budget ledger.
 - Sync 2026-09-11, behaviour decision recorded: `tool_result_meta._sync_message_status` keeps LangChain's public `ToolMessage.status` equal to our richer meta. Upstream's new `test_command_tool_result_semantics.py` asserts the opposite for command receipts ("producer did not set status=error", so the public field stays `success` while meta and receipt say `error`); both of its assertions are adapted, because `ReadBeforeWriteMiddleware` reads `message.status` to decide whether a write landed and a bash write that exits non-zero must not refresh the read mark. Both signals now agree rather than disagreeing.
 - Sync 2026-09-23, guidance budget: upstream's inherited chains now sit within 16 bytes of the 98,304 hard limit (`scripts/check_agent_guidance.py`), so `backend/AGENTS.md` carries NO fork text (the #73 one-liner is removed; this section is the reference) and `agents/middlewares/AGENTS.md` keeps a single pointer line to #72-#85.
 - Sync 2026-09-23: the ReadBeforeWrite uncontended `acquire(blocking=False)` fast path now lives inside upstream's cancellation-safe `_acquire_gate_lock` (#5528 family). The cancellation tests' lock doubles model a held lock for the non-blocking try.
+- Sync 2026-10-10: the uncontended-acquire shortcut in `read_before_write_middleware.py` is retired (upstream #6511's lock covers it); the write-mark call follows upstream's `_extract_tool_message(..., tool_call_id=)`. `_sync_message_status` now keeps the tool's own status under `additional_kwargs['argus_tool_status']` (`tool_reported_status()`), and the subagent executor's direct-return failure check (upstream #6083) reads that, so a direct result whose report text starts with "Error:" is not a failed subagent. #93's receipt stamp is a helper called from both the sync stamp and upstream's async twin.
 
 ## Patch #74
 
@@ -1966,6 +1989,7 @@ carry budget ledger.
 - Tests: `frontend/tests/unit/core/sharing/{thread-id,api,snapshot}.test.ts` (NEW), `frontend/tests/unit/core/artifacts/utils.test.ts` (EDITED, shared URL switch), `frontend/tests/unit/components/workspace/internalize-trigger.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/shared/shared-thread-page.dom.test.tsx` (NEW), `frontend/tests/unit/fixtures/shared-thread-snapshot.json` (NEW), `frontend/tests/e2e/workspace-simplification.spec.ts` (EDITED, header shows Internalize).
 - Delete-when: the Agora share API (`/api/shared-threads`, `/api/shared-files`) is retired. Not upstreamable: the transport and the snapshot contract are Argus-specific.
 - Upstream status: n/a (Argus integration).
+- Sync 2026-10-10: combined with upstream's truncated/still-loading guards in `artifact-file-detail.tsx`; upstream's editing DOM test mocks `InternalizeArtifactAction`.
 
 ## Patch #89
 
@@ -2121,6 +2145,7 @@ carry budget ledger.
 - Delete-when: upstream makes config-change detection content-digest-based instead of mtime/signature-tuple-based.
 - Upstream status: none sent yet (PR candidate).
 - Sync 2026-09-11: kept (`_signatures_differ` in `cache._is_cache_stale` and `app_config.get_app_config`).
+- Sync 2026-10-10: MCP half retired with #87 (`mcp/cache.py` no longer calls `signatures_differ`). The `app_config` half stays: upstream still compares the whole signature tuple there; the reload check is our digest-only comparison plus upstream's new reload when the extensions instance changes.
 
 ## Patch #87
 
@@ -2134,6 +2159,7 @@ carry budget ledger.
 - Delete-when: upstream moves MCP tool re-discovery off the synchronous agent-construction path (background/stale-while-revalidate).
 - Upstream status: none sent yet (PR candidate).
 - Sync 2026-09-11: re-expressed. Upstream replaced the asyncio lock with a cross-loop `threading.Condition` plus generation counter and retires the session pool on every invalidation. Ours is now `_schedule_background_refresh_locked()` + `_refresh_mcp_tools_in_background()`, called from `get_cached_mcp_tools` under `_init_lock` only when tools are already cached AND a loop is running; the refresh retires the pool before discovery (wrappers bind the pool at build time) and closes it after the swap, honours `_cache_generation`/`_initializing_generation` (a mid-refresh reset wins), and on failure keeps the old tools while marking the cache uninitialized. `initialize_mcp_tools()` no longer has a `force` flag. Known limit: the retired pool is closed in `finally` even when the refresh fails, which drops idle sessions (wrappers recreate them on demand) rather than breaking tools.
+- Sync 2026-10-10: RETIRED. Upstream's selective MCP reconciliation compares only the MCP part of the config, so the byte-identical rewrite that caused the 2026-09-04 stall keeps cached tools and sessions without rediscovery. Cost: a real MCP config change made outside the Gateway API rediscovers synchronously in the next caller again. Re-expressing the background refresh would serve tools from a pool upstream may already have retired.
 
 ## Patch #90
 
@@ -2262,7 +2288,25 @@ carry budget ledger.
 - Delete-when: upstream ships a config switch for the Capability Center, or
   Argus stacks make its saves durable.
 
+## Patch #105
+
+**Patch #105 - IM chat-to-thread bindings stay in `channels/store.json`** (2026-10-10)
+
+- Class: argus-edit (`ChannelService.__init__`, `backend/app/channels/service.py`).
+- Intent: upstream (2026-10, migration `0038_channel_thread_bindings`) moves the bindings into a database table on every sqlite/postgres stack and renames `store.json` to `store.json.migrated` on first start, so replicas share them. Argus runs one gateway worker per stack, and host tooling reads the file: the Telegram chat-id sync, the build and minutes notifiers, Aeacus clients, the integrations probe, the threads-meta backfill and Cerberus's Telegram monitoring. `channels.binding_store` selects the store: `json` (the fork default) keeps the file, `auto` follows upstream. Unknown values are refused at start.
+- Tests: `backend/tests/test_argus_channel_binding_store.py`.
+- Delete-when: the acropolis host tooling reads the bindings through the table or a gateway endpoint; then set `binding_store: auto` on one stack, verify the import, and drop the patch.
+- Upstream status: none (deployment-specific).
+
+---
+
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
+
+**Dropped at the 2026-10-10 upstream sync (base `fc26204d` -> `65a18618`):**
+
+- **#96 journal order of short-circuited tool results**: upstream #5671.
+- **#87 background MCP refresh, and #86's MCP half**: upstream's MCP-only config comparison.
+- **#73's uncontended-lock shortcut**: upstream #6511.
 
 **Dropped at the 2026-09-23 upstream sync (base `3f0b6ecc` -> `fc26204d`):**
 
@@ -2400,6 +2444,7 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `TestShortCircuitedToolResultOrder` in `backend/tests/test_run_journal.py`.
 - Delete-when: upstream journals middleware-returned ToolMessages at the point they are produced.
 - Upstream status: candidate for an upstream PR (a small, general ordering fix to #4666).
+- Sync 2026-10-10: RETIRED. Upstream #5671 (3d5cc1ef) persists middleware-answered tool results at the next lead-agent model start, for the results after the latest tool call; `runtime/journal.py` is upstream's file and our `TestShortCircuitedToolResultOrder` passes on it.
 
 ## Patch #97
 
@@ -2411,6 +2456,7 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `TestManyImageLimits` (downscale and label, unchanged under the limit, JPEG vs transparent PNG, most-recent cap, re-view order, describe path) and `TestTimeoutRetryWithoutImages` (sync, async with a wrapped cause, non-timeout, no images) in `backend/tests/test_view_image_middleware.py`.
 - Delete-when: upstream caps or resizes view_image context (watch upstream #5799/#5824, which touch the same reader).
 - Upstream status: candidate for an upstream PR.
+- Sync 2026-10-10: re-applied on upstream's blob-backed view_image (#6160/#6159), host-path binding (#5824) and sandbox authorization (#5799); the timeout retry without images is wired into the sync and async paths after the authorization check. Not redundant: upstream changed where image bytes live, not how many are sent or at what size.
 
 ## Patch #98
 
@@ -2470,4 +2516,5 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `TestNoninteractiveShell` in `backend/tests/test_aio_sandbox.py` (grouping, heredoc, pass-through cases, a real `bash` run of a wrapped `rm`, the notice); three scoped-session tests and `test_aio_sandbox_no_env_leaves_command_unchanged` (`backend/tests/test_github_token_plumbing.py`) compare against the wrapped command.
 - Delete-when: the pinned sandbox image honours `no_change_timeout` and runs shell commands without a terminal stdin (bump the digest in acropolis VERSIONS.md, re-check, then drop the wrapper and the guidance).
 - Upstream status: none (the wrapper works around our pinned image; upstream's own fix is the newer image).
+- Sync 2026-10-10: commands that run `shopt`, `alias` or `enable` are sent unwrapped: bash parses a brace group whole, so an `extglob` pattern or an alias defined earlier in the same command would no longer parse (upstream's new tests caught it). Upstream keeps terminal stdin only for its Lark broker shim, which Argus does not run. Tests: `test_parse_time_builtins_are_sent_as_is`; upstream's stdin and warm-pool tests expect the wrapped command.
 

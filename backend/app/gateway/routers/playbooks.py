@@ -177,7 +177,7 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
     # for one chat, coalesced into an N-fold prompt, and the silent-turn
     # suppression lost — the citizen saw hourly "(No response from agent)".
     # Root rows are unique per chat by key construction.
-    chats = [entry for entry in service.store.list_entries(channel) if not entry.get("topic_id")]
+    chats = [entry for entry in await service.store.list_entries(channel) if not entry.get("topic_id")]
     if not chats:
         # The citizen must have messaged the bot once so a thread mapping exists.
         raise HTTPException(

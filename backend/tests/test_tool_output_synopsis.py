@@ -373,7 +373,7 @@ def test_case_10_middleware_wiring(tmp_path):
     assert budgeted_enabled is not None
     # Upstream returns (replacement, transform_kind) since #5183; the outline
     # lives in the replacement half.
-    budgeted_enabled_text, budgeted_enabled_kind = budgeted_enabled
+    budgeted_enabled_text, budgeted_enabled_kind = budgeted_enabled.replacement, budgeted_enabled.transform_kind
     assert budgeted_enabled_kind in ("externalized", "truncated")
     assert steering_line in budgeted_enabled_text
     assert "[lines " in budgeted_enabled_text

@@ -360,11 +360,17 @@ class MessageBus:
         self._outbound_listeners.append(callback)
 
     def unsubscribe_outbound(self, callback: OutboundCallback) -> None:
-        """Remove a previously registered outbound callback."""
+        """Remove a callback from subsequent outbound dispatches.
+
+        This does not cancel or wait for callbacks in an in-flight dispatch.
+        """
         self._outbound_listeners = [cb for cb in self._outbound_listeners if cb != callback]
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """Dispatch an outbound message to all registered listeners.
+        """Dispatch to listeners registered when dispatch begins.
+
+        Subscribing or unsubscribing during an in-flight dispatch affects
+        subsequent messages, not callbacks captured for the current message.
 
         [argus patch #27/#26a] Stage-progress messages (progress_stage set,
         is_final=False, empty text) are dispatched as fire-and-forget background
@@ -372,17 +378,18 @@ class MessageBus:
         the agent streaming loop. The final answer (is_final=True or non-empty
         text) is awaited inline so the run completes before the manager returns.
         """
+        listeners = tuple(self._outbound_listeners)
         is_stage_signal = msg.progress_stage is not None and not msg.is_final and not msg.text
         logger.info(
             "[Bus] outbound dispatching: channel=%s, chat_id=%s, listeners=%d, text_len=%d, stage=%s, fire_and_forget=%s",
             msg.channel_name,
             msg.chat_id,
-            len(self._outbound_listeners),
+            len(listeners),
             len(msg.text),
             msg.progress_stage,
             is_stage_signal,
         )
-        for callback in self._outbound_listeners:
+        for callback in listeners:
             if is_stage_signal:
                 # Fire-and-forget: the stage emoji send/delete must not stall the
                 # next langgraph chunk. Errors are logged inside the task.

@@ -290,10 +290,25 @@ def _make_meta(*, status: str, source: str, error_type: str | None = None, recov
     return meta
 
 
+#: [argus patch #73] The status the tool itself returned, kept before
+#: ``_sync_message_status`` rewrites ``ToolMessage.status`` from content analysis.
+#: Consumers that must honour the tool's own verdict (a direct-return tool whose
+#: report text starts with "Error:", upstream #6083) read it via ``tool_reported_status``.
+TOOL_STATUS_KEY = "argus_tool_status"
+
+
 def _sync_message_status(msg: ToolMessage, meta: dict[str, object]) -> ToolMessage:
     """Keep LangChain's public status aligned with DeerFlow's richer metadata."""
+    kwargs = msg.additional_kwargs or {}
+    if TOOL_STATUS_KEY not in kwargs:
+        msg.additional_kwargs = {**kwargs, TOOL_STATUS_KEY: msg.status}
     msg.status = "error" if meta.get("status") == "error" else "success"
     return msg
+
+
+def tool_reported_status(msg: ToolMessage) -> str:
+    """The status the tool returned, before content analysis aligned it."""
+    return (msg.additional_kwargs or {}).get(TOOL_STATUS_KEY, msg.status)
 
 
 def stamp_exception_meta(msg: ToolMessage, exc_info: str) -> ToolMessage:
