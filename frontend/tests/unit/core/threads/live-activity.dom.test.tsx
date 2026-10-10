@@ -66,10 +66,18 @@ function mount() {
 
 test("a finished run refreshes the thread's runs and its history; a new one only its runs", () => {
   expect(
-    liveActivityInvalidations({ thread_id: "t1", run_id: "r", status: "pending" }),
+    liveActivityInvalidations({
+      thread_id: "t1",
+      run_id: "r",
+      status: "pending",
+    }),
   ).toEqual([["thread", "t1"]]);
   expect(
-    liveActivityInvalidations({ thread_id: "t1", run_id: "r", status: "success" }),
+    liveActivityInvalidations({
+      thread_id: "t1",
+      run_id: "r",
+      status: "success",
+    }),
   ).toEqual([
     ["thread", "t1"],
     ["thread-messages", "t1"],
