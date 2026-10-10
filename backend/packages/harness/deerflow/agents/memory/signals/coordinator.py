@@ -393,8 +393,10 @@ class MemorySignalCoordinator:
         if context.signals:
             # L3: deterministic positive evidence outranks a model negative verdict.
             return _Eligibility(False, REASON_SIGNALS)
-        if context.staleness_review_enabled or context.consolidation_enabled:
+        if (context.staleness_review_enabled or context.consolidation_enabled) and self._prescreen_mode == MODE_ENFORCE:
             # L8: a skip would also skip that batch's maintenance review.
+            # [argus patch #106] Only enforce can skip; shadow judges and records
+            # while maintenance stays on (DeerMem's default), so it can be measured.
             return _Eligibility(False, REASON_MAINTENANCE)
         if self._over_limit(self._prescreen, batch_length):
             return _Eligibility(False, REASON_OVER_LIMIT)

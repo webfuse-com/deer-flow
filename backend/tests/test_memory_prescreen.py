@@ -305,6 +305,18 @@ class TestEligibility:
         assert server.count == 0, "L8: a skip would also skip that batch's maintenance review"
         assert llm.calls == 1
 
+    @pytest.mark.parametrize("flag", ["staleness_review_enabled", "consolidation_enabled"])
+    def test_shadow_judges_with_maintenance_review_on(self, flag):
+        """[argus patch #106] Shadow never skips, so L8 does not apply to it."""
+        server = _Server(lambda request: httpx.Response(200, json=_answer(0.05)))
+        llm = _FakeLLM()
+        updater = _updater(judge=_judge(_prescreen(server, mode=MODE_SHADOW), prescreen_mode=MODE_SHADOW), llm=llm, **{flag: True})
+
+        assert updater.update_memory(_conversation(), thread_id="thread-1", user_id="user-1") is True
+
+        assert server.count == 1, "shadow records a verdict for the batch"
+        assert llm.calls == 1, "a would-skip verdict in shadow still extracts"
+
     def test_a_cjk_batch_is_limited_by_characters_not_wire_bytes(self):
         """Shared-client design §2.4: the limit stays a character count over the judged text."""
         text = "我们决定用标签" * 5  # 35 characters, 105 UTF-8 bytes
