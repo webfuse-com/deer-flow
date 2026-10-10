@@ -163,6 +163,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#104](#patch-104) | Sandbox shell commands run with stdin from `/dev/null`; a no-change timeout and the bash tool say what the pinned image's ~120 s silence limit means | argus-edit | this PR |
 | [#105](#patch-105) | IM chat-to-thread bindings stay in `channels/store.json` on every database backend (`channels.binding_store: json`, the fork default) | argus-edit | this PR |
 | [#106](#patch-106) | The Jev memory pre-screen in `shadow` judges batches while staleness review or consolidation is on (only `enforce` can skip) | argus-edit | this PR |
+| [#107](#patch-107) | Extensions can add a tab to every project page (`project-tab` surface slot) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2311,6 +2312,18 @@ carry budget ledger.
 - Tests: `test_shadow_judges_with_maintenance_review_on` in `backend/tests/test_memory_prescreen.py`; the enforce case (`test_maintenance_review_disables_skipping`) is unchanged.
 - Delete-when: upstream applies L8 to `enforce` only, or Argus moves the pre-screen to `enforce` with maintenance off.
 - Upstream status: none sent (generic-upstreamable: the rule's own rationale names skipping).
+
+---
+
+## Patch #107
+
+**Patch #107 - Extensions can add a project tab** (2026-10-10)
+
+- Class: argus-edit (frontend: `core/extensions/contracts.ts` `SurfaceSlot`, `registry.ts` validation, `pages.ts` `pluginProjectTabs`, `components/workspace/plugin-surfaces.tsx` project context, `app/workspace/projects/[id]/page.tsx`; new `components/workspace/projects/project-plugin-tabs.tsx`).
+- Intent: a plugin could add pages but nothing to the project page, whose tabs (Chats, Documents, Instructions, Settings) are hard-coded. A surface with `slot: "project-tab"` now renders as an extra tab after Settings on every project page, mounted exactly like a plugin page (same Shadow DOM mount, settings, `callBackend`, enabled state), with `context.project = {id, name, status}`. Tab values are namespaced `plugin:<namespace>:<id>`, so a plugin cannot shadow a host tab. `navigation` stays page-only. Argus uses it for the project Details tab (argus-deerflow-extension).
+- Tests: `tests/unit/core/extensions/registry.test.ts` (project-tab accepted, unknown slot and project-tab navigation rejected), `pages.test.ts` (only enabled project-tab surfaces, never pages), `tests/unit/app/projects-page.dom.test.tsx` (tab after Settings, mounted with the project; host tabs only without plugins).
+- Delete-when: upstream ships project-page extension slots.
+- Upstream status: none sent (generic-upstreamable).
 
 ---
 
