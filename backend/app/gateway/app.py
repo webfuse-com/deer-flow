@@ -53,6 +53,7 @@ from app.gateway.routers import (
     subagents,
     suggestions,
     thread_activity,
+    thread_live,
     thread_runs,
     threads,
     tools_proxy,
@@ -1293,6 +1294,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Read-only RAGFlow catalog for chat knowledge-scope selection.
     app.include_router(knowledge.router)
+
+    # [argus patch #103] /api/threads/activity, before every /api/threads/{thread_id} route.
+    app.include_router(thread_live.router)
 
     # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)

@@ -160,6 +160,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
 | [#101](#patch-101) | Parallel tool calls that re-acquire the thread's sandbox in one step no longer crash the run (`replaces` marker instead of `Overwrite`) | argus-edit | this PR |
 | [#102](#patch-102) | Telegram `/f/` report links name the thread's storage bucket (`/f/<user>/<thread>/<file>`) | argus-edit | this PR |
+| [#103](#patch-103) | Open tabs stream runs they did not start: `GET /api/threads/activity` + the workspace subscribes and rejoins | argus-new | this PR |
 | [#104](#patch-104) | Sandbox shell commands run with stdin from `/dev/null`; a no-change timeout and the bash tool say what the pinned image's ~120 s silence limit means | argus-edit | this PR |
 | [#105](#patch-105) | IM chat-to-thread bindings stay in `channels/store.json` on every database backend (`channels.binding_store: json`, the fork default) | argus-edit | this PR |
 | [#106](#patch-106) | The Jev memory pre-screen in `shadow` judges batches while staleness review or consolidation is on (only `enforce` can skip) | argus-edit | this PR |
@@ -2548,6 +2549,19 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `test_telegram_link_with_user_has_three_segments`, `test_delivery_telegram_link_names_the_storage_bucket`, `test_delivery_telegram_without_user_uses_effective_user` (and the updated `test_delivery_telegram_produces_remote_link`) in `backend/tests/test_artifact_presenter.py`.
 - Delete-when: #10 is retired.
 - Upstream status: none (Argus-only, the `/f/` fileserver is Argus nginx).
+
+## Patch #103
+
+**Patch #103 - Open tabs stream runs they did not start** (2026-10-05)
+
+- Class: argus-new (`backend/packages/harness/deerflow/runtime/runs/live_activity.py`, `backend/app/gateway/routers/thread_live.py`, `frontend/src/core/threads/live-activity.ts`) plus two hook lines in `RunManager.create_or_reject` and `RunManager.set_status` (`runtime/runs/manager.py`), the router registration in `app/gateway/app.py`, and the bridge mounted in `frontend/src/app/workspace/workspace-content.tsx`.
+- Intent: a tab streamed only the runs it started, or one it found active when it loaded (the `activeRunId` rejoin). A run started anywhere else (a build wake-up from the Argus host, a Telegram message, a scheduled playbook, another tab) never reached a tab that already had the thread open; the reply appeared only after a reload. The run manager publishes `{thread_id, run_id, status, user_id, updated_at, origin_kind}` on admission and on every status change to an in-process hub (one gateway worker per stack sees every run). `GET /api/threads/activity` streams those as Server-Sent Events, filtered to runs stamped with the viewer's id or on threads the viewer owns, with a heartbeat every 25 s (under nginx's 600 s timeout) and no content and no replay. The workspace mounts one subscriber per visible tab: a run event invalidates `["thread", id]` (the runs list, so the existing rejoin effect joins and streams the reply), a terminal one also the thread's message history, and, for interactive runs (`origin_kind` null), a debounced sidebar refresh. A hidden tab closes its stream and resyncs when shown; errors back off from 2 s to 5 min. A subscriber that falls 256 events behind gets one `resync` instead of blocking the run path.
+- Tests: `backend/tests/test_thread_live_activity.py` (fan-out and unsubscribe, a slow subscriber resyncs, the run manager publishes pending/running/success, events carry no content, `origin_kind`, visibility by stamp or thread owner, `/activity` routed before `/{thread_id}`, upstream's `/api/thread-activity` still registered), `frontend/tests/unit/core/threads/live-activity.dom.test.tsx` (invalidations per status, a foreign run refetches the runs and the sidebar, a server-started run leaves the sidebar to upstream, hidden tab closes and resyncs, back-off).
+- Delete-when: upstream offers a live (pushed) run activity stream that covers interactive runs started in another tab and drives the open thread's rejoin.
+- Upstream status: candidate (generic: any multi-client or background-run deployment hits it).
+- Sync 2026-10-10: first merged on the synced base (fork PR #85 never merged; this replaces it). Upstream added its own `routers/thread_activity.py` (`GET /api/thread-activity`) and `core/threads/activity.ts`: a feed POLLED every 15 s on the run-change clock that tells the sidebar about SERVER-started runs (schedule, IM channel, GitHub, extension, MCP notification) and per-user read state; it skips interactive runs and never invalidates an open thread's runs or messages. Ours moved to `live_activity.py` / `thread_live.py` / `live-activity.ts` (route path unchanged, under the `^/api/threads` nginx location) and leaves the sidebar refresh of server-started runs to upstream's feed (events carry `origin_kind`).
+
+---
 
 ## Patch #104
 
