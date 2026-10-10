@@ -14,6 +14,24 @@ export function pluginPageTitle(surface: PluginSurface, locale: string) {
   );
 }
 
+/** Tab value of a plugin's project tab, namespaced so it can never shadow a host tab. */
+export function pluginProjectTabValue(namespace: string, surfaceId: string) {
+  return `plugin:${namespace}:${surfaceId}`;
+}
+
+export function pluginProjectTabs(entries: LoadedContribution[]) {
+  return activeFrontendExtensions(entries).flatMap(
+    ({ contribution, extension }) =>
+      (extension.surfaces ?? [])
+        .filter((surface) => surface.slot === "project-tab")
+        .map((surface) => ({
+          contribution,
+          surface,
+          value: pluginProjectTabValue(contribution.namespace, surface.id),
+        })),
+  );
+}
+
 export function pluginPages(entries: LoadedContribution[]) {
   return activeFrontendExtensions(entries).flatMap(
     ({ contribution, extension }) =>

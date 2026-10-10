@@ -308,6 +308,35 @@ export async function uploadProjectDocument(
   return (await response.json()) as ProjectDocumentUploadResponse;
 }
 
+/**
+ * [argus patch #108] Save the edited text of a document as a new version: the
+ * server adds a row with the same name and trashes the previous one. 200 with
+ * ``deduplicated`` when the text is unchanged or equals another document.
+ */
+export async function saveProjectDocumentVersion(
+  projectId: string,
+  documentId: string,
+  content: string,
+): Promise<ProjectDocumentUploadResponse> {
+  const response = await fetchWithAuth(
+    projectUrl(
+      projectId,
+      `/documents/${encodeURIComponent(documentId)}/versions`,
+    ),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      await readProjectAPIError(response, "Failed to save the document."),
+    );
+  }
+  return (await response.json()) as ProjectDocumentUploadResponse;
+}
+
 /** Save a thread file (upload or output) onto the project shelf (spec §7.4). */
 export async function promoteThreadFile(
   projectId: string,

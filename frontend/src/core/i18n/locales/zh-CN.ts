@@ -681,6 +681,9 @@ export const zhCN: Translations = {
     shelfNameLabel: "文件架名称",
     viewTrash: "回收站",
     documentsLoadFailed: "无法加载项目文档",
+    documentOpenFullScreen: "全屏打开",
+    documentExitFullScreen: "退出全屏",
+    documentSaved: "已保存为新版本",
     threadFilesLoadFailed: "无法加载对话文件",
     interimMemoryNotice:
       "记忆目前仍为全局：在第三阶段之前，项目中讨论的内容仍可能进入你的全局记忆。",

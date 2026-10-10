@@ -11,6 +11,7 @@ through the shared ``_require`` accessor convention (§11).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import mimetypes
 from collections.abc import AsyncIterator
@@ -490,6 +491,75 @@ async def get_project_document_content(
         headers={"X-Content-Type-Options": "nosniff"},
         content_disposition_type="inline" if inline else "attachment",
     )
+
+
+class DocumentVersionRequest(BaseModel):
+    """[argus patch #108] The edited text of a shelf document."""
+
+    content: str
+
+
+@router.post("/{document_id}/versions", response_model=ProjectDocumentUploadResponse, status_code=201)
+@require_permission("projects", "write")
+async def save_project_document_version(
+    project_id: str,
+    document_id: str,
+    body: DocumentVersionRequest,
+    request: Request,
+    response: Response,
+    config: AppConfig = Depends(get_config),
+) -> ProjectDocumentUploadResponse:
+    """[argus patch #108] Save an edited text document as a new version (201).
+
+    Shelf rows are immutable and content-addressed, so an edit is a new active
+    row with the same name (``source_kind="edit"``, ``source_name`` = the
+    previous row's ``source_name`` or, when it has none, its id) and the
+    previous row moves to the trash, where it stays restorable. Unchanged text
+    returns the previous row (200), and text identical to another active
+    document returns that row without trashing anything (the shelf's dedup
+    rule, §10.9). Same size limit and archived/foreign 404s as an upload.
+    """
+    await _require_project(request, project_id)
+    repo = get_project_document_repo(request)
+    previous = await repo.get(document_id)
+    if previous is None or previous.get("project_id") != project_id:
+        raise _not_found()
+    data = body.content.encode("utf-8")
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    max_file_size = _get_upload_limit(config, "max_file_size", DEFAULT_MAX_FILE_SIZE, legacy_key="max_single_file_size")
+    if len(data) > max_file_size:
+        raise HTTPException(status_code=413, detail=f"File too large: {previous.get('name', '')}")
+    if hashlib.sha256(data).hexdigest() == previous.get("sha256"):
+        response.status_code = 200
+        return ProjectDocumentUploadResponse(document=_to_response(previous), deduplicated=True)
+    user_id = get_effective_user_id()
+    paths = get_paths()
+    try:
+        staged = await stage_document_bytes(paths, user_id=user_id, project_id=project_id, chunks=[data], max_bytes=max_file_size)
+    except ShelfUploadTooLargeError:
+        raise HTTPException(status_code=413, detail=f"File too large: {previous.get('name', '')}")
+    except ValueError:
+        raise _not_found()
+    result = await add_staged_document(
+        repo,
+        paths,
+        user_id=user_id,
+        project_id=project_id,
+        name=previous["name"],
+        staged=staged,
+        source_kind="edit",
+        source_name=previous.get("source_name") or previous["id"],
+    )
+    if result is None:
+        raise _not_found()
+    row, created = result
+    if not created:
+        response.status_code = 200
+        return ProjectDocumentUploadResponse(document=_to_response(row), deduplicated=True)
+    await repo.trash(previous["id"], project_id=project_id)
+    enqueue_summary(document_id=row["id"], project_id=project_id, user_id=user_id)
+    return ProjectDocumentUploadResponse(document=_to_response(row), deduplicated=False)
 
 
 @router.delete("/{document_id}", status_code=204)

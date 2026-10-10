@@ -163,6 +163,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#104](#patch-104) | Sandbox shell commands run with stdin from `/dev/null`; a no-change timeout and the bash tool say what the pinned image's ~120 s silence limit means | argus-edit | this PR |
 | [#105](#patch-105) | IM chat-to-thread bindings stay in `channels/store.json` on every database backend (`channels.binding_store: json`, the fork default) | argus-edit | this PR |
 | [#106](#patch-106) | The Jev memory pre-screen in `shadow` judges batches while staleness review or consolidation is on (only `enforce` can skip) | argus-edit | this PR |
+| [#107](#patch-107) | Extensions can add a tab to every project page (`project-tab` surface slot) | argus-edit | this PR |
+| [#108](#patch-108) | Open a project document full screen; save an edited text document as a new version | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2311,6 +2313,31 @@ carry budget ledger.
 - Tests: `test_shadow_judges_with_maintenance_review_on` in `backend/tests/test_memory_prescreen.py`; the enforce case (`test_maintenance_review_disables_skipping`) is unchanged.
 - Delete-when: upstream applies L8 to `enforce` only, or Argus moves the pre-screen to `enforce` with maintenance off.
 - Upstream status: none sent (generic-upstreamable: the rule's own rationale names skipping).
+
+---
+
+## Patch #107
+
+**Patch #107 - Extensions can add a project tab** (2026-10-10)
+
+- Class: argus-edit (frontend: `core/extensions/contracts.ts` `SurfaceSlot`, `registry.ts` validation, `pages.ts` `pluginProjectTabs`, `components/workspace/plugin-surfaces.tsx` project context, `app/workspace/projects/[id]/page.tsx`; new `components/workspace/projects/project-plugin-tabs.tsx`).
+- Intent: a plugin could add pages but nothing to the project page, whose tabs (Chats, Documents, Instructions, Settings) are hard-coded. A surface with `slot: "project-tab"` now renders as an extra tab after Settings on every project page, mounted exactly like a plugin page (same Shadow DOM mount, settings, `callBackend`, enabled state), with `context.project = {id, name, status}`. Tab values are namespaced `plugin:<namespace>:<id>`, so a plugin cannot shadow a host tab. `navigation` stays page-only. Argus uses it for the project Details tab (argus-deerflow-extension).
+- Tests: `tests/unit/core/extensions/registry.test.ts` (project-tab accepted, unknown slot and project-tab navigation rejected), `pages.test.ts` (only enabled project-tab surfaces, never pages), `tests/unit/app/projects-page.dom.test.tsx` (tab after Settings, mounted with the project; host tabs only without plugins).
+- Delete-when: upstream ships project-page extension slots.
+- Upstream status: none sent (generic-upstreamable).
+
+---
+
+## Patch #108
+
+**Patch #108 - Open a project document full screen; save an edited text document as a new version** (2026-10-10)
+
+- Class: argus-edit (backend `app/gateway/routers/project_documents.py` new `POST /api/projects/{project_id}/documents/{document_id}/versions`; frontend `components/workspace/projects/project-documents-section.tsx` dialog, `core/projects/{api,hooks,types}.ts`, `components/workspace/code-editor.tsx` + `messages/context.ts` `useOptionalThread`, i18n keys).
+- Intent: the document preview was a 720 px read-only dialog. It now toggles full screen, and a fully loaded text preview on an active project has Edit (the existing CodeEditor, which now works outside a chat) with Save and Cancel. Shelf rows are immutable and content-addressed, so Save adds a new active row with the same name (`source_kind="edit"`, `source_name` = the previous row's `source_name`, or its id when it has none) and trashes the previous row (restorable); unchanged text, or text identical to another active document, returns that row (200, `deduplicated`) and trashes nothing. Same size limit and fail-closed 404s (foreign, missing, archived) as an upload. The frontend `ProjectDocumentSourceKind` accepts `edit` and tolerates deployment kinds (e.g. Argus's `mirror`). Argus's projects mirror writes an edit of a mirrored file back to the fork.
+- Tests: `backend/tests/test_project_documents_router.py::TestDocumentVersions` (new version + trash + provenance chain, mirrored `source_name` kept, unchanged and dedup no-ops, 404/400/413, archived 404); `frontend/tests/unit/components/workspace/projects/project-documents-section.dom.test.tsx` (full-screen toggle, edit and save, no edit when archived or truncated).
+- Delete-when: upstream ships document versions or editing.
+- Upstream status: none sent (generic-upstreamable).
+- The versions route is on the personal-access-token allow list next to document upload (`app/gateway/auth/pat.py`); `test_pat_projects_policy_admits_exactly_the_mounted_routes` requires every mounted project route to be classified.
 
 ---
 
