@@ -32,6 +32,7 @@ import {
 import { ThreadArchiveStatus } from "@/components/workspace/thread-archive-status";
 import { ThreadBackgroundTasks } from "@/components/workspace/thread-background-tasks";
 import { ThreadExtensionActions } from "@/components/workspace/thread-extension-actions";
+import { ThreadScheduledTasksButton } from "@/components/workspace/thread-scheduled-tasks-button";
 import { ThreadSubagentBatches } from "@/components/workspace/thread-subagent-batches";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
@@ -59,6 +60,8 @@ import {
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useNotification } from "@/core/notification/hooks";
 import { useProject } from "@/core/projects";
+import { useThreadScheduledTaskEvents } from "@/core/scheduled-tasks/events";
+import { useScheduleToolResultRefresh } from "@/core/scheduled-tasks/hooks";
 import { useThreadSettings } from "@/core/settings";
 import { resolveThreadContext } from "@/core/settings/store";
 import { createThread } from "@/core/threads/api";
@@ -78,6 +81,7 @@ import { cn } from "@/lib/utils";
 import { ChatBox } from "./chat-box";
 import { QueuedMessages } from "./queued-messages";
 import { useSpecificChatMode } from "./use-chat-mode";
+import { useMarkOpenThreadRead } from "./use-mark-open-thread-read";
 import { useThreadChat } from "./use-thread-chat";
 
 export default function ChatPage() {
@@ -121,6 +125,17 @@ export default function ChatPage() {
   const threadMetadata = useThreadMetadata(threadId, {
     enabled: !isNewThread && !isMock,
     isMock,
+  });
+  // A saved thread that exists on the server is being read while open:
+  // clears its unread dot (sidebar and chats list) on every device.
+  const markThreadRead = useMarkOpenThreadRead(threadId, {
+    enabled: !isNewThread && !isMock && threadMetadata.data != null,
+  });
+  // Lifecycle lines of schedules created in this chat ("Paused by agent",
+  // "Finished"); they stay after the task is deleted.
+  const scheduledTaskEvents = useThreadScheduledTaskEvents(threadId, {
+    isNewThread,
+    enabled: !isMock,
   });
   const branchThread = useBranchThread();
   const contextUsage = selectContextUsage(threadTokenUsage.data);
@@ -204,6 +219,9 @@ export default function ChatPage() {
       setIsNewThread(false);
     },
     onFinish: (state) => {
+      // A run in this thread ended (a send, or a joined scheduled run) while
+      // it is open: it has been read.
+      markThreadRead();
       if (document.hidden || !document.hasFocus()) {
         let body = "Conversation finished";
         const lastMessage = state.messages.at(-1);
@@ -242,6 +260,8 @@ export default function ChatPage() {
   }, [isUploading, processQueueNext, queue.length, thread.isLoading]);
 
   const hasThreadMessages = thread.messages.length > 0;
+  // A schedule_task result refreshes the header button and cards at once.
+  useScheduleToolResultRefresh(isMock ? null : threadId, thread.messages);
 
   useEffect(() => {
     if (
@@ -284,7 +304,13 @@ export default function ChatPage() {
       return;
     }
     try {
-      await createThread(threadId, projectParam);
+      const created = await createThread(threadId, projectParam);
+      // Keep confirmed membership available while the first metadata read is pending
+      // or fails after the composer materializes this new project thread.
+      queryClient.setQueryData(
+        ["thread", "metadata", threadId, false],
+        created,
+      );
       void queryClient.invalidateQueries({
         queryKey: INFINITE_THREADS_QUERY_KEY_PREFIX,
       });
@@ -423,9 +449,11 @@ export default function ChatPage() {
 
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
   const browserEnabled = !isNewThread && !isMock && browserControlEnabled;
-  const { activeGoal, hasGoal, setLocalGoal } = useActiveGoal(
+  const { activeGoal, hasGoal, goalOutcome, setLocalGoal } = useActiveGoal(
     threadId,
     thread.values.goal,
+    thread.values.goal_outcome,
+    thread.messages,
   );
   const hasOpenHumanInputCard = useMemo(
     () =>
@@ -443,6 +471,15 @@ export default function ChatPage() {
     !isNewThread && !isMock && threadMetadata.data
       ? projectIdOfThread(threadMetadata.data)
       : null;
+  // A goal blocks edit-and-rerun server-side; show the pencil locked.
+  const editBase =
+    !isNewThread &&
+    !isMock &&
+    env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
+    !isUploading &&
+    !thread.isLoading &&
+    !branchThread.isPending &&
+    !hasOpenHumanInputCard;
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -491,6 +528,9 @@ export default function ChatPage() {
                   env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" && (
                     <ThreadSubagentBatches threadId={threadId} />
                   )}
+                {!isNewThread && !isMock && (
+                  <ThreadScheduledTasksButton threadId={threadId} />
+                )}
                 <ContextUsageBadge contextUsage={contextUsage} />
                 <SidecarTrigger />
                 <DebugSandboxTrigger threadId={threadId} />
@@ -513,6 +553,7 @@ export default function ChatPage() {
                   threadId={threadId}
                   thread={thread}
                   activeRunId={activeRunId}
+                  scheduledTaskEvents={scheduledTaskEvents.data}
                   enableConversationOutline
                   paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
                   hasMoreHistory={hasMoreHistory}
@@ -526,16 +567,8 @@ export default function ChatPage() {
                     !thread.isLoading
                   }
                   onRegenerateMessage={handleRegenerate}
-                  canEdit={
-                    !isNewThread &&
-                    !isMock &&
-                    env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
-                    !isUploading &&
-                    !thread.isLoading &&
-                    !branchThread.isPending &&
-                    !hasGoal &&
-                    !hasOpenHumanInputCard
-                  }
+                  canEdit={editBase && !hasGoal}
+                  editLockedByGoal={editBase && hasGoal}
                   onEditAndRegenerateMessage={handleEditAndRegenerate}
                   onSubmitHumanInput={
                     isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
@@ -569,7 +602,7 @@ export default function ChatPage() {
                       : "max-w-(--container-width-md)",
                   )}
                 >
-                  {(hasGoal || hasTodos) && (
+                  {(hasGoal || goalOutcome !== null || hasTodos) && (
                     <div
                       className={cn(
                         "right-0 left-0 z-0",
@@ -582,7 +615,12 @@ export default function ChatPage() {
                           isWelcomeMode ? "absolute" : "relative",
                         )}
                       >
-                        {activeGoal && <GoalStatus goal={activeGoal} />}
+                        <GoalStatus
+                          goal={activeGoal}
+                          outcome={goalOutcome}
+                          isRunning={thread.isLoading}
+                          hasOpenHumanInputCard={hasOpenHumanInputCard}
+                        />
                         {hasTodos && (
                           <TodoList
                             className="bg-background/5"
@@ -607,6 +645,7 @@ export default function ChatPage() {
                         )}
                         isWelcomeMode={isWelcomeMode}
                         threadId={threadId}
+                        projectId={projectParam ?? affiliatedProjectId}
                         draftThreadId={isNewThread ? "new" : threadId}
                         knowledgeScopeControl={
                           selectorVisible && knowledgeScope ? (
@@ -645,6 +684,16 @@ export default function ChatPage() {
                         }}
                         onGoalChange={setLocalGoal}
                         onPrepareThread={ensureProjectThread}
+                        onReferenceFileAttached={() => {
+                          if (!isNewThread) return;
+                          history.replaceState(
+                            null,
+                            "",
+                            `/workspace/chats/${threadId}`,
+                          );
+                          setThreadId(threadId);
+                          setIsNewThread(false);
+                        }}
                         onSubmit={handleSubmit}
                         onQueue={(msg, opts) => enqueueMessage(msg, opts)}
                         onStop={handleStop}

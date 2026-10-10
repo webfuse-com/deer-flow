@@ -9,6 +9,19 @@ from app.gateway.deps import get_config
 from app.gateway.routers import features
 
 
+@pytest.fixture(autouse=True)
+def isolated_worker_env(monkeypatch):
+    """Keep the feature surface independent of the invoking shell's worker count.
+
+    ``browser_capability()`` consults the Gateway worker count, which uvicorn takes
+    from ``WEB_CONCURRENCY`` on the launches that pass no ``--workers``. An exported
+    value there would otherwise make the browser-control assertions below report a
+    refusal the code under test did not produce.
+    """
+    monkeypatch.delenv("GATEWAY_WORKERS", raising=False)
+    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
+
+
 def _app_with_config(
     *,
     agents_api_enabled: bool,
@@ -22,8 +35,13 @@ def _app_with_config(
     scope_selection_enabled: bool = False,
     knowledge_search_provider: str | None = None,
     capability_center_enabled: bool = True,
+    scheduled_task_repo_available: bool = False,
+    scheduler_running: bool = False,
+    scheduler_tool_enabled: bool = False,
 ) -> FastAPI:
     app = FastAPI()
+    app.state.scheduled_task_repo = object() if scheduled_task_repo_available else None
+    app.state.scheduled_task_service = SimpleNamespace(is_running=scheduler_running) if scheduled_task_repo_available else None
     app.state.mcp_tasks_available = mcp_tasks_available
     app.state.subagent_batches_available = subagent_batches_available
     if subagent_batch_repo_available is None:
@@ -44,6 +62,7 @@ def _app_with_config(
             scope_selection_enabled=scope_selection_enabled,
         ),
         capability_center=SimpleNamespace(enabled=capability_center_enabled),
+        scheduler=SimpleNamespace(enabled=scheduler_running, tool_enabled=scheduler_tool_enabled, min_once_delay_seconds=60),
     )
     search_tool = SimpleNamespace(use=knowledge_search_provider) if knowledge_search_provider is not None else None
     fake_config.get_tool_config = lambda name: search_tool if name == "knowledge_search" else None
@@ -70,6 +89,8 @@ def test_features_reports_agents_api_enabled() -> None:
             "scope_selection_enabled": False,
         },
         "capability_center": {"enabled": True},
+        "scheduled_tasks": {"available": False, "running": False, "tool_enabled": False, "min_interval_seconds": 60},
+        "thread_activity": {"available": False},
     }
 
 
@@ -92,6 +113,8 @@ def test_features_reports_agents_api_disabled() -> None:
             "scope_selection_enabled": False,
         },
         "capability_center": {"enabled": True},
+        "scheduled_tasks": {"available": False, "running": False, "tool_enabled": False, "min_interval_seconds": 60},
+        "thread_activity": {"available": False},
     }
 
 
@@ -234,3 +257,48 @@ def test_capability_center_defaults_to_enabled() -> None:
     from deerflow.config.app_config import AppConfig
 
     assert AppConfig.model_fields["capability_center"].default_factory().enabled is True
+
+
+@pytest.mark.parametrize(
+    ("repo", "running", "tool", "expected"),
+    [
+        (False, False, False, {"available": False, "running": False, "tool_enabled": False}),
+        (True, False, True, {"available": True, "running": False, "tool_enabled": False}),
+        (True, True, False, {"available": True, "running": True, "tool_enabled": False}),
+        (True, True, True, {"available": True, "running": True, "tool_enabled": True}),
+    ],
+    ids=["no-repo", "repo-service-not-running", "running-tool-off", "running-tool-on"],
+)
+def test_features_reports_scheduled_tasks_process_state(repo: bool, running: bool, tool: bool, expected: dict) -> None:
+    app = _app_with_config(agents_api_enabled=True, scheduled_task_repo_available=repo, scheduler_running=running, scheduler_tool_enabled=tool)
+    with TestClient(app) as client:
+        response = client.get("/api/features")
+    assert response.status_code == 200
+    assert response.json()["scheduled_tasks"] == {**expected, "min_interval_seconds": 60}
+
+
+class _SqlRunStore:
+    async def latest_change(self, *, user_id):
+        return None
+
+
+@pytest.mark.parametrize(
+    ("run_store", "read_repo", "available"),
+    [
+        (None, None, False),
+        (SimpleNamespace(), object(), False),  # memory run store: no run-change clock seek
+        (_SqlRunStore(), None, False),
+        (_SqlRunStore(), object(), True),
+    ],
+    ids=["memory", "memory-run-store", "no-read-repo", "sql"],
+)
+def test_features_reports_thread_activity_only_with_sql_persistence(run_store, read_repo, available: bool) -> None:
+    """The frontend polls /api/thread-activity only when this says so; a
+    missing block on an older backend means unavailable."""
+    app = _app_with_config(agents_api_enabled=True)
+    app.state.run_store = run_store
+    app.state.thread_read_repo = read_repo
+    with TestClient(app) as client:
+        response = client.get("/api/features")
+    assert response.status_code == 200
+    assert response.json()["thread_activity"] == {"available": available}

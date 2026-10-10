@@ -124,6 +124,35 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if owner_user_id:
                 owner_user_id = owner_user_id.strip()
             internal_user = get_internal_user(owner_user_id=owner_user_id or None)
+            if owner_user_id and not is_auth_disabled():
+                # The internal principal is synthesized from trusted headers
+                # without a users-row lookup, so suspension has no other chance
+                # to bite on this surface (#3462 gap 3): enforce it here, the
+                # one gate every owner-bound internal HTTP call (IM channel
+                # dispatch above all) passes through. Auth-disabled mode is
+                # exempt — its owner header carries the synthetic
+                # auth-disabled identity and no suspendable account exists.
+                # Owner ids without a users row stay allowed (a nonexistent
+                # account cannot be suspended), and a store that cannot be
+                # read cannot hold a suspension verdict either; run admission
+                # re-asserts the check when the row is readable.
+                from app.gateway.deps import get_local_provider
+
+                try:
+                    owner = await get_local_provider().get_user(owner_user_id)
+                except Exception:
+                    logger.warning("Internal-owner suspension check skipped: users lookup failed", exc_info=True)
+                    owner = None
+                if owner is not None and getattr(owner, "disabled", False):
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "detail": AuthErrorResponse(
+                                code=AuthErrorCode.ACCOUNT_DISABLED,
+                                message="Account disabled",
+                            ).model_dump()
+                        },
+                    )
 
         auth_source = AUTH_SOURCE_SESSION
         access_token = request.cookies.get("access_token")
@@ -172,6 +201,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 from app.gateway.deps import resolve_or_provision_sso_user
 
                 sso_user = await resolve_or_provision_sso_user(_sso_email)
+                # [argus patch #15] An operator-disabled account (upstream
+                # users.disabled, migration 0039) is refused on the SSO path
+                # too, as upstream refuses it on cookie, bearer and internal
+                # owner paths. 403 for the same reason as the owner mismatch
+                # above: a 401 would loop the browser through Google.
+                if sso_user is not None and getattr(sso_user, "disabled", False):
+                    logger.warning("SSO identity %s refused: account disabled", _sso_email)
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": AuthErrorResponse(
+                                code=AuthErrorCode.ACCOUNT_DISABLED,
+                                message="Account disabled",
+                            ).model_dump()
+                        },
+                    )
 
         # Non-public path: require session cookie (or internal token, or SSO)
         if internal_user is not None:
