@@ -876,7 +876,7 @@ carry budget ledger.
 - Upstream status: Telegram serialization is a generic bug-fix candidate; the
   navigation/header choices are Argus-specific.
 - Sync 2026-09-23: upstream #5309's expandable generic tool details render only in the token-usage `step_debug` inline mode, which this patch's UI never reaches; `tests/e2e/tool-call-details.spec.ts` skips its three debug cases (the debug-off case still runs).
-- Sync 2026-10-10: upstream's new chat-header scheduled-tasks button is shipped; it hides itself when the chat has no tasks. The sidebar still links Chronos.
+- Sync 2026-10-10: upstream's new chat-header scheduled-tasks button is shipped; it hides itself when the chat has no tasks. The sidebar still links Chronos. Upstream's new e2e `details share the browser panel and can reopen after drag collapse` (skill-usage.spec.ts) clicks the Browser trigger this patch removes, so it is skipped with a #65 reason, like the token-usage debug test.
 
 ## Patch #61
 
