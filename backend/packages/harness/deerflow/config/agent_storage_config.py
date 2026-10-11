@@ -36,3 +36,13 @@ class AgentStorageConfig(BaseModel):
             "database.backend to be 'sqlite' or 'postgres'."
         ),
     )
+    # [argus patch #109] A deployment-supplied store for Custom Agent definitions.
+    store_class: str | None = Field(
+        default=None,
+        description=(
+            "Optional import path ('module:Class') of an AgentStore subclass that replaces the "
+            "file/db store for custom-agent definitions, e.g. one that keeps them in the "
+            "deployment's git repository. The Agents API and the update_agent tool go through it; "
+            "managed subagents keep using 'backend'."
+        ),
+    )

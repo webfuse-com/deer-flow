@@ -41,6 +41,32 @@ function isAgentsApiDisabledDetail(detail: string | undefined): boolean {
   return typeof detail === "string" && detail.includes("agents_api.enabled");
 }
 
+/**
+ * The text of a backend error ``detail``: a plain string (store refusals such
+ * as "Changed on GitHub since this page loaded ..." or "Not saved to GitHub:
+ * ...") or FastAPI's validation list, whose ``msg`` entries are joined.
+ * ``null`` when there is nothing to show, so callers fall back to their own
+ * message. [argus patch #110] shared by create, update and import.
+ */
+export function errorDetailMessage(detail: unknown): string | null {
+  const message = Array.isArray(detail)
+    ? detail
+        .filter(
+          (issue): issue is { msg: string } =>
+            typeof issue === "object" &&
+            issue !== null &&
+            "msg" in issue &&
+            typeof issue.msg === "string" &&
+            issue.msg.trim().length > 0,
+        )
+        .map((issue) => issue.msg)
+        .join("; ")
+    : typeof detail === "string"
+      ? detail
+      : null;
+  return message?.trim() ? message : null;
+}
+
 export async function listAgents(): Promise<Agent[]> {
   const res = await fetch(`${getBackendBaseURL()}/api/agents`);
   if (!res.ok) throw new Error(`Failed to load agents: ${res.statusText}`);
@@ -61,11 +87,18 @@ export async function createAgent(request: CreateAgentRequest): Promise<Agent> {
     body: JSON.stringify(request),
   });
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { detail?: string };
-    if (isAgentsApiDisabledDetail(err.detail)) {
-      throw new AgentsApiDisabledError(err.detail!);
+    const err = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    if (
+      typeof err.detail === "string" &&
+      isAgentsApiDisabledDetail(err.detail)
+    ) {
+      throw new AgentsApiDisabledError(err.detail);
     }
-    throw new Error(err.detail ?? `Failed to create agent: ${res.statusText}`);
+    // [argus patch #110] Validation lists read as text too, not "[object Object]".
+    throw new Error(
+      errorDetailMessage(err.detail) ??
+        `Failed to create agent: ${res.statusText}`,
+    );
   }
   return res.json() as Promise<Agent>;
 }
@@ -95,25 +128,8 @@ export async function importAgentPackage(
     const err = (await res.json().catch(() => null)) as {
       detail?: unknown;
     } | null;
-    const detail = err?.detail;
-    const message = Array.isArray(detail)
-      ? detail
-          .filter(
-            (issue): issue is { msg: string } =>
-              typeof issue === "object" &&
-              issue !== null &&
-              "msg" in issue &&
-              typeof issue.msg === "string" &&
-              issue.msg.trim().length > 0,
-          )
-          .map((issue) => issue.msg)
-          .join("; ")
-      : typeof detail === "string"
-        ? detail
-        : null;
-    throw new Error(
-      message?.trim() ? message : `Failed to import agent: ${res.statusText}`,
-    );
+    const message = errorDetailMessage(err?.detail);
+    throw new Error(message ?? `Failed to import agent: ${res.statusText}`);
   }
   return res.json() as Promise<Agent>;
 }
@@ -128,8 +144,12 @@ export async function updateAgent(
     body: JSON.stringify(request),
   });
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { detail?: string };
-    throw new Error(err.detail ?? `Failed to update agent: ${res.statusText}`);
+    const err = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    // [argus patch #110] The store's refusal (409 / 422 / 502) is the message.
+    throw new Error(
+      errorDetailMessage(err.detail) ??
+        `Failed to update agent: ${res.statusText}`,
+    );
   }
   return res.json() as Promise<Agent>;
 }

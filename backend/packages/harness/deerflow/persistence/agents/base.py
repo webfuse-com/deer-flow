@@ -75,6 +75,15 @@ class AgentExistsError(Exception):
     """Raised by :meth:`AgentStore.create` when ``(user_id, name)`` already exists."""
 
 
+class AgentStoreError(Exception):
+    """[argus patch #109] A store refused a write; the Agents API answers with
+    ``status_code`` and the message, the update_agent tool reports the message."""
+
+    def __init__(self, message: str, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class AgentStore(abc.ABC):
     @abc.abstractmethod
     def get(self, name: str, *, user_id: str | None = None) -> AgentConfig:
@@ -134,6 +143,24 @@ class AgentStore(abc.ABC):
     @abc.abstractmethod
     def delete(self, name: str, *, user_id: str | None = None) -> AgentDeleteOutcome:
         """Delete an agent and its co-located memory, returning the outcome."""
+
+    # [argus patch #109] Optional hooks with upstream-identical defaults.
+    def is_legacy_only(self, name: str, *, user_id: str | None = None) -> bool:
+        """Whether ``name`` exists only in the read-only legacy shared layout, so
+        an update must be refused rather than forked into a per-user copy. Only
+        the file backend has that layout."""
+        return False
+
+    def get_editable_soul(self, name: str, *, user_id: str | None = None) -> str | None:
+        """The soul as an editor should show it. Same as :meth:`get_soul` unless
+        the store serves a soul built from an authored source (comments
+        stripped, layers composed) and edits go to that source."""
+        return self.get_soul(name, user_id=user_id)
+
+    def source_info(self, name: str, *, user_id: str | None = None) -> dict | None:
+        """Where the definition is kept, for the UI (e.g. ``{"kind": "github",
+        "url": ..., "path": ..., "commit": ...}``), or None."""
+        return None
 
     @abc.abstractmethod
     def signature(self) -> Hashable:

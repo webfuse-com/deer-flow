@@ -39,6 +39,8 @@ import type { Agent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
 import { cn } from "@/lib/utils";
 
+import { GithubIcon } from "../github-icon";
+
 import { AgentSettingsDialog } from "./agent-settings-dialog";
 
 interface AgentCardProps {
@@ -220,6 +222,25 @@ export function AgentCard({ agent }: AgentCardProps) {
             {t.agents.chat}
           </Button>
           <div className="flex gap-1">
+            {/* [argus patch #110] The agent's definition on GitHub. */}
+            {agent.source?.kind === "github" && agent.source.url && (
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8 shrink-0"
+                asChild
+              >
+                <a
+                  href={agent.source.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={t.agents.openOnGithub}
+                  aria-label={t.agents.openOnGithub}
+                >
+                  <GithubIcon className="h-3.5 w-3.5" />
+                </a>
+              </Button>
+            )}
             <Button
               size="icon"
               variant="ghost"

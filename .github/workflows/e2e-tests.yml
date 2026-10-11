@@ -38,10 +38,19 @@ permissions:
   contents: read
 
 jobs:
-  e2e-tests:
+  e2e-tests-shard:
+    # [argus] The suite (400+ tests) runs serially per job (workers: 1 in CI),
+    # which made this the slowest check (~14 min). Three Playwright shards run
+    # in parallel; each keeps workers: 1, so no test sees new concurrency. The
+    # aggregate job below keeps the `e2e-tests` name for anything that keys on it.
+    name: e2e-tests-shard ${{ matrix.shard }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
       - name: Checkout
@@ -82,13 +91,14 @@ jobs:
         working-directory: frontend
         run: npx playwright install chromium --with-deps
 
-      - name: Run E2E tests
+      - name: Run E2E tests (shard ${{ matrix.shard }} of 3)
         working-directory: frontend
-        run: pnpm exec playwright test
+        run: pnpm exec playwright test --shard=${{ matrix.shard }}/3
         env:
           SKIP_ENV_VALIDATION: '1'
 
       - name: Run auth recovery E2E tests
+        if: ${{ matrix.shard == 1 }}
         working-directory: frontend
         run: pnpm exec playwright test -c playwright.auth.config.ts
         env:
@@ -98,6 +108,21 @@ jobs:
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: frontend/playwright-report/
           retention-days: 7
+
+  e2e-tests:
+    name: e2e-tests
+    # [argus] Green only when every shard passed; a cancelled or skipped shard
+    # is a failure here, not a silent pass (same pattern as backend-unit-tests).
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    needs: [e2e-tests-shard]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every e2e shard passed
+        run: |
+          result='${{ needs.e2e-tests-shard.result }}'
+          echo "shards: ${result}"
+          test "${result}" = success

@@ -1142,6 +1142,23 @@ export interface Translations {
     settingsSaved: string;
     settingsInvalidTemperature: string;
     settingsInvalidMaxTokens: string;
+    // [argus patch #110] Agents page edits and creation commit to GitHub.
+    openOnGithub: string;
+    createTitle: string;
+    createDescription: string;
+    createName: string;
+    createNameHint: string;
+    createNameInvalid: string;
+    createNameCheckError: string;
+    createSubmit: string;
+    createdOnGithub: string;
+    settingsAgentDescription: string;
+    settingsAgentDescriptionPlaceholder: string;
+    settingsSoul: string;
+    settingsSoulHint: string;
+    settingsSoulOpenFullScreen: string;
+    settingsSoulExitFullScreen: string;
+    settingsSavedToGithub: string;
   };
 
   // Breadcrumb

@@ -117,6 +117,15 @@ class FileAgentStore(AgentStore):
                 logger.warning("list_all: skipping agent %s/%s: %s", user_id, name, e)
         return result
 
+    def is_legacy_only(self, name: str, *, user_id: str | None = None) -> bool:
+        # Require config.yaml, not bare directory existence: a per-user agent
+        # directory can hold only memory.json (written the first time a user
+        # chats with a legacy shared agent), see #3390.
+        paths = _ac.get_paths()
+        effective_user = user_id or _ac.get_effective_user_id()
+        agent_dir = paths.user_agent_dir(effective_user, name)
+        return not (agent_dir / "config.yaml").exists() and (paths.agent_dir(name) / "config.yaml").exists()
+
     def create(self, name: str, config: dict, soul: str, *, user_id: str | None = None) -> None:
         name = validate_agent_name(name)
         paths = _ac.get_paths()

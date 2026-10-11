@@ -1,6 +1,11 @@
 "use client";
 
-import { ChevronRightIcon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  ExternalLinkIcon,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -21,6 +26,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { CodeEditor } from "@/components/workspace/code-editor";
 import { useUpdateAgent } from "@/core/agents";
 import type { Agent, ReasoningEffort } from "@/core/agents";
 import { useKnowledgeBaseEnabled } from "@/core/features";
@@ -37,6 +44,7 @@ import {
   supportsThinking as modelSupportsThinking,
 } from "@/core/models/reasoning";
 import { useSubagents } from "@/core/subagents";
+import { cn } from "@/lib/utils";
 
 import { KnowledgeScopeSelector } from "../knowledge-scope-selector";
 
@@ -76,6 +84,11 @@ interface AgentSettingsDialogProps {
  * per-agent temperature / max_tokens overrides and thinking / reasoning
  * defaults. Persists through `PUT /api/agents/{name}`; changes take effect on
  * the agent's next run.
+ *
+ * [argus patch #110] Also edits the description and the soul (SOUL.md), and
+ * links to the GitHub copy when the agent store keeps one there: every save
+ * is a commit, and a store refusal (conflict, validation, GitHub down) is
+ * shown as the server's own text.
  */
 export function AgentSettingsDialog({
   agent,
@@ -103,6 +116,17 @@ export function AgentSettingsDialog({
   );
   const [skills, setSkills] = useState<string[] | null>(agent.skills ?? null);
   const [displayName, setDisplayName] = useState(agent.display_name ?? "");
+  // [argus patch #110] Description and soul, sent only when edited so an
+  // untouched save never rewrites them (or commits a no-op) on GitHub.
+  const [initialText] = useState(() => ({
+    description: agent.description ?? "",
+    soul: agent.soul ?? "",
+  }));
+  const [description, setDescription] = useState(initialText.description);
+  const [soul, setSoul] = useState(initialText.soul);
+  const [soulExpanded, setSoulExpanded] = useState(false);
+  const githubSource =
+    agent.source?.kind === "github" && agent.source.url ? agent.source : null;
 
   const [model, setModel] = useState(agent.model ?? DEFAULT_MODEL_VALUE);
   const [temperature, setTemperature] = useState(
@@ -190,10 +214,15 @@ export function AgentSettingsDialog({
     }
 
     try {
-      await updateAgent.mutateAsync({
+      const saved = await updateAgent.mutateAsync({
         name: agent.name,
         request: {
           display_name: displayName.trim() || null,
+          // [argus patch #110]
+          ...(description.trim() !== initialText.description.trim() && {
+            description: description.trim(),
+          }),
+          ...(soul !== initialText.soul && { soul }),
           ...(knowledgeChanged && {
             knowledge_scope:
               knowledgeSelection.mode === "all"
@@ -220,22 +249,128 @@ export function AgentSettingsDialog({
           ),
         },
       });
-      toast.success(t.agents.settingsSaved);
+      // [argus patch #110] The hook refetches the agent, so the new commit
+      // shows; the store's own answer says where the save landed.
+      toast.success(
+        (saved?.source ?? agent.source)?.kind === "github"
+          ? t.agents.settingsSavedToGithub
+          : t.agents.settingsSaved,
+      );
       onOpenChange(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
   }
 
+  // [argus patch #110] The soul editor; full screen shows only it, the way
+  // the project document dialog does (patch #108).
+  const soulSection = (
+    <div
+      className={cn(
+        "space-y-1.5",
+        soulExpanded && "flex min-h-0 flex-col gap-1.5 space-y-0",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium">{t.agents.settingsSoul}</span>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          aria-label={
+            soulExpanded
+              ? t.agents.settingsSoulExitFullScreen
+              : t.agents.settingsSoulOpenFullScreen
+          }
+          title={
+            soulExpanded
+              ? t.agents.settingsSoulExitFullScreen
+              : t.agents.settingsSoulOpenFullScreen
+          }
+          onClick={() => setSoulExpanded((value) => !value)}
+        >
+          {soulExpanded ? (
+            <Minimize2 className="size-4" />
+          ) : (
+            <Maximize2 className="size-4" />
+          )}
+        </Button>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        {t.agents.settingsSoulHint}
+      </p>
+      <div
+        className={cn(
+          "overflow-hidden rounded-md border",
+          soulExpanded ? "min-h-0 flex-1" : "h-80",
+        )}
+        data-testid="agent-soul-editor"
+      >
+        <CodeEditor
+          className="size-full resize-none rounded-none border-none"
+          value={soul}
+          language="markdown"
+          disabled={updateAgent.isPending}
+          onChange={setSoul}
+          onSave={() => void handleSave()}
+        />
+      </div>
+    </div>
+  );
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setSoulExpanded(false);
+        onOpenChange(next);
+      }}
+    >
+      <DialogContent
+        className={cn(
+          "grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden",
+          // [argus patch #110] Full screen for the soul editor, like #108;
+          // otherwise upstream's size (the layout e2e pins name wrapping).
+          soulExpanded
+            ? "h-[100dvh] max-h-[100dvh] w-screen max-w-none rounded-none sm:max-w-none"
+            : "max-h-[calc(100dvh-2rem)]",
+        )}
+        data-testid="agent-settings-dialog"
+        data-expanded={soulExpanded ? "true" : "false"}
+      >
         <DialogHeader className="pr-6">
           <DialogTitle>{t.agents.settingsTitle}</DialogTitle>
           <DialogDescription>{t.agents.settingsDescription}</DialogDescription>
+          {/* [argus patch #110] Where this agent's definition lives. */}
+          {githubSource && (
+            <a
+              href={githubSource.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary inline-flex w-fit items-center gap-1.5 text-xs hover:underline"
+            >
+              <ExternalLinkIcon className="size-3.5" />
+              {t.agents.openOnGithub}
+              {githubSource.commit && (
+                <code className="text-muted-foreground font-mono">
+                  {githubSource.commit.slice(0, 7)}
+                </code>
+              )}
+            </a>
+          )}
         </DialogHeader>
 
-        <div className="min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain px-1 py-1">
+        {/* [argus patch #110] Full screen shows only the soul editor; the
+            other fields stay mounted (hidden) so nothing typed is lost. */}
+        {soulExpanded && (
+          <div className="flex min-h-0 min-w-0 flex-col px-1 py-1">
+            {soulSection}
+          </div>
+        )}
+        <div
+          hidden={soulExpanded}
+          className="min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain px-1 py-1"
+        >
           <AgentCapabilitySelection
             plugins={plugins}
             skills={skills}
@@ -311,6 +446,20 @@ export function AgentSettingsDialog({
               {[...displayName.trim()].length}/100
             </p>
           </div>
+          {/* [argus patch #110] Description */}
+          <div className="space-y-1.5">
+            <label htmlFor="agent-description" className="text-sm font-medium">
+              {t.agents.settingsAgentDescription}
+            </label>
+            <Textarea
+              id="agent-description"
+              value={description}
+              rows={2}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder={t.agents.settingsAgentDescriptionPlaceholder}
+            />
+          </div>
+          {!soulExpanded && soulSection}
           {/* Default model */}
           <div className="space-y-1.5">
             <span className="text-sm font-medium">
