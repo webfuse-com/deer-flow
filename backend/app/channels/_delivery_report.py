@@ -52,6 +52,7 @@ async def report_delivery(
     chat_id: str | None = None,
     message_text: str | None = None,
     error: str | None = None,
+    thread_id: str | None = None,
 ) -> bool:
     """POST the delivery outcome to *report_url*. Returns True when accepted.
 
@@ -76,6 +77,9 @@ async def report_delivery(
         payload["message_text"] = message_text
     if error:
         payload["error"] = error
+    if thread_id:
+        # [argus patch #117] The thread the turn ran in (the run history opens it).
+        payload["thread_id"] = thread_id
     if status == "delivered":
         payload["delivered_at"] = datetime.now(UTC).isoformat()
 

@@ -2573,7 +2573,7 @@ class TestChannelManager:
             manager = ChannelManager(bus=bus, store=store)
             reports = []
 
-            async def fake_report(msg, *, status, message_text=None, error=None):
+            async def fake_report(msg, *, status, message_text=None, error=None, thread_id=None):
                 reports.append(status)
 
             manager._report_unattended_outcome = fake_report

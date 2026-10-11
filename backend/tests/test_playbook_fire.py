@@ -365,3 +365,21 @@ class TestFireTargetsRootChatsOnly:
             resp = _post(client)
         assert resp.status_code == 409
         service.bus.publish_inbound.assert_not_called()
+
+
+class TestScheduledRunMarks:
+    """[argus patch #117] How Chronos fired the run reaches the chat's card."""
+
+    def test_trigger_and_timezone_flow_through(self, client, playbook_dir):
+        service = _make_service()
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client, body={"trigger": "manual", "timezone": "Europe/Amsterdam"})
+        assert resp.status_code == 200
+        msg = service.bus.publish_inbound.await_args.args[0]
+        assert msg.metadata["trigger"] == "manual" and msg.metadata["timezone"] == "Europe/Amsterdam"
+
+    def test_an_unknown_trigger_is_refused(self, client, playbook_dir):
+        service = _make_service()
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client, body={"trigger": "sometimes"})
+        assert resp.status_code == 422
