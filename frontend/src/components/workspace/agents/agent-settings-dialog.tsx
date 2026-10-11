@@ -329,10 +329,11 @@ export function AgentSettingsDialog({
       <DialogContent
         className={cn(
           "grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden",
-          // [argus patch #110] Wider for the soul editor; full screen like #108.
+          // [argus patch #110] Full screen for the soul editor, like #108;
+          // otherwise upstream's size (the layout e2e pins name wrapping).
           soulExpanded
             ? "h-[100dvh] max-h-[100dvh] w-screen max-w-none rounded-none sm:max-w-none"
-            : "max-h-[calc(100dvh-2rem)] sm:max-w-2xl",
+            : "max-h-[calc(100dvh-2rem)]",
         )}
         data-testid="agent-settings-dialog"
         data-expanded={soulExpanded ? "true" : "false"}
