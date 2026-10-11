@@ -21,7 +21,7 @@ from app.gateway.deps import (
     is_scheduler_running,
 )
 from app.gateway.scheduled_task_errors import active_occurrence_error, active_occurrence_message, repository_error, scheduler_error
-from app.gateway.scheduled_task_validation import prepare_resume_updates, validate_scheduled_task_create, validate_scheduled_task_update
+from app.gateway.scheduled_task_validation import context_modes_for, prepare_resume_updates, validate_scheduled_task_create, validate_scheduled_task_update
 from app.scheduler.service import TASK_CHANGED_ERROR
 from deerflow.config.agents_config import AGENT_NAME_PATTERN, load_agent_config
 from deerflow.persistence.scheduled_tasks import ActiveScheduledTaskMutationConflict, ScheduledTaskQuotaExceeded
@@ -42,6 +42,11 @@ _DEFAULT_ASSISTANT_ID = "lead_agent"
 
 # Kept under its historical name; the coded wrapper is active_occurrence_error.
 _active_occurrence_conflict_detail = active_occurrence_message
+
+
+def _scheduler_backend(request: Request):
+    """[argus patch #120] The scheduler.backend_class instance, if any."""
+    return getattr(getattr(getattr(request, "app", None), "state", None), "scheduled_task_backend", None)
 
 
 def _authentication_required() -> HTTPException:
@@ -225,6 +230,7 @@ async def create_scheduled_task(request: Request, body: ScheduledTaskCreateReque
         scheduler_config=config.scheduler,
         assistant_resolver=resolve_scheduled_task_assistant_id,
         now=datetime.now(UTC),
+        context_modes=context_modes_for(_scheduler_backend(request)),
     )
     # After validation, so a bad request still reports what to fix: a task
     # created while this process's poller is off would silently never run.
@@ -290,6 +296,7 @@ async def update_scheduled_task(task_id: str, request: Request, body: ScheduledT
         assistant_resolver=resolve_scheduled_task_assistant_id,
         used=used,
         now=datetime.now(UTC),
+        context_modes=context_modes_for(_scheduler_backend(request)),
     )
     try:
         updated = await repo.update(

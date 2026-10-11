@@ -102,11 +102,13 @@ class ScheduledTasksFeature(BaseModel):
     # Absent means DeerFlow's own scheduler with every feature.
     supports: ScheduledTasksSupports | None = Field(default=None, description="Which task features a scheduler.backend_class offers")
     external: bool | None = Field(default=None, description="True when a scheduler.backend_class (an external scheduler) runs the tasks")
+    # [argus patch #120]
+    channels: list[str] | None = Field(default=None, description="IM channels a scheduler.backend_class can deliver runs to (context mode channel:<name>)")
 
     @model_serializer(mode="wrap")
     def _omit_backend_fields_when_unset(self, handler):
         data = handler(self)
-        for key in ("supports", "external"):
+        for key in ("supports", "external", "channels"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data
@@ -194,6 +196,7 @@ def _scheduled_tasks_feature(request: Request, config: AppConfig) -> ScheduledTa
         min_interval_seconds=int(getattr(scheduler, "min_once_delay_seconds", 60)),
         supports=supports,
         external=True if backend is not None else None,
+        channels=[str(c) for c in (getattr(backend, "channels", None) or ())] or None if backend is not None else None,
     )
 
 

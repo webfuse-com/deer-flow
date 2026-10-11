@@ -47,6 +47,15 @@ export function fill(
  * minute field is not a single number (the backend's `is_frequent_schedule`).
  * Chat-created tasks on such a schedule must keep a safety cap.
  */
+/** [argus patch #120] The IM channel of a `channel:<name>` context mode, else null. */
+export function channelOfContext(
+  mode: string | null | undefined,
+): string | null {
+  return typeof mode === "string" && mode.startsWith("channel:")
+    ? mode.slice("channel:".length) || null
+    : null;
+}
+
 export function isFrequentSchedule(
   scheduleType: ScheduledTask["schedule_type"],
   spec: Record<string, unknown>,

@@ -32,6 +32,7 @@ rs.mock("@/core/scheduled-tasks/api", () => ({
 const featureState = rs.hoisted(() => ({
   supports: undefined as Record<string, boolean> | undefined,
   external: false,
+  channels: undefined as string[] | undefined,
 }));
 rs.mock("@/core/features/hooks", () => ({
   useScheduledTasksFeature: () => ({
@@ -42,6 +43,7 @@ rs.mock("@/core/features/hooks", () => ({
     isLoading: false,
     supports: featureState.supports,
     external: featureState.external,
+    channels: featureState.channels,
   }),
 }));
 rs.mock("@/core/agents/api", () => ({
@@ -60,6 +62,7 @@ afterEach(() => {
   updateTask.mockReset();
   featureState.supports = undefined;
   featureState.external = false;
+  featureState.channels = undefined;
   document.cookie = "locale=; max-age=0; path=/";
 });
 
@@ -464,5 +467,85 @@ describe("[argus patch #119] a form for an external scheduler", () => {
     renderForm({ mode: "create" });
     expect(screen.getByLabelText(/Each run's goal/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Interval" })).toBeTruthy();
+  });
+});
+
+describe("[argus patch #120] a scheduler that runs tasks in a channel", () => {
+  const CHRONOS = {
+    goals: false,
+    stop_condition: false,
+    limits: false,
+    interval: false,
+    notes: false,
+    create: true,
+    edit: true,
+    delete: true,
+    once: false,
+    context: true,
+  };
+
+  test("offers the channel's chat next to a new chat each run, which stays the default", () => {
+    featureState.supports = CHRONOS;
+    featureState.external = true;
+    featureState.channels = ["telegram"];
+    renderForm({ mode: "create" }, { toolEnabled: false });
+    fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+    const fresh = screen.getByRole("button", {
+      name: "Start a new chat for each run",
+    });
+    const telegram = screen.getByRole("button", {
+      name: "Run in its Telegram chat",
+    });
+    expect(fresh.getAttribute("aria-pressed")).toBe("true");
+    expect(telegram.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(telegram);
+    expect(telegram.getAttribute("aria-pressed")).toBe("true");
+    expect(fresh.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByLabelText("Chat ID")).toBeNull();
+  });
+
+  test("a channel task opens with its choice in view and sends no chat id", () => {
+    featureState.supports = CHRONOS;
+    featureState.external = true;
+    featureState.channels = ["telegram"];
+    const source = task({
+      context_mode: "channel:telegram",
+      thread_id: "telegram-thread",
+      goal_objective: null,
+      max_runs: null,
+      end_at: null,
+      stop_condition: null,
+    });
+    renderForm({ mode: "edit", task: source }, { toolEnabled: false });
+    expect(
+      screen
+        .getByRole("button", { name: "Run in its Telegram chat" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    const { state } = initialFormState({ mode: "edit", task: source }, "");
+    const valid = validateForm({
+      ...state,
+      contextMode: "reuse_thread",
+      chatId: "c-1",
+    });
+    expect(valid.ok).toBe(true);
+    if (!valid.ok) return;
+    const created = createPayload(
+      { ...state, contextMode: "channel:telegram" },
+      valid,
+    );
+    expect(created.context_mode).toBe("channel:telegram");
+    expect(created.thread_id).toBeNull();
+    const moved = updatePayload(
+      source,
+      { ...state, contextMode: "fresh_thread_per_run" },
+      valid,
+      { includeStopCondition: false },
+    );
+    expect(moved).toEqual({
+      context_mode: "fresh_thread_per_run",
+      thread_id: null,
+    });
   });
 });

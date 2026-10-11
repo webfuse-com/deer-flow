@@ -176,6 +176,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#117](#patch-117) | A scheduled playbook fire shows as a "Scheduled run" card, and its delivery report names the thread it ran in | argus-edit | this PR |
 | [#118](#patch-118) | A project whose files live in a repository: its presentation orders the tabs, turns Documents into Files (repository links, changes only in the writable folder, no Attach) and links the instructions; instructions and soul each say what they are for | argus-edit | this PR |
 | [#119](#patch-119) | The scheduled-task form on an external scheduler: only the fields and schedule types it offers (`supports.once`, `supports.context`), the name fixed when editing | argus-edit | this PR |
+| [#120](#patch-120) | Scheduled playbook runs in a web chat (`thread_id`, or `fresh` for a new chat each run, as the schedule's owner); an external scheduler's channels (`channel:<name>`) are a "where runs happen" choice | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2482,6 +2483,18 @@ carry budget ledger.
 - Class: argus-edit (backend: `app/gateway/routers/features.py` `ScheduledTasksSupports.once`, `context`; frontend: `core/features/api.ts`, `components/workspace/scheduled-task-schedule-input.tsx` (`types`), `components/workspace/scheduled-tasks/task-form-dialog.tsx`).
 - Intent: with #115/#116 the Scheduled tasks page lists Chronos schedules; this lets the page create and edit them too. The form asks only for what the scheduler offers: the goal, the safety cap (runs and end time), the chat choice (`supports.context`) and one-time or interval schedules (`supports.once`, `supports.interval`) are hidden when not offered, and the schedule-type toggle disappears when only recurring schedules exist. With an external scheduler a schedule's name is fixed once (Argus: its file name), so the title is read-only when editing. Without `supports` everything is shown as before.
 - Tests: `tests/unit/components/workspace/scheduled-tasks/task-form-dialog.dom.test.tsx` (fields hidden for an external scheduler, title fixed on edit, everything shown otherwise; the features hook is mocked), `tests/unit/core/features/api.test.ts` and `backend/tests/test_scheduler_backend_class.py` (the two new keys).
+- Delete-when: Argus schedules run on DeerFlow's own scheduler.
+- Upstream status: not applicable.
+
+---
+
+## Patch #120
+
+**Patch #120 - Scheduled runs in a web chat** (2026-10-11)
+
+- Class: argus-edit (backend: `app/gateway/routers/playbooks.py` `PlaybookFireRequest.thread_id`/`fresh`/`owner_email`, `_fire_into_web_chat`, `_retry_while_busy`; `app/gateway/services.py` `launch_scheduled_thread_run(context=)`; `app/gateway/scheduled_task_validation.py` `context_modes_for`, `channel:<name>` modes; `app/gateway/routers/scheduled_tasks.py` passes the backend's modes; `app/gateway/routers/features.py` `channels`; frontend: `core/scheduled-tasks/types.ts` and `api.ts` (`channel:${string}`), `core/features/api.ts` and `hooks.ts` (`channels`), `components/workspace/scheduled-tasks/shared.tsx` `channelOfContext`, `task-form-dialog.tsx` (a button per channel), `task-detail.tsx` (the Does line), i18n `form.contextChannel`, `detail.contextChannel`).
+- Intent: Argus schedules (Chronos, through the playbook endpoint #43) delivered only to Telegram. Nicholas wants a schedule made on the web to run in a web chat by default, with Telegram as the alternative. The fire body now takes `thread_id` (run in that chat, which must exist and belong to the owner) or `fresh` (a new chat each run, titled with the schedule name and local time), plus `owner_email`, the schedule's owner, resolved to the web user. The run is server-started through upstream's `launch_scheduled_thread_run` (schedule origin, the "Scheduled run" card), with the schedule's memory mode and allowed tools in the run context and `argus_schedule_id`/`argus_report_url` in the run metadata so the scheduler backend can report the outcome when the run completes. A busy chat is retried every 30 s for about 20 minutes, then reported failed. An external scheduler can name channels (`backend.channels`); each becomes a context mode `channel:<name>` ("Run in its Telegram chat") next to a new chat each run and an existing chat, and a channel task stores no thread id. Without `thread_id`/`fresh` the fire goes to the IM channel as before, and without backend channels the modes are upstream's two.
+- Tests: `backend/tests/test_playbook_web_chat.py` (fresh chat as the owner with context, metadata and origin; an existing chat only when it is the owner's; owner required and known; busy retried then reported failed; channel modes accepted only when the backend names them, and they clear the thread), `backend/tests/test_scheduler_backend_class.py` (features name the channels), `tests/unit/components/workspace/scheduled-tasks/task-form-dialog.dom.test.tsx` (the channel button, fresh stays the default, no chat id sent), `tests/unit/components/workspace/scheduled-tasks/task-detail.dom.test.tsx` (the Does line names the channel).
 - Delete-when: Argus schedules run on DeerFlow's own scheduler.
 - Upstream status: not applicable.
 

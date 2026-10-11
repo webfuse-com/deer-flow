@@ -181,3 +181,19 @@ def test_features_report_the_backends_offer(client):
         "once": False,
         "context": False,
     }
+
+
+class ChannelBackend(FakeBackend):
+    channels = ["telegram"]
+
+
+def test_features_name_the_backends_channels(monkeypatch):
+    # [argus patch #120] the form offers "channel:telegram" next to a new or an existing chat
+    from app.gateway.routers.features import _scheduled_tasks_feature
+
+    backend = ChannelBackend(None)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(scheduled_task_backend=backend, scheduled_task_repo=backend.task_repo, scheduled_task_service=backend.service)))
+    feature = _scheduled_tasks_feature(request, _config()).model_dump()
+    assert feature["channels"] == ["telegram"]
+    request.app.state.scheduled_task_backend = FakeBackend(None)
+    assert "channels" not in _scheduled_tasks_feature(request, _config()).model_dump()

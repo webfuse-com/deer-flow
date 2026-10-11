@@ -810,6 +810,7 @@ export interface Translations {
       openChat: string;
       contextFresh: string;
       contextReuse: string;
+      contextChannel: string;
       copyTaskId: string;
       copied: string;
       moreActions: string;
@@ -878,6 +879,7 @@ export interface Translations {
       advanced: string;
       contextFresh: string;
       contextReuse: string;
+      contextChannel: string;
       chatId: string;
       reuseNoticeTitle: string;
       reuseNoticeDescription: string;

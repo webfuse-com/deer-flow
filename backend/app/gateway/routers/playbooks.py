@@ -25,11 +25,15 @@ trigger that holds no per-stack state (only the global internal token).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from datetime import date, timedelta
+import re
+import uuid
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -90,6 +94,12 @@ class PlaybookFireRequest(BaseModel):
     # "Scheduled run" card.
     trigger: Literal["scheduled", "manual"] | None = None
     timezone: str | None = Field(default=None, max_length=64)
+    # [argus patch #120] Run in a web chat instead of the IM channel: in the
+    # owner's existing thread ``thread_id``, or (``fresh``) in a new chat each
+    # run. ``owner_email`` names whose chat it is (the schedule's owner).
+    thread_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    fresh: bool = False
+    owner_email: str | None = Field(default=None, max_length=320)
 
 
 class PlaybookFireResponse(BaseModel):
@@ -164,6 +174,9 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
     if memory_mode not in _VALID_MEMORY_MODES:
         raise HTTPException(status_code=422, detail=f"invalid memory mode {memory_mode!r}; expected one of {sorted(_VALID_MEMORY_MODES)}")
 
+    if body.thread_id or body.fresh:
+        return await _fire_into_web_chat(request, schedule_id, body, prompt, agent, memory_mode)
+
     channel = (body.channel or "telegram").strip()
 
     # ---- discover the citizen's chat from the running channel store -------
@@ -237,3 +250,118 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
         memory=memory_mode,
         chats=delivered,
     )
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #120] Scheduled runs in a web chat
+# ---------------------------------------------------------------------------
+
+_BUSY_RETRY_SECONDS = 30.0
+_BUSY_RETRY_LIMIT = 40  # about 20 minutes, inside Chronos's 30-minute report window
+_REPORT_RUN_RE = re.compile(r"/runs/([0-9]+)/output/?$")
+_RETRIES: set[asyncio.Task] = set()
+
+
+def _scheduled_origin(schedule_id: str, prompt: str, body: PlaybookFireRequest) -> dict:
+    match = _REPORT_RUN_RE.search(body.report_url or "")
+    return {
+        "task_id": schedule_id,
+        "task_run_id": match.group(1) if match else "",
+        "trigger": "manual" if body.trigger == "manual" else "scheduled",
+        "run_number": None,
+        "scheduled_for": datetime.now(UTC).isoformat(),
+        "timezone": body.timezone or "",
+        "schedule_type": "cron",
+        "task_title": schedule_id.replace("-", " ").capitalize(),
+        "instructions": prompt,
+        "stop_condition": None,
+        "standing_notes": [],
+    }
+
+
+def _fresh_title(schedule_id: str, zone: str | None) -> str:
+    try:
+        now = datetime.now(ZoneInfo(zone)) if zone else datetime.now(UTC)
+    except (ZoneInfoNotFoundError, ValueError):
+        now = datetime.now(UTC)
+    return f"{schedule_id.replace('-', ' ').capitalize()} · {now:%m-%d %H:%M}"
+
+
+async def _fire_into_web_chat(
+    request: Request,
+    schedule_id: str,
+    body: PlaybookFireRequest,
+    prompt: str,
+    agent: str,
+    memory_mode: str,
+) -> PlaybookFireResponse:
+    """Start the scheduled run in the owner's web chat (new or existing).
+
+    The run is server-started (``deerflow_origin`` schedule) with DeerFlow's
+    "Scheduled run" card on its prompt. A busy existing chat is retried in the
+    background. The delivery report (#45) follows the run's completion: the
+    scheduler backend reports it from the run's ``argus_report_url``; a launch
+    that never gets in reports failed here.
+    """
+    from app.gateway.deps import get_thread_store, get_user_repository
+    from app.gateway.services import launch_scheduled_thread_run
+
+    email = (body.owner_email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=422, detail="owner_email is required to run in a web chat")
+    user = await get_user_repository().get_user_by_email(email)
+    if user is None or not getattr(user, "id", None):
+        raise HTTPException(status_code=409, detail=f"{email} has no web user on this stack")
+    owner = str(user.id)
+    if body.thread_id:
+        thread_id, title = body.thread_id, None
+        if not await get_thread_store(request).check_access(thread_id, owner, require_existing=True):
+            raise HTTPException(status_code=404, detail=f"chat {thread_id} not found for {email}")
+    else:
+        thread_id, title = str(uuid.uuid4()), _fresh_title(schedule_id, body.timezone)
+    context: dict = {"unattended": True, "memory_mode": memory_mode}
+    if body.allowed_tools:
+        context["allowed_tools"] = list(body.allowed_tools)
+    metadata = {"argus_schedule_id": schedule_id}
+    if body.report_url:
+        metadata["argus_report_url"] = body.report_url
+
+    async def launch() -> dict:
+        return await launch_scheduled_thread_run(
+            app=request.app,
+            thread_id=thread_id,
+            assistant_id=agent,
+            prompt=prompt,
+            owner_user_id=owner,
+            metadata=metadata,
+            origin=_scheduled_origin(schedule_id, prompt, body),
+            title=title,
+            context=context,
+        )
+
+    try:
+        await launch()
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        task = asyncio.create_task(_retry_while_busy(launch, schedule_id, thread_id, body.report_url))
+        _RETRIES.add(task)
+        task.add_done_callback(_RETRIES.discard)
+    return PlaybookFireResponse(accepted=True, schedule_id=schedule_id, channel="web", agent=agent, memory=memory_mode, chats=1)
+
+
+async def _retry_while_busy(launch, schedule_id: str, thread_id: str, report_url: str | None) -> None:
+    for _ in range(_BUSY_RETRY_LIMIT):
+        await asyncio.sleep(_BUSY_RETRY_SECONDS)
+        try:
+            await launch()
+            return
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                break
+        except Exception:  # noqa: BLE001 - reported below
+            logger.exception("playbook %s: launching in chat %s failed", schedule_id, thread_id)
+            break
+    from app.channels._delivery_report import report_delivery
+
+    await report_delivery(report_url, status="failed", channel="web", error=f"chat {thread_id} stayed busy; the run did not start", thread_id=thread_id)
