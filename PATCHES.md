@@ -170,6 +170,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#111](#patch-111) | `agent_storage.subagent_store_class`, `thinking_enabled` on managed subagents, and their storage location in the Subagents API and page | generic-upstreamable | this PR |
 | [#112](#patch-112) | Extensions can add a tab to the Agents page (`agents-tab` surface slot) | argus-edit | this PR |
 | [#113](#patch-113) | `channels.<name>.owner_email`: a channel locked to named senders runs every message as that web user, so its chats show in the web UI | argus-edit | this PR |
+| [#115](#patch-115) | `scheduler.backend_class`: an external scheduler behind the Scheduled tasks API and page; `/api/features` reports what it supports | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2406,6 +2407,18 @@ carry budget ledger.
 - Tests: `backend/tests/test_channel_owner_email.py` (config parsing: lock required, email normalised, non-dict entries skipped; a message without owner gets the configured owner; a connection owner is kept; an unknown email is retried after the window); existing channel manager and service suites unchanged.
 - Delete-when: upstream channel connections can be pre-bound from config for a single-owner deployment (no `/connect` handshake), or upstream ships an equivalent owner setting.
 - Upstream status: none sent.
+
+---
+
+## Patch #115
+
+**Patch #115 - An external scheduler behind the Scheduled tasks page** (2026-10-11)
+
+- Class: generic-upstreamable (backend: `config/scheduler_config.py` `backend_class`, `app/gateway/deps.py` `load_scheduler_backend` and its install next to the repositories, `app/gateway/app.py` lifespan (the backend's service instead of `ScheduledTaskService`), `app/gateway/routers/features.py` `ScheduledTasksSupports`, `deerflow/scheduler/runtime.py` `scheduler_tools_enabled`; `config.example.yaml`).
+- Intent: Argus schedules run in Chronos, its own scheduler, reconciled from each citizen's GitHub fork; DeerFlow's Scheduled tasks page is the interface Nicholas wants for them. `scheduler.backend_class: module:Class` is built once with the app config and must expose `task_repo`, `run_repo`, `event_repo` and `service` with the methods the Scheduled tasks router calls (the router already uses them by duck typing); they replace DeerFlow's own on `app.state`, and DeerFlow's poller is not created (a set `scheduler.enabled` is ignored with a warning). The backend's `supports` map (goals, stop_condition, limits, interval, notes, create, edit, delete) is reported under `/api/features` `scheduled_tasks.supports`, with `external: true`; both keys are omitted without a backend, so the response is unchanged for DeerFlow's own scheduler. The chat schedule tools stay off with a backend (`scheduler_tools_enabled` is false), because they drive DeerFlow's own scheduler. The frontend side is #116.
+- Tests: `backend/tests/test_scheduler_backend_class.py` (no backend by default; a backend missing a part is refused; chat tools off with a backend; list, get, per-thread list, runs, events and run-now served by the backend through the real router; features report its supports, `external` and tools off); existing features, router, capability and shutdown suites unchanged (675 passed).
+- Delete-when: upstream makes the scheduled-task backend pluggable.
+- Upstream status: none sent (generic-upstreamable).
 
 ---
 

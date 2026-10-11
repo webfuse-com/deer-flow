@@ -18,6 +18,18 @@ class SchedulerConfig(BaseModel):
     )
     queue_timeout_seconds: int = Field(default=3600, ge=60, le=604800)
     min_once_delay_seconds: int = Field(default=60, ge=1, le=86400)
+    # [argus patch #115]
+    backend_class: str | None = Field(
+        default=None,
+        description=(
+            "module:Class of a deployment-supplied scheduled-task backend, for a deployment whose "
+            "schedules run elsewhere (an external scheduler). It is instantiated once with the app "
+            "config; its task_repo, run_repo, event_repo and service replace DeerFlow's own for the "
+            "Scheduled tasks API and page, and DeerFlow's poller is not created. Its `supports` "
+            "mapping tells the page which task features exist (goals, stop_condition, limits, "
+            "interval, notes, create, edit, delete)."
+        ),
+    )
     recursion_limit: int = Field(
         default=1000,
         ge=1,

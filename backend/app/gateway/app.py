@@ -732,7 +732,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             from app.gateway.services import launch_scheduled_thread_run
             from app.scheduler import ScheduledTaskService
 
-            if getattr(app.state, "scheduled_task_repo", None) is not None and getattr(app.state, "scheduled_task_run_repo", None) is not None:
+            backend = getattr(app.state, "scheduled_task_backend", None)
+            if backend is not None:
+                # [argus patch #115] The backend schedules and runs its tasks
+                # itself; DeerFlow's poller is not created.
+                if startup_config.scheduler.enabled:
+                    logger.warning("scheduler.enabled is ignored: scheduler.backend_class %s runs the schedules", startup_config.scheduler.backend_class)
+                app.state.scheduled_task_service = backend.service
+                start = getattr(backend.service, "start", None)
+                if callable(start):
+                    await start()
+            elif getattr(app.state, "scheduled_task_repo", None) is not None and getattr(app.state, "scheduled_task_run_repo", None) is not None:
                 scheduled_task_service = ScheduledTaskService(
                     task_repo=app.state.scheduled_task_repo,
                     task_run_repo=app.state.scheduled_task_run_repo,
