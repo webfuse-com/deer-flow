@@ -1,3 +1,5 @@
+import type { ScheduledTaskSupports } from "@/core/features/api";
+
 import { isTaskBusy, type ScheduledTask } from "./types";
 
 export type TaskAction =
@@ -58,7 +60,14 @@ function state(
  */
 export function availableActions(
   task: Pick<ScheduledTask, "status" | "schedule_type" | "active_run_status">,
-  { createBlocked }: { createBlocked: boolean },
+  {
+    createBlocked,
+    supports,
+  }: {
+    createBlocked: boolean;
+    /** [argus patch #116] An external scheduler may not offer every action. */
+    supports?: Pick<ScheduledTaskSupports, "create" | "edit" | "delete">;
+  },
 ): Record<TaskAction, TaskActionState> {
   const busy = isTaskBusy(task);
   const queued = !busy && task.active_run_status === "queued";
@@ -84,8 +93,11 @@ export function availableActions(
       true,
       busy ? "running" : queued ? "alreadyQueued" : undefined,
     ),
-    edit: state(true, blocked),
-    duplicate: state(true, createBlocked ? "createBlocked" : undefined),
-    delete: state(true, blocked),
+    edit: state(supports?.edit ?? true, blocked),
+    duplicate: state(
+      supports?.create ?? true,
+      createBlocked ? "createBlocked" : undefined,
+    ),
+    delete: state(supports?.delete ?? true, blocked),
   };
 }

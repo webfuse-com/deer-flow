@@ -4,6 +4,7 @@ import {
   BookOpenTextIcon,
   BlocksIcon,
   BotIcon,
+  CalendarClock,
   Clock3Icon,
   LandmarkIcon,
   LightbulbIcon,
@@ -24,7 +25,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentsApiEnabled } from "@/core/agents";
-import { useCapabilityCenterEnabled } from "@/core/features/hooks";
+import {
+  useCapabilityCenterEnabled,
+  useScheduledTasksFeature,
+} from "@/core/features/hooks";
 import { useI18n } from "@/core/i18n/hooks";
 
 export function WorkspaceNavChatList() {
@@ -32,6 +36,10 @@ export function WorkspaceNavChatList() {
   const pathname = usePathname();
   const { enabled: agentsEnabled } = useAgentsApiEnabled();
   const { enabled: capabilityCenterEnabled } = useCapabilityCenterEnabled();
+  // [argus patch #116] With an external scheduler behind the Scheduled tasks
+  // page (patch #115) the page is the place for schedules; otherwise the
+  // Chronos link stays (patch #65).
+  const externalScheduler = useScheduledTasksFeature().external === true;
   return (
     <SidebarGroup className="pt-1">
       <SidebarMenu>
@@ -86,17 +94,32 @@ export function WorkspaceNavChatList() {
           )}
         </SidebarMenuItem>
         <SidebarMenuItem>
-          <SidebarMenuButton asChild>
-            <a
-              className="text-muted-foreground"
-              href="https://chronos.acro.surfly.com/jobs"
-              target="_blank"
-              rel="noopener noreferrer"
+          {externalScheduler ? (
+            <SidebarMenuButton
+              isActive={pathname.startsWith("/workspace/scheduled-tasks")}
+              asChild
             >
-              <Clock3Icon className="text-muted-foreground" />
-              <span>Chronos</span>
-            </a>
-          </SidebarMenuButton>
+              <Link
+                className="text-muted-foreground"
+                href="/workspace/scheduled-tasks"
+              >
+                <CalendarClock className="text-muted-foreground" />
+                <span>{t.sidebar.scheduledTasks}</span>
+              </Link>
+            </SidebarMenuButton>
+          ) : (
+            <SidebarMenuButton asChild>
+              <a
+                className="text-muted-foreground"
+                href="https://chronos.acro.surfly.com/jobs"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Clock3Icon className="text-muted-foreground" />
+                <span>Chronos</span>
+              </a>
+            </SidebarMenuButton>
+          )}
         </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton asChild>

@@ -21,8 +21,14 @@ class SchedulerRunCapability(Protocol):
 
 
 def scheduler_tools_enabled(app_config: Any) -> bool:
-    """Require both operator switches, including for already assembled tools."""
+    """Require both operator switches, including for already assembled tools.
+
+    [argus patch #115] Never with a scheduler.backend_class: the chat tools
+    drive DeerFlow's own scheduler, which then does not run.
+    """
     scheduler = getattr(app_config, "scheduler", None)
+    if getattr(scheduler, "backend_class", None):
+        return False
     return bool(getattr(scheduler, "enabled", False) and getattr(scheduler, "tool_enabled", False))
 
 

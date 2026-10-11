@@ -854,6 +854,15 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
             app.state.scheduled_task_event_repo = None
             app.state.thread_read_repo = None
 
+        # [argus patch #115] A deployment-supplied scheduled-task backend
+        # replaces the repositories behind the Scheduled tasks API.
+        scheduler_backend = load_scheduler_backend(config)
+        app.state.scheduled_task_backend = scheduler_backend
+        if scheduler_backend is not None:
+            app.state.scheduled_task_repo = scheduler_backend.task_repo
+            app.state.scheduled_task_run_repo = scheduler_backend.run_repo
+            app.state.scheduled_task_event_repo = scheduler_backend.event_repo
+
         # RunManager with store backing for persistence
         run_ownership_config = getattr(config, "run_ownership", None)
         sb_config = getattr(config, "stream_bridge", None)
@@ -1081,6 +1090,25 @@ def get_run_context(request: Request) -> RunContext:
         extensions=getattr(request.app.state, "extensions", None),
         on_run_completed=getattr(request.app.state, "scheduled_task_service", None).handle_run_completion if getattr(request.app.state, "scheduled_task_service", None) is not None else None,
     )
+
+
+def load_scheduler_backend(config: Any) -> Any | None:
+    """[argus patch #115] The configured ``scheduler.backend_class`` instance, or None.
+
+    The class is built once with the app config. It must expose ``task_repo``,
+    ``run_repo``, ``event_repo`` and ``service`` with the methods the Scheduled
+    tasks router calls; ``supports`` (optional) maps feature names to booleans.
+    """
+    class_path = getattr(getattr(config, "scheduler", None), "backend_class", None)
+    if not class_path:
+        return None
+    from deerflow.reflection.resolvers import resolve_class
+
+    backend = resolve_class(class_path)(config)
+    for attr in ("task_repo", "run_repo", "event_repo", "service"):
+        if getattr(backend, attr, None) is None:
+            raise ValueError(f"scheduler.backend_class {class_path} has no {attr}")
+    return backend
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { GatewayApiError } from "@/core/api/errors";
+import { ALL_SCHEDULED_TASK_FEATURES } from "@/core/features/api";
+import { useScheduledTasksFeature } from "@/core/features/hooks";
 import { useI18n } from "@/core/i18n/hooks";
 import type { Translations } from "@/core/i18n/locales/types";
 import { useModels } from "@/core/models/hooks";
@@ -262,7 +264,10 @@ export function TaskDetail({
   const timeZone = displayTimeZone(task);
   const status = presentTaskStatus(task);
   const StatusIcon = status.icon;
-  const actions = availableActions(task, { createBlocked });
+  // [argus patch #116] What the scheduler offers (an external one, fewer).
+  const supports =
+    useScheduledTasksFeature().supports ?? ALL_SCHEDULED_TASK_FEATURES;
+  const actions = availableActions(task, { createBlocked, supports });
   // The notice describes the current pause, so it reads the newest runs
   // whichever history page is shown.
   const latestRuns = useLatestScheduledTaskRuns(task.id);
@@ -449,17 +454,19 @@ export function TaskDetail({
               {st.actions.runNow}
             </Button>
           </WithReason>
-          <WithReason reason={editReason}>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={actions.edit.disabled}
-              onClick={() => onEdit(task)}
-            >
-              <Pencil aria-hidden />
-              {st.actions.edit}
-            </Button>
-          </WithReason>
+          {actions.edit.visible && (
+            <WithReason reason={editReason}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={actions.edit.disabled}
+                onClick={() => onEdit(task)}
+              >
+                <Pencil aria-hidden />
+                {st.actions.edit}
+              </Button>
+            </WithReason>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -471,34 +478,40 @@ export function TaskDetail({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <MenuItemWithReason
-                reason={blockReasonText(actions.duplicate.reason, t)}
-              >
-                <DropdownMenuItem
-                  disabled={actions.duplicate.disabled}
-                  onSelect={() => onDuplicate(task)}
+              {actions.duplicate.visible && (
+                <MenuItemWithReason
+                  reason={blockReasonText(actions.duplicate.reason, t)}
                 >
-                  <CopyPlus aria-hidden />
-                  {st.actions.duplicate}
-                </DropdownMenuItem>
-              </MenuItemWithReason>
+                  <DropdownMenuItem
+                    disabled={actions.duplicate.disabled}
+                    onSelect={() => onDuplicate(task)}
+                  >
+                    <CopyPlus aria-hidden />
+                    {st.actions.duplicate}
+                  </DropdownMenuItem>
+                </MenuItemWithReason>
+              )}
               <DropdownMenuItem onSelect={copyTaskId}>
                 <Copy aria-hidden />
                 {st.detail.copyTaskId}
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <MenuItemWithReason
-                reason={blockReasonText(actions.delete.reason, t)}
-              >
-                <DropdownMenuItem
-                  variant="destructive"
-                  disabled={actions.delete.disabled}
-                  onSelect={() => setDeleteOpen(true)}
-                >
-                  <Trash2 aria-hidden />
-                  {st.actions.delete}
-                </DropdownMenuItem>
-              </MenuItemWithReason>
+              {actions.delete.visible && (
+                <>
+                  <DropdownMenuSeparator />
+                  <MenuItemWithReason
+                    reason={blockReasonText(actions.delete.reason, t)}
+                  >
+                    <DropdownMenuItem
+                      variant="destructive"
+                      disabled={actions.delete.disabled}
+                      onSelect={() => setDeleteOpen(true)}
+                    >
+                      <Trash2 aria-hidden />
+                      {st.actions.delete}
+                    </DropdownMenuItem>
+                  </MenuItemWithReason>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -530,21 +543,23 @@ export function TaskDetail({
         )}
       </Section>
 
-      <Section label={st.detail.stopsWhen}>
-        <p data-testid="scheduled-task-stops-when">
-          {stops.primary}
-          {stops.reached && (
-            <span className="ml-1.5 font-medium text-sky-700 dark:text-sky-400">
-              ✓ {stops.reached}
-            </span>
-          )}
-        </p>
-        {stops.secondary.map((line) => (
-          <p key={line} className="text-muted-foreground text-xs">
-            {line}
+      {(supports.limits || supports.stop_condition) && (
+        <Section label={st.detail.stopsWhen}>
+          <p data-testid="scheduled-task-stops-when">
+            {stops.primary}
+            {stops.reached && (
+              <span className="ml-1.5 font-medium text-sky-700 dark:text-sky-400">
+                ✓ {stops.reached}
+              </span>
+            )}
           </p>
-        ))}
-      </Section>
+          {stops.secondary.map((line) => (
+            <p key={line} className="text-muted-foreground text-xs">
+              {line}
+            </p>
+          ))}
+        </Section>
+      )}
 
       {task.goal_objective && (
         <Section

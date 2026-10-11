@@ -132,3 +132,20 @@ describe("availableActions", () => {
     expect(actions.runNow).toEqual(open);
   });
 });
+
+describe("actions an external scheduler does not offer (argus patch #116)", () => {
+  it("hides edit, duplicate and delete but keeps pause and run now", () => {
+    const actions = availableActions(
+      { status: "enabled", schedule_type: "cron", active_run_status: null },
+      {
+        createBlocked: false,
+        supports: { create: false, edit: false, delete: false },
+      },
+    );
+    expect(actions.edit.visible).toBe(false);
+    expect(actions.duplicate.visible).toBe(false);
+    expect(actions.delete.visible).toBe(false);
+    expect(actions.pause.visible).toBe(true);
+    expect(actions.runNow.visible).toBe(true);
+  });
+});

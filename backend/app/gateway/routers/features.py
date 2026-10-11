@@ -8,7 +8,7 @@ started.
 """
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 from app.gateway.browser_capability import browser_capability
 from app.gateway.conversation_access import conversation_references_enabled
@@ -73,6 +73,20 @@ class CapabilityCenterFeature(BaseModel):
     enabled: bool = Field(..., description="Whether the frontend shows the Capability Center entry point")
 
 
+# [argus patch #115]
+class ScheduledTasksSupports(BaseModel):
+    """Which task features the scheduled-task backend offers (all of them for DeerFlow's own)."""
+
+    goals: bool = True
+    stop_condition: bool = True
+    limits: bool = True
+    interval: bool = True
+    notes: bool = True
+    create: bool = True
+    edit: bool = True
+    delete: bool = True
+
+
 class ScheduledTasksFeature(BaseModel):
     """Availability of scheduled tasks in this Gateway process."""
 
@@ -80,6 +94,19 @@ class ScheduledTasksFeature(BaseModel):
     running: bool = Field(..., description="Whether this process's scheduler poller is running, so tasks run on schedule and new tasks can be created")
     tool_enabled: bool = Field(..., description="Whether chats can create and manage tasks and scheduled runs can stop their own schedule")
     min_interval_seconds: int = Field(..., description="Shortest interval and earliest one-time delay, in seconds")
+    # [argus patch #115] Present only with a scheduler.backend_class: which
+    # task features it offers, and that an external scheduler runs the tasks.
+    # Absent means DeerFlow's own scheduler with every feature.
+    supports: ScheduledTasksSupports | None = Field(default=None, description="Which task features a scheduler.backend_class offers")
+    external: bool | None = Field(default=None, description="True when a scheduler.backend_class (an external scheduler) runs the tasks")
+
+    @model_serializer(mode="wrap")
+    def _omit_backend_fields_when_unset(self, handler):
+        data = handler(self)
+        for key in ("supports", "external"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ThreadActivityFeature(BaseModel):
@@ -152,11 +179,18 @@ def _scheduled_tasks_feature(request: Request, config: AppConfig) -> ScheduledTa
     service = getattr(state, "scheduled_task_service", None)
     running = bool(getattr(service, "is_running", False))
     scheduler = getattr(config, "scheduler", None)
+    backend = getattr(state, "scheduled_task_backend", None)
+    supports = None
+    if backend is not None:
+        offered = getattr(backend, "supports", None) or {}
+        supports = ScheduledTasksSupports(**{name: bool(offered.get(name, False)) for name in ScheduledTasksSupports.model_fields})
     return ScheduledTasksFeature(
         available=getattr(state, "scheduled_task_repo", None) is not None,
         running=running,
-        tool_enabled=running and scheduler_tools_enabled(config),
+        tool_enabled=running and backend is None and scheduler_tools_enabled(config),
         min_interval_seconds=int(getattr(scheduler, "min_once_delay_seconds", 60)),
+        supports=supports,
+        external=True if backend is not None else None,
     )
 
 

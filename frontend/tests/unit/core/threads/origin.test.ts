@@ -164,3 +164,31 @@ describe("origin labels", () => {
     expect(channelSourceOfThread(thread(source), zhCN)?.label).toBe("微信");
   });
 });
+
+describe("schedule chats fired through an IM channel (argus patch #116)", () => {
+  test("a channel thread with a sched: topic is a scheduled run", () => {
+    expect(
+      threadOriginOf(
+        thread({
+          channel_source: {
+            type: "im_channel",
+            provider: "telegram",
+            chat_id: "42",
+            topic_id: "sched:morning-briefing",
+          },
+        }),
+      ),
+    ).toEqual({ kind: "schedule" });
+    expect(
+      threadOriginOf(
+        thread({
+          channel_source: {
+            type: "im_channel",
+            provider: "telegram",
+            chat_id: "42",
+          },
+        }),
+      ),
+    ).toEqual({ kind: "im_channel", provider: "telegram" });
+  });
+});

@@ -172,6 +172,9 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#112](#patch-112) | Extensions can add a tab to the Agents page (`agents-tab` surface slot) | argus-edit | this PR |
 | [#113](#patch-113) | `channels.<name>.owner_email`: a channel locked to named senders runs every message as that web user, so its chats show in the web UI | argus-edit | this PR |
 | [#114](#patch-114) | Project Settings: archive and delete in a separate danger zone; a project's `presentation.delete_notice` is shown and makes deletion need the name typed | argus-edit | this PR |
+| [#115](#patch-115) | `scheduler.backend_class`: an external scheduler behind the Scheduled tasks API and page; `/api/features` reports what it supports | generic-upstreamable | this PR |
+| [#116](#patch-116) | The Scheduled tasks page with an external scheduler: hides what it does not offer, sidebar entry instead of the Chronos link, header menu to switch a chat's schedule, schedule chats marked as scheduled | argus-edit | this PR |
+| [#117](#patch-117) | A scheduled playbook fire shows as a "Scheduled run" card, and its delivery report names the thread it ran in | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2420,6 +2423,42 @@ carry budget ledger.
 - Tests: `tests/unit/app/projects-page.dom.test.tsx` (danger zone holds archive and delete but not the name field; one-step delete without a notice; with a notice the text is shown and Delete enables only on the exact name); existing rename/archive reconciliation tests unchanged.
 - Delete-when: upstream separates destructive project actions and lets a deployment extend the delete warning.
 - Upstream status: none sent.
+
+---
+
+## Patch #115
+
+**Patch #115 - An external scheduler behind the Scheduled tasks page** (2026-10-11)
+
+- Class: generic-upstreamable (backend: `config/scheduler_config.py` `backend_class`, `app/gateway/deps.py` `load_scheduler_backend` and its install next to the repositories, `app/gateway/app.py` lifespan (the backend's service instead of `ScheduledTaskService`), `app/gateway/routers/features.py` `ScheduledTasksSupports`, `deerflow/scheduler/runtime.py` `scheduler_tools_enabled`; `config.example.yaml`).
+- Intent: Argus schedules run in Chronos, its own scheduler, reconciled from each citizen's GitHub fork; DeerFlow's Scheduled tasks page is the interface Nicholas wants for them. `scheduler.backend_class: module:Class` is built once with the app config and must expose `task_repo`, `run_repo`, `event_repo` and `service` with the methods the Scheduled tasks router calls (the router already uses them by duck typing); they replace DeerFlow's own on `app.state`, and DeerFlow's poller is not created (a set `scheduler.enabled` is ignored with a warning). The backend's `supports` map (goals, stop_condition, limits, interval, notes, create, edit, delete) is reported under `/api/features` `scheduled_tasks.supports`, with `external: true`; both keys are omitted without a backend, so the response is unchanged for DeerFlow's own scheduler. The chat schedule tools stay off with a backend (`scheduler_tools_enabled` is false), because they drive DeerFlow's own scheduler. The frontend side is #116.
+- Tests: `backend/tests/test_scheduler_backend_class.py` (no backend by default; a backend missing a part is refused; chat tools off with a backend; list, get, per-thread list, runs, events and run-now served by the backend through the real router; features report its supports, `external` and tools off); existing features, router, capability and shutdown suites unchanged (675 passed).
+- Delete-when: upstream makes the scheduled-task backend pluggable.
+- Upstream status: none sent (generic-upstreamable).
+
+---
+
+## Patch #116
+
+**Patch #116 - The Scheduled tasks page on an external scheduler** (2026-10-11)
+
+- Class: argus-edit (frontend: `core/features/api.ts` `ScheduledTaskSupports` / `supports` / `external`, `core/features/hooks.ts`, `core/scheduled-tasks/actions.ts` (`supports`), `components/workspace/scheduled-tasks/task-detail.tsx`, `empty-state.tsx`, `app/workspace/scheduled-tasks/page.tsx`, `components/workspace/workspace-nav-chat-list.tsx` (revises #65), `components/workspace/thread-scheduled-tasks-button.tsx` `SingleTaskMenu`, `core/threads/origin.ts`, i18n `page.descriptionExternal`, `header.active`, `header.menuLabel`).
+- Intent: the frontend side of #115. With `/api/features` reporting `external` and `supports`, the page hides what the external scheduler does not offer (Edit, Duplicate, Delete, New task, the "Stops when" section) instead of showing actions that would fail, and says where schedules live. The sidebar links the page instead of the external Chronos link (#65 keeps the Chronos link without an external scheduler). A chat whose one schedule runs in it gets a header menu: an "Active" check that pauses or resumes it, Run once now and Open task (with DeerFlow's own scheduler the header link is unchanged). A Telegram thread whose topic is `sched:<id>` (Argus's per-schedule chat) carries the "Scheduled run" marker in the sidebar. A missing `supports`/`external` (DeerFlow's own scheduler, older backends) means everything, so upstream behaviour is unchanged.
+- Tests: `tests/unit/core/features/api.test.ts` (supports parsing, missing keys supported), `tests/unit/core/scheduled-tasks/actions.test.ts` (unsupported actions hidden, pause and run kept), `tests/unit/core/threads/origin.test.ts` (sched topic is a scheduled run), `tests/unit/components/workspace/thread-scheduled-tasks-button.dom.test.tsx` (the header menu pauses, resumes and runs), `tests/unit/components/workspace/workspace-nav-chat-list.dom.test.tsx` (page link instead of Chronos); upstream scheduled-task suites unchanged.
+- Delete-when: Argus schedules run on DeerFlow's own scheduler.
+- Upstream status: not applicable.
+
+---
+
+## Patch #117
+
+**Patch #117 - Scheduled playbook fires are marked as scheduled runs** (2026-10-11)
+
+- Class: argus-edit (backend: `app/channels/manager.py` `_playbook_scheduled_origin` and its use in `_handle_chat_on_thread`, `_report_unattended_outcome(thread_id=)`; `app/channels/_delivery_report.py` `thread_id`; `app/gateway/routers/playbooks.py` `PlaybookFireRequest.trigger`/`timezone`).
+- Intent: Chronos fires each schedule through the playbook endpoint (#43/#45), so in the web UI a scheduled chat started with the whole playbook prompt as if the user had typed it. The human message of a playbook fire now carries `deerflow_scheduled_origin` in DeerFlow's own shape (task = the schedule id, run = the Chronos run from the report URL, trigger, time zone, title, the prompt as instructions), so the chat shows upstream's "Scheduled run" card; the run is admitted with it because the channel manager is an internal caller. Chronos passes `trigger` (scheduled or manual) and the schedule's `timezone` in the fire body. The delivery report (#45) names the thread the turn ran in (`thread_id`), so the run history on the Scheduled tasks page (#115, Argus's Chronos backend) opens the right chat.
+- Tests: `backend/tests/test_delivery_report.py` (thread id in the payload and passed by the manager; the scheduled-origin marker for playbook fires only, run id from the report URL, trigger and zone), `backend/tests/test_playbook_fire.py` (trigger and zone flow through; an unknown trigger is 422); `test_channels.py`'s #45 report stub takes the new argument.
+- Delete-when: Argus schedules run on DeerFlow's own scheduler.
+- Upstream status: not applicable (playbook fire is Argus's).
 
 ---
 

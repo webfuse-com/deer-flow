@@ -25,6 +25,8 @@ export interface FeaturesResponse {
     running?: boolean;
     tool_enabled?: boolean;
     min_interval_seconds?: number;
+    supports?: Record<string, boolean>;
+    external?: boolean;
   };
   thread_activity?: {
     available?: boolean;
@@ -40,7 +42,38 @@ export interface ScheduledTasksFeature {
   toolEnabled: boolean;
   /** Shortest interval and earliest one-time delay, in seconds. */
   minIntervalSeconds: number;
+  /**
+   * [argus patch #116] Which task features the backend offers. All of them
+   * for DeerFlow's own scheduler; an external one (`scheduler.backend_class`,
+   * patch #115) may offer fewer, and the page hides the rest.
+   */
+  supports?: ScheduledTaskSupports;
+  /** An external scheduler runs the tasks (patch #115). */
+  external?: boolean;
 }
+
+export type ScheduledTaskSupports = Record<
+  | "goals"
+  | "stop_condition"
+  | "limits"
+  | "interval"
+  | "notes"
+  | "create"
+  | "edit"
+  | "delete",
+  boolean
+>;
+
+export const ALL_SCHEDULED_TASK_FEATURES: ScheduledTaskSupports = {
+  goals: true,
+  stop_condition: true,
+  limits: true,
+  interval: true,
+  notes: true,
+  create: true,
+  edit: true,
+  delete: true,
+};
 
 /**
  * Assumed when the backend sends no `scheduled_tasks` block (an older backend
@@ -159,7 +192,28 @@ export async function fetchScheduledTasksFeature(): Promise<ScheduledTasksFeatur
       minInterval > 0
         ? minInterval
         : defaults.minIntervalSeconds,
+    // Only when the backend reports them (patch #115): absent = DeerFlow's
+    // own scheduler with every feature.
+    ...(feature?.supports !== undefined
+      ? { supports: supportsOf(feature.supports) }
+      : {}),
+    ...(feature?.external === true ? { external: true } : {}),
   };
+}
+
+/** A missing or partial `supports` block means "everything" for the missing keys. */
+function supportsOf(value: unknown): ScheduledTaskSupports {
+  const out = { ...ALL_SCHEDULED_TASK_FEATURES };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return out;
+  }
+  for (const key of Object.keys(out) as (keyof ScheduledTaskSupports)[]) {
+    const offered: unknown = Reflect.get(value, key);
+    if (typeof offered === "boolean") {
+      out[key] = offered;
+    }
+  }
+  return out;
 }
 
 export async function fetchThreadActivityFeature(): Promise<ThreadActivityFeature> {

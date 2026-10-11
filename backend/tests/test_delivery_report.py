@@ -186,3 +186,39 @@ class TestManagerOutcomeGate:
         with patch("app.channels.manager.report_delivery", AsyncMock()) as rep:
             await mgr._report_unattended_outcome(_msg(unattended=False), status="delivered")
         rep.assert_not_awaited()
+
+
+class TestThreadInReport:
+    """[argus patch #117] The report names the thread the turn ran in."""
+
+    @pytest.mark.asyncio
+    async def test_thread_id_is_in_the_payload(self):
+        fake = _CapturingClient(["ok"])
+        with patch.object(delivery_report.httpx, "AsyncClient", fake):
+            await report_delivery(REPORT_URL, status="silent", channel="telegram", thread_id="thread-brief")
+        assert fake.posts[0]["json"]["thread_id"] == "thread-brief"
+
+    @pytest.mark.asyncio
+    async def test_the_manager_passes_its_thread(self):
+        mgr = ChannelManager.__new__(ChannelManager)
+        with patch("app.channels.manager.report_delivery", AsyncMock()) as rep:
+            await mgr._report_unattended_outcome(_msg(), status="delivered", message_text="x", thread_id="thread-brief")
+        assert rep.await_args.kwargs["thread_id"] == "thread-brief"
+
+
+def test_a_playbook_fire_is_marked_as_a_scheduled_run():
+    from app.channels.manager import _playbook_scheduled_origin
+
+    msg = _msg()
+    msg.metadata = {"source": "playbook", "schedule_id": "morning-briefing", "trigger": "manual", "timezone": "Europe/Amsterdam"}
+    origin = _playbook_scheduled_origin(msg)
+    assert origin["task_id"] == "morning-briefing" and origin["task_title"] == "Morning briefing"
+    assert origin["task_run_id"] == REPORT_URL.rstrip("/").split("/")[-2]
+    assert origin["trigger"] == "manual" and origin["timezone"] == "Europe/Amsterdam"
+    assert origin["instructions"] == "playbook prompt" and origin["schedule_type"] == "cron"
+    msg.metadata = {"source": "playbook", "schedule_id": "morning-briefing"}
+    assert _playbook_scheduled_origin(msg)["trigger"] == "scheduled"
+    assert _playbook_scheduled_origin(_msg(unattended=False)) is None
+    other = _msg()
+    other.metadata = {"source": "notify"}
+    assert _playbook_scheduled_origin(other) is None
