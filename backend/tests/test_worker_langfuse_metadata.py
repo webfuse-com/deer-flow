@@ -447,3 +447,74 @@ async def test_run_agent_skips_metadata_when_langfuse_disabled(monkeypatch):
     assert "langfuse_session_id" not in metadata
     assert "langfuse_user_id" not in metadata
     assert "langfuse_trace_name" not in metadata
+
+
+class _FakeThreadStore:
+    """Only what run_agent touches: the tracing switch read and status updates."""
+
+    def __init__(self, metadata):
+        self.metadata = metadata
+
+    async def get(self, thread_id, user_id=None):
+        return {"thread_id": thread_id, "metadata": self.metadata}
+
+    async def update_status(self, *args, **kwargs):
+        return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("switch, traced", [("off", False), ("on", True)])
+async def test_run_agent_attaches_no_tracing_to_a_switched_off_chat(monkeypatch, switch, traced):
+    """[argus patch #121] Only the root span carries the session id, so a chat
+    whose tracing is switched off must get no tracing callbacks at all."""
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    from deerflow.agents.lead_agent import agent as lead_agent_module
+    from deerflow.config.app_config import AppConfig
+    from deerflow.config.model_config import ModelConfig
+    from deerflow.config.sandbox_config import SandboxConfig
+    from deerflow.tracing import argus
+
+    argus.reset_untraced_threads()
+    monkeypatch.setenv("LANGFUSE_TRACING", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    from deerflow.config.tracing_config import reset_tracing_config
+
+    reset_tracing_config()
+    fake_agent = _FakeAgent()
+    app_config = AppConfig(
+        models=[ModelConfig(name="actual-model", model="actual-model", use="langchain_openai:ChatOpenAI")],
+        sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
+    )
+    callback = BaseCallbackHandler()
+    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
+    monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: fake_agent)
+    monkeypatch.setattr(lead_agent_module, "build_tracing_callbacks", lambda: [callback])
+
+    def agent_factory(config):
+        return lead_agent_module.assemble_lead_agent(config, app_config=app_config)
+
+    record = RunRecord(
+        run_id=f"run-switch-{switch}",
+        thread_id=f"thread-switch-{switch}",
+        assistant_id="lead-agent",
+        status=RunStatus.pending,
+        on_disconnect=DisconnectMode.cancel,
+        model_name=None,
+    )
+    record.abort_event = asyncio.Event()
+
+    await run_agent(
+        _FakeBridge(),
+        _FakeRunManager(),
+        record,
+        ctx=RunContext(checkpointer=None, app_config=app_config, thread_store=_FakeThreadStore({"ariadne_tracing": switch})),
+        agent_factory=agent_factory,
+        graph_input={"messages": []},
+        config={"configurable": {"thread_id": record.thread_id}},
+    )
+
+    assert (callback in (fake_agent.captured_config.get("callbacks") or [])) is traced
+    assert argus.is_thread_untraced(record.thread_id) is (not traced)
+    argus.reset_untraced_threads()

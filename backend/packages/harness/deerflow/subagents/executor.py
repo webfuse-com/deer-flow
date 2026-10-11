@@ -1766,7 +1766,10 @@ class SubagentExecutor:
             # produces one trace with all node / LLM / tool calls as child spans.
             # This mirrors the lead agent pattern: graph-level tracing paired with
             # attach_tracing=False on the model avoids double-counted traces.
-            tracing_callbacks = build_tracing_callbacks()
+            # [argus patch #121] None when the parent chat's tracing is off.
+            from deerflow.tracing.argus import is_thread_untraced
+
+            tracing_callbacks = [] if is_thread_untraced(self.thread_id) else build_tracing_callbacks()
             if tracing_callbacks:
                 existing_callbacks = list(run_config.get("callbacks") or [])
                 run_config["callbacks"] = [*existing_callbacks, *tracing_callbacks]
