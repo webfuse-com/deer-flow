@@ -649,6 +649,18 @@ export const zhCN: Translations = {
     documentsEmptyHint: "上传文件或将对话文件保存到项目，即可建立项目文件架。",
     instructions: "指令",
     instructionsPlaceholder: "让 Agent 始终了解该项目的背景、目标与约定…",
+    instructionsScope:
+      "如何开展此项目。仅用于此项目中的对话；智能体是谁由其灵魂决定，在智能体页面设置。",
+    instructionsSource: "保存在你的仓库中",
+    files: "文件",
+    filesHint: (writable) =>
+      writable
+        ? `此项目中的每个对话都能读取这些文件。上传的文件保存在 ${writable}；其他文件在仓库中修改。`
+        : "此项目中的每个对话都能读取这些文件。",
+    filesOtherInRepository: "代码和其他文件在仓库中。",
+    openRepository: "在 GitHub 中打开",
+    viewOnRepository: "GitHub",
+    editOnRepository: "在 GitHub 中编辑",
     instructionsByteCount: (used, max) => `${used} / ${max} 字节`,
     instructionsTooLong: (max) => `指令超过 ${max} 字节上限，请精简后再保存。`,
     instructionsSaved: "已保存",
@@ -1324,7 +1336,8 @@ export const zhCN: Translations = {
     settingsAgentDescription: "描述",
     settingsAgentDescriptionPlaceholder: "这个智能体的用途",
     settingsSoul: "Soul",
-    settingsSoulHint: "SOUL.md：智能体的个性与指令，使用 Markdown 编写。",
+    settingsSoulHint:
+      "SOUL.md：这个智能体是谁，使用 Markdown 编写。用于与该智能体的每个对话；某个项目的工作方式写在该项目的指令中。",
     settingsSoulOpenFullScreen: "全屏打开",
     settingsSoulExitFullScreen: "退出全屏",
     settingsSavedToGithub: "已保存到 GitHub",

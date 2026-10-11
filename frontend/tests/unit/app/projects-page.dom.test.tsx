@@ -449,4 +449,46 @@ describe("ProjectPage plugin tabs", () => {
     render(<ProjectPage />, { wrapper: Wrapper });
     expect(screen.getAllByRole("tab")).toHaveLength(4);
   });
+
+  it("[argus patch #118] puts the presentation's first tab first and shows it", () => {
+    mocks.pluginTabs = [
+      {
+        contribution: { namespace: "argus" },
+        surface: { id: "overview", title: "Overview" },
+        value: "plugin:argus:overview",
+      },
+    ];
+    mocks.project = {
+      ...makeProject(""),
+      presentation: {
+        tabs: ["plugin:argus:overview", "chats", "instructions", "documents"],
+        files: {
+          folder_url: "https://github.com/acme/x/tree/main/projects/alpha",
+        },
+        instructions_url:
+          "https://github.com/acme/x/blob/main/projects/alpha/INSTRUCTIONS.md",
+      },
+    };
+    render(<ProjectPage />, { wrapper: Wrapper });
+    const names = screen.getAllByRole("tab").map((tab) => tab.textContent);
+    expect(names).toEqual([
+      "Overview",
+      "Chats",
+      "Instructions",
+      "Files",
+      "Settings",
+    ]);
+    expect(screen.getByTestId("plugin-surface").textContent).toContain(
+      "overview",
+    );
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Instructions" }));
+    expect(screen.getByText(/Used in every chat in this project/)).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "Saved in your repository" })
+        .getAttribute("href"),
+    ).toBe(
+      "https://github.com/acme/x/blob/main/projects/alpha/INSTRUCTIONS.md",
+    );
+  });
 });

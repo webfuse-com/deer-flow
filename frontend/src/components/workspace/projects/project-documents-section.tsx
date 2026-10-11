@@ -2,6 +2,7 @@
 
 import {
   Archive,
+  ExternalLink,
   FileText,
   LoaderIcon,
   Maximize2,
@@ -66,6 +67,11 @@ import {
   type ProjectThreadFileGroup,
 } from "@/core/projects";
 import { stageProjectAttachment } from "@/core/projects/composer-attach";
+import {
+  filesSourceOf,
+  repoFileOf,
+  type RepoFile,
+} from "@/core/projects/files";
 import { useInfiniteThreads } from "@/core/threads/hooks";
 import type { AgentThread } from "@/core/threads/types";
 import {
@@ -149,6 +155,8 @@ function ProjectDocumentShelf({
   const [previewDoc, setPreviewDoc] = useState<ProjectDocument | null>(null);
   const [attachDoc, setAttachDoc] = useState<ProjectDocument | null>(null);
   const [trashDoc, setTrashDoc] = useState<ProjectDocument | null>(null);
+  // [argus patch #118] Files mirrored from a repository: links and limits.
+  const filesSource = filesSourceOf(project);
 
   const documents =
     documentsQuery.data?.pages.flatMap((page) => page.documents) ?? [];
@@ -222,15 +230,34 @@ function ProjectDocumentShelf({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col">
           <h2 className="text-muted-foreground text-sm font-medium">
-            {t.projects.documentsShelf}
+            {filesSource ? t.projects.files : t.projects.documentsShelf}
           </h2>
-          {!isArchived && (
+          {filesSource ? (
             <p className="text-muted-foreground text-xs">
-              {t.projects.documentsShelfHint}
+              {t.projects.filesHint(filesSource.writable ?? "")}
             </p>
+          ) : (
+            !isArchived && (
+              <p className="text-muted-foreground text-xs">
+                {t.projects.documentsShelfHint}
+              </p>
+            )
           )}
         </div>
         <div className="flex items-center gap-2">
+          {filesSource?.folder_url && (
+            <Button variant="ghost" size="sm" asChild>
+              <a
+                href={filesSource.folder_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="project-files-repository"
+              >
+                <ExternalLink className="size-4" />
+                {t.projects.openRepository}
+              </a>
+            </Button>
+          )}
           <Button variant="ghost" size="sm" asChild>
             <Link href="/workspace/trash">
               <Trash2 className="size-4" />
@@ -314,12 +341,27 @@ function ProjectDocumentShelf({
                     )
                   : null
               }
+              repoFile={repoFileOf(document, filesSource)}
+              canAttach={filesSource === null}
               onPreview={() => setPreviewDoc(document)}
               onAttach={() => setAttachDoc(document)}
               onTrash={() => setTrashDoc(document)}
             />
           ))}
         </ul>
+      )}
+      {filesSource?.folder_url && documents.length > 0 && (
+        <p className="text-muted-foreground text-xs">
+          {t.projects.filesOtherInRepository}{" "}
+          <a
+            href={filesSource.folder_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            {t.projects.openRepository}
+          </a>
+        </p>
       )}
 
       {!documentsQuery.isError && documents.length > 0 && (
@@ -413,6 +455,8 @@ function ProjectDocumentRow({
   document,
   isArchived,
   provenance,
+  repoFile = null,
+  canAttach = true,
   onPreview,
   onAttach,
   onTrash,
@@ -421,10 +465,16 @@ function ProjectDocumentRow({
   document: ProjectDocument;
   isArchived: boolean;
   provenance: string | null;
+  /** [argus patch #118] Where the file lives in the project's repository. */
+  repoFile?: RepoFile | null;
+  canAttach?: boolean;
   onPreview: () => void;
   onAttach: () => void;
   onTrash: () => void;
 }) {
+  // [argus patch #118] A repository file outside the writable folder is
+  // changed on the repository, not here.
+  const canTrash = !isArchived && (repoFile === null || repoFile.writable);
   const { t } = useI18n();
   if (document.content_missing) {
     // §11: the list response's server-side integrity flag is authoritative —
@@ -481,11 +531,29 @@ function ProjectDocumentRow({
             {t.common.download}
           </a>
         </Button>
-        <Button variant="ghost" size="sm" onClick={onAttach}>
-          <Paperclip className="size-4" />
-          {t.projects.attachToThread}
-        </Button>
-        {!isArchived && (
+        {repoFile?.url && (
+          <Button variant="ghost" size="sm" asChild>
+            <a
+              href={
+                (repoFile.writable ? null : repoFile.editUrl) ?? repoFile.url
+              }
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="size-4" />
+              {repoFile.writable
+                ? t.projects.viewOnRepository
+                : t.projects.editOnRepository}
+            </a>
+          </Button>
+        )}
+        {canAttach && (
+          <Button variant="ghost" size="sm" onClick={onAttach}>
+            <Paperclip className="size-4" />
+            {t.projects.attachToThread}
+          </Button>
+        )}
+        {canTrash && (
           <Button variant="ghost" size="sm" onClick={onTrash}>
             <Trash2 className="size-4" />
             {t.projects.moveDocumentToTrash}
@@ -558,10 +626,16 @@ function DocumentPreviewDialog({
     ? urlOfProjectDocumentContent(project.id, document.id, { download: true })
     : "";
   // Only a fully loaded text preview on an active shelf can be edited.
+  // [argus patch #118] A repository file only inside the writable folder,
+  // with an editable suffix; any other is edited on the repository.
+  const repoFile = document
+    ? repoFileOf(document, filesSourceOf(project))
+    : null;
   const editable =
     preview?.kind === "text" &&
     !preview.truncated &&
-    project.status === "active";
+    project.status === "active" &&
+    (repoFile === null || repoFile.editable);
   const editing = editable && draft !== null;
   const save = () => {
     if (!document || draft === null || saveVersion.isPending) return;
@@ -613,6 +687,18 @@ function DocumentPreviewDialog({
             >
               <Pencil className="size-4" />
               {t.common.edit}
+            </Button>
+          )}
+          {repoFile && !repoFile.editable && repoFile.editUrl && (
+            <Button size="sm" variant="ghost" asChild>
+              <a
+                href={repoFile.editUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <ExternalLink className="size-4" />
+                {t.projects.editOnRepository}
+              </a>
             </Button>
           )}
           {editing && (
