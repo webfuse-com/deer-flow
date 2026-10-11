@@ -243,6 +243,17 @@ function ProjectSettingsSection({ project }: { project: Project }) {
     setName((current) => (current === synced ? serverValue : current));
   }, [project.name]);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  // [argus patch #114] A deployment that deletes more than DeerFlow's own
+  // rows (Argus removes the project's folder from GitHub) says so in
+  // presentation.delete_notice; deleting then needs the project's name typed.
+  const deleteNotice =
+    typeof project.presentation?.delete_notice === "string" &&
+    project.presentation.delete_notice.trim()
+      ? project.presentation.delete_notice.trim()
+      : null;
+  const [confirmName, setConfirmName] = useState("");
+  const deleteConfirmed =
+    deleteNotice === null || confirmName.trim() === project.name.trim();
 
   const trimmedName = name.trim();
   const canSave =
@@ -328,22 +339,59 @@ function ProjectSettingsSection({ project }: { project: Project }) {
           </Button>
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          disabled={archiveProject.isPending || restoreProject.isPending}
-          onClick={handleArchiveToggle}
+      {/* [argus patch #114] Archive and delete live in a separate danger
+          zone, away from the name field. */}
+      <div
+        role="group"
+        aria-labelledby="project-danger-zone-title"
+        className="border-destructive/40 mt-8 flex flex-col gap-4 rounded-md border p-4"
+      >
+        <h3
+          id="project-danger-zone-title"
+          className="text-destructive text-sm font-medium"
         >
-          {isArchived ? <RotateCcw /> : <Archive />}
-          {isArchived ? t.projects.restore : t.projects.archive}
-        </Button>
-        <Button
-          variant="destructive"
-          onClick={() => setIsDeleteDialogOpen(true)}
-        >
-          <Trash2 />
-          {t.projects.deleteProject}
-        </Button>
+          {t.projects.dangerZone}
+        </h3>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-sm font-medium">
+              {isArchived ? t.projects.restore : t.projects.archive}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {isArchived
+                ? t.projects.restoreProjectHint
+                : t.projects.archiveProjectHint}
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            disabled={archiveProject.isPending || restoreProject.isPending}
+            onClick={handleArchiveToggle}
+          >
+            {isArchived ? <RotateCcw /> : <Archive />}
+            {isArchived ? t.projects.restore : t.projects.archive}
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-sm font-medium">
+              {t.projects.deleteProject}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {deleteNotice ?? t.projects.deleteProjectHint}
+            </span>
+          </div>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              setConfirmName("");
+              setIsDeleteDialogOpen(true);
+            }}
+          >
+            <Trash2 />
+            {t.projects.deleteProject}
+          </Button>
+        </div>
       </div>
       <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <DialogContent className="sm:max-w-[425px]">
@@ -353,6 +401,25 @@ function ProjectSettingsSection({ project }: { project: Project }) {
               {t.projects.deleteProjectConfirm}
             </DialogDescription>
           </DialogHeader>
+          {deleteNotice ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-destructive text-sm font-medium">
+                {deleteNotice}
+              </p>
+              <label
+                htmlFor="project-delete-confirm-input"
+                className="text-muted-foreground text-xs"
+              >
+                {t.projects.deleteProjectTypeName(project.name)}
+              </label>
+              <Input
+                id="project-delete-confirm-input"
+                value={confirmName}
+                autoComplete="off"
+                onChange={(e) => setConfirmName(e.target.value)}
+              />
+            </div>
+          ) : null}
           <DialogFooter>
             <Button
               variant="outline"
@@ -362,7 +429,7 @@ function ProjectSettingsSection({ project }: { project: Project }) {
             </Button>
             <Button
               variant="destructive"
-              disabled={deleteProject.isPending}
+              disabled={deleteProject.isPending || !deleteConfirmed}
               onClick={handleDelete}
             >
               {t.common.delete}
