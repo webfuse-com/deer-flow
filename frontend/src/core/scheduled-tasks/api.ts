@@ -84,7 +84,7 @@ export async function fetchScheduledTaskRuns(
 }
 
 export type ScheduledTaskPayload = {
-  context_mode: "fresh_thread_per_run" | "reuse_thread";
+  context_mode: ScheduledTask["context_mode"];
   thread_id?: string | null;
   assistant_id?: string | null;
   title: string;

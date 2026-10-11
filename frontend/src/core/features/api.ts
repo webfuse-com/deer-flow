@@ -27,6 +27,7 @@ export interface FeaturesResponse {
     min_interval_seconds?: number;
     supports?: Record<string, boolean>;
     external?: boolean;
+    channels?: string[];
   };
   thread_activity?: {
     available?: boolean;
@@ -50,6 +51,8 @@ export interface ScheduledTasksFeature {
   supports?: ScheduledTaskSupports;
   /** An external scheduler runs the tasks (patch #115). */
   external?: boolean;
+  /** [argus patch #120] IM channels it can deliver runs to (`channel:<name>`). */
+  channels?: string[];
 }
 
 export type ScheduledTaskSupports = Record<
@@ -202,6 +205,13 @@ export async function fetchScheduledTasksFeature(): Promise<ScheduledTasksFeatur
       ? { supports: supportsOf(feature.supports) }
       : {}),
     ...(feature?.external === true ? { external: true } : {}),
+    ...(Array.isArray(feature?.channels)
+      ? {
+          channels: feature.channels.filter(
+            (name): name is string => typeof name === "string" && name !== "",
+          ),
+        }
+      : {}),
   };
 }
 

@@ -57,6 +57,7 @@ import {
 } from "@/core/scheduled-tasks/hooks";
 import { RECIPES, type Recipe } from "@/core/scheduled-tasks/recipes";
 import type { ScheduledTask } from "@/core/scheduled-tasks/types";
+import { labelOfChannelProvider } from "@/core/threads/utils";
 import { cn } from "@/lib/utils";
 
 import { DEFAULT_ASSISTANT_ID, fill, isFrequentSchedule } from "./shared";
@@ -386,6 +387,8 @@ function TaskForm({
   const feature = useScheduledTasksFeature();
   const supports = feature.supports ?? ALL_SCHEDULED_TASK_FEATURES;
   const external = feature.external === true;
+  // [argus patch #120] Channels the scheduler can run a task in.
+  const channels = feature.channels ?? [];
   const scheduleTypes = (["cron", "once", "interval"] as const).filter(
     (type) =>
       type === "cron" ||
@@ -434,7 +437,9 @@ function TaskForm({
     !state.maxRuns.trim() &&
     !state.endAtLocal;
   const [advancedOpen, setAdvancedOpen] = useState(
-    reuse || state.assistantId !== DEFAULT_ASSISTANT_ID,
+    reuse ||
+      state.contextMode.startsWith("channel:") ||
+      state.assistantId !== DEFAULT_ASSISTANT_ID,
   );
   const timeZone = state.schedule.timezone || browserTimeZone();
 
@@ -740,8 +745,12 @@ function TaskForm({
                 <Button
                   type="button"
                   size="sm"
-                  variant={reuse ? "outline" : "default"}
-                  aria-pressed={!reuse}
+                  variant={
+                    state.contextMode === "fresh_thread_per_run"
+                      ? "default"
+                      : "outline"
+                  }
+                  aria-pressed={state.contextMode === "fresh_thread_per_run"}
                   onClick={() => set("contextMode", "fresh_thread_per_run")}
                 >
                   {st.form.contextFresh}
@@ -755,6 +764,24 @@ function TaskForm({
                 >
                   {st.form.contextReuse}
                 </Button>
+                {channels.map((channel) => {
+                  const mode: ContextMode = `channel:${channel}`;
+                  const selected = state.contextMode === mode;
+                  return (
+                    <Button
+                      key={channel}
+                      type="button"
+                      size="sm"
+                      variant={selected ? "default" : "outline"}
+                      aria-pressed={selected}
+                      onClick={() => set("contextMode", mode)}
+                    >
+                      {fill(st.form.contextChannel, {
+                        channel: labelOfChannelProvider(channel, t),
+                      })}
+                    </Button>
+                  );
+                })}
               </div>
             )}
             {supports.context && reuse && (

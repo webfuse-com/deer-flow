@@ -69,6 +69,7 @@ import {
   taskStatusLabel,
 } from "@/core/scheduled-tasks/status";
 import { isTaskBusy, type ScheduledTask } from "@/core/scheduled-tasks/types";
+import { labelOfChannelProvider } from "@/core/threads/utils";
 import { cn } from "@/lib/utils";
 
 import { DeleteTaskDialog } from "./delete-task-dialog";
@@ -76,6 +77,7 @@ import { RenewLimitsDialog } from "./renew-limits-dialog";
 import { RunRow } from "./run-row";
 import {
   blockReasonText,
+  channelOfContext,
   fill,
   isDefaultAgent,
   taskChatPath,
@@ -286,6 +288,8 @@ export function TaskDetail({
   const [renewOpen, setRenewOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
+  // [argus patch #120] A task that runs in a channel's own chat.
+  const channel = channelOfContext(task.context_mode);
   const promptRef = useRef<HTMLParagraphElement>(null);
   const promptClamped = useClampedOverflow(
     promptRef,
@@ -617,9 +621,13 @@ export function TaskDetail({
               {fill(st.detail.agentLine, { name: task.assistant_id ?? "" })}
             </span>
           )}
-          {task.context_mode === "reuse_thread" ? (
+          {task.context_mode === "reuse_thread" || channel ? (
             <span className="inline-flex gap-1">
-              {st.detail.contextReuse}
+              {channel
+                ? fill(st.detail.contextChannel, {
+                    channel: labelOfChannelProvider(channel, t),
+                  })
+                : st.detail.contextReuse}
               {task.thread_id && (
                 <>
                   <span aria-hidden>·</span>

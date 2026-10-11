@@ -931,6 +931,7 @@ export const zhCN: Translations = {
       openChat: "打开对话",
       contextFresh: "每次运行都会新建对话",
       contextReuse: "在已有对话中运行",
+      contextChannel: "在专属的 {channel} 对话中运行",
       copyTaskId: "复制任务 ID",
       copied: "已复制",
       moreActions: "更多操作",
@@ -1006,6 +1007,7 @@ export const zhCN: Translations = {
       advanced: "高级选项",
       contextFresh: "每次运行新建对话",
       contextReuse: "在已有对话中运行",
+      contextChannel: "在专属的 {channel} 对话中运行",
       chatId: "对话 ID",
       reuseNoticeTitle: "会使用这个对话的历史记录",
       reuseNoticeDescription:
