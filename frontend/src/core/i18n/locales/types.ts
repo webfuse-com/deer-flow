@@ -489,6 +489,11 @@ export interface Translations {
     archive: string;
     restore: string;
     deleteProject: string;
+    dangerZone: string;
+    archiveProjectHint: string;
+    restoreProjectHint: string;
+    deleteProjectHint: string;
+    deleteProjectTypeName: (name: string) => string;
     deleteProjectConfirm: string;
     archived: string;
     empty: string;

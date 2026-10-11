@@ -13,6 +13,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -1188,6 +1189,41 @@ def _human_input_message(content: str, *, original_content: str | None = None, f
             additional_kwargs["files"] = files
         message["additional_kwargs"] = additional_kwargs
     return message
+
+
+# [argus patch #117] additional_kwargs key of a scheduled prompt (the Gateway's
+# SCHEDULED_ORIGIN_KEY, kept by run admission for internal callers).
+SCHEDULED_ORIGIN_KEY = "deerflow_scheduled_origin"
+_REPORT_RUN_ID_RE = re.compile(r"/runs/([0-9]+)/output/?$")
+
+
+def _playbook_scheduled_origin(msg: InboundMessage) -> dict[str, Any] | None:
+    """The scheduled-run marker of a playbook fire's prompt, or None for other messages.
+
+    An external scheduler (Chronos) fires playbooks; the marker names the
+    schedule as the task, its run (from the delivery-report URL), and the
+    prompt as the instructions, in the shape DeerFlow's own scheduler uses.
+    """
+    meta = msg.metadata if isinstance(msg.metadata, dict) else {}
+    schedule_id = meta.get("schedule_id")
+    if not msg.unattended or meta.get("source") != "playbook" or not isinstance(schedule_id, str) or not schedule_id:
+        return None
+    match = _REPORT_RUN_ID_RE.search(str(getattr(msg, "report_url", None) or ""))
+    trigger = meta.get("trigger")
+    timezone = meta.get("timezone")
+    return {
+        "task_id": schedule_id,
+        "task_run_id": match.group(1) if match else "",
+        "trigger": "manual" if trigger == "manual" else "scheduled",
+        "run_number": None,
+        "scheduled_for": datetime.now(UTC).isoformat(),
+        "timezone": timezone if isinstance(timezone, str) else "",
+        "schedule_type": "cron",
+        "task_title": schedule_id.replace("-", " ").capitalize(),
+        "instructions": msg.text or "",
+        "stop_condition": None,
+        "standing_notes": [],
+    }
 
 
 def _auth_disabled_owner_user_id() -> str | None:
@@ -3263,6 +3299,11 @@ class ChannelManager:
         original_text = msg.text
         uploaded = await _ingest_inbound_files(thread_id, msg, user_id=storage_user_id)
         human_message = _human_input_message(msg.text, original_content=original_text, files=uploaded or None)
+        if (scheduled_origin := _playbook_scheduled_origin(msg)) is not None:
+            # [argus patch #117] The chat shows a scheduled fire as a
+            # "Scheduled run" card (title, run, instructions) instead of the
+            # whole playbook prompt as if the user had typed it.
+            human_message.setdefault("additional_kwargs", {})[SCHEDULED_ORIGIN_KEY] = scheduled_origin
 
         if self._channel_supports_streaming(msg.channel_name):
             await self._handle_streaming_chat(
@@ -3346,12 +3387,12 @@ class ChannelManager:
                 # handled here rather than re-raised, so release explicitly.
                 await self._release_inbound_dedupe_key(msg)
                 await self._send_error(msg, THREAD_BUSY_MESSAGE)
-                await self._report_unattended_outcome(msg, status="failed", error=repr(exc))
+                await self._report_unattended_outcome(msg, status="failed", error=repr(exc), thread_id=thread_id)
                 return
             if recovery := await self._stale_pin_recovery(msg, exc, expected_pin=expected_pin, thread_id=thread_id):
                 await self._release_inbound_dedupe_key(msg)
                 await self._send_error(msg, recovery.text)
-                await self._report_unattended_outcome(msg, status="failed", error=repr(exc))
+                await self._report_unattended_outcome(msg, status="failed", error=repr(exc), thread_id=thread_id)
                 return
             # Propagates to the bus dispatcher; an unattended fire without a
             # report lands as Chronos's ok/unreported timeout fallback.
@@ -3381,7 +3422,7 @@ class ChannelManager:
         # and real errors are untouched.
         if msg.unattended and not attachments and _is_trivial_unattended_text(response_text):
             logger.info("[Manager] unattended turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
-            await self._report_unattended_outcome(msg, status="silent")
+            await self._report_unattended_outcome(msg, status="silent", thread_id=thread_id)
             return
 
         # [argus patch #36] Use _is_blank_text, not `if not response_text`: a
@@ -3407,7 +3448,7 @@ class ChannelManager:
         )
         logger.info("[Manager] publishing outbound message to bus: channel=%s, chat_id=%s", msg.channel_name, msg.chat_id)
         await self.bus.publish_outbound(outbound)
-        await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
+        await self._report_unattended_outcome(msg, status="delivered", message_text=response_text, thread_id=thread_id)
 
     async def _report_unattended_outcome(
         self,
@@ -3416,10 +3457,13 @@ class ChannelManager:
         status: str,
         message_text: str | None = None,
         error: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
         """[argus patch #45] Report a scheduled turn's delivery outcome to
         Chronos. No-op unless this is an unattended fire that carried a
-        report_url; never raises (see _delivery_report.report_delivery)."""
+        report_url; never raises (see _delivery_report.report_delivery).
+        [argus patch #117] Names the thread the turn ran in, so the run
+        history can open it."""
         report_url = getattr(msg, "report_url", None)
         if not (msg.unattended and report_url):
             return
@@ -3430,6 +3474,7 @@ class ChannelManager:
             chat_id=msg.chat_id,
             message_text=message_text,
             error=error,
+            thread_id=thread_id,
         )
 
     async def _handle_streaming_chat(
@@ -3624,7 +3669,7 @@ class ChannelManager:
 
             if suppress_final:
                 logger.info("[Manager] unattended streaming turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
-                await self._report_unattended_outcome(msg, status="silent")
+                await self._report_unattended_outcome(msg, status="silent", thread_id=thread_id)
             else:
                 logger.info(
                     "[Manager] streaming response completed: thread_id=%s, response_len=%d, artifacts=%d, error=%s",
@@ -3656,13 +3701,13 @@ class ChannelManager:
                 await self._release_inbound_dedupe_key(msg)
                 # [argus patch #45] a captured stream error was delivered to the
                 # chat as an error message; the run itself still failed.
-                await self._report_unattended_outcome(msg, status="failed", error=repr(stream_error))
+                await self._report_unattended_outcome(msg, status="failed", error=repr(stream_error), thread_id=thread_id)
             elif not suppress_final:
                 # [argus patch #45] a clean turn's reply went out. This must sit
                 # outside the stream_error block: nested inside it, no clean
                 # streaming fire ever reported and Chronos closed every one as
                 # unreported after its timeout (2026-09-23..25, whole fleet).
-                await self._report_unattended_outcome(msg, status="delivered", message_text=response_text)
+                await self._report_unattended_outcome(msg, status="delivered", message_text=response_text, thread_id=thread_id)
 
     # -- command handling --------------------------------------------------
 
