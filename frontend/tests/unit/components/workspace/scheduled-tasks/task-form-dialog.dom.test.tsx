@@ -28,6 +28,22 @@ rs.mock("@/core/scheduled-tasks/api", () => ({
   createScheduledTask: createTask,
   updateScheduledTask: updateTask,
 }));
+// [argus patch #119] What the scheduler offers; DeerFlow's own by default.
+const featureState = rs.hoisted(() => ({
+  supports: undefined as Record<string, boolean> | undefined,
+  external: false,
+}));
+rs.mock("@/core/features/hooks", () => ({
+  useScheduledTasksFeature: () => ({
+    available: true,
+    running: true,
+    toolEnabled: true,
+    minIntervalSeconds: 60,
+    isLoading: false,
+    supports: featureState.supports,
+    external: featureState.external,
+  }),
+}));
 rs.mock("@/core/agents/api", () => ({
   fetchAgentsApiEnabled: async () => false,
   listAgents: async () => [],
@@ -42,6 +58,8 @@ afterEach(() => {
   clients.splice(0).forEach((client) => client.clear());
   createTask.mockReset();
   updateTask.mockReset();
+  featureState.supports = undefined;
+  featureState.external = false;
   document.cookie = "locale=; max-age=0; path=/";
 });
 
@@ -393,5 +411,58 @@ describe("form payload helpers", () => {
     expect(
       validateForm({ ...state, contextMode: "reuse_thread", chatId: "c-1" }),
     ).toEqual({ ok: false, error: "goalNeedsFresh" });
+  });
+});
+
+describe("[argus patch #119] a form for an external scheduler", () => {
+  const CHRONOS = {
+    goals: false,
+    stop_condition: false,
+    limits: false,
+    interval: false,
+    notes: false,
+    create: true,
+    edit: true,
+    delete: true,
+    once: false,
+    context: false,
+  };
+
+  test("asks only for what the scheduler offers", () => {
+    featureState.supports = CHRONOS;
+    featureState.external = true;
+    renderForm({ mode: "create" }, { toolEnabled: false });
+    expect(screen.queryByLabelText(/Each run's goal/)).toBeNull();
+    expect(screen.queryByLabelText(/Safety cap/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "One-time" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Interval" })).toBeNull();
+    expect(
+      screen.queryByRole("group", { name: "Where runs happen" }),
+    ).toBeNull();
+    expect(screen.getByLabelText("Title")).toBeTruthy();
+  });
+
+  test("keeps a schedule's name when editing it", () => {
+    featureState.supports = CHRONOS;
+    featureState.external = true;
+    renderForm(
+      {
+        mode: "edit",
+        task: task({
+          goal_objective: null,
+          max_runs: null,
+          end_at: null,
+          stop_condition: null,
+        }),
+      },
+      { toolEnabled: false },
+    );
+    expect(screen.getByLabelText("Title")).toHaveProperty("disabled", true);
+  });
+
+  test("shows every field for DeerFlow's own scheduler", () => {
+    renderForm({ mode: "create" });
+    expect(screen.getByLabelText(/Each run's goal/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Interval" })).toBeTruthy();
   });
 });

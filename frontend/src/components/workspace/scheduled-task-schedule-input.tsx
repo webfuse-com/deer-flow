@@ -91,10 +91,13 @@ export function ScheduledTaskScheduleInput({
   onChange,
   scheduleTypeLocked = false,
   minIntervalSeconds,
+  types = ["cron", "once", "interval"],
 }: {
   initial: ScheduleValue;
   onChange: (value: ScheduleValue) => void;
   scheduleTypeLocked?: boolean;
+  /** [argus patch #119] The schedule types the scheduler offers. */
+  types?: ScheduleType[];
   /** Server floor for intervals (`/api/features`); the default when unknown. */
   minIntervalSeconds?: number;
 }) {
@@ -261,32 +264,38 @@ export function ScheduledTaskScheduleInput({
 
   return (
     <div className="flex flex-col gap-2" data-testid="schedule-input">
-      {!scheduleTypeLocked && (
+      {!scheduleTypeLocked && types.length > 1 && (
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant={scheduleType === "cron" ? "default" : "outline"}
-            size="sm"
-            aria-pressed={scheduleType === "cron"}
-            onClick={() => setScheduleType("cron")}
-          >
-            {labels.scheduleType.cron}
-          </Button>
-          <Button
-            variant={scheduleType === "once" ? "default" : "outline"}
-            size="sm"
-            aria-pressed={scheduleType === "once"}
-            onClick={() => setScheduleType("once")}
-          >
-            {labels.scheduleType.once}
-          </Button>
-          <Button
-            variant={scheduleType === "interval" ? "default" : "outline"}
-            size="sm"
-            aria-pressed={scheduleType === "interval"}
-            onClick={() => setScheduleType("interval")}
-          >
-            {labels.scheduleType.interval}
-          </Button>
+          {types.includes("cron") && (
+            <Button
+              variant={scheduleType === "cron" ? "default" : "outline"}
+              size="sm"
+              aria-pressed={scheduleType === "cron"}
+              onClick={() => setScheduleType("cron")}
+            >
+              {labels.scheduleType.cron}
+            </Button>
+          )}
+          {types.includes("once") && (
+            <Button
+              variant={scheduleType === "once" ? "default" : "outline"}
+              size="sm"
+              aria-pressed={scheduleType === "once"}
+              onClick={() => setScheduleType("once")}
+            >
+              {labels.scheduleType.once}
+            </Button>
+          )}
+          {types.includes("interval") && (
+            <Button
+              variant={scheduleType === "interval" ? "default" : "outline"}
+              size="sm"
+              aria-pressed={scheduleType === "interval"}
+              onClick={() => setScheduleType("interval")}
+            >
+              {labels.scheduleType.interval}
+            </Button>
+          )}
         </div>
       )}
 

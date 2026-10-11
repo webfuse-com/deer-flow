@@ -35,6 +35,8 @@ import {
 } from "@/components/workspace/scheduled-task-schedule-input";
 import { listAgents } from "@/core/agents/api";
 import { useAgentsApiEnabled } from "@/core/agents/hooks";
+import { ALL_SCHEDULED_TASK_FEATURES } from "@/core/features/api";
+import { useScheduledTasksFeature } from "@/core/features/hooks";
 import { useI18n } from "@/core/i18n/hooks";
 import type {
   ScheduledTaskPayload,
@@ -380,6 +382,16 @@ function TaskForm({
   );
   const [error, setError] = useState<string | null>(null);
   const goalRef = useRef<HTMLTextAreaElement>(null);
+  // [argus patch #119] An external scheduler may offer only some fields.
+  const feature = useScheduledTasksFeature();
+  const supports = feature.supports ?? ALL_SCHEDULED_TASK_FEATURES;
+  const external = feature.external === true;
+  const scheduleTypes = (["cron", "once", "interval"] as const).filter(
+    (type) =>
+      type === "cron" ||
+      (type === "once" ? supports.once : supports.interval) ||
+      initial.state.schedule.schedule_type === type,
+  );
   const set = <K extends keyof TaskFormState>(
     key: K,
     value: TaskFormState[K],
@@ -534,6 +546,9 @@ function TaskForm({
             id={id("title")}
             value={state.title}
             autoFocus={request.focus !== "goal"}
+            // [argus patch #119] An external scheduler names a schedule
+            // once (its file); it cannot be renamed here.
+            disabled={editing && external}
             onChange={(event) => set("title", event.target.value)}
           />
         </Field>
@@ -562,6 +577,7 @@ function TaskForm({
             onChange={(value) => set("schedule", value)}
             scheduleTypeLocked={editing}
             minIntervalSeconds={minIntervalSeconds}
+            types={[...scheduleTypes]}
           />
         </fieldset>
 
@@ -581,86 +597,90 @@ function TaskForm({
           </Field>
         )}
 
-        <Field
-          id={id("goal")}
-          label={st.form.goal}
-          hint={reuse ? st.form.goalNeedsFresh : st.form.goalHint}
-        >
-          <Textarea
+        {supports.goals && (
+          <Field
             id={id("goal")}
-            ref={goalRef}
-            rows={2}
-            value={state.goal}
-            // In an existing chat a goal can't be saved; keep the field
-            // editable while it still holds text so the user can clear it.
-            disabled={reuse && !state.goal}
-            aria-describedby={`${id("goal")}-hint`}
-            onChange={(event) => set("goal", event.target.value)}
-          />
-        </Field>
+            label={st.form.goal}
+            hint={reuse ? st.form.goalNeedsFresh : st.form.goalHint}
+          >
+            <Textarea
+              id={id("goal")}
+              ref={goalRef}
+              rows={2}
+              value={state.goal}
+              // In an existing chat a goal can't be saved; keep the field
+              // editable while it still holds text so the user can clear it.
+              disabled={reuse && !state.goal}
+              aria-describedby={`${id("goal")}-hint`}
+              onChange={(event) => set("goal", event.target.value)}
+            />
+          </Field>
+        )}
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            id={id("max-runs")}
-            label={st.form.maxRuns}
-            hint={fill(st.form.maxRunsHint, { used })}
-          >
-            <div className="flex gap-2">
-              <Input
-                id={id("max-runs")}
-                type="number"
-                inputMode="numeric"
-                min={1}
-                value={state.maxRuns}
-                aria-describedby={`${id("max-runs")}-hint`}
-                onChange={(event) => set("maxRuns", event.target.value)}
-              />
-              {state.maxRuns && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-label={`${st.form.clear} ${st.form.maxRuns}`}
-                  onClick={() => set("maxRuns", "")}
-                >
-                  {st.form.clear}
-                </Button>
-              )}
-            </div>
-          </Field>
-          <Field
-            id={id("end-at")}
-            label={fill(st.form.labelWithZone, {
-              label: st.form.endAt,
-              tz: timeZone,
-            })}
-            hint={initial.endAtDropped ? st.form.endAtPassed : undefined}
-          >
-            <div className="flex gap-2">
-              <Input
-                id={id("end-at")}
-                type="datetime-local"
-                value={state.endAtLocal}
-                aria-describedby={
-                  initial.endAtDropped ? `${id("end-at")}-hint` : undefined
-                }
-                onChange={(event) => set("endAtLocal", event.target.value)}
-              />
-              {state.endAtLocal && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-label={`${st.form.clear} ${st.form.endAt}`}
-                  onClick={() => set("endAtLocal", "")}
-                >
-                  {st.form.clear}
-                </Button>
-              )}
-            </div>
-          </Field>
-        </div>
-        {showFrequentWarning && (
+        {supports.limits && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              id={id("max-runs")}
+              label={st.form.maxRuns}
+              hint={fill(st.form.maxRunsHint, { used })}
+            >
+              <div className="flex gap-2">
+                <Input
+                  id={id("max-runs")}
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={state.maxRuns}
+                  aria-describedby={`${id("max-runs")}-hint`}
+                  onChange={(event) => set("maxRuns", event.target.value)}
+                />
+                {state.maxRuns && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`${st.form.clear} ${st.form.maxRuns}`}
+                    onClick={() => set("maxRuns", "")}
+                  >
+                    {st.form.clear}
+                  </Button>
+                )}
+              </div>
+            </Field>
+            <Field
+              id={id("end-at")}
+              label={fill(st.form.labelWithZone, {
+                label: st.form.endAt,
+                tz: timeZone,
+              })}
+              hint={initial.endAtDropped ? st.form.endAtPassed : undefined}
+            >
+              <div className="flex gap-2">
+                <Input
+                  id={id("end-at")}
+                  type="datetime-local"
+                  value={state.endAtLocal}
+                  aria-describedby={
+                    initial.endAtDropped ? `${id("end-at")}-hint` : undefined
+                  }
+                  onChange={(event) => set("endAtLocal", event.target.value)}
+                />
+                {state.endAtLocal && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`${st.form.clear} ${st.form.endAt}`}
+                    onClick={() => set("endAtLocal", "")}
+                  >
+                    {st.form.clear}
+                  </Button>
+                )}
+              </div>
+            </Field>
+          </div>
+        )}
+        {supports.limits && showFrequentWarning && (
           <p
             role="note"
             className="flex items-center gap-1.5 text-sm text-amber-700 dark:text-amber-400"
@@ -711,31 +731,33 @@ function TaskForm({
                 </SelectContent>
               </Select>
             </Field>
-            <div
-              className="flex flex-wrap gap-2"
-              role="group"
-              aria-label={st.form.contextLabel}
-            >
-              <Button
-                type="button"
-                size="sm"
-                variant={reuse ? "outline" : "default"}
-                aria-pressed={!reuse}
-                onClick={() => set("contextMode", "fresh_thread_per_run")}
+            {supports.context && (
+              <div
+                className="flex flex-wrap gap-2"
+                role="group"
+                aria-label={st.form.contextLabel}
               >
-                {st.form.contextFresh}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={reuse ? "default" : "outline"}
-                aria-pressed={reuse}
-                onClick={() => set("contextMode", "reuse_thread")}
-              >
-                {st.form.contextReuse}
-              </Button>
-            </div>
-            {reuse && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={reuse ? "outline" : "default"}
+                  aria-pressed={!reuse}
+                  onClick={() => set("contextMode", "fresh_thread_per_run")}
+                >
+                  {st.form.contextFresh}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={reuse ? "default" : "outline"}
+                  aria-pressed={reuse}
+                  onClick={() => set("contextMode", "reuse_thread")}
+                >
+                  {st.form.contextReuse}
+                </Button>
+              </div>
+            )}
+            {supports.context && reuse && (
               <>
                 <Field id={id("chat")} label={st.form.chatId}>
                   <Input

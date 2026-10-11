@@ -85,6 +85,9 @@ class ScheduledTasksSupports(BaseModel):
     create: bool = True
     edit: bool = True
     delete: bool = True
+    # [argus patch #119] One-time schedules, and choosing the chat a task runs in.
+    once: bool = True
+    context: bool = True
 
 
 class ScheduledTasksFeature(BaseModel):
