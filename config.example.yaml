@@ -2898,6 +2898,12 @@ run_events:
 #
 # agent_storage:
 #   backend: file
+#
+# [argus patch #109] store_class: a deployment-supplied AgentStore subclass
+# ('module:Class') for Custom Agent definitions, used by the Agents API and the
+# update_agent tool instead of file/db (managed subagents keep 'backend'). Argus
+# stacks keep agents in their GitHub repository:
+#   store_class: argus_deerflow_extension.agents.store:ForkAgentStore
 agent_storage:
   backend: file
 

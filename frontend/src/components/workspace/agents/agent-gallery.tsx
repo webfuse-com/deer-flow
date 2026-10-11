@@ -1,6 +1,6 @@
 "use client";
 
-import { BotIcon, UploadIcon } from "lucide-react";
+import { BotIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { type ChangeEvent, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -18,6 +18,7 @@ import { useAgents, useImportAgentPackage } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
 
 import { AgentCard } from "./agent-card";
+import { AgentCreateDialog } from "./agent-create-dialog";
 
 export function AgentGallery() {
   const { t } = useI18n();
@@ -26,6 +27,7 @@ export function AgentGallery() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [packageDocument, setPackageDocument] = useState<unknown>(null);
   const [importName, setImportName] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
 
   const closeImportDialog = () => {
     setPackageDocument(null);
@@ -94,8 +96,13 @@ export function AgentGallery() {
             <UploadIcon className="mr-1.5 h-4 w-4" />
             {t.agents.importAgent}
           </Button>
-          {/* [argus patch #79] No "New Agent": agents are created in the
-              stack's GitHub repository; /workspace/agents/new redirects here. */}
+          {/* [argus patch #110] "New Agent" is back (patch #79 had removed
+              it): the agent store commits the new agent to the stack's GitHub
+              repository. /workspace/agents/new still redirects here. */}
+          <Button onClick={() => setCreateOpen(true)}>
+            <PlusIcon className="mr-1.5 h-4 w-4" />
+            {t.agents.newAgent}
+          </Button>
         </div>
       </div>
 
@@ -125,6 +132,11 @@ export function AgentGallery() {
           </div>
         )}
       </div>
+
+      {/* [argus patch #110] Mounted only while open so the form starts empty. */}
+      {createOpen && (
+        <AgentCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
+      )}
 
       <Dialog
         open={packageDocument !== null}

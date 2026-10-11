@@ -15,6 +15,7 @@ from deerflow.persistence.agents.base import (
     AgentDeleteOutcome,
     AgentExistsError,
     AgentStore,
+    AgentStoreError,
     parse_agent_config,
 )
 from deerflow.persistence.agents.model import AgentRow
@@ -27,12 +28,14 @@ __all__ = [
     "AgentExistsError",
     "AgentRow",
     "AgentStore",
+    "AgentStoreError",
     "get_agent_store",
     "make_agent_store",
     "parse_agent_config",
 ]
 
 _file_store_singleton: AgentStore | None = None
+_custom_stores: dict[str, AgentStore] = {}
 
 
 def make_agent_store(config: AppConfig) -> AgentStore:
@@ -42,6 +45,9 @@ def make_agent_store(config: AppConfig) -> AgentStore:
     ``memory`` database has no durable URL and is rejected here (the gateway
     also fails fast at startup, but this guard covers the graph-process path).
     """
+    # [argus patch #109] A deployment-supplied store wins over file/db.
+    if config.agent_storage.store_class:
+        return _custom_store(config.agent_storage.store_class)
     if config.agent_storage.backend == "db":
         db_backend = config.database.backend
         if db_backend not in ("sqlite", "postgres"):
@@ -104,3 +110,14 @@ def _file_store() -> AgentStore:
 
         _file_store_singleton = FileAgentStore()
     return _file_store_singleton
+
+
+def _custom_store(class_path: str) -> AgentStore:
+    """One instance per configured class path (stores may hold clients/caches)."""
+    store = _custom_stores.get(class_path)
+    if store is None:
+        from deerflow.reflection.resolvers import resolve_class
+
+        store = resolve_class(class_path, AgentStore)()
+        _custom_stores[class_path] = store
+    return store

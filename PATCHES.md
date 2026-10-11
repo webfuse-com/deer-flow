@@ -138,7 +138,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#76](#reverted-patch-76) | reduce multi-file work-cycle churn (REVERTED 2026-08-31) | argus-edit | d29c414d, fb89651a |
 | [#77](#reverted-patch-77) | optional write-file narration (REVERTED 2026-08-31) | argus-edit | 187d7e28, 8f1d49cb |
 | [#78](#patch-78) | ~~Merge model profile and runtime constructor kwargs~~ RETIRED 2026-09-23 (upstream #5403) | generic-upstreamable | this PR |
-| [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation | argus-edit | this PR |
+| [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation (creation restored by #110) | argus-edit | this PR |
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
 | [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
@@ -165,6 +165,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#106](#patch-106) | The Jev memory pre-screen in `shadow` judges batches while staleness review or consolidation is on (only `enforce` can skip) | argus-edit | this PR |
 | [#107](#patch-107) | Extensions can add a tab to every project page (`project-tab` surface slot) | argus-edit | this PR |
 | [#108](#patch-108) | Open a project document full screen; save an edited text document as a new version | argus-edit | this PR |
+| [#109](#patch-109) | `agent_storage.store_class`: a deployment-supplied agent store; the Agents API and `update_agent` ask the store about legacy layout, editable soul and source, and answer its refusals with their status | generic-upstreamable | this PR |
+| [#110](#patch-110) | Agents page edits description and soul, links to where an agent is stored, and has New agent again | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -1942,6 +1944,8 @@ carry budget ledger.
 
 **Patch #79 - Restore agents gallery navigation; drop in-UI agent creation**
 
+- 2026-10-11: part (2) is superseded by #110. New Agent is back and commits to the stack's GitHub repository through the #109 store; the navigation part stays.
+
 - Class: argus-edit (frontend-only edits to upstream workspace files).
 - Intent: fork patch #65 removed the sidebar "Agents" entry, which was the
   only navigation path to `/workspace/agents` - the gallery that also hosts
@@ -2338,6 +2342,30 @@ carry budget ledger.
 - Delete-when: upstream ships document versions or editing.
 - Upstream status: none sent (generic-upstreamable).
 - The versions route is on the personal-access-token allow list next to document upload (`app/gateway/auth/pat.py`); `test_pat_projects_policy_admits_exactly_the_mounted_routes` requires every mounted project route to be classified.
+
+---
+
+## Patch #109
+
+**Patch #109 - A deployment-supplied agent store** (2026-10-11)
+
+- Class: generic-upstreamable (backend: `config/agent_storage_config.py` `store_class`, `persistence/agents/__init__.py` selection, `persistence/agents/base.py` `AgentStoreError` + hooks `is_legacy_only` / `get_editable_soul` / `source_info` with upstream-identical defaults, `persistence/agents/file.py` `is_legacy_only`, `app/gateway/routers/agents.py`, `tools/builtins/update_agent_tool.py`; `config.example.yaml`).
+- Intent: Argus keeps each stack's agent definitions in its GitHub repository (`agents/<name>/`), deployed into the legacy shared layout `{base_dir}/agents/`. The Agents API and `update_agent` refused every edit there ("only exists in the legacy shared layout") and a per-user copy would have shadowed the repository. `agent_storage.store_class: module:Class` now selects an `AgentStore` subclass (one instance per path) ahead of file/db. The two legacy-layout guards ask `store.is_legacy_only` (the file backend keeps the exact old check); responses and exports carry `store.get_editable_soul` (the authored soul, when the store composes or strips what the model sees) and, when the store reports it, `source` (omitted otherwise, so stock responses are unchanged); an `AgentStoreError(message, status_code)` from a write becomes that HTTP status with the message, and an `update_agent` error message. Duck-typed stores without the hooks keep upstream behaviour. Argus's store is `argus_deerflow_extension.agents.store:ForkAgentStore` (commits through atlas-mcp, refuses with 409 when GitHub moved).
+- Tests: `backend/tests/test_agent_store_class.py` (selection and singleton, non-store class rejected, stock defaults, editable soul + source in get and export, shared-layout agent editable through the store, 409/422/502 refusals, `update_agent` reports a refusal); existing agent router, write-drain, update_agent and storage tests unchanged.
+- Delete-when: upstream ships pluggable agent storage.
+- Upstream status: none sent (generic-upstreamable).
+
+---
+
+## Patch #110
+
+**Patch #110 - Agents page: description, soul, source link, New agent** (2026-10-11)
+
+- Class: argus-edit (frontend: `core/agents/types.ts`, `components/workspace/agents/{agent-settings-dialog,agent-card,agent-gallery,agent-create-dialog}.tsx`, i18n).
+- Intent: with agent definitions stored in each stack's GitHub repository (#109), the Agents page is their editor. The settings dialog edits the description and the soul (the CodeEditor from #108, full screen), shows the store's refusal text, and links to the agent's folder on GitHub with the commit. Cards link there too. New agent is back (patch #79 had removed it because agents were only made in GitHub); it creates through the API, which commits.
+- Tests: `frontend/tests/unit/components/workspace/agents/agent-github-store.dom.test.tsx` (soul shown and saved, description sent only when changed, store refusal text shown, GitHub link with short commit only when `source` is set, New agent validates the name and creates), `frontend/tests/unit/core/agents/api.test.ts` (string and validation-list `detail` become the error message for create, update and import). Tool groups are not editable yet (no frontend list of configured groups).
+- Delete-when: upstream's agent editor covers soul and description and a store-provided source link.
+- Upstream status: none sent.
 
 ---
 

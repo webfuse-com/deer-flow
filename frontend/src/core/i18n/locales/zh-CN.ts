@@ -1225,7 +1225,7 @@ export const zhCN: Translations = {
   // Agents
   agents: {
     title: "智能体",
-    description: "管理自定义智能体。新智能体通过堆栈的 GitHub 代码仓库创建。",
+    description: "管理自定义智能体。所有更改都会保存到堆栈的 GitHub 代码仓库。",
     newAgent: "新建智能体",
     importAgent: "导入智能体",
     importTitle: "导入自定义智能体",
@@ -1236,7 +1236,8 @@ export const zhCN: Translations = {
     exportAgent: "导出智能体",
     exportSuccess: "智能体包已下载",
     emptyTitle: "还没有自定义智能体",
-    emptyDescription: "通过堆栈的 GitHub 代码仓库添加你的第一个自定义智能体。",
+    emptyDescription:
+      "创建你的第一个自定义智能体，它会保存到堆栈的 GitHub 代码仓库。",
     featureDisabledTitle: "智能体功能未启用",
     featureDisabledDescription: "该功能未在此服务器上启用，请联系管理员。",
     chat: "对话",
@@ -1299,6 +1300,25 @@ export const zhCN: Translations = {
     settingsSaved: "智能体设置已保存",
     settingsInvalidTemperature: "温度必须在 0 到 2 之间",
     settingsInvalidMaxTokens: "最大输出 token 必须为不超过 200,000 的正整数",
+    // [argus patch #110] Agents page edits and creation commit to GitHub.
+    openOnGithub: "在 GitHub 上打开",
+    createTitle: "新建智能体",
+    createDescription:
+      "为智能体命名、选择模型并编写它的 Soul。创建时会提交到堆栈的 GitHub 代码仓库。",
+    createName: "名称",
+    createNameHint:
+      "仅限字母、数字和连字符，存储为小写（例如 code-reviewer）。",
+    createNameInvalid: "只能使用字母、数字和连字符。",
+    createNameCheckError: "无法确认该名称是否可用，请重试。",
+    createSubmit: "创建智能体",
+    createdOnGithub: "智能体已创建并保存到 GitHub",
+    settingsAgentDescription: "描述",
+    settingsAgentDescriptionPlaceholder: "这个智能体的用途",
+    settingsSoul: "Soul",
+    settingsSoulHint: "SOUL.md：智能体的个性与指令，使用 Markdown 编写。",
+    settingsSoulOpenFullScreen: "全屏打开",
+    settingsSoulExitFullScreen: "退出全屏",
+    settingsSavedToGithub: "已保存到 GitHub",
   },
 
   // Breadcrumb

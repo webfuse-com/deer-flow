@@ -7,6 +7,18 @@ export interface AgentModelSettings {
 
 export type ReasoningEffort = "low" | "medium" | "high";
 
+/**
+ * [argus patch #110] Where the agent definition is kept, when the backend's
+ * agent store reports it (absent for the stock stores). ``commit`` is the
+ * commit that holds the definition the response describes.
+ */
+export interface AgentSource {
+  kind: "github";
+  url: string;
+  path?: string;
+  commit?: string | null;
+}
+
 export interface Agent {
   name: string;
   display_name?: string | null;
@@ -21,6 +33,8 @@ export interface Agent {
   thinking_enabled?: boolean | null;
   reasoning_effort?: ReasoningEffort | null;
   soul?: string | null;
+  /** [argus patch #110] Omitted when the store reports no source. */
+  source?: AgentSource | null;
 }
 
 export interface CreateAgentRequest {
