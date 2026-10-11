@@ -12,7 +12,8 @@ export type ScheduledTaskActiveRunStatus = "queued" | "launching" | "running";
 export type ScheduledTask = {
   id: string;
   thread_id: string | null;
-  context_mode: "fresh_thread_per_run" | "reuse_thread";
+  // [argus patch #120] `channel:<name>`: an external scheduler delivers runs to an IM channel.
+  context_mode: "fresh_thread_per_run" | "reuse_thread" | `channel:${string}`;
   assistant_id: string | null;
   title: string;
   /** The user's task instructions exactly as stored; never contains the stop rule. */

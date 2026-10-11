@@ -2410,8 +2410,12 @@ async def launch_scheduled_thread_run(
     metadata: dict[str, Any] | None = None,
     origin: dict[str, Any] | None = None,
     title: str | None = None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Start one scheduled occurrence as an internal run.
+
+    [argus patch #120] ``context`` adds run context (memory mode, allowed
+    tools, unattended) for a launcher other than DeerFlow's own scheduler.
 
     The prompt message gets a stable id per occurrence (retried launches and
     reconnect hydration see one message) and, with ``origin``, the
@@ -2453,7 +2457,10 @@ async def launch_scheduled_thread_run(
         # runtime-context consumers without a ContextVar fallback (e.g.
         # user-scoped GuardrailMiddleware providers) see the owning user;
         # ``inject_authenticated_user_context`` skips the internal user.
-        context=({"non_interactive": True, "user_id": owner_user_id} if owner_user_id else {"non_interactive": True}),
+        context={
+            **(context or {}),
+            **({"non_interactive": True, "user_id": owner_user_id} if owner_user_id else {"non_interactive": True}),
+        },
         webhook=None,
         checkpoint_id=None,
         checkpoint=None,

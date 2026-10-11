@@ -20,6 +20,17 @@ from deerflow.utils.goal_objective import MAX_GOAL_OBJECTIVE_CHARS, normalize_go
 FREQUENT_THRESHOLD_SECONDS = 3600
 TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "cancelled"})
 CONTEXT_MODES = frozenset({"fresh_thread_per_run", "reuse_thread"})
+# [argus patch #120] A scheduler.backend_class may deliver runs to an IM
+# channel ("channel:<name>"), a third choice next to a fresh or an existing chat.
+CHANNEL_CONTEXT_PREFIX = "channel:"
+
+
+def context_modes_for(backend: Any) -> frozenset[str]:
+    """[argus patch #120] The context modes a task may use: DeerFlow's two plus the backend's channels."""
+    channels = getattr(backend, "channels", None) or ()
+    return CONTEXT_MODES | {f"{CHANNEL_CONTEXT_PREFIX}{name}" for name in channels if isinstance(name, str) and name}
+
+
 SCHEDULE_TYPES = frozenset({"once", "cron", "interval"})
 # Fields a PATCH (or chat update) may clear by sending null.
 CLEARABLE_FIELDS = frozenset({"goal_objective", "max_runs", "end_at", "stop_condition"})
@@ -179,6 +190,7 @@ async def validate_scheduled_task_create(
     assistant_resolver: Callable[..., Awaitable[str]],
     now: datetime | None = None,
     conversation_rules: bool = False,
+    context_modes: frozenset[str] = CONTEXT_MODES,
 ) -> dict[str, Any]:
     """Return repository ``create`` fields after the shared checks.
 
@@ -187,8 +199,10 @@ async def validate_scheduled_task_create(
     that sub-hourly schedules need a safety cap.
     """
     reference = now or datetime.now(UTC)
-    if body.context_mode not in CONTEXT_MODES:
+    if body.context_mode not in context_modes:
         raise scheduler_error(422, "invalid_context_mode", "Unsupported context_mode")
+    if body.context_mode.startswith(CHANNEL_CONTEXT_PREFIX):
+        body.thread_id = None
     if body.context_mode == "reuse_thread":
         if not body.thread_id:
             raise scheduler_error(422, "reuse_thread_requires_thread", "reuse_thread requires thread_id")
@@ -277,6 +291,7 @@ async def validate_scheduled_task_update(
     assistant_resolver: Callable[..., Awaitable[str]],
     used: int,
     now: datetime,
+    context_modes: frozenset[str] = CONTEXT_MODES,
 ) -> dict[str, Any]:
     """Return repository ``updates`` for a PATCH or chat update.
 
@@ -288,7 +303,7 @@ async def validate_scheduled_task_update(
     updates = {key: value for key, value in fields.items() if value is not None or key in CLEARABLE_FIELDS}
     if "assistant_id" in fields:
         updates["assistant_id"] = await assistant_resolver(fields["assistant_id"], user_id=user_id)
-    if "context_mode" in updates and updates["context_mode"] not in CONTEXT_MODES:
+    if "context_mode" in updates and updates["context_mode"] not in context_modes:
         raise scheduler_error(422, "invalid_context_mode", "Unsupported context_mode")
     if "schedule_type" in updates and updates["schedule_type"] not in SCHEDULE_TYPES:
         raise scheduler_error(422, "invalid_schedule_type", "Unsupported schedule_type")
@@ -299,7 +314,7 @@ async def validate_scheduled_task_update(
             raise scheduler_error(422, "reuse_thread_requires_thread", "reuse_thread requires thread_id")
         if not await thread_store.check_access(str(effective_thread_id), user_id, require_existing=True):
             raise scheduler_error(404, "thread_not_found", "Thread not found")
-    elif effective_context_mode == "fresh_thread_per_run":
+    elif effective_context_mode == "fresh_thread_per_run" or effective_context_mode.startswith(CHANNEL_CONTEXT_PREFIX):
         updates["thread_id"] = None
     if "timezone" in updates:
         try:

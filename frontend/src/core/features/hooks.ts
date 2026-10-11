@@ -113,6 +113,7 @@ export function useScheduledTasksFeature() {
     minIntervalSeconds: feature.minIntervalSeconds,
     supports: feature.supports ?? ALL_SCHEDULED_TASK_FEATURES,
     external: feature.external === true,
+    channels: feature.channels ?? [],
     isLoading: isPending,
   };
 }

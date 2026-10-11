@@ -993,6 +993,7 @@ export const enUS: Translations = {
       openChat: "Open chat",
       contextFresh: "Each run starts a new chat",
       contextReuse: "Runs in an existing chat",
+      contextChannel: "Runs in its {channel} chat",
       copyTaskId: "Copy task ID",
       copied: "Copied",
       moreActions: "More actions",
@@ -1073,6 +1074,7 @@ export const enUS: Translations = {
       advanced: "Advanced",
       contextFresh: "Start a new chat for each run",
       contextReuse: "Run in an existing chat",
+      contextChannel: "Run in its {channel} chat",
       chatId: "Chat ID",
       reuseNoticeTitle: "Uses this chat's history",
       reuseNoticeDescription:

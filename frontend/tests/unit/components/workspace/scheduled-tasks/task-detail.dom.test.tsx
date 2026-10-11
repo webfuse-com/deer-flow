@@ -613,3 +613,15 @@ describe("TaskDetail", () => {
     },
   );
 });
+
+describe("[argus patch #120] a task that runs in a channel's chat", () => {
+  test("says which channel and links its chat", async () => {
+    renderDetail(
+      task({ context_mode: "channel:telegram", thread_id: "tg-thread" }),
+    );
+    expect(await screen.findByText(/Runs in its Telegram chat/)).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Open chat" }).getAttribute("href"),
+    ).toContain("tg-thread");
+  });
+});
