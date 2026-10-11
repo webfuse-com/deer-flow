@@ -60,7 +60,9 @@ export type ScheduledTaskSupports = Record<
   | "notes"
   | "create"
   | "edit"
-  | "delete",
+  | "delete"
+  | "once"
+  | "context",
   boolean
 >;
 
@@ -73,6 +75,8 @@ export const ALL_SCHEDULED_TASK_FEATURES: ScheduledTaskSupports = {
   create: true,
   edit: true,
   delete: true,
+  once: true,
+  context: true,
 };
 
 /**
