@@ -2904,6 +2904,9 @@ run_events:
 # update_agent tool instead of file/db (managed subagents keep 'backend'). Argus
 # stacks keep agents in their GitHub repository:
 #   store_class: argus_deerflow_extension.agents.store:ForkAgentStore
+# [argus patch #111] subagent_store_class: the same for managed subagents
+# (Settings > Subagents):
+#   subagent_store_class: argus_deerflow_extension.agents.subagent_store:ForkSubagentStore
 agent_storage:
   backend: file
 

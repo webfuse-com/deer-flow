@@ -46,3 +46,8 @@ class AgentStorageConfig(BaseModel):
             "managed subagents keep using 'backend'."
         ),
     )
+    # [argus patch #111] The same for managed subagent definitions.
+    subagent_store_class: str | None = Field(
+        default=None,
+        description=("Optional import path ('module:Class') of a ManagedSubagentStore subclass that replaces the file/db store for managed subagent definitions (Settings > Subagents)."),
+    )

@@ -1893,6 +1893,10 @@ export const zhCN: Translations = {
       listNamesPlaceholder: "多个名称用逗号分隔",
       maxTurns: "最大轮次",
       timeout: "超时时间（秒）",
+      // [argus patch #111] Thinking switch and the GitHub copy's link.
+      thinking: "思考模式",
+      thinkingHint: "为支持的模型开启扩展思考；未开启时默认关闭。",
+      openOnGithub: "在 GitHub 上打开",
       created: "子智能体已创建",
       saved: "子智能体已保存",
       deleted: "子智能体已删除",

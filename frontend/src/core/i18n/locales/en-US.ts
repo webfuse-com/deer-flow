@@ -2008,6 +2008,11 @@ export const enUS: Translations = {
       listNamesPlaceholder: "Comma-separated names",
       maxTurns: "Maximum turns",
       timeout: "Timeout (seconds)",
+      // [argus patch #111] Thinking switch and the GitHub copy's link.
+      thinking: "Thinking",
+      thinkingHint:
+        "Extended thinking, for models that support it. Off unless turned on.",
+      openOnGithub: "Open on GitHub",
       created: "Subagent created",
       saved: "Subagent saved",
       deleted: "Subagent deleted",
