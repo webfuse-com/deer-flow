@@ -169,6 +169,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#110](#patch-110) | Agents page edits description and soul, links to where an agent is stored, and has New agent again | argus-edit | this PR |
 | [#111](#patch-111) | `agent_storage.subagent_store_class`, `thinking_enabled` on managed subagents, and their storage location in the Subagents API and page | generic-upstreamable | this PR |
 | [#112](#patch-112) | Extensions can add a tab to the Agents page (`agents-tab` surface slot) | argus-edit | this PR |
+| [#113](#patch-113) | `channels.<name>.owner_email`: a channel locked to named senders runs every message as that web user, so its chats show in the web UI | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2393,6 +2394,18 @@ carry budget ledger.
 - Tests: `tests/unit/core/extensions/registry.test.ts` (agents-tab accepted, unknown slot and agents-tab navigation rejected), `pages.test.ts` (only enabled agents-tab surfaces, never project tabs or pages), `tests/unit/app/agents-page.dom.test.tsx` (gallery tab then plugin tab, real `PluginSurfaces` mount in the Shadow DOM without a project, disposed on switching back; no tab strip without plugins; fallback when the plugin goes away).
 - Delete-when: upstream ships Agents-page extension slots.
 - Upstream status: none sent (generic-upstreamable).
+
+---
+
+## Patch #113
+
+**Patch #113 - A locked channel runs as its configured owner** (2026-10-11)
+
+- Class: argus-edit (backend: `app/channels/service.py` `channel_owner_emails_from_config`, `app/channels/manager.py` `_configured_owner_user_id` and one line in `_handle_message`; `config.example.yaml`).
+- Intent: an Argus stack belongs to one person and locks its Telegram bot to their account (`allowed_users`), but without a channel connection every Telegram message ran as no web user: the threads were owned by the gateway's internal `default` user, so the owner's web UI never listed them, and files were kept under the Telegram id's bucket. `channels.<name>.owner_email` names the web user the channel's messages run as. When a message carries no owner (no connection resolved one), the manager looks the email up in the user repository and sets `owner_user_id`, so the existing owner path applies: the thread is created and run with the owner's internal auth headers, files go to the owner's bucket and `/f/` links (#102) name it. Covers every message the manager handles, including scheduled playbook fires and notify wakes. Honoured only for a channel with a non-empty `allowed_users` (otherwise ignored with a warning), because the setting lets the channel's senders act as that user. An email with no user yet is looked up again after 5 minutes (the owner may sign in to the web UI later); until then messages run unowned as before. Thread bindings stay in the channel store, so a chat keeps its thread; existing `default`-owned threads must be handed to the owner once (Argus: `scripts/atlas-telegram-owner-migrate.py`), or the owner's headers get 404 on them. A connection-bound identity (upstream channel connections) still wins. Memory follows the run user: the channel now uses the owner's web memory.
+- Tests: `backend/tests/test_channel_owner_email.py` (config parsing: lock required, email normalised, non-dict entries skipped; a message without owner gets the configured owner; a connection owner is kept; an unknown email is retried after the window); existing channel manager and service suites unchanged.
+- Delete-when: upstream channel connections can be pre-bound from config for a single-owner deployment (no `/connect` handshake), or upstream ships an equivalent owner setting.
+- Upstream status: none sent.
 
 ---
 
