@@ -8,6 +8,7 @@ import {
   pluginPages,
   pluginPageTitle,
   pluginPagePath,
+  pluginAgentsTabs,
   pluginProjectTabs,
 } from "@/core/extensions/pages";
 import {
@@ -122,6 +123,46 @@ describe("plugin project tabs", () => {
       "plugin:community.bookmarks:details",
     ]);
     expect(pluginPages([withTab]).map(({ surface }) => surface.id)).toEqual([
+      "library",
+    ]);
+  });
+});
+
+// [argus patch #112]
+describe("plugin agents tabs", () => {
+  test("only enabled agents-tab surfaces become namespaced tabs, never project tabs or pages", () => {
+    const projectTab: PluginSurface = {
+      id: "details",
+      title: "Details",
+      slot: "project-tab",
+      mount: () => ({ dispose: () => undefined }),
+    };
+    const agentsTab: PluginSurface = {
+      id: "coding-agents",
+      title: "Coding agents",
+      slot: "agents-tab",
+      mount: () => ({ dispose: () => undefined }),
+    };
+    const withTabs: LoadedContribution = {
+      ...entry,
+      extension: {
+        ...entry.extension!,
+        surfaces: [library, projectTab, agentsTab],
+      },
+    };
+    const tabs = pluginAgentsTabs([
+      withTabs,
+      { ...withTabs, namespace: "off", settings: { enabled: false } },
+      { ...withTabs, namespace: "unloaded", extension: undefined },
+    ]);
+    expect(tabs.map(({ value }) => value)).toEqual([
+      "plugin:community.bookmarks:coding-agents",
+    ]);
+    expect(tabs[0]?.surface.title).toBe("Coding agents");
+    expect(pluginProjectTabs([withTabs]).map(({ value }) => value)).toEqual([
+      "plugin:community.bookmarks:details",
+    ]);
+    expect(pluginPages([withTabs]).map(({ surface }) => surface.id)).toEqual([
       "library",
     ]);
   });

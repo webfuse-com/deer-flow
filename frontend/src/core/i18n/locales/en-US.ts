@@ -1407,6 +1407,8 @@ export const enUS: Translations = {
     settingsSoulOpenFullScreen: "Open full screen",
     settingsSoulExitFullScreen: "Exit full screen",
     settingsSavedToGithub: "Saved to GitHub",
+    // [argus patch #112] First tab of the Agents page when plugins add tabs.
+    galleryTab: "Agents",
   },
 
   // Breadcrumb
