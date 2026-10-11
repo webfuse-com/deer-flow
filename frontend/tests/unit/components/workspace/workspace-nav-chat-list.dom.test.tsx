@@ -16,11 +16,18 @@ rs.mock("@/core/agents", () => ({
 }));
 
 // [argus patch #95] Mutable so each test picks the flag /api/features reports.
-const capabilityCenter = rs.hoisted(() => ({ enabled: true }));
+const capabilityCenter = rs.hoisted(() => ({
+  enabled: true,
+  externalScheduler: false,
+}));
 rs.mock("@/core/features/hooks", () => ({
   useCapabilityCenterEnabled: () => ({
     enabled: capabilityCenter.enabled,
     isLoading: false,
+  }),
+  // [argus patch #116]
+  useScheduledTasksFeature: () => ({
+    external: capabilityCenter.externalScheduler,
   }),
 }));
 
@@ -39,6 +46,7 @@ function renderNav() {
 afterEach(() => {
   cleanup();
   capabilityCenter.enabled = true;
+  capabilityCenter.externalScheduler = false;
 });
 
 describe("WorkspaceNavChatList (DOM)", () => {
@@ -70,5 +78,13 @@ describe("WorkspaceNavChatList (DOM)", () => {
     expect(
       screen.queryByRole("link", { name: enUS.capabilities.title }),
     ).toBeNull();
+  });
+
+  it("links the Scheduled tasks page instead of Chronos with an external scheduler (argus patch #116)", () => {
+    capabilityCenter.externalScheduler = true;
+    renderNav();
+    const page = screen.getByRole("link", { name: /Scheduled tasks/ });
+    expect(page.getAttribute("href")).toBe("/workspace/scheduled-tasks");
+    expect(screen.queryByRole("link", { name: /Chronos/ })).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import {
+  ALL_SCHEDULED_TASK_FEATURES,
   DEFAULT_SCHEDULED_TASKS_FEATURE,
   DEFAULT_THREAD_ACTIVITY_FEATURE,
   fetchBrowserControlEnabled,
@@ -110,6 +111,8 @@ export function useScheduledTasksFeature() {
     running: feature.running,
     toolEnabled: feature.toolEnabled,
     minIntervalSeconds: feature.minIntervalSeconds,
+    supports: feature.supports ?? ALL_SCHEDULED_TASK_FEATURES,
+    external: feature.external === true,
     isLoading: isPending,
   };
 }

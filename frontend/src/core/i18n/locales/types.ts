@@ -733,6 +733,7 @@ export interface Translations {
     page: {
       description: string;
       descriptionNoChat: string;
+      descriptionExternal: string;
       newTask: string;
       tabs: { all: string; active: string; paused: string; finished: string };
       tabsLabel: string;
@@ -1064,6 +1065,8 @@ export interface Translations {
       countLabel: string;
       countLabelOne: string;
       runTask: string;
+      active: string;
+      menuLabel: string;
     };
     recipes: {
       label: string;

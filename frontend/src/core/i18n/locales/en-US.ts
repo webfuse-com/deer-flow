@@ -903,6 +903,8 @@ export const enUS: Translations = {
       description:
         "Tasks DeerFlow runs for you on a schedule. You can also just ask in any chat.",
       descriptionNoChat: "Tasks DeerFlow runs for you on a schedule.",
+      descriptionExternal:
+        "Your schedules. Each one is a file in your GitHub repository; pausing or resuming here saves it there.",
       newTask: "New task",
       tabs: {
         all: "All",
@@ -1268,6 +1270,8 @@ export const enUS: Translations = {
       countLabel: "{count} scheduled tasks in this chat",
       countLabelOne: "1 scheduled task in this chat",
       runTask: "Scheduled task",
+      active: "Active",
+      menuLabel: "Schedule of this chat",
     },
     recipes: {
       label: "Quick create",

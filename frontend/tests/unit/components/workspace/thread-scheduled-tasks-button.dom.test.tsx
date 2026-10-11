@@ -8,7 +8,13 @@ import {
   test,
 } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { ThreadScheduledTasksButton } from "@/components/workspace/thread-scheduled-tasks-button";
@@ -20,7 +26,7 @@ import type { ThreadScheduledTask } from "@/core/scheduled-tasks/types";
 import { loadScheduledThread } from "../../helpers/scheduled-fixtures";
 
 const api = rs.hoisted(() => ({ fetchThreadScheduledTasks: rs.fn() }));
-const feature = rs.hoisted(() => ({ available: true }));
+const feature = rs.hoisted(() => ({ available: true, external: false }));
 
 rs.mock("@/core/scheduled-tasks/api", () => ({
   ...api,
@@ -40,6 +46,7 @@ rs.mock("@/core/features", () => ({
     toolEnabled: true,
     minIntervalSeconds: 60,
     isLoading: false,
+    external: feature.external,
   }),
 }));
 rs.mock("next/link", () => ({
@@ -62,6 +69,7 @@ const clients: QueryClient[] = [];
 
 beforeEach(() => {
   feature.available = true;
+  feature.external = false;
 });
 afterEach(() => {
   cleanup();
@@ -275,5 +283,64 @@ describe("a schedule_task result refreshes the header at once", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(invalidate).not.toHaveBeenCalled();
     expect(api.fetchThreadScheduledTasks).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("one schedule of an external scheduler (argus patch #116)", () => {
+  test("the header switches it on and off and runs it", async () => {
+    feature.external = true;
+    const { pauseScheduledTask, resumeScheduledTask, triggerScheduledTask } =
+      await import("@/core/scheduled-tasks/api");
+    const brief = {
+      ...row("morning-briefing", "reuse"),
+      title: "Morning briefing",
+    };
+    api.fetchThreadScheduledTasks.mockResolvedValue([brief]);
+    renderButton();
+    const trigger = await screen.findByTestId("thread-scheduled-tasks-button");
+    expect(trigger.textContent).toContain("Morning briefing");
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });
+    const active = await screen.findByRole("menuitemcheckbox", {
+      name: "Active",
+    });
+    expect(active.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(active);
+    await waitFor(() =>
+      expect(rs.mocked(pauseScheduledTask)).toHaveBeenCalledWith(
+        "morning-briefing",
+      ),
+    );
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: /Run once now/ }),
+    );
+    await waitFor(() =>
+      expect(rs.mocked(triggerScheduledTask)).toHaveBeenCalledWith(
+        "morning-briefing",
+      ),
+    );
+    expect(rs.mocked(resumeScheduledTask)).not.toHaveBeenCalled();
+  });
+
+  test("a paused schedule is switched back on", async () => {
+    feature.external = true;
+    const { resumeScheduledTask } = await import("@/core/scheduled-tasks/api");
+    api.fetchThreadScheduledTasks.mockResolvedValue([
+      { ...row("digest", "reuse"), status: "paused" as const },
+    ]);
+    renderButton();
+    const trigger = await screen.findByTestId("thread-scheduled-tasks-button");
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });
+    const active = await screen.findByRole("menuitemcheckbox", {
+      name: "Active",
+    });
+    expect(active.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(active);
+    await waitFor(() =>
+      expect(rs.mocked(resumeScheduledTask)).toHaveBeenCalledWith(
+        "digest",
+        undefined,
+      ),
+    );
   });
 });

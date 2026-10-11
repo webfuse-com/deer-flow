@@ -87,6 +87,15 @@ export function threadOriginOf(
   }
   const channel = channelSourceOfThread(thread);
   if (channel) {
+    // [argus patch #116] An external scheduler fires schedules through the IM
+    // channel; each schedule's own chat has the topic "sched:<id>".
+    const topic: unknown = Reflect.get(
+      (metadata?.channel_source as object | undefined) ?? {},
+      "topic_id",
+    );
+    if (typeof topic === "string" && topic.startsWith("sched:")) {
+      return { kind: "schedule" };
+    }
     return channel.provider === "github"
       ? { kind: "github", provider: "github" }
       : { kind: "im_channel", provider: channel.provider };
