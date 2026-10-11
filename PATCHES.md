@@ -171,6 +171,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#112](#patch-112) | Extensions can add a tab to the Agents page (`agents-tab` surface slot) | argus-edit | this PR |
 | [#113](#patch-113) | `channels.<name>.owner_email`: a channel locked to named senders runs every message as that web user, so its chats show in the web UI | argus-edit | this PR |
 | [#114](#patch-114) | Project Settings: archive and delete in a separate danger zone; a project's `presentation.delete_notice` is shown and makes deletion need the name typed | argus-edit | this PR |
+| [#117](#patch-117) | A scheduled playbook fire shows as a "Scheduled run" card, and its delivery report names the thread it ran in | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2419,6 +2420,18 @@ carry budget ledger.
 - Tests: `tests/unit/app/projects-page.dom.test.tsx` (danger zone holds archive and delete but not the name field; one-step delete without a notice; with a notice the text is shown and Delete enables only on the exact name); existing rename/archive reconciliation tests unchanged.
 - Delete-when: upstream separates destructive project actions and lets a deployment extend the delete warning.
 - Upstream status: none sent.
+
+---
+
+## Patch #117
+
+**Patch #117 - Scheduled playbook fires are marked as scheduled runs** (2026-10-11)
+
+- Class: argus-edit (backend: `app/channels/manager.py` `_playbook_scheduled_origin` and its use in `_handle_chat_on_thread`, `_report_unattended_outcome(thread_id=)`; `app/channels/_delivery_report.py` `thread_id`; `app/gateway/routers/playbooks.py` `PlaybookFireRequest.trigger`/`timezone`).
+- Intent: Chronos fires each schedule through the playbook endpoint (#43/#45), so in the web UI a scheduled chat started with the whole playbook prompt as if the user had typed it. The human message of a playbook fire now carries `deerflow_scheduled_origin` in DeerFlow's own shape (task = the schedule id, run = the Chronos run from the report URL, trigger, time zone, title, the prompt as instructions), so the chat shows upstream's "Scheduled run" card; the run is admitted with it because the channel manager is an internal caller. Chronos passes `trigger` (scheduled or manual) and the schedule's `timezone` in the fire body. The delivery report (#45) names the thread the turn ran in (`thread_id`), so the run history on the Scheduled tasks page (#115, Argus's Chronos backend) opens the right chat.
+- Tests: `backend/tests/test_delivery_report.py` (thread id in the payload and passed by the manager; the scheduled-origin marker for playbook fires only, run id from the report URL, trigger and zone), `backend/tests/test_playbook_fire.py` (trigger and zone flow through; an unknown trigger is 422); `test_channels.py`'s #45 report stub takes the new argument.
+- Delete-when: Argus schedules run on DeerFlow's own scheduler.
+- Upstream status: not applicable (playbook fire is Argus's).
 
 ---
 

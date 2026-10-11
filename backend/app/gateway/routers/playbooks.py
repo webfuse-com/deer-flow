@@ -29,9 +29,10 @@ import logging
 import os
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,11 @@ class PlaybookFireRequest(BaseModel):
     # path: the endpoint already requires the internal token, and the token
     # holder (Chronos) is the component that pins and gates the text.
     prompt_text: str | None = None
+    # [argus patch #117] How Chronos fired this run ("scheduled" by its cron,
+    # "manual" for Run now) and the schedule's time zone, for the chat's
+    # "Scheduled run" card.
+    trigger: Literal["scheduled", "manual"] | None = None
+    timezone: str | None = Field(default=None, max_length=64)
 
 
 class PlaybookFireResponse(BaseModel):
@@ -203,7 +209,12 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
             memory_mode=memory_mode,
             allowed_tools=body.allowed_tools,
             report_url=body.report_url,
-            metadata={"source": "playbook", "schedule_id": schedule_id},
+            metadata={
+                "source": "playbook",
+                "schedule_id": schedule_id,
+                **({"trigger": body.trigger} if body.trigger else {}),
+                **({"timezone": body.timezone} if body.timezone else {}),
+            },
         )
         await service.bus.publish_inbound(msg)
         delivered += 1
