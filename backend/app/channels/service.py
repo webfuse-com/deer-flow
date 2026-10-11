@@ -20,6 +20,29 @@ from deerflow.utils.file_io import await_drained
 
 logger = logging.getLogger(__name__)
 
+
+def channel_owner_emails_from_config(config: dict[str, Any]) -> dict[str, str]:
+    """[argus patch #113] ``channels.<name>.owner_email`` per channel.
+
+    A single-owner deployment names the web user every message of a channel
+    runs as, so that channel's chats are owned by that user and show in their
+    web UI. Honoured only for a channel locked to named senders
+    (``allowed_users``): without the lock anyone could write as the owner.
+    """
+    emails: dict[str, str] = {}
+    for name, channel_config in config.items():
+        if not isinstance(channel_config, dict):
+            continue
+        email = channel_config.get("owner_email")
+        if not isinstance(email, str) or "@" not in email:
+            continue
+        if not channel_config.get("allowed_users"):
+            logger.warning("channels.%s.owner_email ignored: the channel has no allowed_users lock", name)
+            continue
+        emails[name] = email.strip().lower()
+    return emails
+
+
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
     from deerflow.config.channel_connections_config import ChannelConnectionsConfig
@@ -166,6 +189,7 @@ class ChannelService:
         # Popped before channel_sessions is built so it is not mistaken for a channel.
         coalesce_window = config.pop("coalesce_window", None)
         channel_sessions = {name: channel_config.get("session") for name, channel_config in config.items() if isinstance(channel_config, dict)}
+        channel_owner_emails = channel_owner_emails_from_config(config)
         from app.channels.dedupe_store import make_inbound_dedupe_store
 
         self.manager = ChannelManager(
@@ -182,6 +206,7 @@ class ChannelService:
             inbound_dedupe_store=make_inbound_dedupe_store(app_config),
             get_stream_bridge=get_stream_bridge,
             coalesce_window=float(coalesce_window) if isinstance(coalesce_window, (int, float)) else None,
+            channel_owner_emails=channel_owner_emails,
         )
         self._channels: dict[str, Any] = {}  # name -> Channel instance
         self._config = config

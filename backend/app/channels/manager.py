@@ -1541,6 +1541,7 @@ class ChannelManager:
         inbound_dedupe_store: InboundDedupeStore | None = None,
         get_stream_bridge: Callable[[], StreamBridge | None] | None = None,
         coalesce_window: float | None = None,
+        channel_owner_emails: dict[str, str] | None = None,
     ) -> None:
         if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or max_concurrency <= 0:
             raise ValueError("max_concurrency must be a positive integer")
@@ -1558,6 +1559,11 @@ class ChannelManager:
         self._assistant_id = assistant_id
         self._default_session = _as_dict(default_session)
         self._channel_sessions = dict(channel_sessions or {})
+        # [argus patch #113] channel -> owner email, and the resolved user id
+        # (with when it was looked up: an unknown email is retried later, the
+        # owner may not have signed in to the web UI yet).
+        self._channel_owner_emails = dict(channel_owner_emails or {})
+        self._channel_owner_ids: dict[str, tuple[str | None, float]] = {}
         self._connection_repo = connection_repo
         self._require_bound_identity = require_bound_identity
         # Zero-arg accessor for the FastAPI app's StreamBridge singleton,
@@ -2559,8 +2565,37 @@ class ChannelManager:
         if exc:
             logger.error("[Manager] unhandled error in message task: %s", exc, exc_info=exc)
 
+    _OWNER_RETRY_SECONDS = 300.0
+
+    async def _configured_owner_user_id(self, channel_name: str) -> str | None:
+        """[argus patch #113] The web user a channel's messages run as, from
+        ``channels.<name>.owner_email``, or None (no owner configured, or that
+        email has no user yet)."""
+        email = self._channel_owner_emails.get(channel_name)
+        if not email:
+            return None
+        cached = self._channel_owner_ids.get(channel_name)
+        if cached is not None and (cached[0] or time.monotonic() - cached[1] < self._OWNER_RETRY_SECONDS):
+            return cached[0]
+        user_id: str | None = None
+        try:
+            from app.gateway.deps import get_user_repository
+
+            user = await get_user_repository().get_user_by_email(email)
+            user_id = str(user.id) if user is not None and getattr(user, "id", None) else None
+        except Exception:
+            logger.warning("[Manager] could not resolve the owner of channel %s", channel_name, exc_info=True)
+        if user_id is None:
+            logger.info("[Manager] channel %s owner %s has no web user yet; its chats stay unowned", channel_name, email)
+        self._channel_owner_ids[channel_name] = (user_id, time.monotonic())
+        return user_id
+
     async def _handle_message(self, msg: InboundMessage) -> None:
         msg = _apply_effective_owner(msg)
+        if not msg.owner_user_id:
+            # [argus patch #113] A channel locked to its owner runs every
+            # message (chat, scheduled playbook, notify) as the owner's web user.
+            msg.owner_user_id = await self._configured_owner_user_id(msg.channel_name)
         try:
             # Commands are handled below because provider adapters consume
             # binding commands before manager dispatch, and _handle_command()
