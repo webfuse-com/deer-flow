@@ -174,6 +174,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#115](#patch-115) | `scheduler.backend_class`: an external scheduler behind the Scheduled tasks API and page; `/api/features` reports what it supports | generic-upstreamable | this PR |
 | [#116](#patch-116) | The Scheduled tasks page with an external scheduler: hides what it does not offer, sidebar entry instead of the Chronos link, header menu to switch a chat's schedule, schedule chats marked as scheduled | argus-edit | this PR |
 | [#117](#patch-117) | A scheduled playbook fire shows as a "Scheduled run" card, and its delivery report names the thread it ran in | argus-edit | this PR |
+| [#118](#patch-118) | A project whose files live in a repository: its presentation orders the tabs, turns Documents into Files (repository links, changes only in the writable folder, no Attach) and links the instructions; instructions and soul each say what they are for | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2458,6 +2459,18 @@ carry budget ledger.
 - Tests: `backend/tests/test_delivery_report.py` (thread id in the payload and passed by the manager; the scheduled-origin marker for playbook fires only, run id from the report URL, trigger and zone), `backend/tests/test_playbook_fire.py` (trigger and zone flow through; an unknown trigger is 422); `test_channels.py`'s #45 report stub takes the new argument.
 - Delete-when: Argus schedules run on DeerFlow's own scheduler.
 - Upstream status: not applicable (playbook fire is Argus's).
+
+---
+
+## Patch #118
+
+**Patch #118 - Project files in a repository, and a clearer project page** (2026-10-11)
+
+- Class: argus-edit (frontend: new `core/projects/files.ts` (`filesSourceOf`, `repoFileOf`, `orderedTabs`), `core/projects/types.ts` (`ProjectPresentation.tabs`, `files`, `instructions_url`), `app/workspace/projects/[id]/page.tsx` (ordered tabs, the first shown; Files label; instructions scope line and source link), `components/workspace/projects/project-documents-section.tsx` (Files header, repository links, Trash and Edit limited to the writable folder, Edit on GitHub, no Attach), i18n `projects.files*`, `instructionsScope`, `instructionsSource`, `openRepository`, `viewOnRepository`, `editOnRepository`, reworded `agents.settingsSoulHint`).
+- Intent: Nicholas found the project page confusing: the same STATE.md in Documents and in a read-only Details tab, documents without a link to where they live, and Soul vs Instructions unclear. Argus mirrors each project folder from the citizen's GitHub fork (projects/<slug>/), and the shelf rows carry their repository path in `source_name`. A project's `presentation` now describes that: `tabs` orders the tabs (the first is shown on open; Argus puts its Overview tab first), and `files` (folder, file and edit URL templates with `{path}`, the writable folder, editable suffixes) turns Documents into Files: a header links the folder, each mirrored row links its file, rows outside the writable folder offer Edit on GitHub instead of Trash and in-app editing, Markdown inside the writable folder stays editable, and Attach to chat is not offered (every project chat can already read the files; attach copied a snapshot into one chat). `instructions_url` links where the instructions are kept. The Instructions tab says what instructions are for (this project's chats only) as opposed to an agent's soul, and the Agents page's soul hint says the reverse. Without these keys the page is as before.
+- Tests: `tests/unit/core/projects/files.test.ts` (https-only links, suffix filter, writable/editable, URL encoding, `..` refused, tab order), `tests/unit/components/workspace/projects/project-documents-section.dom.test.tsx` (Files header and repository link, no Attach, Trash only in the writable folder, Edit on GitHub, in-app edit only for writable Markdown, an ordinary project unchanged), `tests/unit/app/projects-page.dom.test.tsx` (presentation tab order, first tab shown, Files label, instructions scope and link).
+- Delete-when: upstream lets a deployment back project documents with a repository.
+- Upstream status: none sent.
 
 ---
 

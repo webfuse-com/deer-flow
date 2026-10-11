@@ -6,7 +6,29 @@ export type ProjectPresentation = {
   // [argus patch #114] What deleting the project removes beyond DeerFlow's
   // own rows, shown in the delete confirmation.
   delete_notice?: string;
+  // [argus patch #118] Tab order ("chats", "documents", "instructions",
+  // "settings", or a plugin tab value); missing tabs follow in the default order.
+  tabs?: string[];
+  // [argus patch #118] The project's files live in a repository: the Documents
+  // tab becomes Files, links each mirrored file there and changes only the
+  // writable folder in the app.
+  files?: ProjectFilesSource;
+  // [argus patch #118] Where the instructions are kept (shown on that tab).
+  instructions_url?: string;
   [key: string]: unknown;
+};
+
+export type ProjectFilesSource = {
+  /** The project's folder in the repository. */
+  folder_url?: string;
+  /** A file's page; `{path}` is the document's `source_name`. */
+  file_url?: string;
+  /** A file's edit page; `{path}` as above. */
+  edit_url?: string;
+  /** Path prefix (e.g. "refs/") of the folder the app may change; uploads land there. */
+  writable?: string;
+  /** Suffixes the app may edit inside the writable folder (e.g. [".md"]). */
+  editable_suffixes?: string[];
 };
 
 export type Project = {
