@@ -848,6 +848,8 @@ export const zhCN: Translations = {
       description:
         "DeerFlow 按计划替你运行的任务。也可以直接在任意对话里让它创建。",
       descriptionNoChat: "DeerFlow 按计划替你运行的任务。",
+      descriptionExternal:
+        "你的计划任务。每个任务都是 GitHub 仓库中的一个文件；在这里暂停或恢复会保存到那里。",
       newTask: "新建任务",
       tabs: {
         all: "全部",
@@ -1197,6 +1199,8 @@ export const zhCN: Translations = {
       countLabel: "本对话有 {count} 个定时任务",
       countLabelOne: "本对话有 1 个定时任务",
       runTask: "所属定时任务",
+      active: "启用",
+      menuLabel: "此对话的计划任务",
     },
     recipes: {
       label: "快速创建",

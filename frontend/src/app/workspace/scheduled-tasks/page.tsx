@@ -57,6 +57,8 @@ export default function ScheduledTasksPage() {
   const threadId = searchParams.get("thread_id");
   const taskIdParam = searchParams.get("task_id");
   const feature = useScheduledTasksFeature();
+  // [argus patch #116] Absent in older backends and mocks: every feature.
+  const canCreate = feature.supports?.create ?? true;
   const createBlocked = !feature.running;
   // Until /api/features answers, show what an enabled tool shows (as the chat
   // card does) instead of flipping copy and "Stops when" once it loads.
@@ -182,10 +184,14 @@ export default function ScheduledTasksPage() {
                 {t.sidebar.scheduledTasks}
               </h1>
               <p className="text-muted-foreground text-sm">
-                {toolEnabled ? st.page.description : st.page.descriptionNoChat}
+                {feature.external === true
+                  ? st.page.descriptionExternal
+                  : toolEnabled
+                    ? st.page.description
+                    : st.page.descriptionNoChat}
               </p>
             </div>
-            {feature.available && (
+            {feature.available && canCreate && (
               <NewTaskButton
                 createBlocked={createBlocked}
                 onClick={openCreate}
@@ -253,6 +259,7 @@ export default function ScheduledTasksPage() {
                   toolEnabled={toolEnabled}
                   createBlocked={createBlocked}
                   onCreate={openCreate}
+                  canCreate={canCreate}
                 />
               ) : (
                 <div className="grid min-w-0 gap-4 lg:grid-cols-[330px_minmax(0,1fr)] lg:items-start">

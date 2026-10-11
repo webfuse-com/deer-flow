@@ -149,3 +149,32 @@ describe("scheduled tasks feature", () => {
     });
   });
 });
+
+describe("scheduled tasks from an external scheduler (argus patch #116)", () => {
+  it("reads what the backend supports; a missing key counts as supported", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse({
+        scheduled_tasks: {
+          available: true,
+          running: true,
+          tool_enabled: false,
+          min_interval_seconds: 60,
+          supports: { goals: false, create: false, edit: "no" },
+          external: true,
+        },
+      }),
+    );
+    const feature = await fetchScheduledTasksFeature();
+    expect(feature.external).toBe(true);
+    expect(feature.supports).toEqual({
+      goals: false,
+      stop_condition: true,
+      limits: true,
+      interval: true,
+      notes: true,
+      create: false,
+      edit: true,
+      delete: true,
+    });
+  });
+});

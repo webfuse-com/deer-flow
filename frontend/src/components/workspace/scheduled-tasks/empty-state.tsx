@@ -40,10 +40,13 @@ export function EmptyState({
   toolEnabled,
   createBlocked,
   onCreate,
+  canCreate = true,
 }: {
   toolEnabled: boolean;
   createBlocked: boolean;
   onCreate: () => void;
+  /** [argus patch #116] False when the scheduler does not create tasks here. */
+  canCreate?: boolean;
 }) {
   const { t } = useI18n();
   const st = t.scheduledTasks;
@@ -59,7 +62,9 @@ export function EmptyState({
       <p className="text-muted-foreground max-w-md text-sm">
         {toolEnabled ? st.page.emptyBody : st.page.emptyBodyNoChat}
       </p>
-      <NewTaskButton createBlocked={createBlocked} onClick={onCreate} />
+      {canCreate && (
+        <NewTaskButton createBlocked={createBlocked} onClick={onCreate} />
+      )}
     </div>
   );
 }

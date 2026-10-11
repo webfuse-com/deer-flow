@@ -1,13 +1,27 @@
 "use client";
 
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, ExternalLink, Play } from "lucide-react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { fill } from "@/components/workspace/scheduled-tasks/shared";
 import { useScheduledTasksFeature } from "@/core/features";
 import { useI18n } from "@/core/i18n/hooks";
-import { useThreadScheduledTasks } from "@/core/scheduled-tasks/hooks";
+import {
+  usePauseScheduledTask,
+  useResumeScheduledTask,
+  useThreadScheduledTasks,
+  useTriggerScheduledTask,
+} from "@/core/scheduled-tasks/hooks";
 import type { ThreadScheduledTask } from "@/core/scheduled-tasks/types";
 
 const TASKS_PAGE = "/workspace/scheduled-tasks";
@@ -53,6 +67,9 @@ export function ThreadScheduledTasksButton({ threadId }: { threadId: string }) {
   if (!feature.available || query.isError || !query.data) {
     return null;
   }
+  if (feature.external && query.data.length === 1) {
+    return <SingleTaskMenu task={query.data[0]!} />;
+  }
   const target = threadScheduledTasksTarget(threadId, query.data);
   if (!target) {
     return null;
@@ -94,5 +111,67 @@ export function ThreadScheduledTasksButton({ threadId }: { threadId: string }) {
         </span>
       </Link>
     </Button>
+  );
+}
+
+/**
+ * [argus patch #116] The one schedule of this chat, switched and run from the
+ * header: an "Active" check (pause / resume), Run once now, Open task.
+ */
+function SingleTaskMenu({ task }: { task: ThreadScheduledTask }) {
+  const { t } = useI18n();
+  const st = t.scheduledTasks;
+  const pause = usePauseScheduledTask();
+  const resume = useResumeScheduledTask();
+  const trigger = useTriggerScheduledTask();
+  const active = task.status === "enabled" || task.status === "running";
+  const switchable = active || task.status === "paused";
+  const busy = pause.isPending || resume.isPending;
+  const title = task.title || st.header.runTask;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`${st.header.menuLabel}: ${title}`}
+          data-testid="thread-scheduled-tasks-button"
+        >
+          <CalendarClock
+            aria-hidden
+            className={active ? undefined : "opacity-50"}
+          />
+          <span className="hidden max-w-40 truncate sm:inline">{title}</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+          {st.header.menuLabel}
+        </DropdownMenuLabel>
+        <DropdownMenuCheckboxItem
+          checked={active}
+          disabled={!switchable || busy}
+          onCheckedChange={(checked) =>
+            checked ? resume.mutate({ taskId: task.id }) : pause.mutate(task.id)
+          }
+        >
+          {st.header.active}
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuItem
+          disabled={trigger.isPending}
+          onSelect={() => trigger.mutate(task.id)}
+        >
+          <Play aria-hidden />
+          {st.actions.runNow}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link href={`${TASKS_PAGE}?task_id=${encodeURIComponent(task.id)}`}>
+            <ExternalLink aria-hidden />
+            {st.actions.openTask}
+          </Link>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
