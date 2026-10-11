@@ -92,7 +92,8 @@ def test_build_tracing_callbacks_creates_langsmith_and_langfuse(monkeypatch):
     assert callbacks[1].public_key == "pk-lf-test"
 
 
-def test_build_tracing_callbacks_raises_when_enabled_provider_fails(monkeypatch):
+def test_build_tracing_callbacks_skips_a_provider_that_fails(monkeypatch, caplog):
+    # [argus patch #121] fail-open: upstream raised here and failed the run.
     monkeypatch.setattr(tracing_factory, "get_enabled_tracing_providers", lambda: ["langfuse"])
     monkeypatch.setattr(tracing_factory, "validate_enabled_tracing_providers", lambda: None)
     monkeypatch.setattr(
@@ -111,12 +112,14 @@ def test_build_tracing_callbacks_raises_when_enabled_provider_fails(monkeypatch)
         )(),
     )
     monkeypatch.setattr(tracing_factory, "_create_langfuse_handler", lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(tracing_factory, "_warned", set())
 
-    with pytest.raises(RuntimeError, match="Langfuse tracing initialization failed"):
-        tracing_factory.build_tracing_callbacks()
+    assert tracing_factory.build_tracing_callbacks() == []
+    assert "langfuse tracing initialization failed" in caplog.text
 
 
-def test_build_tracing_callbacks_raises_for_explicitly_enabled_misconfigured_provider(monkeypatch):
+def test_build_tracing_callbacks_skips_an_enabled_but_misconfigured_provider(monkeypatch, caplog):
+    # [argus patch #121] fail-open: upstream raised ValueError and failed the run.
     from deerflow.config.tracing_config import reset_tracing_config
 
     monkeypatch.setenv("LANGFUSE_TRACING", "true")
@@ -124,8 +127,10 @@ def test_build_tracing_callbacks_raises_for_explicitly_enabled_misconfigured_pro
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
     reset_tracing_config()
 
-    with pytest.raises(ValueError, match="LANGFUSE_PUBLIC_KEY"):
-        tracing_factory.build_tracing_callbacks()
+    monkeypatch.setattr(tracing_factory, "_warned", set())
+
+    assert tracing_factory.build_tracing_callbacks() == []
+    assert "LANGFUSE_PUBLIC_KEY" in caplog.text
 
 
 def test_create_langfuse_handler_initializes_client_before_handler(monkeypatch):
@@ -158,6 +163,8 @@ def test_create_langfuse_handler_initializes_client_before_handler(monkeypatch):
 
     tracing_factory._create_langfuse_handler(cfg)
 
+    from deerflow.tracing import argus
+
     assert calls == [
         (
             "client",
@@ -165,6 +172,12 @@ def test_create_langfuse_handler_initializes_client_before_handler(monkeypatch):
                 "secret_key": "sk-lf-test",
                 "public_key": "pk-lf-test",
                 "host": "https://langfuse.example.com",
+                # [argus patch #121]
+                "mask": argus.mask,
+                "should_export_span": argus.should_export_span,
+                "flush_at": 64,
+                "flush_interval": 2,
+                "environment": "argus",
             },
         ),
         (

@@ -112,7 +112,8 @@ def test_stream_injects_langfuse_metadata_when_enabled(monkeypatch):
     assert metadata.get("langfuse_trace_name") == "lead-agent"
     assert metadata.get(DEERFLOW_TRACE_METADATA_KEY)
     # Default no-auth context falls back to ``"default"`` user.
-    assert metadata.get("langfuse_user_id") in {"default", "test-user-autouse"}
+    # [argus patch #121] the autouse user's email (the person), not the id.
+    assert metadata.get("langfuse_user_id") in {"default", "test@local"}
     callbacks = config.get("callbacks") or []
     assert sentinel in callbacks
 
