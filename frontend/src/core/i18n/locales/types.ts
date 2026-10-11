@@ -1702,6 +1702,10 @@ export interface Translations {
       listNamesPlaceholder: string;
       maxTurns: string;
       timeout: string;
+      // [argus patch #111] Thinking switch and the GitHub copy's link.
+      thinking: string;
+      thinkingHint: string;
+      openOnGithub: string;
       created: string;
       saved: string;
       deleted: string;

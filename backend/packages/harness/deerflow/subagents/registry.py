@@ -100,6 +100,7 @@ def _build_managed_subagent_config(name: str, *, app_config: Any | None = None) 
             model=definition.model,
             max_turns=definition.max_turns,
             timeout_seconds=definition.timeout_seconds,
+            thinking_enabled=definition.thinking_enabled,  # [argus patch #111]
         )
     return None
 

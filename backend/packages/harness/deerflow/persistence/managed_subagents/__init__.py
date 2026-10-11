@@ -24,10 +24,21 @@ __all__ = [
 ]
 
 _file_store_singleton: ManagedSubagentStore | None = None
+_custom_stores: dict[str, ManagedSubagentStore] = {}
 
 
 def make_managed_subagent_store(config: AppConfig) -> ManagedSubagentStore:
     """Select the same persistence backend used by custom agent definitions."""
+    # [argus patch #111] A deployment-supplied store wins over file/db.
+    store_class = getattr(config.agent_storage, "subagent_store_class", None)
+    if store_class:
+        store = _custom_stores.get(store_class)
+        if store is None:
+            from deerflow.reflection.resolvers import resolve_class
+
+            store = resolve_class(store_class, ManagedSubagentStore)()
+            _custom_stores[store_class] = store
+        return store
     if config.agent_storage.backend == "db":
         if config.database.backend not in ("sqlite", "postgres"):
             raise ValueError("Managed subagent database storage requires database.backend to be 'sqlite' or 'postgres'.")

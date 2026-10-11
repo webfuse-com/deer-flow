@@ -1,7 +1,12 @@
 "use client";
 
-import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  ExternalLinkIcon,
+  PencilIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
+import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -40,7 +45,7 @@ import {
   useSubagents,
   useUpdateManagedSubagent,
 } from "@/core/subagents";
-import type { Subagent } from "@/core/subagents";
+import type { Subagent, SubagentStoredIn } from "@/core/subagents";
 
 import { SettingsSection } from "./settings-section";
 import {
@@ -63,6 +68,7 @@ type Draft = {
   skills: string;
   maxTurns: string;
   timeoutSeconds: string;
+  thinking: boolean | null; // [argus patch #111] null = not set (off)
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -77,6 +83,7 @@ const EMPTY_DRAFT: Draft = {
   skills: "",
   maxTurns: "50",
   timeoutSeconds: "900",
+  thinking: null,
 };
 
 function formatOverrideValue(value: unknown): string {
@@ -100,7 +107,33 @@ function draftFrom(subagent: Subagent): Draft {
     skills: skills.text,
     maxTurns: String(subagent.max_turns),
     timeoutSeconds: String(subagent.timeout_seconds),
+    thinking: subagent.thinking_enabled ?? null,
   };
+}
+
+/**
+ * [argus patch #111] Where a managed definition is kept, when its store
+ * reports it; the same link as the agents settings dialog (#110).
+ */
+function StoredInLink({ storedIn }: { storedIn?: SubagentStoredIn | null }) {
+  const { t } = useI18n();
+  if (storedIn?.kind !== "github" || !storedIn.url) return null;
+  return (
+    <a
+      href={storedIn.url}
+      target="_blank"
+      rel="noreferrer"
+      className="text-primary inline-flex w-fit items-center gap-1.5 text-xs hover:underline"
+    >
+      <ExternalLinkIcon className="size-3.5" />
+      {t.settings.subagents.openOnGithub}
+      {storedIn.commit && (
+        <code className="text-muted-foreground font-mono">
+          {storedIn.commit.slice(0, 7)}
+        </code>
+      )}
+    </a>
+  );
 }
 
 export function SubagentSettingsPage() {
@@ -201,6 +234,8 @@ export function SubagentSettingsPage() {
                         .join("; ")}
                     </p>
                   )}
+                  {/* [argus patch #111] */}
+                  <StoredInLink storedIn={subagent.stored_in} />
                 </ItemContent>
                 <ItemActions className="gap-1">
                   {isAdmin && subagent.editable && (
@@ -257,12 +292,14 @@ function SubagentEditor({
   const create = useCreateManagedSubagent();
   const update = useUpdateManagedSubagent();
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const thinkingId = useId();
 
   useEffect(() => {
     setDraft(value && value !== "new" ? draftFrom(value) : EMPTY_DRAFT);
   }, [value]);
 
   const isNew = value === "new";
+  const existing = value && value !== "new" ? value : null;
   const pending = create.isPending || update.isPending;
 
   function set<K extends keyof Draft>(key: K, next: Draft[K]) {
@@ -288,6 +325,12 @@ function SubagentEditor({
       skills: optionalNameListFromDraft(draft.skillsMode, draft.skills),
       max_turns: maxTurns,
       timeout_seconds: timeoutSeconds,
+      // [argus patch #111] Sent only when the user changed it, so an
+      // untouched save keeps the stored value.
+      ...(typeof draft.thinking === "boolean" &&
+      draft.thinking !== (existing?.thinking_enabled ?? null)
+        ? { thinking_enabled: draft.thinking }
+        : {}),
     };
     try {
       if (isNew) {
@@ -315,6 +358,8 @@ function SubagentEditor({
           <DialogDescription>
             {t.settings.subagents.description}
           </DialogDescription>
+          {/* [argus patch #111] */}
+          <StoredInLink storedIn={existing?.stored_in} />
         </DialogHeader>
         <div className="grid gap-4 py-1 sm:grid-cols-2">
           <Field label={t.settings.subagents.name}>
@@ -408,6 +453,22 @@ function SubagentEditor({
               onChange={(event) => set("timeoutSeconds", event.target.value)}
             />
           </Field>
+          {/* [argus patch #111] Extended thinking, off unless turned on. */}
+          <div className="space-y-1.5">
+            <label htmlFor={thinkingId} className="block text-sm font-medium">
+              {t.settings.subagents.thinking}
+            </label>
+            <div className="flex items-center gap-2">
+              <Switch
+                id={thinkingId}
+                checked={draft.thinking === true}
+                onCheckedChange={(checked) => set("thinking", checked)}
+              />
+              <span className="text-muted-foreground text-xs">
+                {t.settings.subagents.thinkingHint}
+              </span>
+            </div>
+          </div>
         </div>
         <DialogFooter>
           <Button

@@ -6,6 +6,7 @@ rs.mock("@/core/config", () => ({ getBackendBaseURL: () => "" }));
 import { fetch as fetcher } from "@/core/api/fetcher";
 import {
   createManagedSubagent,
+  deleteManagedSubagent,
   listSubagents,
   updateManagedSubagent,
 } from "@/core/subagents/api";
@@ -98,5 +99,43 @@ describe("managed subagent API", () => {
         system_prompt: "Invalid",
       }),
     ).rejects.toThrow("String should match pattern");
+  });
+});
+
+describe("[argus patch #111] thinking and store refusals", () => {
+  test("sends thinking_enabled on update", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        name: "planner",
+        description: "Plans",
+        source: "managed",
+        thinking_enabled: true,
+      }),
+    );
+    const updated = await updateManagedSubagent("planner", {
+      thinking_enabled: true,
+    });
+    expect(updated.thinking_enabled).toBe(true);
+    expect(JSON.parse(mockedFetch.mock.calls[0]?.[1]?.body as string)).toEqual({
+      thinking_enabled: true,
+    });
+  });
+
+  test("an update refused by the store throws the server's text", async () => {
+    const detail =
+      "Changed on GitHub since this page loaded (abc1234). Reload and try again.";
+    mockedFetch.mockResolvedValueOnce(jsonResponse(409, { detail }));
+    await expect(
+      updateManagedSubagent("planner", { description: "Plans more" }),
+    ).rejects.toThrow(detail);
+  });
+
+  test("a delete refused by the store throws the server's text", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(502, { detail: "Not saved to GitHub: rate limited" }),
+    );
+    await expect(deleteManagedSubagent("planner")).rejects.toThrow(
+      "Not saved to GitHub: rate limited",
+    );
   });
 });
