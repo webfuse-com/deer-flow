@@ -35,6 +35,9 @@ class ManagedSubagentDefinition(BaseModel):
     max_turns: int = Field(default=50, ge=1)
     timeout_seconds: int = Field(default=900, ge=1)
     enabled: bool = True
+    # [argus patch #111] Per-subagent extended thinking, as config.yaml
+    # custom_agents have it (#92); None = the model's default.
+    thinking_enabled: bool | None = None
 
     @field_validator("name")
     @classmethod
@@ -90,6 +93,11 @@ class ManagedSubagentStore(abc.ABC):
         override this so registry snapshots can be reused across instances.
         """
         return id(self)
+
+    def source_info(self, name: str) -> dict | None:
+        """[argus patch #111] Where the definition is kept, for the UI (e.g.
+        ``{"kind": "github", "url": ...}``), or None."""
+        return None
 
     @abc.abstractmethod
     def get(self, name: str) -> ManagedSubagentDefinition:

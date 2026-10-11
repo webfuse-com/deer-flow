@@ -6,11 +6,12 @@ import asyncio
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_serializer
 
 from app.gateway.deps import is_admin_user, require_admin_user
 from app.gateway.persistent_writes import run_drained_write
 from deerflow.config.app_config import get_app_config
+from deerflow.persistence.agents.base import AgentStoreError
 from deerflow.persistence.managed_subagents import (
     ManagedSubagentDefinition,
     ManagedSubagentExistsError,
@@ -38,10 +39,21 @@ class SubagentResponse(BaseModel):
     max_turns: int = 50
     timeout_seconds: int = 900
     enabled: bool = True
+    thinking_enabled: bool | None = None  # [argus patch #111]
     source: Literal["builtin", "config", "managed"]
     editable: bool = False
     conflict: bool = False
     config_overrides: dict[str, Any] = Field(default_factory=dict)
+    # [argus patch #111] Where a managed definition is kept, when its store
+    # reports it (e.g. a git repository link); omitted otherwise.
+    stored_in: dict | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_stored_in(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("stored_in") is None:
+            data.pop("stored_in", None)
+        return data
 
 
 class SubagentsListResponse(BaseModel):
@@ -60,6 +72,7 @@ class ManagedSubagentCreateRequest(BaseModel):
     max_turns: int = Field(default=50, ge=1)
     timeout_seconds: int = Field(default=900, ge=1)
     enabled: bool = True
+    thinking_enabled: bool | None = None  # [argus patch #111]
 
 
 class ManagedSubagentUpdateRequest(BaseModel):
@@ -73,6 +86,7 @@ class ManagedSubagentUpdateRequest(BaseModel):
     max_turns: int | None = Field(default=None, ge=1)
     timeout_seconds: int | None = Field(default=None, ge=1)
     enabled: bool | None = None
+    thinking_enabled: bool | None = None  # [argus patch #111]
 
 
 def _validate_model(model: str, app_config) -> None:
@@ -101,6 +115,12 @@ def _explicit_overrides(name: str, app_config) -> dict[str, Any]:
         if value is not None:
             result[field] = value
     return result
+
+
+def _stored_in(store, name: str) -> dict | None:
+    """[argus patch #111] The store's location hint, for stores that report one."""
+    hook = getattr(store, "source_info", None)
+    return hook(name) if callable(hook) else None
 
 
 def _catalog(include_system_prompt: bool) -> SubagentsListResponse:
@@ -138,6 +158,7 @@ def _catalog(include_system_prompt: bool) -> SubagentsListResponse:
                 model=definition.model,
                 max_turns=definition.max_turns,
                 timeout_seconds=definition.timeout_seconds,
+                thinking_enabled=getattr(definition, "thinking_enabled", None),  # [argus patch #111]
                 source="config",
                 conflict=name in BUILTIN_SUBAGENTS,
                 config_overrides=_explicit_overrides(name, app_config),
@@ -154,6 +175,7 @@ def _catalog(include_system_prompt: bool) -> SubagentsListResponse:
                 editable=True,
                 conflict=definition.name in reserved_names,
                 config_overrides=_explicit_overrides(definition.name, app_config),
+                stored_in=_stored_in(store, definition.name),
             )
         )
     source_order = {"builtin": 0, "config": 1, "managed": 2}
@@ -181,15 +203,18 @@ async def create_managed_subagent(request: Request, body: ManagedSubagentCreateR
         raise HTTPException(status_code=409, detail=f"Subagent name '{definition.name}' is reserved by a built-in or config.yaml definition.")
     store = get_managed_subagent_store(app_config)
     try:
-        await run_drained_write("Create managed subagent", store.create, (ManagedSubagentExistsError,), definition)
+        await run_drained_write("Create managed subagent", store.create, (ManagedSubagentExistsError, AgentStoreError), definition)
     except ManagedSubagentExistsError:
         raise HTTPException(status_code=409, detail=f"Managed subagent '{definition.name}' already exists")
+    except AgentStoreError as exc:  # [argus patch #111] a store refusal, e.g. "changed on GitHub"
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return SubagentResponse(
         **definition.model_dump(exclude={"system_prompt"}),
         system_prompt=definition.system_prompt,
         source="managed",
         editable=True,
         config_overrides=_explicit_overrides(definition.name, app_config),
+        stored_in=_stored_in(store, definition.name),
     )
 
 
@@ -212,7 +237,9 @@ async def update_managed_subagent(name: str, request: Request, body: ManagedSuba
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
     _validate_model(updated.model, app_config)
     try:
-        await run_drained_write("Update managed subagent", store.update, (FileNotFoundError,), updated)
+        await run_drained_write("Update managed subagent", store.update, (FileNotFoundError, AgentStoreError), updated)
+    except AgentStoreError as exc:  # [argus patch #111]
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except FileNotFoundError:
         # The definition may be deleted by another administrator after the
         # read above. Preserve the endpoint's not-found contract instead of
@@ -226,6 +253,7 @@ async def update_managed_subagent(name: str, request: Request, body: ManagedSuba
         editable=True,
         conflict=conflict,
         config_overrides=_explicit_overrides(updated.name, app_config),
+        stored_in=_stored_in(store, updated.name),
     )
 
 
@@ -235,5 +263,9 @@ async def delete_managed_subagent(name: str, request: Request) -> None:
     name = _validate_path_name(name)
     app_config = await asyncio.to_thread(get_app_config)
     store = get_managed_subagent_store(app_config)
-    if not await run_drained_write("Delete managed subagent", store.delete, (), name):
+    try:
+        deleted = await run_drained_write("Delete managed subagent", store.delete, (AgentStoreError,), name)
+    except AgentStoreError as exc:  # [argus patch #111]
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail=f"Managed subagent '{name}' not found")
