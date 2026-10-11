@@ -5244,7 +5244,10 @@ class TestSubagentTracingWiring:
 
         metadata = (fake_agent.captured_config or {}).get("metadata") or {}
         # DEFAULT_USER_ID is "default" (see deerflow.runtime.user_context).
-        assert metadata.get("langfuse_user_id") == "default"
+        # [argus patch #121] the trace user is shown as the autouse user's
+        # email; the id fallback stays in deerflow_user_id.
+        assert metadata.get("deerflow_user_id") == "default"
+        assert metadata.get("langfuse_user_id") in {"default", "test@local"}
 
     @pytest.mark.anyio
     async def test_trace_name_falls_back_when_config_name_empty(

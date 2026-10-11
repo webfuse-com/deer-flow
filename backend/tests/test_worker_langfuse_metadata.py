@@ -135,8 +135,11 @@ async def test_run_agent_injects_langfuse_metadata(monkeypatch):
     assert metadata.get("langfuse_session_id") == "thread-xyz"
     # conftest.py autouse fixture injects ``test-user-autouse`` into the
     # contextvar — the worker should read it via ``get_effective_user_id``.
+    # [argus patch #121] the trace user is the person's email; the id stays in
+    # deerflow_user_id.
     user_id = metadata.get("langfuse_user_id")
-    assert user_id == "test-user-autouse", f"expected test-user-autouse, got {user_id}"
+    assert user_id == "test@local", f"expected the autouse user's email, got {user_id}"
+    assert metadata.get("deerflow_user_id") == "test-user-autouse"
     assert metadata.get("langfuse_trace_name") == "lead-agent"
     assert metadata.get(DEERFLOW_TRACE_METADATA_KEY) == "gateway-trace-1"
     assert fake_agent.captured_config.get("context", {}).get(DEERFLOW_TRACE_METADATA_KEY) == "gateway-trace-1"

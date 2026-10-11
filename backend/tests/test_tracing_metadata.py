@@ -59,6 +59,11 @@ def test_session_id_maps_to_thread_id(monkeypatch):
 
 def test_user_id_falls_back_to_default(monkeypatch):
     _enable_langfuse(monkeypatch)
+    # [argus patch #121] the email lookup would name the autouse user or the
+    # stack owner; with neither, the upstream fallback stands.
+    from deerflow.tracing import argus
+
+    monkeypatch.setattr(argus, "display_user", lambda user_id: user_id)
 
     result = tracing_metadata.build_langfuse_trace_metadata(
         thread_id="thread-abc",

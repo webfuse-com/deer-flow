@@ -155,6 +155,11 @@ def _strip_reserved_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 
 def _is_organization_metadata_patch(metadata: dict[str, Any]) -> bool:
     """Recognize list-organization writes that must preserve activity time."""
+    from deerflow.tracing.argus import TRACING_METADATA_KEY
+
+    # [argus patch #121] The Ariadne tracing switch is a setting, not activity.
+    if metadata and set(metadata) == {TRACING_METADATA_KEY} and metadata[TRACING_METADATA_KEY] in ("on", "off"):
+        return True
     return bool(metadata) and set(metadata) <= {THREAD_PINNED_METADATA_KEY, THREAD_ARCHIVED_METADATA_KEY} and all(isinstance(value, bool) for value in metadata.values())
 
 
@@ -1444,6 +1449,12 @@ async def patch_thread(thread_id: ThreadId, body: ThreadPatchRequest, request: R
 
     # Re-read to get the merged metadata and the store's timestamp decision.
     record = await thread_store.get(thread_id) or record
+    # [argus patch #121] Apply the tracing switch to the export filter at once,
+    # so a memory update already queued for this chat is not exported.
+    from deerflow.tracing.argus import TRACING_METADATA_KEY, is_tracing_off, set_thread_untraced
+
+    if TRACING_METADATA_KEY in (body.metadata or {}):
+        set_thread_untraced(thread_id, is_tracing_off(record.get("metadata")))
     return ThreadResponse(
         thread_id=thread_id,
         status=record.get("status", "idle"),

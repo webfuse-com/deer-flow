@@ -2749,6 +2749,39 @@ class ChannelManager:
         )
         await self.bus.publish_outbound(outbound)
 
+    async def _toggle_tracing(self, msg: InboundMessage, arg: str) -> str:
+        """[argus patch #121] Set or flip the conversation's ``ariadne_tracing``
+        metadata (the same key the web thread menu writes). With tracing off,
+        nothing from the conversation is exported to Ariadne."""
+        from deerflow.tracing.argus import TRACING_METADATA_KEY, TRACING_OFF, is_tracing_off, set_thread_untraced
+
+        thread_id = await self._lookup_thread_id(msg)
+        if not thread_id:
+            return "No active conversation to change. Send a message first."
+        client = self._get_client()
+        owner_kwargs: dict[str, Any] = {}
+        if owner_headers := _owner_headers(msg):
+            owner_kwargs["headers"] = owner_headers
+        choice = arg.strip().lower()
+        if choice in ("on", "off"):
+            off = choice == "off"
+        else:
+            try:
+                thread = await client.threads.get(thread_id, **owner_kwargs)
+                off = not is_tracing_off((thread or {}).get("metadata"))
+            except Exception:
+                logger.exception("[Manager] could not read the tracing switch for thread_id=%s", thread_id)
+                return "Could not read this conversation's tracing setting. Try /notrace on or /notrace off."
+        try:
+            await client.threads.update(thread_id, metadata={TRACING_METADATA_KEY: TRACING_OFF if off else "on"}, **owner_kwargs)
+        except Exception:
+            logger.exception("[Manager] could not change the tracing switch for thread_id=%s", thread_id)
+            return "Could not change this conversation's tracing setting."
+        set_thread_untraced(thread_id, off)
+        if off:
+            return "Tracing is off for this conversation: nothing from it goes to Ariadne. Send /notrace again to turn it back on."
+        return "Tracing is on for this conversation. You can inspect it in Ariadne for 7 days; only you can see it."
+
     async def _lookup_thread_id(self, msg: InboundMessage) -> str | None:
         return await lookup_thread_id(msg, repo=self._connection_repo, store=self.store)
 
@@ -3753,6 +3786,9 @@ class ChannelManager:
         elif reply is None and command == "status":
             thread_id = await self._lookup_thread_id(msg)
             reply = f"Active thread: {thread_id}" if thread_id else "No active conversation."
+        elif reply is None and command == "notrace":
+            # [argus patch #121] This conversation's Ariadne tracing switch.
+            reply = await self._toggle_tracing(msg, parts[1] if len(parts) > 1 else "")
         elif reply is None and command == "models":
             # The pin footer decorates only a successful listing: appended to
             # the failure string it would advertise a pin next to an error
@@ -3794,6 +3830,7 @@ class ChannelManager:
                 "/models — List available models\n"
                 "/model [name|default] — Show or pin this conversation's model\n"
                 "/memory — Show memory status\n"
+                "/notrace [on|off] — Turn tracing of this conversation off or back on\n"
                 "/agent list — List your Custom Agents\n"
                 "/agent use <name> — Start a new conversation with an agent\n"
                 "/<skill-name> <task> — Activate an enabled skill for one turn\n"

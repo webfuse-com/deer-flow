@@ -34,6 +34,7 @@ def build_langfuse_trace_metadata(
     model_name: str | None = None,
     environment: str | None = None,
     deerflow_trace_id: str | None = None,
+    channel: str | None = None,
 ) -> dict[str, Any]:
     """Return Langfuse trace-attribute metadata for ``RunnableConfig.metadata``.
 
@@ -58,11 +59,15 @@ def build_langfuse_trace_metadata(
         return {}
 
     from deerflow.runtime.user_context import DEFAULT_USER_ID
+    from deerflow.tracing import argus
 
     metadata: dict[str, Any] = {
         "langfuse_session_id": thread_id,
-        "langfuse_user_id": user_id or DEFAULT_USER_ID,
+        # [argus patch #121] the person (email), not the per-stack user UUID;
+        # the UUID stays in deerflow_user_id for joins back to the stack.
+        "langfuse_user_id": argus.display_user(user_id) or DEFAULT_USER_ID,
         "langfuse_trace_name": assistant_id or _DEFAULT_TRACE_NAME,
+        "deerflow_user_id": user_id or DEFAULT_USER_ID,
     }
     metadata[DEERFLOW_TRACE_METADATA_KEY] = resolve_trace_id(deerflow_trace_id)
 
@@ -71,6 +76,11 @@ def build_langfuse_trace_metadata(
         tags.append(f"env:{environment}")
     if model_name:
         tags.append(f"model:{model_name}")
+    # [argus patch #121] which stack and which channel (web, telegram, schedule, ...).
+    if stack := argus.stack_tag():
+        tags.append(stack)
+    if channel:
+        tags.append(channel)
     if tags:
         metadata["langfuse_tags"] = tags
 
@@ -97,6 +107,8 @@ def inject_langfuse_metadata(
     The ``config`` dict is mutated in place; the call is a no-op when
     Langfuse is not in the enabled tracing providers.
     """
+    from deerflow.tracing import argus
+
     langfuse_metadata = build_langfuse_trace_metadata(
         thread_id=thread_id,
         user_id=user_id,
@@ -104,6 +116,8 @@ def inject_langfuse_metadata(
         model_name=model_name,
         environment=environment,
         deerflow_trace_id=deerflow_trace_id,
+        # [argus patch #121]
+        channel="channel:subagent" if str(assistant_id or "").startswith("subagent:") else argus.channel_tag(config.get("metadata")),
     )
     if not langfuse_metadata:
         return

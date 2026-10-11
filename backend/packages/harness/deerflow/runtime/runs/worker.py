@@ -99,6 +99,7 @@ from deerflow.sandbox.lease import SANDBOX_SERVER_OWNED_CONTEXT_KEYS
 from deerflow.scheduler.runtime import SCHEDULER_CAPABILITY_CONTEXT_KEY, SchedulerRunCapability
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, ensure_trace_id
 from deerflow.tracing import inject_langfuse_metadata
+from deerflow.tracing.argus import is_tracing_off, set_thread_untraced  # [argus patch #121]
 from deerflow.utils.assembly_io import run_assembly
 from deerflow.utils.messages import message_to_text
 from deerflow.workspace_changes import capture_workspace_snapshot, get_changed_output_paths, record_workspace_changes
@@ -1253,6 +1254,15 @@ async def run_agent(
         # Assembly resolves request, agent, and authorization fallbacks. Trace the
         # model that will run, rather than the model name originally requested.
         effective_model = _assembled_model_name(agent_result) or record.model_name
+        # [argus patch #121] The chat's tracing switch, read fresh on every run
+        # so a change applies from the next message. Spans for this thread
+        # (memory updates and subagents included) are dropped at export.
+        if thread_store is not None:
+            try:
+                thread_row = await thread_store.get(thread_id, user_id=None)
+                set_thread_untraced(thread_id, is_tracing_off((thread_row or {}).get("metadata")))
+            except Exception:  # noqa: BLE001 - tracing must never fail a run
+                logger.debug("Could not read the tracing switch for thread %s", thread_id, exc_info=True)
         for trace_config in (config, initial_runnable_config):
             inject_langfuse_metadata(
                 trace_config,

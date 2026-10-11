@@ -19,6 +19,7 @@ KNOWN_CHANNEL_COMMANDS: frozenset[str] = frozenset(
         "/model",
         "/memory",
         "/help",
+        "/notrace",  # [argus patch #121]
     }
 )
 

@@ -687,6 +687,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Must run AFTER langgraph_runtime so app.state.store is available for thread migration
         await _ensure_admin_user(app)
 
+        # [argus patch #121] Chats whose owner switched tracing off, loaded
+        # before any run so a memory update right after a restart is not
+        # exported either. Observability must never break startup.
+        try:
+            from deerflow.persistence.engine import get_session_factory
+            from deerflow.tracing.argus import preload_untraced_threads
+
+            if (session_factory := get_session_factory()) is not None:
+                untraced = await preload_untraced_threads(session_factory)
+                logger.info("Ariadne: %d chat(s) have tracing switched off", untraced)
+        except Exception:
+            logger.exception("Could not load the chats with tracing switched off; tracing only chats checked by a run")
+            from deerflow.tracing.argus import mark_preload_failed
+
+            mark_preload_failed()
+
         # Phase-2 trash tier (§8.3): one retention sweep at startup, beside
         # the lazy trigger on the trash listing — no daemon, no scheduler.
         # Runs after langgraph_runtime so app.state.project_document_repo is
