@@ -170,6 +170,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#111](#patch-111) | `agent_storage.subagent_store_class`, `thinking_enabled` on managed subagents, and their storage location in the Subagents API and page | generic-upstreamable | this PR |
 | [#112](#patch-112) | Extensions can add a tab to the Agents page (`agents-tab` surface slot) | argus-edit | this PR |
 | [#113](#patch-113) | `channels.<name>.owner_email`: a channel locked to named senders runs every message as that web user, so its chats show in the web UI | argus-edit | this PR |
+| [#114](#patch-114) | Project Settings: archive and delete in a separate danger zone; a project's `presentation.delete_notice` is shown and makes deletion need the name typed | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2405,6 +2406,18 @@ carry budget ledger.
 - Intent: an Argus stack belongs to one person and locks its Telegram bot to their account (`allowed_users`), but without a channel connection every Telegram message ran as no web user: the threads were owned by the gateway's internal `default` user, so the owner's web UI never listed them, and files were kept under the Telegram id's bucket. `channels.<name>.owner_email` names the web user the channel's messages run as. When a message carries no owner (no connection resolved one), the manager looks the email up in the user repository and sets `owner_user_id`, so the existing owner path applies: the thread is created and run with the owner's internal auth headers, files go to the owner's bucket and `/f/` links (#102) name it. Covers every message the manager handles, including scheduled playbook fires and notify wakes. Honoured only for a channel with a non-empty `allowed_users` (otherwise ignored with a warning), because the setting lets the channel's senders act as that user. An email with no user yet is looked up again after 5 minutes (the owner may sign in to the web UI later); until then messages run unowned as before. Thread bindings stay in the channel store, so a chat keeps its thread; existing `default`-owned threads must be handed to the owner once (Argus: `scripts/atlas-telegram-owner-migrate.py`), or the owner's headers get 404 on them. A connection-bound identity (upstream channel connections) still wins. Memory follows the run user: the channel now uses the owner's web memory.
 - Tests: `backend/tests/test_channel_owner_email.py` (config parsing: lock required, email normalised, non-dict entries skipped; a message without owner gets the configured owner; a connection owner is kept; an unknown email is retried after the window); existing channel manager and service suites unchanged.
 - Delete-when: upstream channel connections can be pre-bound from config for a single-owner deployment (no `/connect` handshake), or upstream ships an equivalent owner setting.
+- Upstream status: none sent.
+
+---
+
+## Patch #114
+
+**Patch #114 - Project settings: a danger zone and an honest delete** (2026-10-11)
+
+- Class: argus-edit (frontend: `app/workspace/projects/[id]/page.tsx` `ProjectSettingsSection`, `core/projects/types.ts` `ProjectPresentation.delete_notice`, i18n `projects.dangerZone`, `archiveProjectHint`, `restoreProjectHint`, `deleteProjectHint`, `deleteProjectTypeName`).
+- Intent: Archive and Delete sat directly under the name field with no separation, and the delete confirmation only describes DeerFlow's own rows. They now sit in a bordered "Danger zone" below the name, each with one line on what it does. A deployment that deletes more than DeerFlow's rows says so in the project's `presentation.delete_notice` (Argus: deleting a mirrored project also deletes its folder from the citizen's GitHub repository); the notice replaces the delete hint, is shown in the confirmation, and the Delete button stays disabled until the project's name is typed. Without a notice deletion works as before (one confirmation).
+- Tests: `tests/unit/app/projects-page.dom.test.tsx` (danger zone holds archive and delete but not the name field; one-step delete without a notice; with a notice the text is shown and Delete enables only on the exact name); existing rename/archive reconciliation tests unchanged.
+- Delete-when: upstream separates destructive project actions and lets a deployment extend the delete warning.
 - Upstream status: none sent.
 
 ---
