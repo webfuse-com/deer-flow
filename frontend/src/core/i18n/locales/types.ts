@@ -1159,6 +1159,8 @@ export interface Translations {
     settingsSoulOpenFullScreen: string;
     settingsSoulExitFullScreen: string;
     settingsSavedToGithub: string;
+    // [argus patch #112] First tab of the Agents page when plugins add tabs.
+    galleryTab: string;
   };
 
   // Breadcrumb

@@ -19,17 +19,31 @@ export function pluginProjectTabValue(namespace: string, surfaceId: string) {
   return `plugin:${namespace}:${surfaceId}`;
 }
 
-export function pluginProjectTabs(entries: LoadedContribution[]) {
+// [argus patch #112] Project tabs and Agents page tabs share one helper and
+// the same namespaced values.
+function pluginTabs(
+  entries: LoadedContribution[],
+  slot: "project-tab" | "agents-tab",
+) {
   return activeFrontendExtensions(entries).flatMap(
     ({ contribution, extension }) =>
       (extension.surfaces ?? [])
-        .filter((surface) => surface.slot === "project-tab")
+        .filter((surface) => surface.slot === slot)
         .map((surface) => ({
           contribution,
           surface,
           value: pluginProjectTabValue(contribution.namespace, surface.id),
         })),
   );
+}
+
+export function pluginProjectTabs(entries: LoadedContribution[]) {
+  return pluginTabs(entries, "project-tab");
+}
+
+/** [argus patch #112] Enabled, loaded plugins' `agents-tab` surfaces, in plugin order. */
+export function pluginAgentsTabs(entries: LoadedContribution[]) {
+  return pluginTabs(entries, "agents-tab");
 }
 
 export function pluginPages(entries: LoadedContribution[]) {

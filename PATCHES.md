@@ -168,6 +168,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#109](#patch-109) | `agent_storage.store_class`: a deployment-supplied agent store; the Agents API and `update_agent` ask the store about legacy layout, editable soul and source, and answer its refusals with their status | generic-upstreamable | this PR |
 | [#110](#patch-110) | Agents page edits description and soul, links to where an agent is stored, and has New agent again | argus-edit | this PR |
 | [#111](#patch-111) | `agent_storage.subagent_store_class`, `thinking_enabled` on managed subagents, and their storage location in the Subagents API and page | generic-upstreamable | this PR |
+| [#112](#patch-112) | Extensions can add a tab to the Agents page (`agents-tab` surface slot) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2379,6 +2380,18 @@ carry budget ledger.
 - Intent: Argus keeps each stack's subagents in its GitHub repository (`subagents/<name>.md`, one file per subagent) and edits them in Settings > Subagents, so the managed-subagent store must be replaceable the way #109 made the agent store replaceable: `agent_storage.subagent_store_class: module:Class` (one instance per path) wins over file/db. Managed definitions gain `thinking_enabled` (config.yaml custom agents have it since #92; Argus's `build` subagent uses it), passed to the runtime config, accepted on create/update and kept when an update omits it. The Subagents API reports where a managed definition is kept (`stored_in`, omitted when the store reports nothing) and answers a store's `AgentStoreError` (#109) with its status and message on create, update and delete. The page shows the thinking switch and an Open on GitHub link.
 - Tests: `backend/tests/test_subagent_store_class.py` (selection and singleton, thinking reaches the runtime config, create/update/list carry thinking and `stored_in`, omitted thinking preserved, 409/422/502 refusals on update and delete); `frontend/tests/unit/components/workspace/settings/subagent-settings-page.dom.test.tsx` (thinking switch shown and saved only when changed, GitHub link only with `stored_in`, refusal text in the toast) and `frontend/tests/unit/core/subagents/api.test.ts` additions; existing subagent router, store and registry suites unchanged.
 - Delete-when: upstream ships pluggable managed-subagent storage and managed thinking.
+- Upstream status: none sent (generic-upstreamable).
+
+---
+
+## Patch #112
+
+**Patch #112 - Extensions can add a tab to the Agents page** (2026-10-11)
+
+- Class: argus-edit (frontend: `core/extensions/contracts.ts` `SurfaceSlot`, `registry.ts` validation, `pages.ts` `pluginAgentsTabs` (shares one helper with `pluginProjectTabs`), `components/workspace/agents/agent-gallery.tsx`, i18n `agents.galleryTab`; new `components/workspace/agents/agents-plugin-tabs.tsx`).
+- Intent: the same as #107, for the Agents page (`/workspace/agents`). A surface with `slot: "agents-tab"` renders as an extra tab after the gallery, which becomes the first tab ("Agents"), mounted exactly like a project tab or plugin page (same Shadow DOM mount, settings, `callBackend`, enabled state) with the base surface context and no `project`. Tab values are namespaced `plugin:<namespace>:<id>`, so a plugin cannot shadow the gallery tab. With no such surface the page has no tab strip and looks as before. Import and New Agent show on the gallery tab only; a selected tab whose plugin goes away falls back to the gallery. `navigation` stays page-only. Argus uses it for a "Coding agents" tab (Claude Code, Codex, OpenCode settings) from argus-deerflow-extension.
+- Tests: `tests/unit/core/extensions/registry.test.ts` (agents-tab accepted, unknown slot and agents-tab navigation rejected), `pages.test.ts` (only enabled agents-tab surfaces, never project tabs or pages), `tests/unit/app/agents-page.dom.test.tsx` (gallery tab then plugin tab, real `PluginSurfaces` mount in the Shadow DOM without a project, disposed on switching back; no tab strip without plugins; fallback when the plugin goes away).
+- Delete-when: upstream ships Agents-page extension slots.
 - Upstream status: none sent (generic-upstreamable).
 
 ---

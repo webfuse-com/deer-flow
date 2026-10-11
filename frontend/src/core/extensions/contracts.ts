@@ -6,8 +6,11 @@ import type { AgentThread } from "@/core/threads/types";
 export type ExtensionSettings = Readonly<
   Record<string, boolean | number | string>
 >;
-/** `page`: a full page under /workspace/extensions/{ns}/{id}; `project-tab`: an extra tab on every project page. */
-export type SurfaceSlot = "page" | "project-tab";
+/**
+ * `page`: a full page under /workspace/extensions/{ns}/{id}; `project-tab`: an extra tab on every project page;
+ * `agents-tab`: an extra tab on the Agents page ([argus patch #112]).
+ */
+export type SurfaceSlot = "page" | "project-tab" | "agents-tab";
 /** The project a `project-tab` surface is mounted for. */
 export type SurfaceProject = {
   id: string;
