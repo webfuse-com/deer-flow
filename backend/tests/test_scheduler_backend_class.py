@@ -178,4 +178,6 @@ def test_features_report_the_backends_offer(client):
         "create": False,
         "edit": False,
         "delete": False,
+        "once": False,
+        "context": False,
     }

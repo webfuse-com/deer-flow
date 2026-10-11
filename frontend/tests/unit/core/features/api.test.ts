@@ -175,6 +175,8 @@ describe("scheduled tasks from an external scheduler (argus patch #116)", () => 
       create: false,
       edit: true,
       delete: true,
+      once: true,
+      context: true,
     });
   });
 });

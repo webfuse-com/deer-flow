@@ -176,6 +176,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#116](#patch-116) | The Scheduled tasks page with an external scheduler: hides what it does not offer, sidebar entry instead of the Chronos link, header menu to switch a chat's schedule, schedule chats marked as scheduled | argus-edit | this PR |
 | [#117](#patch-117) | A scheduled playbook fire shows as a "Scheduled run" card, and its delivery report names the thread it ran in | argus-edit | this PR |
 | [#118](#patch-118) | A project whose files live in a repository: its presentation orders the tabs, turns Documents into Files (repository links, changes only in the writable folder, no Attach) and links the instructions; instructions and soul each say what they are for | argus-edit | this PR |
+| [#119](#patch-119) | The scheduled-task form on an external scheduler: only the fields and schedule types it offers (`supports.once`, `supports.context`), the name fixed when editing | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2472,6 +2473,18 @@ carry budget ledger.
 - Tests: `tests/unit/core/projects/files.test.ts` (https-only links, suffix filter, writable/editable, URL encoding, `..` refused, tab order), `tests/unit/components/workspace/projects/project-documents-section.dom.test.tsx` (Files header and repository link, no Attach, Trash only in the writable folder, Edit on GitHub, in-app edit only for writable Markdown, an ordinary project unchanged), `tests/unit/app/projects-page.dom.test.tsx` (presentation tab order, first tab shown, Files label, instructions scope and link).
 - Delete-when: upstream lets a deployment back project documents with a repository.
 - Upstream status: none sent.
+
+---
+
+## Patch #119
+
+**Patch #119 - The scheduled-task form on an external scheduler** (2026-10-11)
+
+- Class: argus-edit (backend: `app/gateway/routers/features.py` `ScheduledTasksSupports.once`, `context`; frontend: `core/features/api.ts`, `components/workspace/scheduled-task-schedule-input.tsx` (`types`), `components/workspace/scheduled-tasks/task-form-dialog.tsx`).
+- Intent: with #115/#116 the Scheduled tasks page lists Chronos schedules; this lets the page create and edit them too. The form asks only for what the scheduler offers: the goal, the safety cap (runs and end time), the chat choice (`supports.context`) and one-time or interval schedules (`supports.once`, `supports.interval`) are hidden when not offered, and the schedule-type toggle disappears when only recurring schedules exist. With an external scheduler a schedule's name is fixed once (Argus: its file name), so the title is read-only when editing. Without `supports` everything is shown as before.
+- Tests: `tests/unit/components/workspace/scheduled-tasks/task-form-dialog.dom.test.tsx` (fields hidden for an external scheduler, title fixed on edit, everything shown otherwise; the features hook is mocked), `tests/unit/core/features/api.test.ts` and `backend/tests/test_scheduler_backend_class.py` (the two new keys).
+- Delete-when: Argus schedules run on DeerFlow's own scheduler.
+- Upstream status: not applicable.
 
 ---
 
