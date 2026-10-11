@@ -2364,6 +2364,7 @@ carry budget ledger.
 - Class: argus-edit (frontend: `core/agents/types.ts`, `components/workspace/agents/{agent-settings-dialog,agent-card,agent-gallery,agent-create-dialog}.tsx`, i18n).
 - Intent: with agent definitions stored in each stack's GitHub repository (#109), the Agents page is their editor. The settings dialog edits the description and the soul (the CodeEditor from #108, full screen), shows the store's refusal text, and links to the agent's folder on GitHub with the commit. Cards link there too. New agent is back (patch #79 had removed it because agents were only made in GitHub); it creates through the API, which commits.
 - Tests: `frontend/tests/unit/components/workspace/agents/agent-github-store.dom.test.tsx` (soul shown and saved, description sent only when changed, store refusal text shown, GitHub link with short commit only when `source` is set, New agent validates the name and creates), `frontend/tests/unit/core/agents/api.test.ts` (string and validation-list `detail` become the error message for create, update and import). Tool groups are not editable yet (no frontend list of configured groups).
+- 2026-10-11 follow-up: the settings dialog is 42rem wide (56rem from the `lg` breakpoint) instead of upstream's 32rem; `tests/e2e/agent-settings-layout.spec.ts` uses longer worker names so its wrapping check still bites.
 - Delete-when: upstream's agent editor covers soul and description and a store-provided source link.
 - Upstream status: none sent.
 

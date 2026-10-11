@@ -8,8 +8,9 @@ const description =
     15,
   );
 
-const longName = "research" + "a".repeat(57);
-const missingName = "missing" + "b".repeat(58);
+// [argus patch #110] Long enough to wrap in the wider settings dialog too.
+const longName = "research" + "a".repeat(150);
+const missingName = "missing" + "b".repeat(150);
 
 async function expectInsideViewport(element: Locator) {
   await expect(element).toBeVisible();
