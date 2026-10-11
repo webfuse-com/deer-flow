@@ -663,6 +663,13 @@ export const enUS: Translations = {
     archive: "Archive",
     restore: "Restore",
     deleteProject: "Delete project",
+    dangerZone: "Danger zone",
+    archiveProjectHint:
+      "Moves the project out of the active list. You can restore it at any time.",
+    restoreProjectHint: "Brings the project back to the active list.",
+    deleteProjectHint:
+      "Unlinks its chats. The chats, their history and their files are kept.",
+    deleteProjectTypeName: (name: string) => `Type "${name}" to confirm`,
     deleteProjectConfirm:
       "Deleting this project unlinks its chats; chats, their history, and their files are not deleted. Shelf documents move to trash and stay recoverable for the retention window.",
     archived: "Archived",

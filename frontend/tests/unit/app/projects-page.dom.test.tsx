@@ -20,6 +20,7 @@ const mocks = rs.hoisted(() => ({
     | { instructions_max_bytes: number; trash_retention_days: number }
     | undefined,
   patchMutate: rs.fn(),
+  deleteMutate: rs.fn(),
   patchPending: false,
   patchSuccess: false,
   pluginTabs: [] as {
@@ -72,7 +73,7 @@ rs.mock("@/core/projects", () => ({
   }),
   useArchiveProject: () => ({ mutate: rs.fn(), isPending: false }),
   useRestoreProject: () => ({ mutate: rs.fn(), isPending: false }),
-  useDeleteProject: () => ({ mutate: rs.fn(), isPending: false }),
+  useDeleteProject: () => ({ mutate: mocks.deleteMutate, isPending: false }),
 }));
 
 // Chrome around the section under test: layout shell and sibling tabs.
@@ -356,6 +357,73 @@ describe("ProjectPage rename reconciliation", () => {
 
     expect(nameInput()).toHaveProperty("value", "Alpha");
     expect(screen.getByRole("button", { name: "Restore" })).toBeDefined();
+  });
+});
+
+describe("ProjectPage danger zone (argus patch #114)", () => {
+  function openSettings() {
+    render(<ProjectPage />, { wrapper: Wrapper });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Settings" }));
+  }
+
+  function deleteDialogButton() {
+    const buttons = screen.getAllByRole("button", { name: "Delete" });
+    return buttons[buttons.length - 1]!;
+  }
+
+  it("puts archive and delete in a separate danger zone with what each does", () => {
+    openSettings();
+    const zone = screen.getByRole("group", { name: "Danger zone" });
+    expect(zone.textContent).toContain("You can restore it at any time.");
+    expect(zone.textContent).toContain(
+      "The chats, their history and their files are kept.",
+    );
+    expect(zone.contains(screen.getByRole("button", { name: "Archive" }))).toBe(
+      true,
+    );
+    expect(
+      zone.contains(screen.getByRole("textbox", { name: "Project name" })),
+    ).toBe(false);
+  });
+
+  it("deletes after one confirmation when the project has no delete notice", () => {
+    openSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    expect(
+      screen.queryByRole("textbox", { name: 'Type "Alpha" to confirm' }),
+    ).toBeNull();
+    fireEvent.click(deleteDialogButton());
+    expect(mocks.deleteMutate).toHaveBeenCalledWith(
+      "proj-1",
+      expect.anything(),
+    );
+  });
+
+  it("shows the delete notice and needs the project name typed", () => {
+    mocks.project = {
+      ...makeProject(""),
+      presentation: {
+        delete_notice:
+          "Also deletes projects/alpha/ from your GitHub repository.",
+      },
+    };
+    openSettings();
+    expect(
+      screen.getByRole("group", { name: "Danger zone" }).textContent,
+    ).toContain("Also deletes projects/alpha/ from your GitHub repository.");
+    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    expect(deleteDialogButton().hasAttribute("disabled")).toBe(true);
+    const confirm = screen.getByRole("textbox", {
+      name: 'Type "Alpha" to confirm',
+    });
+    fireEvent.change(confirm, { target: { value: "Alph" } });
+    expect(deleteDialogButton().hasAttribute("disabled")).toBe(true);
+    fireEvent.change(confirm, { target: { value: "Alpha" } });
+    fireEvent.click(deleteDialogButton());
+    expect(mocks.deleteMutate).toHaveBeenCalledWith(
+      "proj-1",
+      expect.anything(),
+    );
   });
 });
 

@@ -620,6 +620,11 @@ export const zhCN: Translations = {
     archive: "归档",
     restore: "恢复",
     deleteProject: "删除项目",
+    dangerZone: "危险操作",
+    archiveProjectHint: "将项目移出活动列表，可随时恢复。",
+    restoreProjectHint: "将项目恢复到活动列表。",
+    deleteProjectHint: "解除其对话的关联，对话、历史记录及文件均会保留。",
+    deleteProjectTypeName: (name: string) => `输入“${name}”以确认`,
     deleteProjectConfirm:
       "删除项目将解除其对话的关联，对话、历史记录及文件均不会被删除。项目文档将移至回收站，并在保留期内可恢复。",
     archived: "已归档",

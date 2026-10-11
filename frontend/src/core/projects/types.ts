@@ -3,6 +3,10 @@ export type ProjectStatus = "active" | "archived";
 export type ProjectPresentation = {
   icon?: string;
   color?: string;
+  // [argus patch #114] What deleting the project removes beyond DeerFlow's
+  // own rows, shown in the delete confirmation.
+  delete_notice?: string;
+  [key: string]: unknown;
 };
 
 export type Project = {
