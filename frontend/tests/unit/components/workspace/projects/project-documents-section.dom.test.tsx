@@ -807,3 +807,124 @@ describe("[argus patch #108] document dialog: full screen and editing", () => {
     expect(within(dialog).queryByRole("button", { name: "Edit" })).toBeNull();
   });
 });
+
+describe("[argus patch #118] files mirrored from a repository", () => {
+  const REPO = "https://github.com/acme/atlas-x";
+  function repoProject(): Project {
+    return {
+      ...makeProject(),
+      presentation: {
+        files: {
+          folder_url: `${REPO}/tree/main/projects/alpha`,
+          file_url: `${REPO}/blob/main/projects/alpha/{path}`,
+          edit_url: `${REPO}/edit/main/projects/alpha/{path}`,
+          writable: "refs/",
+          editable_suffixes: [".md"],
+        },
+      },
+    };
+  }
+  const textPreview = {
+    kind: "text" as const,
+    content: "# notes",
+    truncated: false,
+    previewBytes: 7,
+    totalBytes: 7,
+  };
+
+  it("is Files: a repository link, no Attach, changes only in the writable folder", () => {
+    mocks.documents = [
+      makeDocument({
+        id: "d-ref",
+        name: "refs › notes.md",
+        source_kind: "mirror",
+        source_name: "refs/notes.md",
+      }),
+      makeDocument({
+        id: "d-ch",
+        name: "content › chapter 1.md",
+        source_kind: "mirror",
+        source_name: "content/chapter 1.md",
+      }),
+    ];
+    render(<ProjectDocumentsSection project={repoProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    expect(screen.getByText("Files")).toBeTruthy();
+    expect(
+      screen.getByTestId("project-files-repository").getAttribute("href"),
+    ).toBe(`${REPO}/tree/main/projects/alpha`);
+    expect(screen.queryByRole("button", { name: /Attach/ })).toBeNull();
+    const rows = screen.getAllByRole("listitem");
+    const ref = rows.find((row) =>
+      row.textContent?.includes("refs › notes.md"),
+    )!;
+    const chapter = rows.find((row) => row.textContent?.includes("chapter 1"))!;
+    expect(
+      within(ref).getByRole("button", { name: /Move to trash/ }),
+    ).toBeTruthy();
+    expect(
+      within(ref)
+        .getByRole("link", { name: /On GitHub/ })
+        .getAttribute("href"),
+    ).toBe(`${REPO}/blob/main/projects/alpha/refs/notes.md`);
+    expect(
+      within(chapter).queryByRole("button", { name: /Move to trash/ }),
+    ).toBeNull();
+    expect(
+      within(chapter)
+        .getByRole("link", { name: /Edit on GitHub/ })
+        .getAttribute("href"),
+    ).toBe(`${REPO}/edit/main/projects/alpha/content/chapter%201.md`);
+  });
+
+  it("edits Markdown in the writable folder only; other files open on GitHub", async () => {
+    mocks.fetchPreview.mockResolvedValue(textPreview);
+    mocks.documents = [
+      makeDocument({
+        id: "d-ref",
+        name: "refs › notes.md",
+        source_kind: "mirror",
+        source_name: "refs/notes.md",
+      }),
+    ];
+    render(<ProjectDocumentsSection project={repoProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    let dialog = await screen.findByTestId("project-document-preview-dialog");
+    expect(
+      await within(dialog).findByRole("button", { name: "Edit" }),
+    ).toBeTruthy();
+    cleanup();
+    mocks.documents = [
+      makeDocument({
+        id: "d-st",
+        name: "notes.md",
+        source_kind: "mirror",
+        source_name: "notes.md",
+      }),
+    ];
+    render(<ProjectDocumentsSection project={repoProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    dialog = await screen.findByTestId("project-document-preview-dialog");
+    await waitFor(() => expect(mocks.fetchPreview).toHaveBeenCalled());
+    expect(within(dialog).queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(
+      within(dialog)
+        .getByRole("link", { name: /Edit on GitHub/ })
+        .getAttribute("href"),
+    ).toBe(`${REPO}/edit/main/projects/alpha/notes.md`);
+  });
+
+  it("leaves an ordinary project's shelf as it was", () => {
+    mocks.documents = [makeDocument({ id: "d-1", name: "plan.md" })];
+    render(<ProjectDocumentsSection project={makeProject()} threads={[]} />, {
+      wrapper: Wrapper,
+    });
+    expect(screen.queryByTestId("project-files-repository")).toBeNull();
+    expect(screen.getByRole("button", { name: /Attach/ })).toBeTruthy();
+  });
+});

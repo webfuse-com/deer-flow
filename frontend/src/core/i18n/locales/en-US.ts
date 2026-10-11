@@ -697,6 +697,18 @@ export const enUS: Translations = {
     instructions: "Instructions",
     instructionsPlaceholder:
       "Background, goals, and conventions the agent should always know for this project…",
+    instructionsScope:
+      "How to work on this project. Used in every chat in this project, and only there; who the agent is lives in its soul, on the Agents page.",
+    instructionsSource: "Saved in your repository",
+    files: "Files",
+    filesHint: (writable) =>
+      writable
+        ? `Every chat in this project can read these files. Uploads go to ${writable}; other files are changed in the repository.`
+        : "Every chat in this project can read these files.",
+    filesOtherInRepository: "Code and other files are in the repository.",
+    openRepository: "Open on GitHub",
+    viewOnRepository: "On GitHub",
+    editOnRepository: "Edit on GitHub",
     instructionsByteCount: (used, max) => `${used} / ${max} bytes`,
     instructionsTooLong: (max) =>
       `Instructions are over the ${max}-byte limit. Shorten them to save.`,
@@ -1414,7 +1426,7 @@ export const enUS: Translations = {
     settingsAgentDescriptionPlaceholder: "What this agent is for",
     settingsSoul: "Soul",
     settingsSoulHint:
-      "SOUL.md, the agent's personality and instructions, in Markdown.",
+      "SOUL.md: who this agent is, in Markdown. Used in every chat with this agent; how to work on one project goes in that project's Instructions.",
     settingsSoulOpenFullScreen: "Open full screen",
     settingsSoulExitFullScreen: "Exit full screen",
     settingsSavedToGithub: "Saved to GitHub",

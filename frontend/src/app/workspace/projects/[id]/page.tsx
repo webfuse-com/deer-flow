@@ -53,6 +53,7 @@ import {
   useRestoreProject,
   type Project,
 } from "@/core/projects";
+import { filesSourceOf, orderedTabs } from "@/core/projects/files";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { isIMEComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
@@ -76,9 +77,36 @@ export default function ProjectPage() {
     enabled: project != null,
   });
   const projectThreads = threadsQuery.data?.pages.flatMap((page) => page) ?? [];
-  const [tab, setTab] = useState("chats");
+  // Null until the user picks a tab: the project's first tab is shown
+  // (argus patch #118: its presentation may order them).
+  const [tab, setTab] = useState<string | null>(null);
   // Plugins can add tabs after Settings (`project-tab` surfaces).
   const pluginTabs = useProjectPluginTabs();
+  const tabOrder = project
+    ? orderedTabs(
+        [
+          "chats",
+          "documents",
+          "instructions",
+          "settings",
+          ...pluginTabs.map(({ value }) => value),
+        ],
+        project,
+      )
+    : ["chats"];
+  const activeTab = tab !== null && tabOrder.includes(tab) ? tab : tabOrder[0]!;
+  const pluginTabByValue = new Map(
+    pluginTabs.map((pluginTab) => [pluginTab.value, pluginTab]),
+  );
+  const hostTabLabels: Record<string, string> = {
+    chats: t.projects.threads,
+    documents:
+      project && filesSourceOf(project)
+        ? t.projects.files
+        : t.projects.documents,
+    instructions: t.projects.instructions,
+    settings: t.projects.settings,
+  };
 
   useEffect(() => {
     document.title = project?.name
@@ -107,26 +135,16 @@ export default function ProjectPage() {
               <>
                 <ProjectHeader project={project} />
                 <Tabs
-                  value={tab}
+                  value={activeTab}
                   onValueChange={setTab}
                   className="flex flex-col gap-6"
                 >
                   <TabsList aria-label={project.name}>
-                    <TabsTrigger value="chats">
-                      {t.projects.threads}
-                    </TabsTrigger>
-                    <TabsTrigger value="documents">
-                      {t.projects.documents}
-                    </TabsTrigger>
-                    <TabsTrigger value="instructions">
-                      {t.projects.instructions}
-                    </TabsTrigger>
-                    <TabsTrigger value="settings">
-                      {t.projects.settings}
-                    </TabsTrigger>
-                    {pluginTabs.map(({ surface, value }) => (
+                    {tabOrder.map((value) => (
                       <TabsTrigger key={value} value={value}>
-                        {surface.title}
+                        {hostTabLabels[value] ??
+                          pluginTabByValue.get(value)?.surface.title ??
+                          value}
                       </TabsTrigger>
                     ))}
                   </TabsList>
@@ -442,6 +460,11 @@ function ProjectSettingsSection({ project }: { project: Project }) {
 }
 
 function ProjectInstructionsSection({ project }: { project: Project }) {
+  const instructionsUrl =
+    typeof project.presentation?.instructions_url === "string" &&
+    project.presentation.instructions_url.startsWith("https://")
+      ? project.presentation.instructions_url
+      : null;
   const { t } = useI18n();
   const patchProject = usePatchProject();
   const configQuery = useProjectsConfig();
@@ -499,8 +522,27 @@ function ProjectInstructionsSection({ project }: { project: Project }) {
       >
         {t.projects.instructions}
       </label>
+      {/* [argus patch #118] What instructions are for, as opposed to an
+          agent's soul, and where a deployment keeps them. */}
+      <p
+        id="project-instructions-scope"
+        className="text-muted-foreground text-xs"
+      >
+        {t.projects.instructionsScope}{" "}
+        {instructionsUrl && (
+          <a
+            href={instructionsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            {t.projects.instructionsSource}
+          </a>
+        )}
+      </p>
       <Textarea
         id="project-instructions-input"
+        aria-describedby="project-instructions-scope"
         className="min-h-40"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}

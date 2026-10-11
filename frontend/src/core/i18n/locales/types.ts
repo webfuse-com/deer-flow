@@ -520,6 +520,14 @@ export interface Translations {
     documentsEmptyHint: string;
     instructions: string;
     instructionsPlaceholder: string;
+    instructionsScope: string;
+    instructionsSource: string;
+    files: string;
+    filesHint: (writable: string) => string;
+    filesOtherInRepository: string;
+    openRepository: string;
+    viewOnRepository: string;
+    editOnRepository: string;
     instructionsByteCount: (used: number, max: number) => string;
     instructionsTooLong: (max: number) => string;
     instructionsSaved: string;
