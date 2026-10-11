@@ -19,6 +19,7 @@ export const RESERVED_SLASH_SKILL_NAMES = new Set([
   "model",
   "models",
   "new",
+  "notrace", // [argus patch #121] Telegram's tracing switch
   "status",
 ]);
 

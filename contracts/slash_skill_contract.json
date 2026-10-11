@@ -11,6 +11,7 @@
     "model",
     "models",
     "new",
+    "notrace",
     "status"
   ],
   "skill_name_pattern": "^/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\\s+|$)"
