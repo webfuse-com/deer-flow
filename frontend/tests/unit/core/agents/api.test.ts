@@ -29,6 +29,7 @@ rs.mock("@/core/config", () => ({
 import {
   AgentsApiDisabledError,
   checkAgentName,
+  createAgent,
   exportAgentPackage,
   importAgentPackage,
   updateAgent,
@@ -343,5 +344,62 @@ describe("agent portability", () => {
     await expect(importAgentPackage(agentPackage)).rejects.toMatchObject({
       message: "Failed to import agent: Bad Gateway",
     });
+  });
+});
+
+describe("[argus patch #110] store refusals reach the UI as text", () => {
+  test.each([
+    [
+      409,
+      "Changed on GitHub since this page loaded (abc1234). Reload and try again.",
+    ],
+    [422, "config.yaml needs a model"],
+    [502, "Not saved to GitHub: 503 Service Unavailable"],
+  ])("updateAgent surfaces the HTTP %i detail", async (status, detail) => {
+    mockedFetch.mockResolvedValueOnce(jsonResponse(status, { detail }));
+    await expect(updateAgent("atlas", { soul: "x" })).rejects.toThrow(detail);
+  });
+
+  test("updateAgent joins a validation list instead of [object Object]", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(422, {
+        detail: [
+          { loc: ["body", "soul"], msg: "Input should be a valid string" },
+          { loc: ["body", "model"], msg: "Input should be a valid string" },
+        ],
+      }),
+    );
+    await expect(updateAgent("atlas", {})).rejects.toThrow(
+      "Input should be a valid string; Input should be a valid string",
+    );
+  });
+
+  test("updateAgent falls back to the status text without a detail", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      new Response("not json", { status: 500, statusText: "Server Error" }),
+    );
+    await expect(updateAgent("atlas", {})).rejects.toThrow(
+      "Failed to update agent: Server Error",
+    );
+  });
+
+  test("createAgent surfaces the store detail", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(502, { detail: "Not saved to GitHub: timeout" }),
+    );
+    await expect(createAgent({ name: "atlas" })).rejects.toThrow(
+      "Not saved to GitHub: timeout",
+    );
+  });
+
+  test("createAgent still classifies a disabled agents API", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(403, {
+        detail: "Custom-agent management API is disabled (agents_api.enabled)",
+      }),
+    );
+    await expect(createAgent({ name: "atlas" })).rejects.toBeInstanceOf(
+      AgentsApiDisabledError,
+    );
   });
 });

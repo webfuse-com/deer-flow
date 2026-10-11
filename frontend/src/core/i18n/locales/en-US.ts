@@ -1302,7 +1302,7 @@ export const enUS: Translations = {
   agents: {
     title: "Agents",
     description:
-      "Manage custom agents. New agents are created through the stack's GitHub repository.",
+      "Manage custom agents. Every change is saved to the stack's GitHub repository.",
     newAgent: "New Agent",
     importAgent: "Import Agent",
     importTitle: "Import custom agent",
@@ -1315,7 +1315,7 @@ export const enUS: Translations = {
     exportSuccess: "Agent package downloaded",
     emptyTitle: "No custom agents yet",
     emptyDescription:
-      "Add your first custom agent through the stack's GitHub repository.",
+      "Create your first custom agent. It is saved to the stack's GitHub repository.",
     featureDisabledTitle: "Agents feature is not enabled",
     featureDisabledDescription:
       "This feature is not enabled on this server. Please contact your administrator.",
@@ -1386,6 +1386,27 @@ export const enUS: Translations = {
     settingsInvalidTemperature: "Temperature must be between 0 and 2",
     settingsInvalidMaxTokens:
       "Max output tokens must be a positive integer up to 200,000",
+    // [argus patch #110] Agents page edits and creation commit to GitHub.
+    openOnGithub: "Open on GitHub",
+    createTitle: "New agent",
+    createDescription:
+      "Name the agent, pick its model and write its soul. Creating it commits it to the stack's GitHub repository.",
+    createName: "Name",
+    createNameHint:
+      "Letters, digits and hyphens only, stored lowercase (e.g. code-reviewer).",
+    createNameInvalid: "Use only letters, digits and hyphens.",
+    createNameCheckError:
+      "Could not check whether this name is free. Try again.",
+    createSubmit: "Create agent",
+    createdOnGithub: "Agent created and saved to GitHub",
+    settingsAgentDescription: "Description",
+    settingsAgentDescriptionPlaceholder: "What this agent is for",
+    settingsSoul: "Soul",
+    settingsSoulHint:
+      "SOUL.md, the agent's personality and instructions, in Markdown.",
+    settingsSoulOpenFullScreen: "Open full screen",
+    settingsSoulExitFullScreen: "Exit full screen",
+    settingsSavedToGithub: "Saved to GitHub",
   },
 
   // Breadcrumb

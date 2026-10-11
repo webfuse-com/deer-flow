@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from app.gateway.authz import require_permission
 from app.gateway.persistent_writes import run_drained_write
@@ -25,7 +25,7 @@ from deerflow.config.agents_config import (
 from deerflow.config.app_config import get_app_config
 from deerflow.config.paths import get_paths
 from deerflow.knowledge_scope import KnowledgeScope, canonicalize_knowledge_scope
-from deerflow.persistence.agents import AgentDeleteOutcome, AgentExistsError, get_agent_store
+from deerflow.persistence.agents import AgentDeleteOutcome, AgentExistsError, AgentStoreError, get_agent_store
 from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,17 @@ class AgentResponse(BaseModel):
     thinking_enabled: bool | None = Field(default=None, description="Per-agent thinking-mode default (None = runtime default)")
     reasoning_effort: ReasoningEffort | None = Field(default=None, description="Per-agent reasoning-effort default (None = runtime default)")
     soul: str | None = Field(default=None, description="SOUL.md content")
+    # [argus patch #109] Where the definition is kept (store-supplied), e.g. a
+    # git repo link. Left out of the payload when the store reports none, so
+    # responses from the stock stores are unchanged.
+    source: dict | None = Field(default=None, description="Where the agent definition is stored, when the store reports it")
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_source(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("source") is None:
+            data.pop("source", None)
+        return data
 
 
 class AgentsListResponse(BaseModel):
@@ -223,8 +234,11 @@ def _apply_model_behavior(config_data: dict, source: BaseModel, existing: AgentC
 def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False, *, user_id: str | None = None) -> AgentResponse:
     """Convert AgentConfig to AgentResponse."""
     soul: str | None = None
+    store = get_agent_store()
     if include_soul:
-        soul = load_agent_soul(agent_cfg.name, user_id=user_id) or ""
+        # [argus patch #109] The editable soul: a store that composes or strips
+        # what the model sees returns the authored source here.
+        soul = _editable_soul(store, agent_cfg.name, user_id) or ""
 
     return AgentResponse(
         name=agent_cfg.name,
@@ -240,7 +254,19 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         thinking_enabled=agent_cfg.thinking_enabled,
         reasoning_effort=agent_cfg.reasoning_effort,
         soul=soul,
+        source=_store_hook(store, "source_info", lambda *_a, **_k: None)(agent_cfg.name, user_id=user_id),
     )
+
+
+def _store_hook(store, hook: str, default):
+    """[argus patch #109] A store hook, or ``default`` for stores without it
+    (duck-typed stores predate the hooks)."""
+    found = getattr(store, hook, None)
+    return found if callable(found) else default
+
+
+def _editable_soul(store, name: str, user_id: str | None) -> str | None:
+    return _store_hook(store, "get_editable_soul", lambda n, user_id=None: load_agent_soul(n, user_id=user_id))(name, user_id=user_id)
 
 
 def _build_agent_config(body: AgentCreateRequest, normalized_name: str, *, memory_enabled: bool = True) -> dict:
@@ -277,7 +303,7 @@ async def _persist_new_agent(body: AgentCreateRequest, normalized_name: str, use
         agent_cfg = load_agent_config(normalized_name, user_id=user_id)
         return _agent_config_to_response(agent_cfg, include_soul=True, user_id=user_id)
 
-    return await run_drained_write("Create agent", _create_agent, (AgentExistsError,))
+    return await run_drained_write("Create agent", _create_agent, (AgentExistsError, AgentStoreError))
 
 
 @router.get(
@@ -370,6 +396,8 @@ async def import_agent_package(body: AgentPackage, request: Request, name: str |
         )
     except AgentExistsError:
         raise HTTPException(status_code=409, detail=f"Agent '{normalized_name}' already exists")
+    except AgentStoreError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         logger.error("Failed to import agent '%s' (%s)", normalized_name, type(e).__name__, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to import agent")
@@ -392,7 +420,8 @@ async def export_agent_package(name: str, request: Request, response: Response) 
 
     def _export() -> AgentPackage:
         agent_cfg = load_agent_config(normalized_name, user_id=user_id)
-        soul = load_agent_soul(normalized_name, user_id=user_id) or ""
+        # [argus patch #109] The authored soul, so the package re-imports as written.
+        soul = _editable_soul(get_agent_store(), normalized_name, user_id) or ""
         return AgentPackage(
             format="deerflow.custom-agent",
             version=1,
@@ -495,6 +524,8 @@ async def create_agent_endpoint(body: AgentCreateRequest, request: Request) -> A
         return await _persist_new_agent(body, normalized_name, user_id)
     except AgentExistsError:
         raise HTTPException(status_code=409, detail=f"Agent '{normalized_name}' already exists")
+    except AgentStoreError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to create agent '{body.name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
@@ -532,19 +563,10 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
 
     def _is_legacy_only_layout() -> bool:
-        # Require config.yaml, not bare directory existence — a per-user agent
-        # directory can exist containing only memory.json (written the first
-        # time this user chats with a legacy shared agent, before this route
-        # is ever called). Bare .exists() would miss that case and let this
-        # fall through to a silent fork of a brand-new config.yaml/SOUL.md
-        # into the memory-only directory instead of blocking (mirrors
-        # resolve_agent_dir's guard, see #3390). The db backend has no legacy
-        # shared layout, so this file-only guard is a no-op there. The .exists()
-        # probes are filesystem IO, so they run off the event loop.
-        paths = get_paths()
-        agent_dir = paths.user_agent_dir(user_id, name)
-        legacy_dir = paths.agent_dir(name)
-        return not (agent_dir / "config.yaml").exists() and (legacy_dir / "config.yaml").exists()
+        # [argus patch #109] The store decides (file backend: config.yaml only
+        # in the legacy shared layout, see #3390; a store that owns that layout
+        # says no). Filesystem IO, so off the event loop.
+        return bool(_store_hook(get_agent_store(), "is_legacy_only", lambda *_a, **_k: False)(name, user_id=user_id))
 
     if await asyncio.to_thread(_is_legacy_only_layout):
         raise HTTPException(
@@ -617,7 +639,7 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
             def _update_agent() -> None:
                 get_agent_store().update(name, updated, body.soul, user_id=user_id)
 
-            await run_drained_write("Update agent", _update_agent)
+            await run_drained_write("Update agent", _update_agent, (AgentStoreError,))
 
         logger.info(f"Updated agent '{name}'")
 
@@ -630,6 +652,8 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
 
     except HTTPException:
         raise
+    except AgentStoreError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to update agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
@@ -749,7 +773,9 @@ async def delete_agent(name: str, request: Request) -> None:
     try:
         # Off the event loop: resolve store + cancel → delete → cancel-on-success
         # (get_agent_store / memory manager do blocking config and FS I/O).
-        outcome = await run_drained_write("Delete agent", _delete_agent_with_memory_cancel, (), name, user_id)
+        outcome = await run_drained_write("Delete agent", _delete_agent_with_memory_cancel, (AgentStoreError,), name, user_id)
+    except AgentStoreError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to delete agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")
