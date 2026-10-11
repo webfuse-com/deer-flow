@@ -310,3 +310,26 @@ test("accepts project-tab surfaces and rejects unknown slots and project-tab nav
     else expect(loaded?.error).toBeTruthy();
   }
 });
+
+// [argus patch #112] The Agents page tab slot follows the project-tab rules.
+test("accepts agents-tab surfaces and rejects agents-tab navigation", async () => {
+  const assets = {
+    ...entry,
+    transport: "assets-v1" as const,
+    entry: `/api/plugins/${entry.namespace}/assets/${"b".repeat(64)}/index.mjs`,
+  };
+  const mount = () => ({ dispose: () => undefined });
+  const tab = { id: "coding", slot: "agents-tab", title: "Coding", mount };
+  for (const [surfaces, ok] of [
+    [[tab], true],
+    [[{ ...tab, slot: "agents-panel" }], false],
+    [[{ ...tab, navigation: { label: "Coding" } }], false],
+  ] as const) {
+    const importer = rs
+      .fn()
+      .mockResolvedValue({ default: { ...extension, surfaces } });
+    const [loaded] = await loadFrontendExtensions([assets], rs.fn(), importer);
+    if (ok) expect(loaded?.extension?.surfaces).toEqual([tab]);
+    else expect(loaded?.error).toBeTruthy();
+  }
+});

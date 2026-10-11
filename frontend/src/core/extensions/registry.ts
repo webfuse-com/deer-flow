@@ -122,7 +122,10 @@ export async function loadFrontendExtensions(
               typeof surface.id !== "string" ||
               !/^[a-z][a-z0-9-]{0,63}$/.test(surface.id) ||
               seen.has(surface.id) ||
-              (surface.slot !== "page" && surface.slot !== "project-tab") ||
+              // [argus patch #112] `agents-tab` joins `page` and `project-tab`.
+              (surface.slot !== "page" &&
+                surface.slot !== "project-tab" &&
+                surface.slot !== "agents-tab") ||
               typeof surface.title !== "string" ||
               !surface.title.trim() ||
               typeof surface.mount !== "function"

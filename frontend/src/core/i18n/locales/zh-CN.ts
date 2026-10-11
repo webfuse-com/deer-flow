@@ -1319,6 +1319,8 @@ export const zhCN: Translations = {
     settingsSoulOpenFullScreen: "全屏打开",
     settingsSoulExitFullScreen: "退出全屏",
     settingsSavedToGithub: "已保存到 GitHub",
+    // [argus patch #112] First tab of the Agents page when plugins add tabs.
+    galleryTab: "智能体",
   },
 
   // Breadcrumb
