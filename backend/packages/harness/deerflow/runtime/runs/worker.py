@@ -1238,6 +1238,18 @@ async def run_agent(
             runnable_configs.append(continuation)
             return continuation
 
+        # [argus patch #121] The chat's tracing switch, read fresh on every run
+        # and BEFORE assembly: a switched-off chat gets no tracing callbacks at
+        # all (lead agent and subagents check is_thread_untraced), because only the root
+        # span carries the session id a span filter could match on. Memory
+        # updates for the chat are bare model roots and are dropped at export.
+        if thread_store is not None:
+            try:
+                thread_row = await thread_store.get(thread_id, user_id=None)
+                set_thread_untraced(thread_id, is_tracing_off((thread_row or {}).get("metadata")))
+            except Exception:  # noqa: BLE001 - tracing must never fail a run
+                logger.debug("Could not read the tracing switch for thread %s", thread_id, exc_info=True)
+
         agent_factory_kwargs: dict[str, Any] = {"config": initial_runnable_config}
         if ctx.app_config is not None and _agent_factory_supports_app_config(agent_factory):
             agent_factory_kwargs["app_config"] = ctx.app_config
@@ -1254,15 +1266,6 @@ async def run_agent(
         # Assembly resolves request, agent, and authorization fallbacks. Trace the
         # model that will run, rather than the model name originally requested.
         effective_model = _assembled_model_name(agent_result) or record.model_name
-        # [argus patch #121] The chat's tracing switch, read fresh on every run
-        # so a change applies from the next message. Spans for this thread
-        # (memory updates and subagents included) are dropped at export.
-        if thread_store is not None:
-            try:
-                thread_row = await thread_store.get(thread_id, user_id=None)
-                set_thread_untraced(thread_id, is_tracing_off((thread_row or {}).get("metadata")))
-            except Exception:  # noqa: BLE001 - tracing must never fail a run
-                logger.debug("Could not read the tracing switch for thread %s", thread_id, exc_info=True)
         for trace_config in (config, initial_runnable_config):
             inject_langfuse_metadata(
                 trace_config,

@@ -1287,7 +1287,12 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     # actually propagates ``langfuse_session_id`` / ``langfuse_user_id`` from
     # ``config["metadata"]`` onto the trace. Without root-level attachment the
     # model is a nested observation and the handler strips ``langfuse_*`` keys.
-    tracing_callbacks = build_tracing_callbacks()
+    # [argus patch #121] None for a chat whose tracing is switched off: only
+    # the root span carries the session id, so an export filter cannot catch
+    # the children; not attaching is the guarantee.
+    from deerflow.tracing.argus import is_thread_untraced
+
+    tracing_callbacks = [] if is_thread_untraced((config.get("configurable") or {}).get("thread_id")) else build_tracing_callbacks()
     if tracing_callbacks:
         existing = config.get("callbacks") or []
         if not isinstance(existing, list):
