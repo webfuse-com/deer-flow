@@ -17,12 +17,13 @@ export function resolveConversationActions(
   try {
     const group = extension.conversationActions?.(t, locale);
     if (group == null) return;
-    const { label, icon, actions } = group;
+    const { label, icon, actions, toolbarAction } = group;
     if (
       typeof label !== "string" ||
       !label.trim() ||
       typeof icon !== "string" ||
-      !Array.isArray(actions)
+      !Array.isArray(actions) ||
+      (toolbarAction !== undefined && typeof toolbarAction !== "string")
     ) {
       // A misdeclared async factory must not leak a rejected Promise.
       void Promise.resolve(group).catch(() => undefined);
@@ -61,7 +62,10 @@ export function resolveConversationActions(
         });
     }
     // Copy validated values so plugin getters are not evaluated again by React.
-    return visible.length ? { label, icon, actions: visible } : undefined;
+    if (!visible.length) return undefined;
+    return visible.some((action) => action.id === toolbarAction)
+      ? { label, icon, actions: visible, toolbarAction }
+      : { label, icon, actions: visible };
   } catch (error) {
     console.warn(
       `Plugin conversation actions unavailable: ${contribution.namespace}`,

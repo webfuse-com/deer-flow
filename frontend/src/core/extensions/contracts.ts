@@ -82,6 +82,10 @@ export type ConversationActionGroup = {
   label: string;
   icon: string;
   actions: ConversationAction[];
+  /** [argus patch #121] Id of one of `actions`: the chat toolbar button runs
+   * it on click instead of opening the group's menu. The sidebar menu still
+   * lists every action. Ignored when no visible action has this id. */
+  toolbarAction?: string;
 };
 
 export type ExtensionMention = {
