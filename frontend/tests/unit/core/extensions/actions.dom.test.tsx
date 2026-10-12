@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, rs, test } from "@rstest/core";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConversationExtensionActions } from "@/components/workspace/conversation-extension-actions";
@@ -187,4 +187,62 @@ test("toolbar group renders its icon without a visible label", () => {
   const button = screen.getByRole("button", { name: "Healthy actions" });
   expect(button.textContent).toBe("");
   expect(button.querySelector("svg.lucide-spool")).not.toBeNull();
+});
+
+// [argus patch #121] toolbarAction: the toolbar button runs that action on
+// click, without a menu; the sidebar menu still lists every action.
+test("toolbarAction runs its action from the toolbar without a menu", () => {
+  const run = rs.fn(async () => undefined);
+  const open = { ...action, id: "open", label: "Open it", execute: run };
+  const other = { ...action, id: "other", label: "Other" };
+  state.entries = [
+    entry("healthy", () => ({
+      ...group,
+      actions: [open, other],
+      toolbarAction: "open",
+    })),
+  ];
+  render(
+    <TooltipProvider>
+      <ConversationExtensionActions
+        context={{ thread: { thread_id: "test" } as AgentThread }}
+      />
+    </TooltipProvider>,
+  );
+  const button = screen.getByRole("button", { name: "Open it" });
+  expect(button.getAttribute("aria-haspopup")).toBeNull();
+  fireEvent.click(button);
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("menuitem")).toBeNull();
+});
+
+test("an unknown or hidden toolbarAction falls back to the menu", () => {
+  state.entries = [
+    entry("healthy", () => ({ ...group, toolbarAction: "missing" })),
+  ];
+  render(
+    <TooltipProvider>
+      <ConversationExtensionActions
+        context={{ thread: { thread_id: "test" } as AgentThread }}
+      />
+    </TooltipProvider>,
+  );
+  const button = screen.getByRole("button", { name: "Healthy actions" });
+  expect(button.getAttribute("aria-haspopup")).toBe("menu");
+});
+
+test("a non-string toolbarAction is contained like any invalid group", () => {
+  state.entries = [
+    entry("broken", () => ({ ...group, toolbarAction: 7 })),
+    entry("healthy", () => group),
+  ];
+  render(
+    <TooltipProvider>
+      <ConversationExtensionActions
+        context={{ thread: { thread_id: "test" } as AgentThread }}
+      />
+    </TooltipProvider>,
+  );
+  expect(screen.getAllByRole("button")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Healthy actions" })).toBeDefined();
 });

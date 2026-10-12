@@ -98,6 +98,24 @@ export function ConversationExtensionActions({
             <DropdownMenuSubContent>{items}</DropdownMenuSubContent>
           </DropdownMenuSub>
         );
+      // [argus patch #121] A group may name one action for the toolbar button
+      // to run directly (one click, no menu); its label becomes the tooltip.
+      const direct = actions.find(({ id }) => id === group.toolbarAction);
+      if (direct)
+        return (
+          <Tooltip key={contribution.namespace} content={direct.label}>
+            <Button
+              aria-label={direct.label}
+              className="text-muted-foreground hover:text-foreground"
+              size="icon"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => void execute(direct, contribution)}
+            >
+              <GroupIcon />
+            </Button>
+          </Tooltip>
+        );
       return (
         <DropdownMenu key={contribution.namespace}>
           <Tooltip content={group.label}>
