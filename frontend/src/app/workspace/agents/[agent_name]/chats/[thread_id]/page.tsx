@@ -12,6 +12,7 @@ import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import {
   ChatBox,
   useMarkOpenThreadRead,
+  useProjectNewChat,
   useThreadChat,
 } from "@/components/workspace/chats";
 import { QueuedMessages } from "@/components/workspace/chats/queued-messages";
@@ -30,6 +31,7 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { ProjectAffiliationBadge } from "@/components/workspace/projects/project-affiliation-badge";
 import {
   SidecarProvider,
   SidecarTrigger,
@@ -93,6 +95,12 @@ export default function AgentChatPage() {
 
   const { threadId, setThreadId, isNewThread, setIsNewThread, isMock } =
     useThreadChat();
+  // [argus patch #122] Project-scoped new chat (`…/chats/new?project={id}`):
+  // Argus opens every new chat on the citizen's Atlas agent page, so the
+  // project page's "New chat" lands here and must file the first message
+  // under the project, exactly as the plain chat page does.
+  const { projectParam, ensureProjectThread, prepareSubmission } =
+    useProjectNewChat({ threadId, isNewThread });
   // `isNewThread` gates history/token-usage fetches until the backend creates
   // the thread. `isWelcomeMode` controls only the centered welcome layout, so
   // it can flip immediately on submit without triggering eager history loads.
@@ -115,6 +123,13 @@ export default function AgentChatPage() {
     enabled: !isNewThread && !isMock,
     isMock,
   });
+  // The project chip: the materialized thread's project, or for a new
+  // project chat the project it will be filed under.
+  const affiliatedProjectId =
+    !isNewThread && !isMock && threadMetadata.data
+      ? projectIdOfThread(threadMetadata.data)
+      : null;
+  const shownProjectId = projectParam ?? affiliatedProjectId;
   // A saved thread that exists on the server is being read while open:
   // clears its unread dot (sidebar and chats list) on every device.
   const markThreadRead = useMarkOpenThreadRead(threadId, {
@@ -286,7 +301,9 @@ export default function AgentChatPage() {
   ]);
 
   const handleSubmit = useCallback(
-    (message: PromptInputMessage, options?: InputBoxSubmitOptions) => {
+    async (message: PromptInputMessage, options?: InputBoxSubmitOptions) => {
+      // Project pre-create first; rejects when the conversation changed meanwhile.
+      await prepareSubmission();
       const scopedOptions = currentKnowledgeScopeSnapshot
         ? {
             ...options,
@@ -307,7 +324,13 @@ export default function AgentChatPage() {
       }
       void sendPromise;
     },
-    [currentKnowledgeScopeSnapshot, sendMessage, threadId, agent_name],
+    [
+      currentKnowledgeScopeSnapshot,
+      sendMessage,
+      threadId,
+      agent_name,
+      prepareSubmission,
+    ],
   );
 
   const handleSubmitHumanInput = useCallback(
@@ -430,6 +453,9 @@ export default function AgentChatPage() {
                       metadata={threadMetadata.data?.metadata}
                     />
                   )}
+                {shownProjectId && (
+                  <ProjectAffiliationBadge projectId={shownProjectId} />
+                )}
               </div>
               <div className="flex shrink-0 items-center sm:mr-4">
                 {!isNewThread &&
@@ -561,11 +587,7 @@ export default function AgentChatPage() {
                     )}
                     isWelcomeMode={isWelcomeMode}
                     threadId={threadId}
-                    projectId={
-                      !isNewThread && threadMetadata.data
-                        ? projectIdOfThread(threadMetadata.data)
-                        : null
-                    }
+                    projectId={shownProjectId}
                     draftThreadId={isNewThread ? "new" : threadId}
                     draftAgentName={agent_name}
                     agentSkillNames={agent?.skills}
@@ -615,6 +637,7 @@ export default function AgentChatPage() {
                     }}
                     onGoalChange={setLocalGoal}
                     onSubmit={handleSubmit}
+                    onPrepareThread={ensureProjectThread}
                     onQueue={(msg, opts) => enqueueMessage(msg, opts)}
                     onStop={handleStop}
                     canStopStreaming={canStopStreaming}

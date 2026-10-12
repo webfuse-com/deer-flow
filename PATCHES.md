@@ -179,6 +179,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#119](#patch-119) | The scheduled-task form on an external scheduler: only the fields and schedule types it offers (`supports.once`, `supports.context`), the name fixed when editing | argus-edit | this PR |
 | [#120](#patch-120) | Scheduled playbook runs in a web chat (`thread_id`, or `fresh` for a new chat each run, as the schedule's owner); an external scheduler's channels (`channel:<name>`) are a "where runs happen" choice | argus-edit | this PR |
 | [#121](#patch-121) | Ariadne: Langfuse tracing that fails open, names the person and stack, masks images and credentials, and honours a per-chat off switch (`ariadne_tracing`, thread menu + Telegram `/notrace`); langfuse SDK 4.15.6; toolbar action groups icon-only, `spool` icon, one-click `toolbarAction` | argus-edit | this PR |
+| [#122](#patch-122) | Project-scoped new chats on the agent chat page: `…/chats/new?project={id}` files the first message under the project and shows the project chip before it (shared `useProjectNewChat` + `ProjectAffiliationBadge`) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2514,6 +2515,17 @@ carry budget ledger.
 - Sync 2026-10-12 (one click): a conversation-action group may name one of its actions as `toolbarAction`; the chat toolbar button then runs it on click (no menu; the action's label is the tooltip) while the sidebar menu keeps the full list. Ariadne uses it so the spool icon opens the chat's traces directly (`frontend/src/core/extensions/contracts.ts`, `actions.ts`, `components/workspace/conversation-extension-actions.tsx`, plugin docs en/zh). Tests: `frontend/tests/unit/core/extensions/actions.dom.test.tsx` (direct run, fallback to the menu, non-string contained).
 - Delete-when: upstream ships masking, export filtering and per-thread opt-out in its Langfuse integration, or Argus stops tracing.
 - Upstream status: the fail-open part is generic-upstreamable.
+
+
+## Patch #122
+
+**Patch #122 - Project-scoped new chats on the agent chat page** (2026-10-12)
+
+- Class: argus-edit (frontend: new `components/workspace/chats/use-project-new-chat.ts` (the `?project=` read, the `POST /api/threads` pre-create with `project_id`, the submission fence) and `components/workspace/projects/project-affiliation-badge.tsx`, both moved out of `chat-page.tsx`; `app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` uses them: first submit awaits the pre-create, `onPrepareThread`, `projectId` for the composer, the project chip; `chat-page.tsx` uses the same hook and shows the chip for a new project chat too).
+- Intent: the project page's "New chat" links to `/workspace/chats/new?project={id}`, and Argus routes every new chat to the citizen's Atlas agent page (`/workspace/agents/atlas/chats/new`, an nginx redirect in acropolis). The agent page had no project handling, so the chat started unfiled: no project instructions or documents, no Argus project context, not listed under the project. Now the first message creates the chat already filed under the project, exactly as on the plain chat page, and the chip shows the project from the empty chat on.
+- Tests: `frontend/tests/unit/components/workspace/chats/use-project-new-chat.dom.test.tsx` (files the first message under the project, existing chats ignore the param, an unavailable project refuses the send with a toast, a conversation switch drops the stale send).
+- Delete-when: upstream's agent chat page handles `?project=` (then drop the agent-page half and keep only what upstream lacks).
+- Upstream status: generic-upstreamable (upstream's agent chat page has the same gap).
 
 ---
 
