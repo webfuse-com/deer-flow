@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 SANDBOX_LEASE_OWNER_CONTEXT_KEY = "sandbox_lease_owner_id"
+# [argus patch #124] The run's background sandbox reclaim (SandboxMiddleware
+# prewarm), awaited before the run-end fence releases the execution lease.
+SANDBOX_PREWARM_CONTEXT_KEY = "_sandbox_prewarm_task"
+_PREWARM_DRAIN_SECONDS = 60.0
 SANDBOX_COMMAND_SCOPE_CONTEXT_KEY = "sandbox_command_scope_id"
 SANDBOX_SERVER_OWNED_CONTEXT_KEYS = frozenset(
     {
@@ -788,8 +792,21 @@ def release_sandbox_execution_lease(context: Any) -> None:
     get_sandbox_lease_manager(provider).release(owner_id)
 
 
+async def _drain_prewarm(context: Any) -> None:
+    """Let a still-running prewarm finish, so the lease it binds is released
+    here and not left behind after the run."""
+    task = context.pop(SANDBOX_PREWARM_CONTEXT_KEY, None) if isinstance(context, dict) else None
+    if task is None or task.done():
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=_PREWARM_DRAIN_SECONDS)
+    except (TimeoutError, Exception):
+        logger.warning("Sandbox prewarm still running at run end; releasing what it bound so far", exc_info=True)
+
+
 async def release_sandbox_execution_lease_async(context: Any) -> None:
     """Async counterpart to :func:`release_sandbox_execution_lease`."""
+    await _drain_prewarm(context)
     lease = _sandbox_execution_lease(context)
     if lease is None:
         return

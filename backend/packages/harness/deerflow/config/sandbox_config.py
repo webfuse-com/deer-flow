@@ -336,6 +336,15 @@ class SandboxConfig(BaseModel):
         ge=0,
         description="Maximum characters to keep from bash tool output. Output exceeding this limit is middle-truncated (head + tail), preserving the first and last half. Set to 0 to disable truncation.",
     )
+    prewarm: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #124] Start reclaiming a thread's sandbox when a run starts, in the background, "
+            "for threads that already used one. The first sandbox tool then finds it ready instead of "
+            "paying the 3.5-5 s reclaim after the first model call. A run that never touches the sandbox "
+            "releases it at its end as usual. Default false matches upstream (lazy acquisition)."
+        ),
+    )
     command_max_chars: int = Field(
         default=10000,
         ge=1,

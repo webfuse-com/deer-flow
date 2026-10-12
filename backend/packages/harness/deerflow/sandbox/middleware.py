@@ -25,6 +25,7 @@ from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox import get_sandbox_provider
 from deerflow.sandbox.exceptions import SandboxAuthorizationError, SandboxRuntimeError
 from deerflow.sandbox.lease import (
+    SANDBOX_PREWARM_CONTEXT_KEY,
     ensure_sandbox_lease_owner,
     get_sandbox_lease_manager,
     run_sync_lifecycle_operation,
@@ -364,6 +365,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         owner_id = ensure_sandbox_lease_owner(runtime.context)
 
         if self._lazy_init and projection is None:
+            await self._maybe_prewarm(state, runtime, thread_id=thread_id, user_id=user_id, owner_id=owner_id)
             return await super().abefore_agent(state, runtime)
 
         existing_sandbox_id = self._read_sandbox_id_from_state(state)
@@ -427,6 +429,45 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             if retained_id != existing_sandbox_id:
                 return {"sandbox": Overwrite({"sandbox_id": retained_id})}
         return await super().abefore_agent(state, runtime)
+
+    async def _maybe_prewarm(self, state, runtime, *, thread_id: str, user_id: str, owner_id: str | None) -> None:
+        """[argus patch #124] Reclaim this thread's sandbox in the background.
+
+        Only for a thread whose checkpoint names a sandbox (it has used one)
+        and with ``sandbox.prewarm`` on. The reclaim goes through the lease
+        manager under this run's owner, so the first sandbox tool waits on the
+        same per-thread serializer and then reuses the binding, and the
+        worker's run-end fence releases it whether or not a tool ran. Any
+        failure leaves the lazy path to acquire as before.
+        """
+        context = runtime.context
+        if owner_id is None or not isinstance(context, dict) or SANDBOX_PREWARM_CONTEXT_KEY in context:
+            return
+        sandbox, fork_restored = unwrap_sandbox(state.get("sandbox"))
+        existing_sandbox_id = (sandbox or {}).get("sandbox_id")
+        if not existing_sandbox_id or fork_restored:
+            return
+        app_config = await safe_app_config_async()
+        if not getattr(getattr(app_config, "sandbox", None), "prewarm", False):
+            return
+
+        async def prewarm() -> str | None:
+            try:
+                await authorize_sandbox_execution_async(context=context, app_config=app_config)
+                provider = get_sandbox_provider()
+                sandbox_id = await get_sandbox_lease_manager(provider).reuse_or_acquire_async(
+                    owner_id,
+                    existing_sandbox_id,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                )
+                context["sandbox_id"] = sandbox_id
+                return sandbox_id
+            except Exception:
+                logger.info("Sandbox prewarm for thread %s did not complete; the first tool acquires as usual", thread_id, exc_info=True)
+                return None
+
+        context[SANDBOX_PREWARM_CONTEXT_KEY] = asyncio.create_task(prewarm())
 
     @override
     def after_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
