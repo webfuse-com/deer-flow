@@ -383,3 +383,40 @@ class TestScheduledRunMarks:
         with patch("app.channels.service.get_channel_service", return_value=service):
             resp = _post(client, body={"trigger": "sometimes"})
         assert resp.status_code == 422
+
+
+class TestFreshThreadPerRun:
+    """[argus patch #126] ``history: none`` starts each run in a new thread."""
+
+    def _fire(self, client, body):
+        service = _make_service()
+        service.store.remove = AsyncMock(return_value=True)
+        with patch("app.channels.service.get_channel_service", return_value=service):
+            resp = _post(client, body=body)
+        return resp, service
+
+    def test_history_none_drops_the_schedule_topic_binding(self, client, playbook_dir):
+        resp, service = self._fire(client, {"topic_id": "sched:meeting-prep", "history": "none"})
+        assert resp.status_code == 200
+        service.store.remove.assert_awaited_once_with("telegram", "8726302666", "sched:meeting-prep")
+        msg = service.bus.publish_inbound.await_args.args[0]
+        assert msg.topic_id == "sched:meeting-prep"
+
+    def test_keep_is_the_default(self, client, playbook_dir):
+        resp, service = self._fire(client, {"topic_id": "sched:meeting-prep"})
+        assert resp.status_code == 200
+        service.store.remove.assert_not_called()
+
+    def test_a_real_topic_is_never_reset(self, client, playbook_dir):
+        resp, service = self._fire(client, {"topic_id": "42", "history": "none"})
+        assert resp.status_code == 200
+        service.store.remove.assert_not_called()
+
+    def test_no_topic_means_the_main_chat_is_never_reset(self, client, playbook_dir):
+        resp, service = self._fire(client, {"history": "none"})
+        assert resp.status_code == 200
+        service.store.remove.assert_not_called()
+
+    def test_unknown_history_value_is_422(self, client, playbook_dir):
+        resp, service = self._fire(client, {"topic_id": "sched:x", "history": "forget"})
+        assert resp.status_code == 422
