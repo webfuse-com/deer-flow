@@ -180,6 +180,10 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#120](#patch-120) | Scheduled playbook runs in a web chat (`thread_id`, or `fresh` for a new chat each run, as the schedule's owner); an external scheduler's channels (`channel:<name>`) are a "where runs happen" choice | argus-edit | this PR |
 | [#121](#patch-121) | Ariadne: Langfuse tracing that fails open, names the person and stack, masks images and credentials, and honours a per-chat off switch (`ariadne_tracing`, thread menu + Telegram `/notrace`); langfuse SDK 4.15.6; toolbar action groups icon-only, `spool` icon, one-click `toolbarAction` | argus-edit | this PR |
 | [#122](#patch-122) | Project-scoped new chats on the agent chat page: `…/chats/new?project={id}` files the first message under the project and shows the project chip before it (shared `useProjectNewChat` + `ProjectAffiliationBadge`) | argus-edit | this PR |
+| [#123](#patch-123) | Title generation off the critical path: `title.timeout_seconds` caps the title model call (local fallback title on expiry) and `title.background` lets the run continue while it runs (collected at a later model step or at run end) | config-expressed | this PR |
+| [#124](#patch-124) | `sandbox.prewarm`: a working thread's sandbox is reclaimed in the background at run start under the run's lease owner; the run-end fence drains it before releasing | config-expressed | this PR |
+| [#125](#patch-125) | `prompt_cache.durable_context_volatile_at_tail`: the durable-context parts that change during a run (ledger, active skills, artifact handles, task notes) render in a second hidden data message at the tail; goal and summary stay at the head | config-expressed | this PR |
+| [#126](#patch-126) | Playbook fire `history: none`: a schedule's own IM topic (`sched:<id>`) gets a new thread per run in the same chat | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2527,6 +2531,50 @@ carry budget ledger.
 - Tests: `frontend/tests/unit/components/workspace/chats/use-project-new-chat.dom.test.tsx` (files the first message under the project, existing chats ignore the param, an unavailable project refuses the send with a toast, a conversation switch drops the stale send).
 - Delete-when: upstream's agent chat page handles `?project=` (then drop the agent-page half and keep only what upstream lacks).
 - Upstream status: generic-upstreamable (upstream's agent chat page has the same gap).
+
+## Patch #123
+
+**Patch #123 - Title generation off the critical path** (2026-10-12)
+
+- Class: config-expressed (`title.timeout_seconds` default None and `title.background` default false keep upstream behaviour byte-identical; atlas-template sets 5 s and true).
+- Intent: `TitleMiddleware.aafter_model` awaits a second model call inside the first model step. On atlas-nicholas (Ariadne review, 2026-10-12) it added 1.6-4.7 s to every new thread, and one stalled title stream (TTFT 0.4 s, then nothing) held a turn for 71 s, because only the model's own `request_timeout: 600` applied. `timeout_seconds` bounds the call and falls back to the local title. `background` starts the call as a task after the first model step and returns `{"title": ...}` at the first later model step that finds it done, or in `aafter_agent` before the run ends (bounded by the same cap). Pending tasks are keyed by thread id.
+- Files: `config/title_config.py`, `agents/middlewares/title_middleware.py`.
+- Tests: `backend/tests/test_title_background.py` (upstream default waits, timeout fallback, title at a later step, collected at run end, bounded end wait, threads kept apart, local title without a model, no-op end).
+- Delete-when: upstream bounds or backgrounds title generation.
+- Upstream status: generic-upstreamable.
+
+## Patch #124
+
+**Patch #124 - Sandbox prewarm** (2026-10-12)
+
+- Class: config-expressed (`sandbox.prewarm` default false keeps lazy acquisition).
+- Intent: the sandbox is released at the end of every run and reclaimed on the next run's first sandbox tool (warm-pool reclaim: health check, docker inspect through the socket proxy, ownership round trip, new client), which cost 3.5-5 s after the first model call of most working turns. With prewarm, `SandboxMiddleware.abefore_agent` (lazy branch) starts the same `reuse_or_acquire_async` under the run's lease owner as a background task, only for a thread whose checkpoint names a sandbox. The first tool waits on the lease manager's per-thread serializer and reuses the binding; the task records `sandbox_id` in the run context, so the worker's run-end fence releases it whether or not a tool ran. `release_sandbox_execution_lease_async` drains a still-running prewarm (60 s cap) before releasing, so a late binding cannot outlive the run.
+- Files: `config/sandbox_config.py`, `sandbox/middleware.py`, `sandbox/lease.py`.
+- Tests: `backend/tests/test_sandbox_prewarm.py` (binds and is released at run end, drained when still in flight, off by config, not for a thread without a sandbox, a failed prewarm leaves the lazy path).
+- Delete-when: upstream acquires a known thread sandbox eagerly without blocking `before_agent`.
+- Upstream status: generic-upstreamable.
+
+## Patch #125
+
+**Patch #125 - Durable context: the changing parts at the tail** (2026-10-12)
+
+- Class: config-expressed (`prompt_cache.durable_context_volatile_at_tail` default false keeps one block after the system prompt).
+- Intent: `DurableContextMiddleware` renders goal, summary, delegation ledger, active skills, tool-artifact handles and task notes in one hidden data message right after the system prompt, on every model call. The ledger, skills and artifact handles change on most steps of a run, and every change made SGLang's radix cache recompute everything after that point: the whole conversation, 40-75k tokens and 4-5 s TTFT per affected call, 7 of 14 calls in one atlas-nicholas turn (Ariadne, 2026-10-12, cut at token 32,512). With the switch, goal and summary (which change only on `/goal` or compaction) stay at the head; the changing parts go in a second data message at the end of the request, before a trailing user message so the user's request stays last. Same provenance and `durable_context_data` marker on both messages.
+- Files: `config/prompt_cache_config.py` (new `prompt_cache` section), `config/app_config.py`, `agents/middlewares/durable_context_middleware.py`, `agents/lead_agent/agent.py`.
+- Tests: `backend/tests/test_durable_context_volatile_tail.py` (default unchanged, head/tail split, user request stays last, the prefix before the newest messages is identical across steps, no tail message when nothing changes).
+- Delete-when: upstream keeps run-volatile context out of the prompt prefix.
+- Upstream status: generic-upstreamable (upstream's prompt caching targets provider breakpoints; a self-hosted radix cache needs a stable prefix).
+
+## Patch #126
+
+**Patch #126 - Fresh thread per run for a schedule's own IM topic** (2026-10-12)
+
+- Class: argus-edit (`PlaybookFireRequest.history`, `keep` default).
+- Intent: `thread: own` reconciles to the synthetic topic `sched:<id>`, and the channel manager reuses that topic's thread on every fire, so an hourly playbook re-read its own earlier runs until summarization at 96k tokens. meeting-prep on atlas-nicholas re-prefilled 73-94k tokens cold every hour (TTFT 7-8.5 s, 12 times a day) to answer ".". With `history: none` the endpoint drops the topic's binding before publishing, and the manager creates a new thread in the same chat. Only `sched:` topics: a real IM topic a person talks in is never reset. Telegram threads live under the chat's own user bucket, so no web sidebar fills up.
+- Files: `app/gateway/routers/playbooks.py`.
+- Tests: `backend/tests/test_playbook_fire.py::TestFreshThreadPerRun` (drops the binding, keep is the default, real topics and the main chat untouched, unknown value 422).
+- Delete-when: the external scheduler can ask for a fresh IM thread natively.
+- Upstream status: argus-specific (the playbook fire endpoint is argus).
 
 ---
 

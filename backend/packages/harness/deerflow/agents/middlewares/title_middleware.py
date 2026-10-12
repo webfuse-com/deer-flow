@@ -1,7 +1,9 @@
 """Middleware for automatic thread title generation."""
 
+import asyncio
 import logging
 import re
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NotRequired, override
@@ -53,6 +55,8 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
 
             extensions = get_agent_build_extensions()
         self._extensions = extensions
+        # [argus patch #123] Background titles still running, keyed by thread.
+        self._pending_titles: dict[str, asyncio.Task] = {}
 
     def _get_title_config(self):
         if self._title_config is not None:
@@ -236,6 +240,9 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         title_content = self._normalize_content(content)
         title_content = self._strip_think_tags(title_content)
         title = title_content.strip().strip('"').strip("'")
+        # [argus patch #123] Fast title models (gpt-oss on Cerebras) wrap the
+        # title in Markdown (**...**, # ...); the sidebar shows it literally.
+        title = title.strip("*_#` \t").strip('"').strip("'").strip()
         return title[: config.max_chars] if len(title) > config.max_chars else title
 
     def _fallback_title(self, user_msg: str) -> str:
@@ -369,6 +376,38 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
             logger.debug("Failed to generate async title; falling back to local title", exc_info=True)
         return {"title": self._fallback_title(user_msg)}
 
+    async def _acapped_title_result(self, state: TitleMiddlewareState, *, task_store=None) -> dict | None:
+        """[argus patch #123] The LLM title, bounded by ``title.timeout_seconds``.
+
+        A stalled title stream once held a first turn for 71 s (atlas-nicholas,
+        2026-10-12); on expiry the local fallback title is used instead.
+        """
+        timeout = self._get_title_config().timeout_seconds
+        if not timeout:
+            return await self._agenerate_title_result(state, task_store=task_store)
+        started = time.monotonic()
+        try:
+            return await asyncio.wait_for(self._agenerate_title_result(state, task_store=task_store), timeout=timeout)
+        except TimeoutError:
+            logger.info("Title model gave no answer within %.1fs; using the local title", time.monotonic() - started)
+            return {"title": self._fallback_title(self._get_title_user_message(state))}
+
+    def _needs_title_model(self, state: TitleMiddlewareState) -> bool:
+        """True when the title comes from the configured model, not a local rule."""
+        return bool(self._get_title_config().model_name) and self._attachment_only_title(state) is None and bool(self._get_title_user_message(state).strip())
+
+    @staticmethod
+    def _thread_key(runtime: Runtime | None) -> str:
+        context = getattr(runtime, "context", None) or {}
+        return str(context.get("thread_id") or "") if isinstance(context, Mapping) else ""
+
+    def _finished_title(self, task: asyncio.Task, state: TitleMiddlewareState) -> dict | None:
+        try:
+            return task.result()
+        except (asyncio.CancelledError, Exception):
+            logger.debug("Background title failed; using the local title", exc_info=True)
+            return {"title": self._fallback_title(self._get_title_user_message(state))}
+
     @override
     def after_model(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
         return self._generate_title_result(state)
@@ -377,7 +416,46 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
     async def aafter_model(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
         from deerflow_extension_api import task_store_from_runtime
 
-        return await self._agenerate_title_result(
-            state,
-            task_store=task_store_from_runtime(runtime),
-        )
+        task_store = task_store_from_runtime(runtime)
+        if not self._get_title_config().background:
+            return await self._acapped_title_result(state, task_store=task_store)
+
+        # [argus patch #123] Background title: the first model step does not
+        # wait for a second model call. The title lands at the next model step
+        # that finds it ready, or at the end of the run (aafter_agent).
+        key = self._thread_key(runtime)
+        pending = self._pending_titles.get(key)
+        if pending is not None:
+            if not pending.done():
+                return None
+            del self._pending_titles[key]
+            return None if state.get("title") else self._finished_title(pending, state)
+        if not self._should_generate_title(state):
+            return None
+        if not self._needs_title_model(state):
+            return await self._agenerate_title_result(state, task_store=task_store)
+        self._pending_titles[key] = asyncio.create_task(self._acapped_title_result(dict(state), task_store=task_store))
+        return None
+
+    @override
+    def after_agent(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
+        return None
+
+    @override
+    async def aafter_agent(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
+        """[argus patch #123] Collect a background title before the run ends.
+
+        The wait is bounded: the task itself stops at ``title.timeout_seconds``
+        after it started and then returns the local title.
+        """
+        pending = self._pending_titles.pop(self._thread_key(runtime), None)
+        if pending is None:
+            return None
+        if state.get("title"):
+            pending.cancel()
+            return None
+        try:
+            await asyncio.shield(pending)
+        except (asyncio.CancelledError, Exception):
+            pass
+        return self._finished_title(pending, state)

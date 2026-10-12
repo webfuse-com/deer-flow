@@ -100,6 +100,12 @@ class PlaybookFireRequest(BaseModel):
     thread_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     fresh: bool = False
     owner_email: str | None = Field(default=None, max_length=320)
+    # [argus patch #126] ``none``: each run of a schedule with
+    # its own IM thread (``thread: own`` -> topic "sched:<id>") starts a new
+    # thread in the same chat. The thread used to carry every earlier run, so
+    # an hourly playbook re-read up to 96k tokens of its own past runs each
+    # time (meeting-prep on atlas-nicholas, 2026-10-12). ``keep`` = as before.
+    history: Literal["keep", "none"] = "keep"
 
 
 class PlaybookFireResponse(BaseModel):
@@ -206,11 +212,19 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
 
     from app.channels.message_bus import InboundMessage
 
+    # [argus patch #126] A schedule's own synthetic topic only: never a real
+    # IM topic a person talks in.
+    fresh_thread = body.history == "none" and bool(body.topic_id) and str(body.topic_id).startswith("sched:")
+
     delivered = 0
     for entry in chats:
         chat_id = entry.get("chat_id")
         if not chat_id:
             continue
+        if fresh_thread:
+            # Drop the topic's thread binding; the channel manager creates a
+            # new thread for this run and binds it in the same chat.
+            await service.store.remove(channel, str(chat_id), body.topic_id)
         msg = InboundMessage(
             channel_name=channel,
             chat_id=str(chat_id),
