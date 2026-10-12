@@ -172,3 +172,19 @@ test("unknown icon names including prototype properties use the fallback icon", 
   );
   expect(screen.getByRole("button", { name: "Healthy actions" })).toBeDefined();
 });
+
+// [argus patch #121] The toolbar shows the group as its icon alone, like the
+// other header buttons; the label remains the accessible name.
+test("toolbar group renders its icon without a visible label", () => {
+  state.entries = [entry("healthy", () => ({ ...group, icon: "spool" }))];
+  render(
+    <TooltipProvider>
+      <ConversationExtensionActions
+        context={{ thread: { thread_id: "test" } as AgentThread }}
+      />
+    </TooltipProvider>,
+  );
+  const button = screen.getByRole("button", { name: "Healthy actions" });
+  expect(button.textContent).toBe("");
+  expect(button.querySelector("svg.lucide-spool")).not.toBeNull();
+});
