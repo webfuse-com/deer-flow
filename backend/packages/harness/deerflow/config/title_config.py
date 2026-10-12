@@ -28,6 +28,20 @@ class TitleConfig(BaseModel):
         default=None,
         description="Model name to use for LLM title generation (None = use local fallback title)",
     )
+    timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        le=600,
+        description=("Cap on the title model call in seconds; on expiry the local fallback title is used. None = no cap (the model's own request_timeout and retries apply)."),
+    )
+    background: bool = Field(
+        default=False,
+        description=(
+            "Start the title model call after the first model step and let the run continue: the title "
+            "lands at a later model step, or at the end of the run after at most timeout_seconds. "
+            "False = the first model step waits for the title (upstream behaviour)."
+        ),
+    )
     prompt_template: str = Field(
         default=("Generate a concise title (max {max_words} words) for this conversation.\nUser: {user_msg}\nAssistant: {assistant_msg}\n\nReturn ONLY the title, no quotes, no explanation."),
         description="Prompt template for LLM title generation when model_name is set",
