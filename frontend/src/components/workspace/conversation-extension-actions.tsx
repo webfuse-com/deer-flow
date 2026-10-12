@@ -102,14 +102,16 @@ export function ConversationExtensionActions({
         <DropdownMenu key={contribution.namespace}>
           <Tooltip content={group.label}>
             <DropdownMenuTrigger asChild>
+              {/* [argus patch #121] Icon only, like the other header
+                  buttons; the label stays the tooltip and accessible name. */}
               <Button
                 aria-label={group.label}
                 className="text-muted-foreground hover:text-foreground"
+                size="icon"
                 variant="ghost"
                 disabled={busy}
               >
                 <GroupIcon />
-                <span className="hidden sm:inline">{group.label}</span>
               </Button>
             </DropdownMenuTrigger>
           </Tooltip>

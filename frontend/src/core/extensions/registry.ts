@@ -5,6 +5,7 @@ import {
   FileJsonIcon,
   FileTextIcon,
   PuzzleIcon,
+  SpoolIcon,
   type LucideIcon,
 } from "lucide-react";
 
@@ -21,6 +22,7 @@ export function extensionIcon(name?: string): LucideIcon {
     download: DownloadIcon,
     "file-json": FileJsonIcon,
     "file-text": FileTextIcon,
+    spool: SpoolIcon, // [argus patch #121] Ariadne's chat menu
   };
   return name && Object.hasOwn(icons, name) ? icons[name]! : PuzzleIcon;
 }
