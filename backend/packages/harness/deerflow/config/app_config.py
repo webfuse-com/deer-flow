@@ -38,6 +38,7 @@ from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.pii_redaction_config import PiiRedactionConfig
 from deerflow.config.projects_config import ProjectsConfig
+from deerflow.config.prompt_cache_config import PromptCacheConfig
 from deerflow.config.prompt_overlay import PromptOverlay
 from deerflow.config.read_before_write_config import ReadBeforeWriteConfig
 from deerflow.config.reload_boundary import format_field_description
@@ -321,6 +322,7 @@ class AppConfig(BaseModel):
     tool_search: ToolSearchConfig = Field(default_factory=ToolSearchConfig, description="Tool search / deferred loading configuration")
     tool_policy: ToolPolicyConfig = Field(default_factory=ToolPolicyConfig, description="[argus patch #53] Tool authorization policy: which allowed-tools declarations gate the run's toolset")
     title: TitleConfig = Field(default_factory=TitleConfig, description="Automatic title generation configuration")
+    prompt_cache: PromptCacheConfig = Field(default_factory=PromptCacheConfig, description="[argus patch #125] Prompt-prefix stability for a self-hosted prefix cache")
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig, description="Conversation summarization configuration")
     task_continuity: TaskContinuityConfig = Field(default_factory=TaskContinuityConfig, description="Thread-local notes and compacted-source recall")
     memory: MemoryConfig = Field(default_factory=MemoryConfig, description="Memory subsystem configuration")
