@@ -169,3 +169,56 @@ def test_tracing_switch_is_not_conversation_activity():
 
     assert _is_organization_metadata_patch({"ariadne_tracing": "off"})
     assert not _is_organization_metadata_patch({"ariadne_tracing": "maybe"})
+
+
+# --- failed tools are marked ERROR (DeerFlow classifies after Langfuse's callback) ---
+def _tool_message(content, status="success", name="bash"):
+    from langchain_core.messages import ToolMessage
+
+    return ToolMessage(content=content, tool_call_id="call_1", name=name, status=status)
+
+
+def test_a_failed_bash_call_gets_a_short_masked_status_message():
+    secret = "ghp_" + "a" * 36
+    msg = argus.tool_error_message(_tool_message(f"fatal: detected dubious ownership\n{secret}\nExit Code: 128"))
+    assert msg is not None and msg.startswith("fatal: detected dubious ownership") and msg.endswith("Exit Code: 128")
+    assert secret not in msg and "[redacted]" in msg
+    long = argus.tool_error_message(_tool_message("x" * 5000 + "\nExit Code: 1"))
+    assert len(long) <= argus.TOOL_STATUS_MESSAGE_CAP + 5 and long.endswith("Exit Code: 1")
+
+
+def test_only_results_deerflow_treats_as_errors_get_a_status_message():
+    assert argus.tool_error_message(_tool_message("ok\nExit Code: 0")) is None
+    assert argus.tool_error_message(_tool_message("all good")) is None
+    assert argus.tool_error_message(_tool_message("Error: file not found", name="read_file")) is not None
+    assert argus.tool_error_message(_tool_message("blocked", status="error", name="write_file")) == "blocked"
+    assert argus.tool_error_message("Exit Code: 1") is None  # not a ToolMessage
+    original = _tool_message("boom\nExit Code: 2")
+    argus.tool_error_message(original)
+    assert original.status == "success" and "deerflow_tool_meta" not in (original.additional_kwargs or {})
+
+
+def test_the_langfuse_handler_exports_a_failed_tool_as_an_error_span():
+    import uuid
+
+    from langfuse import Langfuse
+    from langfuse.langchain import CallbackHandler
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    public_key = f"pk-lf-test-{uuid.uuid4().hex[:8]}"
+    client = Langfuse(public_key=public_key, secret_key="sk-lf-test", host="http://127.0.0.1:9", span_exporter=exporter, mask=argus.mask)
+    handler = argus.callback_handler(CallbackHandler, public_key=public_key)
+    for content in ("fatal: not a git repository\nExit Code: 128", "fine\nExit Code: 0"):
+        run_id = uuid.uuid4()
+        handler.on_tool_start({"name": "bash"}, "{}", run_id=run_id, inputs={"command": "git log"})
+        handler.on_tool_end(_tool_message(content), run_id=run_id)
+    client.flush()
+    spans = {s.attributes.get("langfuse.observation.output", ""): s for s in exporter.get_finished_spans()}
+    failed = next(s for out, s in spans.items() if "Exit Code: 128" in out)
+    ok = next(s for out, s in spans.items() if "Exit Code: 0" in out)
+    assert failed.attributes.get("langfuse.observation.level") == "ERROR"
+    assert failed.attributes.get("langfuse.observation.status_message") == "fatal: not a git repository Exit Code: 128"
+    assert '"status": "error"' in failed.attributes["langfuse.observation.output"]
+    assert ok.attributes.get("langfuse.observation.level") in (None, "DEFAULT")
+    client.shutdown()

@@ -19,6 +19,10 @@ lacks for that:
   note (view_image re-sends every image on every turn), credentials are
   redacted, and oversized fields are cut, keeping the system prompt and the
   latest messages.
+* Failed tools show as errors: DeerFlow decides a tool result is an error in a
+  middleware, after Langfuse's callback has recorded it, so a bash call that
+  exited 128 reached Ariadne as a success. The callback handler runs the same
+  classification and marks the span ERROR, with a short, masked status message.
 
 Everything here is fail-open: a tracing problem may cost a trace, never a run.
 """
@@ -245,3 +249,78 @@ def mask(*, data: Any, **kwargs: Any) -> Any:
     except Exception:  # noqa: BLE001 - never ship unmasked data on a masking bug
         logger.warning("Ariadne mask failed; the field is dropped", exc_info=True)
         return "[omitted: masking failed]"
+
+
+# --- failed tools ------------------------------------------------------------------
+TOOL_STATUS_MESSAGE_CAP = 300
+
+
+def tool_error_message(output: Any) -> str | None:
+    """A tool span's status message when DeerFlow treats its result as an error, else None.
+
+    Langfuse's callback marks a tool span ERROR only when the ToolMessage it is
+    handed already says ``status="error"``. DeerFlow decides that afterwards, in
+    ``tool_result_meta.normalize_tool_message`` (a non-zero bash exit code, an
+    "Error:" prefix, a JSON error, a failed subagent), so this runs the same
+    classification on a copy. The message is masked and short: the SDK puts the
+    raw output in the status message, which no mask function sees.
+    """
+    from langchain_core.messages import ToolMessage
+
+    from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY, normalize_tool_message
+
+    if not isinstance(output, ToolMessage):
+        return None
+    probe = output.model_copy(update={"additional_kwargs": dict(output.additional_kwargs or {})})
+    normalize_tool_message(probe)
+    meta = (probe.additional_kwargs or {}).get(TOOL_META_KEY)
+    if probe.status != "error" and not (isinstance(meta, Mapping) and meta.get("status") == "error"):
+        return None
+    content = output.content if isinstance(output.content, str) else json.dumps(output.content, default=str)
+    text = " ".join(_mask_text(content).split())
+    if len(text) > TOOL_STATUS_MESSAGE_CAP:
+        half = TOOL_STATUS_MESSAGE_CAP // 2
+        text = f"{text[:half]} ... {text[-half:]}"
+    return text or "error"
+
+
+_SDK_TOOL_END_HOOKS = ("_log_debug_event", "_detach_observation", "_clear_root_run_resume_key", "_reset")
+_handler_classes: dict[type, type] = {}
+
+
+def callback_handler(base: type, **kwargs: Any) -> Any:
+    """Langfuse's LangChain callback handler (``base``) with failed tools marked ERROR."""
+    cls = _handler_classes.get(base)
+    if cls is None:
+        cls = _handler_classes[base] = _ariadne_handler_class(base)
+    return cls(**kwargs)
+
+
+def _ariadne_handler_class(base: type) -> type:
+    class AriadneCallbackHandler(base):  # type: ignore[misc, valid-type]
+        def on_tool_end(self, output: Any, *, run_id: Any, parent_run_id: Any = None, **kwargs: Any) -> Any:
+            message = None
+            try:
+                message = tool_error_message(output)
+            except Exception:  # noqa: BLE001 - a classification bug costs the level, never the span
+                logger.debug("Ariadne could not classify a tool result", exc_info=True)
+            if message is None or not all(hasattr(self, name) for name in _SDK_TOOL_END_HOOKS):
+                return super().on_tool_end(output, run_id=run_id, parent_run_id=parent_run_id, **kwargs)
+            # langfuse 4.15.6 CallbackHandler.on_tool_end, with the level and the
+            # masked message instead of the raw output as the status message.
+            try:
+                self._log_debug_event("on_tool_end", run_id, parent_run_id, output=output)
+                observation = self._detach_observation(run_id)
+                if observation is not None:
+                    if parent_run_id is None:
+                        self._clear_root_run_resume_key(run_id)
+                    shown = output if output.status == "error" else output.model_copy(update={"status": "error"})
+                    observation.update(output=shown, input=kwargs.get("inputs"), level="ERROR", status_message=message).end()
+            except Exception:  # noqa: BLE001 - observability must never break a run
+                logger.debug("Ariadne could not record a failed tool", exc_info=True)
+            finally:
+                if parent_run_id is None:
+                    self._reset(run_id)
+            return None
+
+    return AriadneCallbackHandler
