@@ -48,7 +48,8 @@ def _create_langfuse_handler(config) -> Any:
         flush_interval=2,
         environment=os.environ.get("LANGFUSE_TRACING_ENVIRONMENT") or "argus",
     )
-    return LangfuseCallbackHandler(public_key=config.public_key)
+    # [argus patch #121] failed tools are marked ERROR (tracing/argus.py).
+    return argus.callback_handler(LangfuseCallbackHandler, public_key=config.public_key)
 
 
 def build_tracing_callbacks() -> list[Any]:
