@@ -240,6 +240,9 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         title_content = self._normalize_content(content)
         title_content = self._strip_think_tags(title_content)
         title = title_content.strip().strip('"').strip("'")
+        # [argus patch #123] Fast title models (gpt-oss on Cerebras) wrap the
+        # title in Markdown (**...**, # ...); the sidebar shows it literally.
+        title = title.strip("*_#` \t").strip('"').strip("'").strip()
         return title[: config.max_chars] if len(title) > config.max_chars else title
 
     def _fallback_title(self, user_msg: str) -> str:

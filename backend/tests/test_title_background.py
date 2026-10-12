@@ -102,3 +102,10 @@ def test_background_without_a_title_model_answers_locally_at_once(monkeypatch):
 def test_run_end_without_pending_title_is_a_no_op(monkeypatch):
     middleware, _ = _middleware(monkeypatch, background=True)
     assert asyncio.run(middleware.aafter_agent(STATE, runtime=_runtime())) is None
+
+
+def test_markdown_wrapping_is_stripped_from_the_title():
+    middleware = TitleMiddleware(title_config=TitleConfig(model_name="title-model"), extensions=())
+    assert middleware._parse_title("**Ariadne Rollout Planning Blueprint**") == "Ariadne Rollout Planning Blueprint"
+    assert middleware._parse_title("# Plan the rollout") == "Plan the rollout"
+    assert middleware._parse_title('"Quoted title"') == "Quoted title"
