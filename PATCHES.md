@@ -184,6 +184,15 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#124](#patch-124) | `sandbox.prewarm`: a working thread's sandbox is reclaimed in the background at run start under the run's lease owner; the run-end fence drains it before releasing | config-expressed | this PR |
 | [#125](#patch-125) | `prompt_cache.durable_context_volatile_at_tail`: the durable-context parts that change during a run (ledger, active skills, artifact handles, task notes) render in a second hidden data message at the tail; goal and summary stay at the head | config-expressed | this PR |
 | [#126](#patch-126) | Playbook fire `history: none`: a schedule's own IM topic (`sched:<id>`) gets a new thread per run in the same chat | argus-edit | this PR |
+| [#127](#patch-127) | `run_limits.finalize_on_stop`: at a hard stop, a batch of only finalize tools (commit, schedule, present) runs once, then the run ends; build runs get commit-and-schedule warnings | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#128](#patch-128) | A Telegram run that errors is reported to Chronos as failed and the citizen gets a one-line notice, instead of staying silent | argus-edit | webfuse-com/deer-flow PR 113 |
+| [#129](#patch-129) | "Command too long" names the length, the limit and write_file | argus-edit | webfuse-com/deer-flow PR 113 |
+| [#130](#patch-130) | Skill auto-routing ignores framework-injected hints; `skills.mention_only_skills` route only on @name or /name | argus-edit + config-expressed | webfuse-com/deer-flow PR 113 |
+| [#131](#patch-131) | `tool_search.bind_schedule_allowlist`: a playbook run binds its allow-listed tools instead of deferring them | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#132](#patch-132) | `sandbox.prewarm_playbook_runs`: a playbook fire with sandbox tools prewarms on a new thread too | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#133](#patch-133) | `artifact_delivery.auto_present`: unpresented outputs are presented instead of failing the run | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#134](#patch-134) | Subagents follow the #125 durable-context layout (rides `prompt_cache.durable_context_volatile_at_tail`) | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#135](#patch-135) | DeerMem update runaway guards: `max_tokens`, `request_timeout_seconds`, `max_retries`, `max_failed_batch_attempts` | config-expressed | webfuse-com/deer-flow PR 113 |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2575,6 +2584,105 @@ carry budget ledger.
 - Tests: `backend/tests/test_playbook_fire.py::TestFreshThreadPerRun` (drops the binding, keep is the default, real topics and the main chat untouched, unknown value 422).
 - Delete-when: the external scheduler can ask for a fresh IM thread natively.
 - Upstream status: argus-specific (the playbook fire endpoint is argus).
+
+## Patch #127
+
+**Patch #127 - Finish on deadline** (2026-10-13)
+
+- Class: config-expressed (`run_limits.finalize_on_stop` default false keeps the upstream hard stop).
+- Intent: at `wall_clock_seconds` (or `max_model_calls`) the hard stop strips every tool call on the model message that crossed the limit. On atlas-ashish (Ariadne trace 605cfd06, 2026-10-12) that message carried three `atlas_create_schedule` calls for the daily refresh the citizen had asked for; they never ran, so the app was committed but never refreshed. With the switch, a message whose tool calls are ALL in `run_limits.finalize_tools` (default: atlas_commit_app, atlas_commit_project, atlas_create_schedule, atlas_update_schedule, present_files) runs once; the next model call gets a short "the finishing calls ran, now answer" note; a tool-free answer then ends the run as written (stop_reason still stamped, no #98 synthesis call), and any further tool call is stopped as before. One grace step per run, a mixed batch is stripped. A run whose model can call a finalize tool also gets warning wording that says to commit and schedule what works now, and a second reminder `final_warning_seconds_before_stop` (default 120) before the stop.
+- Files: `config/run_limits_config.py`, `agents/middlewares/run_deadline_middleware.py`, `config.example.yaml`.
+- Tests: `backend/tests/test_run_deadline_finalize.py` (off by default, one batch then stop, answer after grace has no stub, mixed batch stripped, grace on the model-call cap, grace note injected, build wording and second warning, chat runs keep the upstream wording).
+- Delete-when: upstream lets pending side-effect calls complete at a run deadline.
+- Upstream status: generic-upstreamable (the allowlist is config).
+
+## Patch #128
+
+**Patch #128 - A failed Telegram run is reported as failed** (2026-10-13)
+
+- Class: argus-edit (bug fix, no switch).
+- Intent: the Telegram branch of `ChannelManager._handle_streaming_chat` tracks stage emojis and `values`, then `continue`s before the `error` frame check the other channels use. A run that ended in an `error` frame therefore looked like an empty answer: a scheduled fire was reported to Chronos as `silent` (closed `ok`) and the citizen heard nothing; an interactive turn showed "(No response from agent)". atlas-ashish 2026-10-13 07:27 CEST, run dc87e6ad: the Surfly dashboard refresh hit GraphRecursionError after 58 model calls, nothing was committed or sent, Chronos run 42623 recorded ok. The Telegram branch now records the error frame. An unattended fire with no answer text sends one line naming the schedule and the cause ("reached the run's step limit" for GraphRecursionError) and reports `failed` with `<name>: <message>`, which Chronos already closes as `error` (`scheduler/src/routes/api.py::report_run_output`). Partial answer text is still delivered as before and reported `failed`. Error frames on every channel now keep their name (`RunErrorFrame`; `str()` keeps upstream's text so the thread-busy check is unchanged).
+- Files: `app/channels/manager.py`.
+- Tests: `backend/tests/test_channel_unattended_run_error.py` (failed fire notifies and reports failed, a clean empty fire stays silent, interactive Telegram error shows the error text, partial text kept and reported failed); `test_channel_stream_errors.py` unchanged and green.
+- Delete-when: upstream's Telegram streaming path consumes error frames.
+- Upstream status: generic-upstreamable for the error-frame half; the notice is argus (playbook fires).
+
+## Patch #129
+
+**Patch #129 - "Command too long" says the limit and what to do** (2026-10-13)
+
+- Class: argus-edit (message only, no switch).
+- Intent: `SandboxAuditMiddleware` rejected an over-long bash command with "Command blocked: command too long. Please use a safer alternative approach." atlas-ashish trace 605cfd06 (2026-10-12) spent 82 s generating a 6,203-token heredoc, got that message, and had to infer the fix. The block now names the command length and the configured `sandbox.command_max_chars`, says nothing ran, and points at write_file plus a short bash command. Other block reasons keep upstream's wording.
+- Files: `agents/middlewares/sandbox_audit_middleware.py`.
+- Tests: `backend/tests/test_sandbox_audit_middleware.py::TestCommandTooLongMessage`.
+- Delete-when: upstream's rejection message carries the limit and an alternative.
+- Upstream status: generic-upstreamable.
+
+## Patch #130
+
+**Patch #130 - Skill auto-routing: ignore framework hints, delegate skills on @name only** (2026-10-13)
+
+- Class: (a) argus-edit bug fix, no switch; (b) config-expressed (`skills.mention_only_skills` default empty keeps upstream bare-word routing).
+- Intent: (a) `is_real_user_message` counted the HumanMessages middleware appends to a request (`progress_hint`, `deadline_warning`, `budget_warning`, `loop_warning`, `forced_stop_synthesis`, `auto_skill_activation`) as the user's request. `SkillAutoRoutingMiddleware` picks the last real user message, so on the call that carried a progress or efficiency hint it routed the hint, found no skill and dropped the `<auto_skill_activation>` block; the next call put it back. Two prefix-cache misses each time (atlas-ashish dashboard refresh a77ecc08, calls 24 and 50, 2026-10-13: 105k tokens re-read). The names are now excluded centrally; the other caller (slash-skill activation) wants the same. (b) A single distinctive skill name in the text auto-routes that skill. For the delegate skills that hand work to another agent that also matched ordinary prose: atlas-ashish typed "signing claude" (meaning clause) and got the full /claude skill injected, and the answer mentioned Claude Code. Skills listed in `skills.mention_only_skills` route only on an explicit `@name` (an e-mail address does not count); slash commands are unchanged (SkillActivationMiddleware).
+- Files: `utils/messages.py`, `config/skills_config.py`, `agents/middlewares/skill_auto_routing_middleware.py`, `config.example.yaml`.
+- Tests: `backend/tests/test_skill_auto_routing_middleware.py` (bare word ignored, @mention routes, e-mail ignored, unlisted skills unchanged, hint names are not user messages, the block stays on the user request when a hint is appended).
+- Delete-when: upstream excludes injected hints from user-intent detection and offers mention-only routing.
+- Upstream status: (a) generic-upstreamable; (b) generic-upstreamable as a config list.
+
+## Patch #131
+
+**Patch #131 - Bind a playbook run's allowed tools** (2026-10-13)
+
+- Class: config-expressed (`tool_search.bind_schedule_allowlist` default false keeps deferral).
+- Intent: under `tool_policy.source: agent` a schedule's `allowed-tools` list is the run's whole tool set (#43), typically 8-15 tools, yet its MCP tools were still deferred. A playbook that used one of them (bq_query in every atlas-ashish fde-trial-status fire and the dashboard refresh, 2026-10-12/13) first called it, got "deferred and has not been promoted yet", called tool_search, and then, because the chat template renders tools before the system prompt, re-read the whole 84-88k-token thread (7.5-8.3 s per fire). With the switch the allowlist names join the always-bind patterns for that run, so the tool list is fixed from the first call. Interactive runs are unchanged.
+- Files: `config/tool_search_config.py`, `agents/lead_agent/agent.py` (`deferral_exclude`), `config.example.yaml`.
+- Tests: `backend/tests/test_schedule_allowlist_binding.py` (off by default, allowlist added, no schedule no change, allowlisted MCP tool bound and others deferred, whole allowlist bound).
+- Delete-when: upstream stops deferring tools a run's own allowlist already narrows to.
+- Upstream status: argus-specific (schedule allowlists are #43).
+
+## Patch #132
+
+**Patch #132 - Prewarm the sandbox for a playbook fire on a new thread** (2026-10-13)
+
+- Class: config-expressed (`sandbox.prewarm_playbook_runs` default false keeps lazy acquisition on new threads).
+- Intent: #124 prewarms only a thread whose checkpoint already names a sandbox. Playbook fires with `history: none` (#126) start a new thread every time, so each fire still paid the 3.4-3.7 s acquire on its first file or shell call (atlas-ashish fde-trial-status, dashboard refresh, morning briefing, 2026-10-12/13). With the switch, an unattended run whose `allowed_tools` (#43) names a sandbox tool (bash, read_file, write_file, ls, glob, grep, str_replace) starts the same lease-manager `acquire_async` the first tool would make, in the background under the run's lease owner; the tool then finds that owner's binding under the per-thread serializer. Release is #124's: the run-end fence drains and releases it whether or not a tool ran. Interactive new threads and playbooks without sandbox tools stay lazy; a thread that already has a sandbox still follows `sandbox.prewarm`.
+- Files: `config/sandbox_config.py`, `sandbox/middleware.py`.
+- Tests: `backend/tests/test_sandbox_prewarm_playbook.py` (prewarm then the tool reuses the binding and run end releases it, off by default, no sandbox tools stays lazy, interactive stays lazy, existing thread still keyed on `prewarm`).
+- Delete-when: as #124.
+- Upstream status: argus-specific (playbook allowlists are #43).
+
+## Patch #133
+
+**Patch #133 - Present produced outputs instead of failing the run** (2026-10-13)
+
+- Class: config-expressed (`artifact_delivery.auto_present` default false keeps upstream's fail-closed delivery check).
+- Intent: the run worker fails a run with "Artifact delivery incomplete: no produced output artifact was presented" when it created or changed files under `/mnt/user-data/outputs` and called `present_files` on none of them. On atlas-ashish (thread 0cf0bd0e, 2026-10-12 21:45 CEST) the fifth version of a runbook was written but not presented; the turn showed as an error and the citizen had to ask "link?". With the switch, before the verdict the worker adds the produced paths to the thread's `artifacts` channel (the same reducer update `present_files` makes, via `aupdate_state` with no `as_node`, so the graph has no pending step) and records the delivery as `stage: auto_presented`, `satisfied: true`, `auto_presented_paths`. More than `artifact_delivery.max_paths` (default 20) files, a failed state update, or an agent without `aupdate_state` keep the old error.
+- Files: `config/artifact_delivery_config.py` (new), `config/app_config.py`, `runtime/runs/worker.py`.
+- Tests: `backend/tests/test_run_worker_auto_present.py` (real checkpointed graph: artifacts merged and no pending step; off by default; too many outputs; a failed update keeps the error; worker-level run succeeds with an auto_presented delivery event). `test_run_worker_delivery.py` unchanged and green.
+- Delete-when: upstream presents produced outputs itself or relaxes the check.
+- Upstream status: generic-upstreamable as an option.
+
+## Patch #134
+
+**Patch #134 - Subagents follow the #125 durable-context layout** (2026-10-13)
+
+- Class: config-expressed (rides `prompt_cache.durable_context_volatile_at_tail`, default false).
+- Intent: #125 wired the switch into the lead agent's `DurableContextMiddleware` only. The subagent chain (`build_subagent_runtime_middlewares`) built its own without it, so deep-research and other subagents still rendered the changing artifact handles right after the system prompt (atlas-nicholas canary 2026-10-12 21:41 CEST: subagent calls re-read their whole history as handles accumulated). The subagent chain now passes the same flag.
+- Files: `agents/middlewares/tool_error_handling_middleware.py`.
+- Tests: `backend/tests/test_durable_context_volatile_tail.py` (subagent chain follows the switch, default unchanged).
+- Delete-when: as #125.
+- Upstream status: part of #125.
+
+## Patch #135
+
+**Patch #135 - DeerMem memory-update runaway guards** (2026-10-13)
+
+- Class: config-expressed (every new key defaults to None = today's behaviour).
+- Intent: DeerMem's memory-update call had no completion cap, the client's default timeout and retries, and a failed update left the watermark in place, so the same batch (plus every newer turn) was fed again on the next update. atlas-ashish 2026-10-12 21:51 CEST: one update reasoned for 1,540 s, emitted 131,072 completion tokens, failed with "No valid memory update JSON object found" and was lost; the serial queue held the next update about 25 minutes. Fleet, 7 days to 2026-10-13 (LiteLLM SpendLogs, glm-5.3-flash, prompts over 20k on atlas keys, n=1,158): completion p50 2.5k, p90 40k, p95 49k, largest normal 83,782; 13 calls at the 131,072 ceiling and one at 587,460 tokens over 14,281 s; normal updates took up to 2,064 s on a slow provider. `memory.backend_config.model` gains `max_tokens`, `request_timeout_seconds` and `max_retries` (passed to `init_chat_model` as `max_tokens`, `timeout`, `max_retries`); a response cut at the cap (`finish_reason` length / max_tokens) logs a warning. `memory.backend_config.max_failed_batch_attempts`: after N consecutive failed calls for one thread the batch is skipped (watermark advanced, warning logged); a success resets the count. The counter is a bounded LRU like the watermarks.
+- Files: `agents/memory/backends/deermem/deermem/config.py`, `deermem/core/llm.py`, `deermem/core/updater.py`.
+- Tests: `backend/tests/test_deermem_runaway_guard.py` (caps passed to the client, none by default, default keeps re-feeding, skip after N failures then only new turns flow, a success resets the count).
+- Delete-when: upstream DeerMem bounds its extraction call and gives up on a poisoned batch.
+- Upstream status: generic-upstreamable.
 
 ---
 

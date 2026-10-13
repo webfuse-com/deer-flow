@@ -819,6 +819,16 @@ def _memory_with_manual_markers(memory: Any) -> Any:
     return display
 
 
+def _finish_reason(response: Any) -> str | None:
+    """[argus patch #135] The provider's finish reason for a chat response, if any."""
+    metadata = getattr(response, "response_metadata", None)
+    if isinstance(metadata, dict):
+        reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+        if isinstance(reason, str):
+            return reason
+    return None
+
+
 def _message_identity(msg: Any) -> tuple[str, ...] | None:
     """Return a hashable identity for ``msg`` for watermark tracking.
 
@@ -869,6 +879,8 @@ class MemoryUpdater:
         # gateway handling many threads cannot grow it without limit; a dropped
         # key re-extracts one batch on that thread's next turn.
         self._watermarks: OrderedDict[tuple[str | None, str | None, str | None], tuple[str, ...] | None] = OrderedDict()
+        # [argus patch #135] consecutive failed update calls per watermark key.
+        self._failed_batches: OrderedDict[tuple[str | None, str | None, str | None], int] = OrderedDict()
 
     # ── Data access + fact CRUD (formerly module-level functions; use self._storage) ──
 
@@ -1887,6 +1899,13 @@ class MemoryUpdater:
                 started=started,
                 model_name=model_name,
             )
+            if _finish_reason(response) in ("length", "max_tokens"):
+                # [argus patch #135] cut at max_tokens: the JSON is incomplete.
+                logger.warning(
+                    "Memory-update LLM output was cut at max_tokens (thread=%s, model=%s); the update fails and the batch is retried",
+                    thread_id,
+                    model_name,
+                )
             success = self._finalize_update(
                 current_memory=current_memory,
                 response_content=response.content,
@@ -1910,6 +1929,9 @@ class MemoryUpdater:
             logger.exception("Memory update failed: %s", e)
             return False
         finally:
+            # [argus patch #135] count failed calls; skip a batch that keeps failing.
+            if attempted and not bypass_watermark and messages:
+                self._track_batch_outcome((thread_id, user_id, agent_name), messages, success=success)
             # Emit metrics even when _finalize_update (or invoke) raises, so the
             # observability callback sees exception failures (parse errors,
             # storage errors after retry) rather than only the happy path. The
@@ -1933,6 +1955,43 @@ class MemoryUpdater:
                     response=response,
                     success=success,
                 )
+
+    def _track_batch_outcome(
+        self,
+        key: tuple[str | None, str | None, str | None],
+        messages: list[Any],
+        *,
+        success: bool,
+    ) -> None:
+        """[argus patch #135] Advance past a batch after N consecutive failed calls.
+
+        A failed update leaves the watermark where it was, so the same batch
+        (plus every newer turn) is fed again on the next update. When the batch
+        itself is the problem (atlas-ashish 2026-10-12: a 131,072-token reasoning
+        runaway, 1,540 s, then "No valid memory update JSON object found") that
+        repeats on every later turn. With ``max_failed_batch_attempts`` set, the
+        Nth consecutive failure for a thread advances the watermark to the last
+        message fed and logs that the batch was skipped.
+        """
+        limit = self._config.max_failed_batch_attempts
+        if success:
+            self._failed_batches.pop(key, None)
+            return
+        if limit is None:
+            return
+        count = self._failed_batches.pop(key, 0) + 1
+        if count >= limit:
+            self._watermark_set(key, _message_identity(messages[-1]))
+            logger.warning(
+                "Memory update failed %d times in a row for thread %s; skipping that batch (watermark advanced, those turns are not extracted)",
+                count,
+                key[0],
+            )
+            return
+        self._failed_batches[key] = count
+        cap = self._config.watermark_max_keys
+        if cap > 0 and len(self._failed_batches) > cap:
+            self._failed_batches.popitem(last=False)
 
     def _notify_llm_result(
         self,

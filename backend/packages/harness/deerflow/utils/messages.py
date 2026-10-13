@@ -202,6 +202,20 @@ def restore_original_human_message(message: HumanMessage) -> HumanMessage:
     )
 
 
+# [argus patch #130] HumanMessages middleware appends to a model request.
+# They are visible to the model (no hide_from_ui) but are not the user's words.
+FRAMEWORK_HUMAN_MESSAGE_NAMES: frozenset[str] = frozenset(
+    {
+        "progress_hint",  # ToolProgressMiddleware
+        "deadline_warning",  # RunDeadlineMiddleware
+        "budget_warning",  # TokenBudgetMiddleware
+        "loop_warning",  # LoopDetectionMiddleware
+        "forced_stop_synthesis",  # ForcedStopSynthesisMiddleware
+        "auto_skill_activation",  # SkillAutoRoutingMiddleware
+    }
+)
+
+
 def is_real_user_message(message: object) -> bool:
     """Return whether ``message`` is a real user-authored HumanMessage.
 
@@ -211,6 +225,11 @@ def is_real_user_message(message: object) -> bool:
     if not isinstance(message, HumanMessage):
         return False
     if message.name == SUMMARY_MESSAGE_NAME:
+        return False
+    # [argus patch #130] a progress hint or deadline warning appended to the
+    # request is not the request: auto skill routing re-targeted it, found no
+    # skill, and dropped its block for one call (two prefix-cache misses).
+    if message.name in FRAMEWORK_HUMAN_MESSAGE_NAMES:
         return False
     if message.additional_kwargs.get("hide_from_ui"):
         return False

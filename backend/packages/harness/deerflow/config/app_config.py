@@ -14,6 +14,7 @@ from deerflow.config.acp_config import ACPAgentConfig, load_acp_config_from_dict
 from deerflow.config.adaptive_reasoning_config import AdaptiveReasoningConfig
 from deerflow.config.agent_storage_config import AgentStorageConfig
 from deerflow.config.agents_api_config import AgentsApiConfig, load_agents_api_config_from_dict
+from deerflow.config.artifact_delivery_config import ArtifactDeliveryConfig
 from deerflow.config.auth_config import AuthAppConfig
 from deerflow.config.authorization_config import AuthorizationConfig, load_authorization_config_from_dict
 from deerflow.config.blob_storage_config import BlobStorageConfig, load_blob_storage_config_from_dict
@@ -323,6 +324,7 @@ class AppConfig(BaseModel):
     tool_policy: ToolPolicyConfig = Field(default_factory=ToolPolicyConfig, description="[argus patch #53] Tool authorization policy: which allowed-tools declarations gate the run's toolset")
     title: TitleConfig = Field(default_factory=TitleConfig, description="Automatic title generation configuration")
     prompt_cache: PromptCacheConfig = Field(default_factory=PromptCacheConfig, description="[argus patch #125] Prompt-prefix stability for a self-hosted prefix cache")
+    artifact_delivery: ArtifactDeliveryConfig = Field(default_factory=ArtifactDeliveryConfig, description="[argus patch #133] Run-end handling of produced but unpresented outputs")
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig, description="Conversation summarization configuration")
     task_continuity: TaskContinuityConfig = Field(default_factory=TaskContinuityConfig, description="Thread-local notes and compacted-source recall")
     memory: MemoryConfig = Field(default_factory=MemoryConfig, description="Memory subsystem configuration")

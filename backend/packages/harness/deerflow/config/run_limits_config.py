@@ -2,6 +2,15 @@
 
 from pydantic import BaseModel, Field, model_validator
 
+# [argus patch #127] Quick finishing calls a hard stop lets through once.
+DEFAULT_FINALIZE_TOOLS: tuple[str, ...] = (
+    "atlas_commit_app",
+    "atlas_commit_project",
+    "atlas_create_schedule",
+    "atlas_update_schedule",
+    "present_files",
+)
+
 
 class RunLimitsConfig(BaseModel):
     """Wall-clock ceiling for a single agent run.
@@ -42,6 +51,23 @@ class RunLimitsConfig(BaseModel):
         default=0,
         ge=0,
         description="Model-call count for the wrap-up warning; 0 disables the warning.",
+    )
+
+    # [argus patch #127] Finish on deadline. Off by default (upstream: the hard
+    # stop strips every tool call, so a commit or schedule the model had just
+    # emitted is lost).
+    finalize_on_stop: bool = Field(
+        default=False,
+        description=("When the wall-clock or model-call hard stop fires on a model message whose tool calls are ALL finalize tools, let that one batch run, then stop on the next model message. One grace step per run."),
+    )
+    finalize_tools: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_FINALIZE_TOOLS),
+        description="Tool names a hard stop lets through once when finalize_on_stop is set.",
+    )
+    final_warning_seconds_before_stop: int = Field(
+        default=120,
+        ge=0,
+        description=("With finalize_on_stop, a second wrap-up warning this many seconds before the wall-clock stop; 0 disables it."),
     )
 
     @model_validator(mode="after")

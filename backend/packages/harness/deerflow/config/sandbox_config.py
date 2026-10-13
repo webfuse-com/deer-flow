@@ -345,6 +345,15 @@ class SandboxConfig(BaseModel):
             "releases it at its end as usual. Default false matches upstream (lazy acquisition)."
         ),
     )
+    prewarm_playbook_runs: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #132] Also prewarm on a NEW thread when the run is an unattended playbook fire whose "
+            "allowed-tools list includes a sandbox tool. With `history: none` every fire starts a new thread, so "
+            "#124 (which needs a sandbox already named in the checkpoint) never fired and each fire paid the "
+            "3.4-3.7 s acquire on its first file or shell call. Default false keeps lazy acquisition."
+        ),
+    )
     command_max_chars: int = Field(
         default=10000,
         ge=1,

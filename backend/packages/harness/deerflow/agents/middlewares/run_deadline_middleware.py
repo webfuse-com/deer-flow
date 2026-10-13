@@ -63,6 +63,15 @@ _DEADLINE_WARNING_MSG = (
 _DEADLINE_EXCEEDED_MSG = "[TIME BUDGET EXCEEDED] This run hit its {budget} wall-clock limit. Producing a final answer from the work completed so far. State what was finished and what was not."
 _CALL_WARNING_MSG = "[MODEL CALL BUDGET WARNING] This run has used {used} of {budget} model calls. Finish the current implementation and verification path; do not open new work."
 _CALL_EXCEEDED_MSG = "[MODEL CALL BUDGET EXCEEDED] This run reached {budget} model calls. Returning the completed work and an explicit checkpoint for anything left."
+# [argus patch #127] Wording for runs that can commit or schedule: a final
+# answer alone loses a build the citizen asked to keep.
+_DEADLINE_WARNING_FINALIZE_MSG = (
+    "[TIME BUDGET WARNING] This run has been going for {elapsed} of its {budget} limit. "
+    "Make what works durable now: commit it and create any schedule the citizen asked for "
+    "({tools}), then answer. Do not start new work. Say plainly what is unfinished."
+)
+_FINAL_WARNING_FINALIZE_MSG = "[TIME BUDGET WARNING] About {remaining} left of the {budget} limit. If anything is still uncommitted or unscheduled, do that in your next step ({tools}), then answer."
+_FINALIZE_GRACE_MSG = "[TIME BUDGET EXCEEDED] The {budget} limit was reached; the finishing calls you just made were allowed to run. Now write the final answer: what was finished, what was not."
 
 
 def _format_duration(seconds: float) -> str:
@@ -97,6 +106,11 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
         self._call_warned: BoundedDict[str, bool] = BoundedDict(1000)
         self._pending_warnings: BoundedDict[str, list[str]] = BoundedDict(1000)
         self._model_calls: BoundedDict[str, int] = BoundedDict(1000)
+        # [argus patch #127] runs that already used their one finalize grace step,
+        # and runs that already got the near-end warning.
+        self._finalize_granted: BoundedDict[str, bool] = BoundedDict(1000)
+        self._final_warned: BoundedDict[str, bool] = BoundedDict(1000)
+        self._offers_finalize: BoundedDict[str, bool] = BoundedDict(1000)
         # Same contract as TokenBudgetMiddleware: not cleared by after_agent so
         # the executor can consume it after the run returns.
         self._stop_reason: BoundedDict[str, str] = BoundedDict(1000)
@@ -113,6 +127,9 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
             self._pending_warnings.clear()
             self._model_calls.clear()
             self._stop_reason.clear()
+            self._finalize_granted.clear()
+            self._final_warned.clear()
+            self._offers_finalize.clear()
 
     def consume_stop_reason(self, run_id: str | None) -> str | None:
         """Pop and return ``"time_capped"`` if the deadline fired for this run."""
@@ -157,6 +174,7 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
         with self._lock:
             self._warned.pop(run_id, None)
             self._pending_warnings.pop(run_id, None)
+            self._final_warned.pop(run_id, None)
             # Model calls, like elapsed time, span the worker's goal-continuation
             # invocations. They remain bounded by BoundedDict and are reset only
             # explicitly or by eviction.
@@ -202,6 +220,27 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
         # [argus patch #98] stamp the stub so the lead's synthesis turn can replace it.
         return {"messages": [mark_forced_stop(stopped_msg, reason=reason, notice=stop_msg)]}
 
+    def _finalize_grace(self, run_id: str, msg: AIMessage) -> bool:
+        """[argus patch #127] Let one batch of finishing calls through a hard stop.
+
+        True only when finalize_on_stop is set, this run has not used its grace
+        step, and every tool call on ``msg`` is a finalize tool. Caller holds
+        the lock. The next model message after the batch is stopped as usual.
+        """
+        if not self._config.finalize_on_stop or self._finalize_granted.get(run_id, False):
+            return False
+        calls = list(getattr(msg, "tool_calls", None) or [])
+        if not calls:
+            return False
+        allowed = set(self._config.finalize_tools)
+        if not all(isinstance(c, dict) and c.get("name") in allowed for c in calls):
+            return False
+        self._finalize_granted[run_id] = True
+        return True
+
+    def _tools_hint(self) -> str:
+        return ", ".join(self._config.finalize_tools)
+
     def _apply(self, state: AgentState, runtime: Runtime) -> dict | None:
         if not self._config.enabled:
             return None
@@ -224,7 +263,24 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
             elapsed = self._elapsed(run_id)
             calls = self._model_calls.get(run_id, 0)
 
-            if self._config.max_model_calls and calls >= self._config.max_model_calls:
+            capped_calls = bool(self._config.max_model_calls and calls >= self._config.max_model_calls)
+            if (capped_calls or elapsed >= budget) and self._finalize_granted.get(run_id, False) and not getattr(last_msg, "tool_calls", None):
+                # [argus patch #127] the answer after the finishing batch ends the
+                # run as written; stubbing it would cost a synthesis call to say
+                # the same thing again.
+                reason = "model_calls_capped" if capped_calls else "time_capped"
+                self._stop_reason[run_id] = reason
+                ctx = getattr(runtime, "context", None)
+                if isinstance(ctx, dict):
+                    ctx["stop_reason"] = reason
+                return None
+            if (capped_calls or elapsed >= budget) and self._finalize_grace(run_id, last_msg):
+                # [argus patch #127] the finishing batch runs; the next model message stops.
+                logger.warning("Run hard stop for run %s deferred one step for finalize calls: %s", run_id, [c.get("name") for c in last_msg.tool_calls])
+                self._pending_warnings.setdefault(run_id, []).append(_FINALIZE_GRACE_MSG.format(budget=_format_duration(budget)))
+                return None
+
+            if capped_calls:
                 logger.warning("Run model-call hard stop for run %s: %s calls", run_id, calls)
                 self._stop_reason[run_id] = "model_calls_capped"
                 ctx = getattr(runtime, "context", None)
@@ -256,11 +312,32 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
                     elapsed,
                     budget,
                 )
-                warn_text = _DEADLINE_WARNING_MSG.format(
-                    elapsed=_format_duration(elapsed),
-                    budget=_format_duration(budget),
-                )
+                if self._config.finalize_on_stop and self._offers_finalize.get(run_id, False):
+                    # [argus patch #127] a run that can commit is told to commit, not just answer.
+                    warn_text = _DEADLINE_WARNING_FINALIZE_MSG.format(
+                        elapsed=_format_duration(elapsed),
+                        budget=_format_duration(budget),
+                        tools=self._tools_hint(),
+                    )
+                else:
+                    warn_text = _DEADLINE_WARNING_MSG.format(
+                        elapsed=_format_duration(elapsed),
+                        budget=_format_duration(budget),
+                    )
                 self._pending_warnings.setdefault(run_id, []).append(warn_text)
+                return None
+
+            # [argus patch #127] one more reminder shortly before the stop.
+            lead = self._config.final_warning_seconds_before_stop
+            if self._config.finalize_on_stop and lead and self._offers_finalize.get(run_id, False) and self._warned.get(run_id, False) and elapsed >= budget - lead and not self._final_warned.get(run_id, False):
+                self._final_warned[run_id] = True
+                self._pending_warnings.setdefault(run_id, []).append(
+                    _FINAL_WARNING_FINALIZE_MSG.format(
+                        remaining=_format_duration(max(0.0, budget - elapsed)),
+                        budget=_format_duration(budget),
+                        tools=self._tools_hint(),
+                    )
+                )
                 return None
 
             if self._config.warn_at_model_calls and calls >= self._config.warn_at_model_calls and not self._call_warned.get(run_id, False):
@@ -293,12 +370,24 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
         new_messages = list(getattr(request, "messages", [])) + [warning_msg]
         return request.override(messages=new_messages)
 
+    def _note_finalize_tools(self, request: ModelRequest, run_id: str) -> None:
+        """[argus patch #127] remember whether this run's model can call a finalize tool. Caller holds the lock."""
+        if not self._config.finalize_on_stop:
+            return
+        allowed = set(self._config.finalize_tools)
+        for tool in getattr(request, "tools", None) or []:
+            name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+            if name in allowed:
+                self._offers_finalize[run_id] = True
+                return
+
     @override
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelCallResult:
         if self._config.enabled:
             run_id = self._get_run_id(request.runtime)
             with self._lock:
                 self._model_calls[run_id] = self._model_calls.get(run_id, 0) + 1
+                self._note_finalize_tools(request, run_id)
         warnings = self._drain_pending_warnings(request.runtime)
         return handler(self._inject_warnings(request, warnings))
 
@@ -308,5 +397,6 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
             run_id = self._get_run_id(request.runtime)
             with self._lock:
                 self._model_calls[run_id] = self._model_calls.get(run_id, 0) + 1
+                self._note_finalize_tools(request, run_id)
         warnings = self._drain_pending_warnings(request.runtime)
         return await handler(self._inject_warnings(request, warnings))

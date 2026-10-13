@@ -48,6 +48,15 @@ class ToolSearchConfig(BaseModel):
         ),
     )
 
+    # [argus patch #131] A schedule's allowed-tools list is short and is the
+    # run's whole tool set; deferring part of it only costs a failed call, a
+    # tool_search round and (tools render before the system prompt) a full
+    # re-read of the thread when the tool is promoted mid-run.
+    bind_schedule_allowlist: bool = Field(
+        default=False,
+        description="Bind every tool named in a playbook run's allowed-tools list instead of deferring it.",
+    )
+
     defer: list[str] = Field(
         default_factory=list,
         description=(

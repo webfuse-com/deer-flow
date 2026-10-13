@@ -1179,3 +1179,26 @@ class TestAuditRedaction:
             mw._write_audit("thread-1", cmd, "block", truncate=True)
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert "ak_6XTULMv_HhGZCbvJHtkahablGR2POKs1" not in joined
+
+
+class TestCommandTooLongMessage:
+    """[argus patch #129] The block names the limit and suggests write_file."""
+
+    def test_message_names_length_limit_and_write_file(self):
+        mw = SandboxAuditMiddleware(command_max_chars=100)
+        request = MagicMock()
+        request.tool_call = {"name": "bash", "id": "tc-1", "args": {"command": "x" * 250}}
+        request.runtime = None
+        result = mw.wrap_tool_call(request, lambda r: pytest.fail("handler must not run"))
+        assert result.status == "error"
+        assert "command too long" in result.content
+        assert "250 characters" in result.content and "limit is 100" in result.content
+        assert "write_file" in result.content
+
+    def test_other_blocks_keep_upstream_wording(self):
+        mw = SandboxAuditMiddleware()
+        request = MagicMock()
+        request.tool_call = {"name": "bash", "id": "tc-1", "args": {"command": "echo a\x00b"}}
+        request.runtime = None
+        result = mw.wrap_tool_call(request, lambda r: pytest.fail("handler must not run"))
+        assert result.content == "Command blocked: null byte detected. Please use a safer alternative approach."

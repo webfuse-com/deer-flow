@@ -65,3 +65,27 @@ def test_tail_mode_with_nothing_changing_has_no_tail_message():
     state = {"summary_text": "Earlier.", "goal": None}
     messages = _inject(DurableContextMiddleware(volatile_at_tail=True), [SystemMessage(content="sys"), HumanMessage(content="go")], state)
     assert len(_data(messages)) == 1 and messages[-1].content == "go"
+
+
+# [argus patch #134] subagents get the same layout as the lead.
+
+
+def _subagent_durable_context(volatile: bool):
+    from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
+    from deerflow.agents.middlewares.tool_error_handling_middleware import build_subagent_runtime_middlewares
+    from deerflow.config.app_config import AppConfig
+    from deerflow.config.sandbox_config import SandboxConfig
+
+    app_config = AppConfig(sandbox=SandboxConfig(use="test"))
+    app_config.prompt_cache.durable_context_volatile_at_tail = volatile
+    middlewares = build_subagent_runtime_middlewares(app_config=app_config, lazy_init=False)
+    (durable,) = [m for m in middlewares if isinstance(m, DurableContextMiddleware)]
+    return durable
+
+
+def test_subagent_chain_follows_the_tail_switch():
+    assert _subagent_durable_context(True)._volatile_at_tail is True
+
+
+def test_subagent_chain_default_is_upstream_layout():
+    assert _subagent_durable_context(False)._volatile_at_tail is False

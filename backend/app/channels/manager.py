@@ -100,6 +100,48 @@ STREAM_UPDATE_MIN_CHARS = 60  # flush immediately when this many chars accumulat
 STREAM_MODES = ["messages-tuple", "values"]
 MESSAGE_STREAM_EVENTS = ("messages-tuple", "messages")
 THREAD_BUSY_MESSAGE = "This conversation is already processing another request. Please wait for it to finish and try again."
+
+
+class RunErrorFrame(RuntimeError):
+    """[argus patch #128] A run that ended in an ``error`` SSE frame (the v1 SDK yields these, it does not raise)."""
+
+    def __init__(self, name: str, message: str) -> None:
+        # str() keeps upstream's shape (no backend message), so substring checks
+        # such as _is_thread_busy_error behave as before; repr() carries the
+        # message for the delivery report.
+        super().__init__(f"Agent run failed: {name}")
+        self.error_name = name
+        self.error_message = message
+
+    def __repr__(self) -> str:
+        return f"{self.error_name}: {self.error_message[:500]}"
+
+
+def _run_error_from_frame(data: Any) -> RunErrorFrame:
+    error_data = data if isinstance(data, dict) else {}
+    return RunErrorFrame(str(error_data.get("name") or "Error"), str(error_data.get("message") or "unknown"))
+
+
+def _unattended_failure_text(msg: Any, error: BaseException) -> str:
+    """[argus patch #128] The one-line notice a citizen gets when a scheduled run fails.
+
+    Before this, a failed Telegram playbook fire with no answer text was
+    reported as ``silent`` and nobody was told (atlas-ashish 2026-10-13, run
+    dc87e6ad: GraphRecursionError after 58 model calls, Chronos recorded ok).
+    """
+    meta = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+    schedule_id = meta.get("schedule_id")
+    name = f"'{schedule_id}'" if isinstance(schedule_id, str) and schedule_id else "A scheduled run"
+    if isinstance(error, RunErrorFrame):
+        reason = error.error_name
+        if error.error_name == "GraphRecursionError":
+            reason = "it reached the run's step limit"
+    else:
+        reason = type(error).__name__
+    lead = f"Scheduled run {name}" if name != "A scheduled run" else name
+    return f"{lead} failed before it finished ({reason}). Its report was not sent, and work after that point was not committed. The run is marked as an error in Chronos."
+
+
 # Recovery replies must say the turn was dropped: the run was rejected before
 # starting, so the triggering message never reached the agent.
 _STALE_PIN_RETRY_NOTE = "Your message was not processed — please send it again."
@@ -3597,6 +3639,12 @@ class ChannelManager:
                     # Still track values for the final result + artifact extraction.
                     if event == "values" and isinstance(data, (dict, list)):
                         last_values = data
+                    elif event == "error":
+                        # [argus patch #128] the Telegram branch skipped error
+                        # frames, so a failed run looked like an empty answer:
+                        # silent on a schedule, "(No response from agent)" in chat.
+                        stream_error = _run_error_from_frame(data)
+                        logger.warning("[Manager] stream error frame: thread_id=%s, error=%r", thread_id, stream_error)
                     continue
 
                 if event in MESSAGE_STREAM_EVENTS:
@@ -3613,7 +3661,8 @@ class ChannelManager:
                     )
                     # The v1 SDK yields backend errors as frames, not exceptions.
                     # Keep draining the stream and use the existing failure path.
-                    stream_error = RuntimeError("Agent run failed.")
+                    # [argus patch #128] keep the error name for the report.
+                    stream_error = _run_error_from_frame(data)
                 elif event == "values" and isinstance(data, (dict, list)):
                     last_values = data
                     # Clarification text is only in the values snapshot;
@@ -3693,6 +3742,9 @@ class ChannelManager:
                 elif stream_error:
                     if _is_thread_busy_error(stream_error):
                         response_text = THREAD_BUSY_MESSAGE
+                    elif msg.unattended and not pin_recovery_text:
+                        # [argus patch #128] say which schedule failed and what that means.
+                        response_text = _unattended_failure_text(msg, stream_error)
                     else:
                         response_text = pin_recovery_text or "An error occurred while processing your request. Please try again."
                 elif not _is_blank_text(latest_text):

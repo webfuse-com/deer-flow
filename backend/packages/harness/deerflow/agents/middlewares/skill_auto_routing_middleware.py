@@ -72,9 +72,17 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
             selected.append(by_name[project_name])
 
         words = _tokens(text)
+        # [argus patch #130] delegate skills route on "@name" only: a bare
+        # "claude" (atlas-ashish typo for "clause") injected the /claude
+        # delegate skill into an unrelated chat.
+        mention_only = {name.lower() for name in (getattr(self._app_config.skills, "mention_only_skills", None) or [])}
         candidates = []
         for skill in allowed:
             if skill in selected or skill.name == project_name:
+                continue
+            if skill.name.lower() in mention_only:
+                if re.search(rf"(?<![\w@])@{re.escape(skill.name)}(?![\w-])", text, re.IGNORECASE):
+                    candidates.append((len(_tokens(skill.name.replace("-", " "))) or 1, len(skill.name), skill))
                 continue
             name_tokens = _tokens(skill.name.replace("-", " "))
             if not name_tokens:

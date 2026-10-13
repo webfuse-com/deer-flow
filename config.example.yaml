@@ -1394,6 +1394,8 @@ tool_search:
   # latency than their schemas cost context. `exclude` (read: exclude FROM
   # deferral) is the historical alias for the same field.
   # always_bind: ["pythia_*", "calendar_list_events"]
+  # [argus patch #131] bind every tool a playbook run's allowed-tools names
+  # bind_schedule_allowlist: false
   # [argus patch #59] fnmatch patterns of NON-MCP (builtin/config) tool names
   # to defer like MCP tools: name-only in <available-deferred-tools> until
   # promoted via an explicit tool_search call. For cold tools whose intrinsic
@@ -1647,6 +1649,11 @@ pii_redaction:
 #   warn_at_seconds: 1200      # must be < wall_clock_seconds
 #   max_model_calls: 0         # 0 disables the model-call ceiling
 #   warn_at_model_calls: 0     # 0 disables the call-count warning
+#   # [argus patch #127] let one batch of finishing calls (commit, schedule,
+#   # present) run when a hard stop fires, then stop on the next message.
+#   finalize_on_stop: false
+#   finalize_tools: [atlas_commit_app, atlas_commit_project, atlas_create_schedule, atlas_update_schedule, present_files]
+#   final_warning_seconds_before_stop: 120   # second reminder; 0 disables
 
 # ============================================================================
 # Read-Before-Write File Gate (issue #3857)
@@ -2240,6 +2247,8 @@ skills:
   # auto_route: false
   # project_skill_name: project-workspace
   # max_auto_activated: 2
+  # [argus patch #130] delegate skills route only on an explicit @name mention
+  # mention_only_skills: [claude, gpt, opencode, myrmidon]
 
 # Use the normal reasoning model for user turns, research, and errors, but a
 # no-thinking variant after successful deterministic tools. Disabled by default.
