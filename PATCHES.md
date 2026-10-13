@@ -2631,6 +2631,17 @@ carry budget ledger.
 - Delete-when: upstream stops deferring tools a run's own allowlist already narrows to.
 - Upstream status: argus-specific (schedule allowlists are #43).
 
+## Patch #132
+
+**Patch #132 - Prewarm the sandbox for a playbook fire on a new thread** (2026-10-13)
+
+- Class: config-expressed (`sandbox.prewarm_playbook_runs` default false keeps lazy acquisition on new threads).
+- Intent: #124 prewarms only a thread whose checkpoint already names a sandbox. Playbook fires with `history: none` (#126) start a new thread every time, so each fire still paid the 3.4-3.7 s acquire on its first file or shell call (atlas-ashish fde-trial-status, dashboard refresh, morning briefing, 2026-10-12/13). With the switch, an unattended run whose `allowed_tools` (#43) names a sandbox tool (bash, read_file, write_file, ls, glob, grep, str_replace) starts the same lease-manager `acquire_async` the first tool would make, in the background under the run's lease owner; the tool then finds that owner's binding under the per-thread serializer. Release is #124's: the run-end fence drains and releases it whether or not a tool ran. Interactive new threads and playbooks without sandbox tools stay lazy; a thread that already has a sandbox still follows `sandbox.prewarm`.
+- Files: `config/sandbox_config.py`, `sandbox/middleware.py`.
+- Tests: `backend/tests/test_sandbox_prewarm_playbook.py` (prewarm then the tool reuses the binding and run end releases it, off by default, no sandbox tools stays lazy, interactive stays lazy, existing thread still keyed on `prewarm`).
+- Delete-when: as #124.
+- Upstream status: argus-specific (playbook allowlists are #43).
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)

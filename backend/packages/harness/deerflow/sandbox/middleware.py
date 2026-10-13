@@ -52,6 +52,18 @@ class SandboxMiddlewareState(AgentState):
     thread_data: NotRequired[ThreadDataState | None]
 
 
+# [argus patch #132] Tools that run in the sandbox.
+_SANDBOX_TOOL_NAMES = frozenset({"bash", "read_file", "write_file", "ls", "glob", "grep", "str_replace"})
+
+
+def _playbook_run_uses_sandbox(context: dict) -> bool:
+    """True for an unattended playbook fire whose allowed-tools list names a sandbox tool."""
+    allowed = context.get("allowed_tools")
+    if not context.get("unattended") or not isinstance(allowed, list):
+        return False
+    return any(name in _SANDBOX_TOOL_NAMES for name in allowed)
+
+
 class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
     """Create a sandbox environment and assign it to an agent.
 
@@ -445,22 +457,38 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             return
         sandbox, fork_restored = unwrap_sandbox(state.get("sandbox"))
         existing_sandbox_id = (sandbox or {}).get("sandbox_id")
-        if not existing_sandbox_id or fork_restored:
+        if fork_restored:
             return
         app_config = await safe_app_config_async()
-        if not getattr(getattr(app_config, "sandbox", None), "prewarm", False):
+        sandbox_config = getattr(app_config, "sandbox", None)
+        if existing_sandbox_id:
+            if not getattr(sandbox_config, "prewarm", False):
+                return
+        elif not (getattr(sandbox_config, "prewarm_playbook_runs", False) is True and _playbook_run_uses_sandbox(context)):
+            # [argus patch #132] a new thread prewarms only for a playbook fire
+            # that is allowed sandbox tools.
             return
 
         async def prewarm() -> str | None:
             try:
                 await authorize_sandbox_execution_async(context=context, app_config=app_config)
                 provider = get_sandbox_provider()
-                sandbox_id = await get_sandbox_lease_manager(provider).reuse_or_acquire_async(
-                    owner_id,
-                    existing_sandbox_id,
-                    thread_id=thread_id,
-                    user_id=user_id,
-                )
+                if existing_sandbox_id:
+                    sandbox_id = await get_sandbox_lease_manager(provider).reuse_or_acquire_async(
+                        owner_id,
+                        existing_sandbox_id,
+                        thread_id=thread_id,
+                        user_id=user_id,
+                    )
+                else:
+                    # [argus patch #132] the same acquire the first tool would
+                    # make; under the per-thread serializer that tool then finds
+                    # this owner's binding instead of starting its own.
+                    sandbox_id = await get_sandbox_lease_manager(provider).acquire_async(
+                        owner_id,
+                        thread_id,
+                        user_id=user_id,
+                    )
                 context["sandbox_id"] = sandbox_id
                 return sandbox_id
             except Exception:
