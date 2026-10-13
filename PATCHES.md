@@ -2620,6 +2620,17 @@ carry budget ledger.
 - Delete-when: upstream excludes injected hints from user-intent detection and offers mention-only routing.
 - Upstream status: (a) generic-upstreamable; (b) generic-upstreamable as a config list.
 
+## Patch #131
+
+**Patch #131 - Bind a playbook run's allowed tools** (2026-10-13)
+
+- Class: config-expressed (`tool_search.bind_schedule_allowlist` default false keeps deferral).
+- Intent: under `tool_policy.source: agent` a schedule's `allowed-tools` list is the run's whole tool set (#43), typically 8-15 tools, yet its MCP tools were still deferred. A playbook that used one of them (bq_query in every atlas-ashish fde-trial-status fire and the dashboard refresh, 2026-10-12/13) first called it, got "deferred and has not been promoted yet", called tool_search, and then, because the chat template renders tools before the system prompt, re-read the whole 84-88k-token thread (7.5-8.3 s per fire). With the switch the allowlist names join the always-bind patterns for that run, so the tool list is fixed from the first call. Interactive runs are unchanged.
+- Files: `config/tool_search_config.py`, `agents/lead_agent/agent.py` (`deferral_exclude`), `config.example.yaml`.
+- Tests: `backend/tests/test_schedule_allowlist_binding.py` (off by default, allowlist added, no schedule no change, allowlisted MCP tool bound and others deferred, whole allowlist bound).
+- Delete-when: upstream stops deferring tools a run's own allowlist already narrows to.
+- Upstream status: argus-specific (schedule allowlists are #43).
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)

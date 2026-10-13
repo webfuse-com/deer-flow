@@ -961,6 +961,19 @@ def build_middlewares(
     )
 
 
+def deferral_exclude(tool_search_config, extra_allowed: set[str] | None) -> list[str]:
+    """[argus patch #131] Always-bind patterns for this run.
+
+    With ``tool_search.bind_schedule_allowlist`` a playbook run's allowed-tools
+    list (``extra_allowed``) is bound in full: no mid-run tool_search promotion
+    of a tool the schedule already granted.
+    """
+    patterns = list(getattr(tool_search_config, "exclude", ()) or ())
+    if extra_allowed and getattr(tool_search_config, "bind_schedule_allowlist", False) is True:
+        patterns.extend(sorted(name for name in extra_allowed if name not in patterns))
+    return patterns
+
+
 def _available_skill_names(agent_config, is_bootstrap: bool) -> set[str] | None:
     if is_bootstrap:
         return set(_BOOTSTRAP_SKILL_NAMES)
@@ -1523,7 +1536,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     final_tools, setup = assemble_deferred_tools(
         configured_tools,
         enabled=resolved_app_config.tool_search.enabled,
-        exclude=getattr(resolved_app_config.tool_search, "exclude", ()),
+        exclude=deferral_exclude(resolved_app_config.tool_search, extra_allowed),
         defer=getattr(resolved_app_config.tool_search, "defer", ()),
     )
     final_tools.extend(late_tools)

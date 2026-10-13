@@ -1394,6 +1394,8 @@ tool_search:
   # latency than their schemas cost context. `exclude` (read: exclude FROM
   # deferral) is the historical alias for the same field.
   # always_bind: ["pythia_*", "calendar_list_events"]
+  # [argus patch #131] bind every tool a playbook run's allowed-tools names
+  # bind_schedule_allowlist: false
   # [argus patch #59] fnmatch patterns of NON-MCP (builtin/config) tool names
   # to defer like MCP tools: name-only in <available-deferred-tools> until
   # promoted via an explicit tool_search call. For cold tools whose intrinsic
