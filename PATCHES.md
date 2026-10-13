@@ -184,6 +184,15 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#124](#patch-124) | `sandbox.prewarm`: a working thread's sandbox is reclaimed in the background at run start under the run's lease owner; the run-end fence drains it before releasing | config-expressed | this PR |
 | [#125](#patch-125) | `prompt_cache.durable_context_volatile_at_tail`: the durable-context parts that change during a run (ledger, active skills, artifact handles, task notes) render in a second hidden data message at the tail; goal and summary stay at the head | config-expressed | this PR |
 | [#126](#patch-126) | Playbook fire `history: none`: a schedule's own IM topic (`sched:<id>`) gets a new thread per run in the same chat | argus-edit | this PR |
+| [#127](#patch-127) | `run_limits.finalize_on_stop`: at a hard stop, a batch of only finalize tools (commit, schedule, present) runs once, then the run ends; build runs get commit-and-schedule warnings | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#128](#patch-128) | A Telegram run that errors is reported to Chronos as failed and the citizen gets a one-line notice, instead of staying silent | argus-edit | webfuse-com/deer-flow PR 113 |
+| [#129](#patch-129) | "Command too long" names the length, the limit and write_file | argus-edit | webfuse-com/deer-flow PR 113 |
+| [#130](#patch-130) | Skill auto-routing ignores framework-injected hints; `skills.mention_only_skills` route only on @name or /name | argus-edit + config-expressed | webfuse-com/deer-flow PR 113 |
+| [#131](#patch-131) | `tool_search.bind_schedule_allowlist`: a playbook run binds its allow-listed tools instead of deferring them | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#132](#patch-132) | `sandbox.prewarm_playbook_runs`: a playbook fire with sandbox tools prewarms on a new thread too | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#133](#patch-133) | `artifact_delivery.auto_present`: unpresented outputs are presented instead of failing the run | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#134](#patch-134) | Subagents follow the #125 durable-context layout (rides `prompt_cache.durable_context_volatile_at_tail`) | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#135](#patch-135) | DeerMem update runaway guards: `max_tokens`, `request_timeout_seconds`, `max_retries`, `max_failed_batch_attempts` | config-expressed | webfuse-com/deer-flow PR 113 |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
