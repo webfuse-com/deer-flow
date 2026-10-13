@@ -1787,6 +1787,7 @@ def test_open_mode_replacement_destroy_removes_restricted_sidecar_and_networks(m
         "_cleanup_restricted_resources",
         lambda sandbox_id, *, stop_sandbox=True, remove_proxy=True: cleaned.append((sandbox_id, stop_sandbox, remove_proxy)),
     )
+    monkeypatch.setattr(backend, "_batch_inspect", lambda names, **_kwargs: {names[0]: _labelled_sandbox("old-restricted", "allowlist")})
 
     backend.destroy(
         SandboxInfo(
@@ -1799,6 +1800,42 @@ def test_open_mode_replacement_destroy_removes_restricted_sidecar_and_networks(m
 
     assert stopped == ["sandbox-old-restricted"]
     assert cleaned == [("old-restricted", False, True), ("old-restricted", False, False)]
+
+
+def _labelled_sandbox(sandbox_id: str, mode: str) -> _ContainerInspection:
+    labels = {"deerflow.role": "sandbox", "deerflow.sandbox_id": sandbox_id, "deerflow.network_mode": mode}
+    return _ContainerInspection(1.0, 8080, labels, "sandbox:latest", frozenset())
+
+
+def _fail_inspect(_names, **_kwargs):
+    raise RuntimeError("inspect failed")
+
+
+@pytest.mark.parametrize(
+    ("inspect", "expect_cleanup"),
+    [
+        (lambda names, **_kwargs: {names[0]: _labelled_sandbox("quarantined", "open")}, False),
+        (lambda names, **_kwargs: {}, True),
+        (_fail_inspect, True),
+    ],
+    ids=["open-sandbox-has-no-sidecar", "absent-sandbox-keeps-cleanup", "unreadable-sandbox-keeps-cleanup"],
+)
+def test_open_mode_replacement_destroy_touches_sidecar_only_for_restricted_sandbox(monkeypatch, inspect, expect_cleanup):
+    # [argus] patch #142: an open sandbox replaced in open mode (quarantine,
+    # shell capacity) never had a netproxy. Touching its fixed name made a
+    # per-stack engine proxy refuse the stop and aborted the main teardown.
+    backend = _backend_for_inspect_tests()
+    stopped: list[str] = []
+    cleaned: list[str] = []
+    monkeypatch.setattr(backend, "_stop_container", stopped.append)
+    monkeypatch.setattr(backend, "_remove_restricted_proxy", cleaned.append)
+    monkeypatch.setattr(backend, "_cleanup_restricted_resources", lambda sandbox_id, **_kwargs: cleaned.append(sandbox_id))
+    monkeypatch.setattr(backend, "_batch_inspect", inspect)
+
+    backend.destroy(SandboxInfo(sandbox_id="quarantined", sandbox_url="", container_name="sandbox-quarantined", requires_replacement=True))
+
+    assert stopped == ["sandbox-quarantined"]
+    assert cleaned == (["quarantined", "quarantined"] if expect_cleanup else [])
 
 
 def test_deny_pending_network_policy_events_uses_atomic_proxy_command(monkeypatch):

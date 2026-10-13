@@ -1350,7 +1350,7 @@ class LocalContainerBackend(SandboxBackend):
         elif port:
             with self._pending_cleanup_ports_lock:
                 self._unknown_cleanup_ports.setdefault(info.sandbox_id, set()).add(port)
-        restricted_cleanup = self._runtime == "docker" and (self._network_mode != "open" or info.requires_replacement)
+        restricted_cleanup = self._runtime == "docker" and (self._network_mode != "open" or (info.requires_replacement and self._may_hold_restricted_resources(info)))
         # Keep the main generation inspectable if proxy teardown fails. Once
         # its proxy is removed, a failed main stop retains the known reservation
         # above for a subsequent generation-fenced retry.
@@ -1377,6 +1377,24 @@ class LocalContainerBackend(SandboxBackend):
                 self._forget_unknown_cleanup_port(info.sandbox_id, port)
         if restricted_cleanup:
             self._cleanup_restricted_resources(info.sandbox_id, stop_sandbox=False, remove_proxy=False)
+
+    def _may_hold_restricted_resources(self, info: SandboxInfo) -> bool:
+        """[argus] patch #142: whether an open-mode replacement can own a sidecar.
+
+        Only a sandbox provisioned under a restricted mode has a netproxy and
+        networks to remove. Open-mode quarantine and shell-capacity
+        replacements never had them, and a per-stack engine proxy that admits
+        only the stack's own sandbox names refuses the fixed
+        ``deer-flow-netproxy-*`` name: every such destroy aborted before the
+        main stop and was retried each minute. The sandbox's own labels
+        decide; an unreadable or absent sandbox keeps the upstream cleanup.
+        """
+        name = info.container_name or f"{self._container_prefix}-{info.sandbox_id}"
+        try:
+            inspection = self._batch_inspect([name], strict=True).get(name)
+        except RuntimeError:
+            return True
+        return inspection is None or self._persisted_sandbox_mode(inspection, info.sandbox_id) != "open"
 
     def _forget_unknown_cleanup_port(self, sandbox_id: str, port: int) -> None:
         """Remove a released reservation; caller holds the cleanup ledger lock."""

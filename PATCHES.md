@@ -194,6 +194,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#134](#patch-134) | Subagents follow the #125 durable-context layout (rides `prompt_cache.durable_context_volatile_at_tail`) | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#135](#patch-135) | DeerMem update runaway guards: `max_tokens`, `request_timeout_seconds`, `max_retries`, `max_failed_batch_attempts` | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#141](#patch-141) | Cross-tab preferences sync: a storage event refetches only when another tab's value disagrees on a field both know, throttled to one read per 2 s (two tabs on different bundles ping-ponged GET /api/v1/auth/preferences at network speed) | argus-edit | this PR |
+| [#142](#patch-142) | Open-mode sandbox replacement removes the restricted netproxy only when the sandbox itself was provisioned restricted (an engine proxy that admits only the stack's sandbox names refused the fixed `deer-flow-netproxy-*` stop, aborting every quarantine recycle) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2694,6 +2695,17 @@ carry budget ledger.
 - Tests: `frontend/tests/unit/core/settings/user-preferences-crosstab.dom.test.tsx` (an older sibling tab that rewrites the same reply in four fields: 1 request instead of an unbounded loop; a genuinely different value from another tab still refetches; a burst of 20 storage events costs at most 2 requests). `user-preferences.dom.test.tsx` now watches `safeLocalStorage.setItem`: jsdom's Storage proxy bypasses `Storage.prototype`, so the old spy could not see any write.
 - Delete-when: upstream compares cross-tab preference writes semantically or stops refetching on storage events.
 - Upstream status: generic-upstreamable (any release that adds a preference field triggers it for users with long-lived tabs).
+
+## Patch #142
+
+**Patch #142 - Open-mode replacement does not touch a netproxy it never had** (2026-10-13)
+
+- Class: argus-edit (harness; `LocalContainerBackend.destroy`).
+- Intent: `destroy` removed the restricted-mode sidecar `deer-flow-netproxy-<digest>` and its networks whenever `requires_replacement` was set, even in an open-mode process replacing a sandbox that was itself provisioned open (an uncertain-shell-outcome quarantine, a shell-capacity mismatch). Such a sandbox never had a sidecar. On Argus the gateway reaches the engine through a per-stack socket proxy that admits only the stack's own `argus-<stack>-sandbox-*` names, so the fixed, unprefixed sidecar name is refused (403), the stop raises before the main container is stopped, and startup reconciliation retries every minute: atlas-aphiwe from 2026-10-11 22:11 CEST and atlas-vamsi 2026-10-13 18:25-20:58 CEST, about 60 refusals an hour, a stuck 3 GB sandbox each, and Cerberus `sockproxy_policy_probe` findings until a gateway restart. The cleanup now runs for an open-mode replacement only when the sandbox's own labels (`_persisted_sandbox_mode`) say it was provisioned under a restricted mode. Restricted-mode processes are unchanged, and a sandbox that is absent or cannot be inspected keeps the upstream cleanup.
+- Files: `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py`.
+- Tests: `backend/tests/test_aio_sandbox_local_backend.py` (`test_open_mode_replacement_destroy_touches_sidecar_only_for_restricted_sandbox`: an open-labelled sandbox is stopped with no sidecar or network cleanup; absent and unreadable sandboxes keep the cleanup. The upstream `test_open_mode_replacement_destroy_removes_restricted_sidecar_and_networks` now states that its sandbox was labelled `allowlist`).
+- Delete-when: upstream records the provisioned mode on `SandboxInfo`, or treats a refused sidecar teardown as absent for open-provisioned sandboxes.
+- Upstream status: generic-upstreamable (any deployment that scopes engine access by sandbox name hits it).
 
 ---
 
