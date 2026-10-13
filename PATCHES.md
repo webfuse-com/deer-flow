@@ -2576,6 +2576,17 @@ carry budget ledger.
 - Delete-when: the external scheduler can ask for a fresh IM thread natively.
 - Upstream status: argus-specific (the playbook fire endpoint is argus).
 
+## Patch #127
+
+**Patch #127 - Finish on deadline** (2026-10-13)
+
+- Class: config-expressed (`run_limits.finalize_on_stop` default false keeps the upstream hard stop).
+- Intent: at `wall_clock_seconds` (or `max_model_calls`) the hard stop strips every tool call on the model message that crossed the limit. On atlas-ashish (Ariadne trace 605cfd06, 2026-10-12) that message carried three `atlas_create_schedule` calls for the daily refresh the citizen had asked for; they never ran, so the app was committed but never refreshed. With the switch, a message whose tool calls are ALL in `run_limits.finalize_tools` (default: atlas_commit_app, atlas_commit_project, atlas_create_schedule, atlas_update_schedule, present_files) runs once; the next model call gets a short "the finishing calls ran, now answer" note; a tool-free answer then ends the run as written (stop_reason still stamped, no #98 synthesis call), and any further tool call is stopped as before. One grace step per run, a mixed batch is stripped. A run whose model can call a finalize tool also gets warning wording that says to commit and schedule what works now, and a second reminder `final_warning_seconds_before_stop` (default 120) before the stop.
+- Files: `config/run_limits_config.py`, `agents/middlewares/run_deadline_middleware.py`, `config.example.yaml`.
+- Tests: `backend/tests/test_run_deadline_finalize.py` (off by default, one batch then stop, answer after grace has no stub, mixed batch stripped, grace on the model-call cap, grace note injected, build wording and second warning, chat runs keep the upstream wording).
+- Delete-when: upstream lets pending side-effect calls complete at a run deadline.
+- Upstream status: generic-upstreamable (the allowlist is config).
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)

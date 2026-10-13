@@ -1647,6 +1647,11 @@ pii_redaction:
 #   warn_at_seconds: 1200      # must be < wall_clock_seconds
 #   max_model_calls: 0         # 0 disables the model-call ceiling
 #   warn_at_model_calls: 0     # 0 disables the call-count warning
+#   # [argus patch #127] let one batch of finishing calls (commit, schedule,
+#   # present) run when a hard stop fires, then stop on the next message.
+#   finalize_on_stop: false
+#   finalize_tools: [atlas_commit_app, atlas_commit_project, atlas_create_schedule, atlas_update_schedule, present_files]
+#   final_warning_seconds_before_stop: 120   # second reminder; 0 disables
 
 # ============================================================================
 # Read-Before-Write File Gate (issue #3857)
