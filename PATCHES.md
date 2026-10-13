@@ -2664,6 +2664,17 @@ carry budget ledger.
 - Delete-when: as #125.
 - Upstream status: part of #125.
 
+## Patch #135
+
+**Patch #135 - DeerMem memory-update runaway guards** (2026-10-13)
+
+- Class: config-expressed (every new key defaults to None = today's behaviour).
+- Intent: DeerMem's memory-update call had no completion cap, the client's default timeout and retries, and a failed update left the watermark in place, so the same batch (plus every newer turn) was fed again on the next update. atlas-ashish 2026-10-12 21:51 CEST: one update reasoned for 1,540 s, emitted 131,072 completion tokens, failed with "No valid memory update JSON object found" and was lost; the serial queue held the next update about 25 minutes. Fleet, 7 days to 2026-10-13 (LiteLLM SpendLogs, glm-5.3-flash, prompts over 20k on atlas keys, n=1,158): completion p50 2.5k, p90 40k, p95 49k, largest normal 83,782; 13 calls at the 131,072 ceiling and one at 587,460 tokens over 14,281 s; normal updates took up to 2,064 s on a slow provider. `memory.backend_config.model` gains `max_tokens`, `request_timeout_seconds` and `max_retries` (passed to `init_chat_model` as `max_tokens`, `timeout`, `max_retries`); a response cut at the cap (`finish_reason` length / max_tokens) logs a warning. `memory.backend_config.max_failed_batch_attempts`: after N consecutive failed calls for one thread the batch is skipped (watermark advanced, warning logged); a success resets the count. The counter is a bounded LRU like the watermarks.
+- Files: `agents/memory/backends/deermem/deermem/config.py`, `deermem/core/llm.py`, `deermem/core/updater.py`.
+- Tests: `backend/tests/test_deermem_runaway_guard.py` (caps passed to the client, none by default, default keeps re-feeding, skip after N failures then only new turns flow, a success resets the count).
+- Delete-when: upstream DeerMem bounds its extraction call and gives up on a poisoned batch.
+- Upstream status: generic-upstreamable.
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)

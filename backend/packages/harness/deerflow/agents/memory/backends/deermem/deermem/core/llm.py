@@ -48,6 +48,13 @@ def build_llm(model_config: DeerMemModelConfig | None) -> Any:
         kwargs["base_url"] = model_config.base_url
     if model_config.temperature is not None:
         kwargs["temperature"] = model_config.temperature
+    # [argus patch #135] runaway guards (langchain's common chat-model kwargs).
+    if model_config.max_tokens is not None:
+        kwargs["max_tokens"] = model_config.max_tokens
+    if model_config.request_timeout_seconds is not None:
+        kwargs["timeout"] = model_config.request_timeout_seconds
+    if model_config.max_retries is not None:
+        kwargs["max_retries"] = model_config.max_retries
     try:
         return init_chat_model(
             model=model_config.model,

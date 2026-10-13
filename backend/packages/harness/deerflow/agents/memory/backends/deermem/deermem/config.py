@@ -41,6 +41,23 @@ class DeerMemModelConfig(BaseModel):
     api_key: str | None = Field(default=None, description="API key (or rely on the provider's env var).")
     base_url: str | None = Field(default=None, description="Override base URL (e.g. an OpenAI-compatible gateway).")
     temperature: float | None = Field(default=None, description="Sampling temperature.")
+    # [argus patch #135] Runaway guards. None = the provider client's default
+    # (no completion cap, the client's own timeout and retries).
+    max_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        description="Completion-token cap for one memory-update call (reasoning included). None = no cap.",
+    )
+    request_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description="Per-request timeout for one memory-update call. None = the client default.",
+    )
+    max_retries: int | None = Field(
+        default=None,
+        ge=0,
+        description="Client retries per memory-update call. None = the client default (2 for OpenAI-compatible), which multiplies a timeout.",
+    )
 
 
 class DeerMemConfig(BaseModel):
@@ -314,6 +331,16 @@ class DeerMemConfig(BaseModel):
         ),
     )
     # ── Watermark cache (in-memory, bounded LRU) ─────────────────────────
+    # [argus patch #135] Stop re-feeding a batch that keeps failing.
+    max_failed_batch_attempts: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "After this many consecutive failed update calls for one thread (parse error, timeout, a cut at "
+            "max_tokens), skip that batch: advance the watermark and log a warning. None = keep retrying the "
+            "growing batch on every later turn (upstream)."
+        ),
+    )
     watermark_max_keys: int = Field(
         default=4096,
         ge=0,
