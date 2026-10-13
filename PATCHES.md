@@ -2587,6 +2587,17 @@ carry budget ledger.
 - Delete-when: upstream lets pending side-effect calls complete at a run deadline.
 - Upstream status: generic-upstreamable (the allowlist is config).
 
+## Patch #128
+
+**Patch #128 - A failed Telegram run is reported as failed** (2026-10-13)
+
+- Class: argus-edit (bug fix, no switch).
+- Intent: the Telegram branch of `ChannelManager._handle_streaming_chat` tracks stage emojis and `values`, then `continue`s before the `error` frame check the other channels use. A run that ended in an `error` frame therefore looked like an empty answer: a scheduled fire was reported to Chronos as `silent` (closed `ok`) and the citizen heard nothing; an interactive turn showed "(No response from agent)". atlas-ashish 2026-10-13 07:27 CEST, run dc87e6ad: the Surfly dashboard refresh hit GraphRecursionError after 58 model calls, nothing was committed or sent, Chronos run 42623 recorded ok. The Telegram branch now records the error frame. An unattended fire with no answer text sends one line naming the schedule and the cause ("reached the run's step limit" for GraphRecursionError) and reports `failed` with `<name>: <message>`, which Chronos already closes as `error` (`scheduler/src/routes/api.py::report_run_output`). Partial answer text is still delivered as before and reported `failed`. Error frames on every channel now keep their name (`RunErrorFrame`; `str()` keeps upstream's text so the thread-busy check is unchanged).
+- Files: `app/channels/manager.py`.
+- Tests: `backend/tests/test_channel_unattended_run_error.py` (failed fire notifies and reports failed, a clean empty fire stays silent, interactive Telegram error shows the error text, partial text kept and reported failed); `test_channel_stream_errors.py` unchanged and green.
+- Delete-when: upstream's Telegram streaming path consumes error frames.
+- Upstream status: generic-upstreamable for the error-frame half; the notice is argus (playbook fires).
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
