@@ -318,6 +318,23 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
 
     def _build_block_message(self, request: ToolCallRequest, reason: str) -> ToolMessage:
         tool_call_id = str(request.tool_call.get("id") or "missing_id")
+        if reason == "command too long":
+            # [argus patch #129] Name the limit and the way out. The generic
+            # "safer alternative" left the model guessing: atlas-ashish
+            # 605cfd06 generated a 6,203-token heredoc for 82 s, got this
+            # message, and had to work out write_file on its own.
+            raw = request.tool_call.get("args", {}).get("command")
+            length = len(raw) if isinstance(raw, str) else 0
+            return ToolMessage(
+                content=(
+                    f"Command blocked: command too long ({length:,} characters; the limit is {self._command_max_chars:,}). "
+                    "Nothing ran. Write the script or data to a file with write_file, then run it with a short bash command "
+                    "(for example: python3 /mnt/user-data/workspace/script.py)."
+                ),
+                tool_call_id=tool_call_id,
+                name="bash",
+                status="error",
+            )
         return ToolMessage(
             content=f"Command blocked: {reason}. Please use a safer alternative approach.",
             tool_call_id=tool_call_id,

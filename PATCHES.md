@@ -2598,6 +2598,17 @@ carry budget ledger.
 - Delete-when: upstream's Telegram streaming path consumes error frames.
 - Upstream status: generic-upstreamable for the error-frame half; the notice is argus (playbook fires).
 
+## Patch #129
+
+**Patch #129 - "Command too long" says the limit and what to do** (2026-10-13)
+
+- Class: argus-edit (message only, no switch).
+- Intent: `SandboxAuditMiddleware` rejected an over-long bash command with "Command blocked: command too long. Please use a safer alternative approach." atlas-ashish trace 605cfd06 (2026-10-12) spent 82 s generating a 6,203-token heredoc, got that message, and had to infer the fix. The block now names the command length and the configured `sandbox.command_max_chars`, says nothing ran, and points at write_file plus a short bash command. Other block reasons keep upstream's wording.
+- Files: `agents/middlewares/sandbox_audit_middleware.py`.
+- Tests: `backend/tests/test_sandbox_audit_middleware.py::TestCommandTooLongMessage`.
+- Delete-when: upstream's rejection message carries the limit and an alternative.
+- Upstream status: generic-upstreamable.
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
