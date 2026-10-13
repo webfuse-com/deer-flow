@@ -8,6 +8,7 @@ import {
   DEFAULT_LOCAL_SETTINGS,
   getLocalSettings,
   LOCAL_SETTINGS_KEY,
+  safeLocalStorage,
 } from "@/core/settings/local";
 import {
   getBaseSettingsSnapshot,
@@ -278,7 +279,8 @@ describe("authenticated workspace preferences", () => {
     mocks.fetch.mockImplementation(async () => Response.json({ mode: "pro" }));
     render(<Workspace />);
     await screen.findByText("true:default:pro");
-    const writes = rs.spyOn(Storage.prototype, "setItem");
+    // jsdom's Storage proxy bypasses Storage.prototype, so watch the facade.
+    const writes = rs.spyOn(safeLocalStorage, "setItem");
     act(() => {
       window.dispatchEvent(
         new StorageEvent("storage", { key: "deerflow.preferences.alice" }),

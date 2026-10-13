@@ -193,6 +193,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#133](#patch-133) | `artifact_delivery.auto_present`: unpresented outputs are presented instead of failing the run | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#134](#patch-134) | Subagents follow the #125 durable-context layout (rides `prompt_cache.durable_context_volatile_at_tail`) | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#135](#patch-135) | DeerMem update runaway guards: `max_tokens`, `request_timeout_seconds`, `max_retries`, `max_failed_batch_attempts` | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#141](#patch-141) | Cross-tab preferences sync: a storage event refetches only when another tab's value disagrees on a field both know, throttled to one read per 2 s (two tabs on different bundles ping-ponged GET /api/v1/auth/preferences at network speed) | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2683,6 +2684,16 @@ carry budget ledger.
 - Tests: `backend/tests/test_deermem_runaway_guard.py` (caps passed to the client, none by default, default keeps re-feeding, skip after N failures then only new turns flow, a success resets the count).
 - Delete-when: upstream DeerMem bounds its extraction call and gives up on a poisoned batch.
 - Upstream status: generic-upstreamable.
+## Patch #141
+
+**Patch #141 - Cross-tab preferences sync cannot ping-pong** (2026-10-13)
+
+- Class: argus-edit (frontend; no overlay exists for the frontend).
+- Intent: every tab caches the account's preferences under `deerflow.preferences.<user>` and refetched `GET /api/v1/auth/preferences` on every `storage` event for that key, then rewrote the key when its own serialization differed. Two tabs whose bundles parse the same reply differently never agree: a tab loaded before upstream added the `locale` preference (#6393, reached the fleet in the 2026-10-10 sync) stores four fields, a newer tab five, so each write made the other tab refetch and rewrite at network speed. atlas-ashish served 406k such GETs and atlas-salome 290k between 10:00 and 16:00 CEST on 2026-10-12 (about 33 per second from one browser), salome again from 07:39 CEST on 2026-10-13 with four tabs open; 41% of the user journal in that window, which pushed older gateway logs out. A storage event now refetches only when the stored value disagrees with this tab on a field both know (a missing field counts as unknown, not as a difference), and storage-driven refetches are throttled to one per 2 s with a trailing refetch. Focus, online, start and edits still read the server as before.
+- Files: `frontend/src/core/settings/user-preferences.ts`.
+- Tests: `frontend/tests/unit/core/settings/user-preferences-crosstab.dom.test.tsx` (an older sibling tab that rewrites the same reply in four fields: 1 request instead of an unbounded loop; a genuinely different value from another tab still refetches; a burst of 20 storage events costs at most 2 requests). `user-preferences.dom.test.tsx` now watches `safeLocalStorage.setItem`: jsdom's Storage proxy bypasses `Storage.prototype`, so the old spy could not see any write.
+- Delete-when: upstream compares cross-tab preference writes semantically or stops refetching on storage events.
+- Upstream status: generic-upstreamable (any release that adds a preference field triggers it for users with long-lived tabs).
 
 ---
 
