@@ -2609,6 +2609,17 @@ carry budget ledger.
 - Delete-when: upstream's rejection message carries the limit and an alternative.
 - Upstream status: generic-upstreamable.
 
+## Patch #130
+
+**Patch #130 - Skill auto-routing: ignore framework hints, delegate skills on @name only** (2026-10-13)
+
+- Class: (a) argus-edit bug fix, no switch; (b) config-expressed (`skills.mention_only_skills` default empty keeps upstream bare-word routing).
+- Intent: (a) `is_real_user_message` counted the HumanMessages middleware appends to a request (`progress_hint`, `deadline_warning`, `budget_warning`, `loop_warning`, `forced_stop_synthesis`, `auto_skill_activation`) as the user's request. `SkillAutoRoutingMiddleware` picks the last real user message, so on the call that carried a progress or efficiency hint it routed the hint, found no skill and dropped the `<auto_skill_activation>` block; the next call put it back. Two prefix-cache misses each time (atlas-ashish dashboard refresh a77ecc08, calls 24 and 50, 2026-10-13: 105k tokens re-read). The names are now excluded centrally; the other caller (slash-skill activation) wants the same. (b) A single distinctive skill name in the text auto-routes that skill. For the delegate skills that hand work to another agent that also matched ordinary prose: atlas-ashish typed "signing claude" (meaning clause) and got the full /claude skill injected, and the answer mentioned Claude Code. Skills listed in `skills.mention_only_skills` route only on an explicit `@name` (an e-mail address does not count); slash commands are unchanged (SkillActivationMiddleware).
+- Files: `utils/messages.py`, `config/skills_config.py`, `agents/middlewares/skill_auto_routing_middleware.py`, `config.example.yaml`.
+- Tests: `backend/tests/test_skill_auto_routing_middleware.py` (bare word ignored, @mention routes, e-mail ignored, unlisted skills unchanged, hint names are not user messages, the block stays on the user request when a hint is appended).
+- Delete-when: upstream excludes injected hints from user-intent detection and offers mention-only routing.
+- Upstream status: (a) generic-upstreamable; (b) generic-upstreamable as a config list.
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)

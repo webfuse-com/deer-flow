@@ -51,6 +51,12 @@ class SkillsConfig(BaseModel):
         le=2,
         description="Maximum high-confidence skills injected automatically for one user request.",
     )
+    # [argus patch #130] Skills that hand work to another agent (claude, gpt,
+    # opencode, ...) and must not fire on a bare word in ordinary prose.
+    mention_only_skills: list[str] = Field(
+        default_factory=list,
+        description="Skills auto routing selects only on an explicit @name mention, never on the bare word.",
+    )
 
     def get_skills_path(self) -> Path:
         """

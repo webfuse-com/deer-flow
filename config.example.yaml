@@ -2245,6 +2245,8 @@ skills:
   # auto_route: false
   # project_skill_name: project-workspace
   # max_auto_activated: 2
+  # [argus patch #130] delegate skills route only on an explicit @name mention
+  # mention_only_skills: [claude, gpt, opencode, myrmidon]
 
 # Use the normal reasoning model for user turns, research, and errors, but a
 # no-thinking variant after successful deterministic tools. Disabled by default.
