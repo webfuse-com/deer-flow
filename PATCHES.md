@@ -2653,6 +2653,17 @@ carry budget ledger.
 - Delete-when: upstream presents produced outputs itself or relaxes the check.
 - Upstream status: generic-upstreamable as an option.
 
+## Patch #134
+
+**Patch #134 - Subagents follow the #125 durable-context layout** (2026-10-13)
+
+- Class: config-expressed (rides `prompt_cache.durable_context_volatile_at_tail`, default false).
+- Intent: #125 wired the switch into the lead agent's `DurableContextMiddleware` only. The subagent chain (`build_subagent_runtime_middlewares`) built its own without it, so deep-research and other subagents still rendered the changing artifact handles right after the system prompt (atlas-nicholas canary 2026-10-12 21:41 CEST: subagent calls re-read their whole history as handles accumulated). The subagent chain now passes the same flag.
+- Files: `agents/middlewares/tool_error_handling_middleware.py`.
+- Tests: `backend/tests/test_durable_context_volatile_tail.py` (subagent chain follows the switch, default unchanged).
+- Delete-when: as #125.
+- Upstream status: part of #125.
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
