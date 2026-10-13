@@ -14,6 +14,26 @@ import { activatePreferences } from "./store";
 
 const PREFIX = "deerflow.preferences.";
 
+// [argus patch #141] Two tabs whose bundles parse the same server reply into
+// different caches (one loaded before a release added a preference, one
+// after) each rewrote the shared key whenever it differed, and every write
+// made the other tabs refetch: an endless GET ping-pong at network speed
+// (406k requests in 6 h from one browser on atlas-ashish, 2026-10-12). A
+// storage event now refetches only when the other tab's value disagrees with
+// this tab on a field both know, and storage-driven refetches are throttled.
+const STORAGE_REFETCH_INTERVAL_MS = 2000;
+
+/** Whether every preference another tab stored matches what this tab holds. */
+function agreesWith(stored: Preferences, current: Preferences): boolean {
+  const fields = Object.keys(stored) as (keyof Preferences)[];
+  return (
+    fields.length > 0 &&
+    fields.every(
+      (field) => (stored[field] ?? null) === (current[field] ?? null),
+    )
+  );
+}
+
 // The UI language the user reads DeerFlow in, reported by the I18nProvider.
 // The Gateway words scheduled-task IM notices in the account's `locale`
 // preference, so a running preference session keeps that preference equal
@@ -187,13 +207,46 @@ export function startUserPreferences(userId: string) {
     },
   );
   apply = detach.apply;
+  let storageTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastStorageWake = -Infinity;
+  const storageWake = () => {
+    if (stopped || storageTimer !== undefined) return;
+    const run = () => {
+      // A read already in flight may predate the other tab's write; read
+      // again once it settles instead of dropping the event.
+      if (flushing) {
+        storageTimer = setTimeout(run, 250);
+        return;
+      }
+      storageTimer = undefined;
+      lastStorageWake = Date.now();
+      wake();
+    };
+    const wait = lastStorageWake + STORAGE_REFETCH_INTERVAL_MS - Date.now();
+    if (wait <= 0) run();
+    else storageTimer = setTimeout(run, wait);
+  };
   const onStorage = (event: StorageEvent) => {
-    if (event.key === key || event.key === null) wake();
+    if (event.key !== key && event.key !== null) return;
+    // A rewrite that agrees with this tab (a different serialization of the
+    // same reply) carries nothing new; refetching it is what kept two tabs
+    // writing at each other. An empty or unparseable value is unknown, so it
+    // still refetches, as does a cleared storage (key null).
+    if (
+      event.key === key &&
+      agreesWith(
+        readJSON(() => event.newValue),
+        effective,
+      )
+    )
+      return;
+    storageWake();
   };
   function stop() {
     if (stopped) return;
     stopped = true;
     clearTimeout(timer);
+    clearTimeout(storageTimer);
     abort.abort();
     sync.stop();
     detach.stop();
