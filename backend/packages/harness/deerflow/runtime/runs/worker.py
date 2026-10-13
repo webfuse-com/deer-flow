@@ -374,6 +374,45 @@ def _delivery_content_with_outputs(
     }
 
 
+async def _auto_present_outputs(
+    agent: Any,
+    config: Any,
+    content: dict[str, Any],
+    app_config: AppConfig | None,
+) -> dict[str, Any] | None:
+    """[argus patch #133] Present produced outputs the run left unpresented.
+
+    Returns the delivery content marked satisfied when the thread's
+    ``artifacts`` channel took the paths (the same reducer update
+    ``present_files`` makes), else None so the caller fails closed as before.
+    atlas-ashish 2026-10-12: a runbook draft was written to outputs but not
+    presented, the run ended "Artifact delivery incomplete" and the citizen had
+    to ask "link?".
+    """
+    delivery_config = getattr(app_config, "artifact_delivery", None)
+    if getattr(delivery_config, "auto_present", False) is not True:
+        return None
+    paths = [path for path in content.get("produced_paths") or [] if isinstance(path, str) and path]
+    if not paths or len(paths) > getattr(delivery_config, "max_paths", 20) or content.get("satisfied") is True:
+        return None
+    update_state = getattr(agent, "aupdate_state", None)
+    if update_state is None:
+        return None
+    try:
+        await update_state(config, {"artifacts": paths})
+    except Exception:
+        logger.warning("Auto-present of %d produced output(s) failed; the run keeps its delivery error", len(paths), exc_info=True)
+        return None
+    logger.info("Auto-presented %d produced output(s) the run did not present", len(paths))
+    return {
+        **content,
+        "auto_presented_paths": paths,
+        "matched_paths": paths,
+        "stage": "auto_presented",
+        "satisfied": True,
+    }
+
+
 def _delivery_error(content: dict[str, Any]) -> str | None:
     """Return the terminal error when no changed output was presented."""
     if not content.get("produced_paths") or content.get("satisfied") is True:
@@ -1606,6 +1645,11 @@ async def run_agent(
                 journal.get_delivery_content() if journal is not None else _empty_delivery_content(),
                 produced_output_paths,
             )
+            if _delivery_error(delivery_content) is not None:
+                # [argus patch #133] present them rather than fail the run.
+                auto_presented = await _auto_present_outputs(agent, initial_runnable_config, delivery_content, ctx.app_config)
+                if auto_presented is not None:
+                    delivery_content = auto_presented
             delivery_error = _delivery_error(delivery_content)
             cancel_action = await run_manager.set_status_if_not_cancelled(
                 run_id,

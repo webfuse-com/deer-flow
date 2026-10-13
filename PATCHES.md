@@ -2642,6 +2642,17 @@ carry budget ledger.
 - Delete-when: as #124.
 - Upstream status: argus-specific (playbook allowlists are #43).
 
+## Patch #133
+
+**Patch #133 - Present produced outputs instead of failing the run** (2026-10-13)
+
+- Class: config-expressed (`artifact_delivery.auto_present` default false keeps upstream's fail-closed delivery check).
+- Intent: the run worker fails a run with "Artifact delivery incomplete: no produced output artifact was presented" when it created or changed files under `/mnt/user-data/outputs` and called `present_files` on none of them. On atlas-ashish (thread 0cf0bd0e, 2026-10-12 21:45 CEST) the fifth version of a runbook was written but not presented; the turn showed as an error and the citizen had to ask "link?". With the switch, before the verdict the worker adds the produced paths to the thread's `artifacts` channel (the same reducer update `present_files` makes, via `aupdate_state` with no `as_node`, so the graph has no pending step) and records the delivery as `stage: auto_presented`, `satisfied: true`, `auto_presented_paths`. More than `artifact_delivery.max_paths` (default 20) files, a failed state update, or an agent without `aupdate_state` keep the old error.
+- Files: `config/artifact_delivery_config.py` (new), `config/app_config.py`, `runtime/runs/worker.py`.
+- Tests: `backend/tests/test_run_worker_auto_present.py` (real checkpointed graph: artifacts merged and no pending step; off by default; too many outputs; a failed update keeps the error; worker-level run succeeds with an auto_presented delivery event). `test_run_worker_delivery.py` unchanged and green.
+- Delete-when: upstream presents produced outputs itself or relaxes the check.
+- Upstream status: generic-upstreamable as an option.
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
