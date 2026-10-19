@@ -754,7 +754,10 @@ def build_subagent_runtime_middlewares(
     # context, which strict providers reject. The same middleware also keeps
     # skill references durable when their original read results are compacted.
     from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
+    from deerflow.config.prompt_cache_config import durable_context_layout
 
+    # [argus patch #147] the subagent's own model picks the layout.
+    volatile_at_tail, contract_always = durable_context_layout(app_config, model_name)
     middlewares.append(
         DurableContextMiddleware(
             skills_container_path=app_config.skills.container_path,
@@ -767,7 +770,8 @@ def build_subagent_runtime_middlewares(
             skill_authorization=skill_authorization,
             entry_decisions_owner_token=slash_source_owner_token,
             # [argus patch #134] same cache-stable layout as the lead (#125).
-            volatile_at_tail=getattr(getattr(app_config, "prompt_cache", None), "durable_context_volatile_at_tail", False) is True,
+            volatile_at_tail=volatile_at_tail,
+            contract_always=contract_always,
         )
     )
 

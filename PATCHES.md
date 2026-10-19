@@ -195,6 +195,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#135](#patch-135) | DeerMem update runaway guards: `max_tokens`, `request_timeout_seconds`, `max_retries`, `max_failed_batch_attempts` | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#141](#patch-141) | Cross-tab preferences sync: a storage event refetches only when another tab's value disagrees on a field both know, throttled to one read per 2 s (two tabs on different bundles ping-ponged GET /api/v1/auth/preferences at network speed) | argus-edit | this PR |
 | [#142](#patch-142) | Open-mode sandbox replacement removes the restricted netproxy only when the sandbox itself was provisioned restricted (an engine proxy that admits only the stack's sandbox names refused the fixed `deer-flow-netproxy-*` stop, aborting every quarantine recycle) | argus-edit | this PR |
+| [#147](#patch-147) | `prompt_cache.volatile_tail_models` (default `["local-qwen"]`): #125's tail layout only for the matched models, cloud models keep the head layout their caches can extend; `prompt_cache.durable_context_contract_always` (default: follows the #125 switch) puts the authority contract in the system message from call 1 | config-expressed | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2706,6 +2707,18 @@ carry budget ledger.
 - Tests: `backend/tests/test_aio_sandbox_local_backend.py` (`test_open_mode_replacement_destroy_touches_sidecar_only_for_restricted_sandbox`: an open-labelled sandbox is stopped with no sidecar or network cleanup; absent and unreadable sandboxes keep the cleanup. The upstream `test_open_mode_replacement_destroy_removes_restricted_sidecar_and_networks` now states that its sandbox was labelled `allowlist`).
 - Delete-when: upstream records the provisioned mode on `SandboxInfo`, or treats a refused sidecar teardown as absent for open-provisioned sandboxes.
 - Upstream status: generic-upstreamable (any deployment that scopes engine access by sandbox name hits it).
+
+## Patch #147
+
+**Patch #147 - Durable-context layout per model; the contract from call 1** (2026-10-19)
+
+- Class: config-expressed (`prompt_cache.volatile_tail_models` default `["local-qwen"]`, read only while `prompt_cache.durable_context_volatile_at_tail` is true; `prompt_cache.durable_context_contract_always` default `None` = follows that switch). With the #125 switch at its default false nothing changes for any model.
+- Intent: #125 put the changing durable-context parts in a tail message for every model on a stack. SGLang's radix cache reuses any shared prefix, so local-qwen improved (calls that extend the previous request 76% to 83%). OpenAI, and Anthropic under LiteLLM's last-message breakpoint, reuse a prefix only where an earlier request ended; with the tail removed and re-added every call, request N+1 is never an extension of request N. Ariadne, 2026-10-13 to 10-19, calls over 8k whose previous call in the run used the same model: gpt-5.6-sol extends 57% to 7%, claude-opus-5.5 37% to 11% (Opus cache-write tokens 1.64M on 10-13, 19.54M on 10-14); about $85-105 of avoidable spend in six days on five stacks (marko, sasha, vipin, salome, ashish). Separately, the authority-contract SystemMessage was built only once the first data existed, so `SystemMessageCoalescingMiddleware` grew the system message mid-run and that call missed every cache (trace b296af7f call 03: 0 cached, divergence at character 44,536 of 60,703). Now the lead chain (`build_middlewares`) and the subagent chain (`build_subagent_runtime_middlewares`) resolve the layout for their own model via `durable_context_layout(app_config, model_name)`: fnmatch patterns against the model's config `name` and its `model` id; `["*"]` restores #125's stack-wide reading, `[]` turns the tail off, and a chain built without a model keeps #125's reading. With `contract_always`, `DurableContextMiddleware._inject` emits the contract on every call even when there is no data. Existing boolean configs parse unchanged.
+- Migration: after the pin carrying #147 is promoted, the five stacks that set `durable_context_volatile_at_tail: false` as a stopgap (marko, sasha, salome merged; ashish, vipin held) drop that override; the atlas-template `true` then gives local-qwen the tail and every cloud model the head layout, both with a stable contract. No template change is needed for the default model list.
+- Files: `config/prompt_cache_config.py`, `agents/middlewares/durable_context_middleware.py`, `agents/lead_agent/agent.py`, `agents/middlewares/tool_error_handling_middleware.py`.
+- Tests: `backend/tests/test_prompt_cache_per_model.py` (defaults unchanged, only matched models on the tail, name or model id match, `*` and `[]`, no model keeps #125, contract follows the switch, old booleans parse, layout from the app config, stub config is upstream, contract present before any data, empty state untouched without it, system head unchanged when the first data appears, head layout extends the previous request, tail layout cannot, subagent and lead chains use their own model, default config upstream). `test_durable_context_volatile_tail.py` unchanged and green.
+- Delete-when: as #125, or upstream offers per-provider cache layouts.
+- Upstream status: generic-upstreamable together with #125.
 
 ---
 
