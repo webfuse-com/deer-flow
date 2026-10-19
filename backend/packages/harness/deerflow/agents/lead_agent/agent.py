@@ -681,6 +681,8 @@ def build_middlewares(
             entry_decisions_owner_token=slash_source_owner_token,
             # [argus patch #125]
             volatile_at_tail=getattr(getattr(resolved_app_config, "prompt_cache", None), "durable_context_volatile_at_tail", False) is True,
+            # [argus patch #145]
+            reread_only_after_summary=getattr(resolved_app_config.skills, "reread_only_after_summary", False) is True,
         )
     )
 

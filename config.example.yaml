@@ -2259,6 +2259,14 @@ skills:
   # max_auto_activated: 2
   # [argus patch #130] delegate skills route only on an explicit @name mention
   # mention_only_skills: [claude, gpt, opencode, myrmidon]
+  # [argus patch #145] false: no auto routing in unattended (scheduled) runs
+  # auto_route_unattended: true
+  # [argus patch #145] skip negated mentions and skills whose tools a tool
+  # allowlist does not grant; routed workflows follow the request
+  # auto_route_guard: false
+  # [argus patch #145] ask to re-read an active skill only once its body was
+  # summarized away
+  # reread_only_after_summary: false
 
 # Use the normal reasoning model for user turns, research, and errors, but a
 # no-thinking variant after successful deterministic tools. Disabled by default.

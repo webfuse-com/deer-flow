@@ -768,6 +768,8 @@ def build_subagent_runtime_middlewares(
             entry_decisions_owner_token=slash_source_owner_token,
             # [argus patch #134] same cache-stable layout as the lead (#125).
             volatile_at_tail=getattr(getattr(app_config, "prompt_cache", None), "durable_context_volatile_at_tail", False) is True,
+            # [argus patch #145] same re-read wording as the lead.
+            reread_only_after_summary=getattr(getattr(app_config, "skills", None), "reread_only_after_summary", False) is True,
         )
     )
 

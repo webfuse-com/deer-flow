@@ -57,6 +57,23 @@ class SkillsConfig(BaseModel):
         default_factory=list,
         description="Skills auto routing selects only on an explicit @name mention, never on the bare word.",
     )
+    # [argus patch #145] Auto routing in unattended and allowlisted runs.
+    auto_route_unattended: bool = Field(
+        default=True,
+        description="[argus patch #145] Auto-route skills in unattended (scheduled) runs. False leaves those runs to the skills their schedule names.",
+    )
+    auto_route_guard: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #145] Auto routing skips a skill named only in a negated clause (never, don't, no, ...), "
+            "skips skills whose allowed-tools are not all available in a run with a tool allowlist, and places the "
+            "routed skills after the request with wording that keeps the request's own instructions first."
+        ),
+    )
+    reread_only_after_summary: bool = Field(
+        default=False,
+        description=("[argus patch #145] The Active skills reminder asks for a re-read only for skills whose body is no longer in the conversation (summarized away); skills still in context are marked as above."),
+    )
 
     def get_skills_path(self) -> Path:
         """

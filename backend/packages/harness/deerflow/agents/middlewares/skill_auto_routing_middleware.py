@@ -36,6 +36,45 @@ def _is_durable_work(text: str) -> bool:
     return bool(words & _DURABLE_NOUNS and words & _DURABLE_ACTIONS)
 
 
+# [argus patch #145] skills.auto_route_guard. A skill named only after a
+# negation in its sentence is not a request for it: atlas-ashish's dashboard
+# refresh says "Never write these files under /mnt/knowledge" and routed
+# knowledge-edit on every run.
+_CLAUSE_SPLIT_RE = re.compile(r"[.!?;:\n]+")
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|none|nothing|without|avoid|cannot|dont|nicht|niet|geen|nooit|kein|keine)\b|\b\w+n[\u2019']t\b",
+    re.IGNORECASE,
+)
+
+
+def _affirmed_tokens(text: str) -> set[str]:
+    """Tokens that appear before any negation word in their sentence."""
+    affirmed: set[str] = set()
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        negation = _NEGATION_RE.search(clause)
+        affirmed |= _tokens(clause[: negation.start()] if negation else clause)
+    return affirmed
+
+
+def _skill_tools_available(skill, tool_names: set[str]) -> bool:
+    """True when every tool the skill declares is available in this run."""
+    declared = getattr(skill, "allowed_tools", None)
+    return declared is not None and set(declared) <= tool_names
+
+
+def _run_tool_names(request: ModelRequest, run_context: dict | None) -> set[str] | None:
+    """The tools a run with a tool allowlist can call, or None for an unrestricted run."""
+    allowed = run_context.get("allowed_tools") if run_context is not None else None
+    if not isinstance(allowed, list) or not allowed:
+        return None
+    names = {name for name in allowed if isinstance(name, str)}
+    for tool in getattr(request, "tools", None) or ():
+        name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
 class SkillAutoRoutingMiddleware(AgentMiddleware):
     """Load at most two skills when deterministic signals are unambiguous.
 
@@ -63,8 +102,15 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
         text = get_original_user_content_text(message.content, message.additional_kwargs)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    def _select(self, text: str, skills: list) -> list:
+    def _select(self, text: str, skills: list, *, run_tool_names: set[str] | None = None) -> list:
         allowed = [s for s in skills if s.enabled and not (getattr(s, "required_secrets", ()) or ()) and (self._available_skills is None or s.name in self._available_skills)]
+        # [argus patch #145] In a run with a tool allowlist, only skills whose
+        # declared tools are all available (94% of skills routed into
+        # scheduled runs in the week to 2026-10-19 needed tools the schedule
+        # did not grant).
+        guard = getattr(self._app_config.skills, "auto_route_guard", False) is True
+        if guard and run_tool_names is not None:
+            allowed = [s for s in allowed if _skill_tools_available(s, run_tool_names)]
         by_name = {s.name: s for s in allowed}
         selected: list = []
         project_name = self._app_config.skills.project_skill_name
@@ -72,6 +118,7 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
             selected.append(by_name[project_name])
 
         words = _tokens(text)
+        affirmed = _affirmed_tokens(text) if guard else words  # [argus patch #145]
         # [argus patch #130] delegate skills route on "@name" only: a bare
         # "claude" (atlas-ashish typo for "clause") injected the /claude
         # delegate skill into an unrelated chat.
@@ -87,7 +134,7 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
             name_tokens = _tokens(skill.name.replace("-", " "))
             if not name_tokens:
                 continue
-            if name_tokens <= words and (len(name_tokens) > 1 or len(next(iter(name_tokens))) >= 5):
+            if name_tokens <= affirmed and (len(name_tokens) > 1 or len(next(iter(name_tokens))) >= 5):
                 candidates.append((len(name_tokens), len(skill.name), skill))
         if candidates and len(selected) < self._app_config.skills.max_auto_activated:
             candidates.sort(key=lambda item: (-item[0], -item[1], item[2].name))
@@ -105,12 +152,17 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
             return request
         context = getattr(request.runtime, "context", None)
         run_context = context if isinstance(context, dict) else None
+        # [argus patch #145] skills.auto_route_unattended / skills.auto_route_guard
+        skills_config = self._app_config.skills
+        if run_context is not None and run_context.get("unattended") and getattr(skills_config, "auto_route_unattended", True) is False:
+            return request
+        guard = getattr(skills_config, "auto_route_guard", False) is True
         request_key = self._request_key(target)
         if run_context is not None and run_context.get(_ROUTED_REQUEST_KEY) == request_key:
             return request
 
         storage = self._storage()
-        selected = self._select(text, storage.load_skills(enabled_only=False))
+        selected = self._select(text, storage.load_skills(enabled_only=False), run_tool_names=_run_tool_names(request, run_context) if guard else None)
         if run_context is not None:
             run_context[_ROUTED_REQUEST_KEY] = request_key
         if not selected:
@@ -132,12 +184,21 @@ class SkillAutoRoutingMiddleware(AgentMiddleware):
             blocks.append(f'<skill name="{html.escape(skill.name, quote=True)}" path="{html.escape(skill.get_container_file_path(storage.get_container_root()), quote=True)}">\n{html.escape(content, quote=False)}\n</skill>')
         if not blocks:
             return request
+        # [argus patch #145] Under the guard the routed workflows follow the
+        # request and defer to it: a schedule's own date gate and stop rule sat
+        # below "Follow them in order" (atlas-tony Release Desk posted to a team
+        # Slack channel on days it should have done nothing).
+        lead = (
+            "Routing matched these workflows to the request above. The request's own instructions, conditions and stop rules come first; apply a workflow only where the request calls for it, with the tools you have.\n"
+            if guard
+            else "High-confidence routing selected these workflows. Follow them in order; load referenced resources only when needed.\n"
+        )
         reminder = HumanMessage(
-            content="<auto_skill_activation>\nHigh-confidence routing selected these workflows. Follow them in order; load referenced resources only when needed.\n" + "\n".join(blocks) + "\n</auto_skill_activation>",
+            content="<auto_skill_activation>\n" + lead + "\n".join(blocks) + "\n</auto_skill_activation>",
             name="auto_skill_activation",
             additional_kwargs={_AUTO_CONTEXT_KEY: routed_names},
         )
-        messages.insert(target_index, reminder)
+        messages.insert(target_index + 1 if guard else target_index, reminder)
 
         journal = run_context.get("__run_journal") if run_context is not None else None
         if journal is not None:
