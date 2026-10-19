@@ -1396,6 +1396,9 @@ tool_search:
   # always_bind: ["pythia_*", "calendar_list_events"]
   # [argus patch #131] bind every tool a playbook run's allowed-tools names
   # bind_schedule_allowlist: false
+  # [argus patch #146] tool_search answers "already available" for tools the
+  # run already has; hints for auto-promoted tools stop sending it to search
+  # answer_bound_directly: false
   # [argus patch #59] fnmatch patterns of NON-MCP (builtin/config) tool names
   # to defer like MCP tools: name-only in <available-deferred-tools> until
   # promoted via an explicit tool_search call. For cold tools whose intrinsic

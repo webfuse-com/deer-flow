@@ -1539,11 +1539,14 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     layer_one = layer_one_outcome(authorization_candidates, authorized_tools)
     configured_tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
+    # [argus patch #146] tool_search.answer_bound_directly
+    answer_bound_directly = getattr(resolved_app_config.tool_search, "answer_bound_directly", False) is True
     final_tools, setup = assemble_deferred_tools(
         configured_tools,
         enabled=resolved_app_config.tool_search.enabled,
         exclude=deferral_exclude(resolved_app_config.tool_search, extra_allowed),
         defer=getattr(resolved_app_config.tool_search, "defer", ()),
+        answer_bound_directly=answer_bound_directly,
     )
     final_tools.extend(late_tools)
     directly_bound_names = frozenset(t.name for t in final_tools if t.name not in setup.deferred_names)
@@ -1552,7 +1555,11 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         setup,
         top_k=resolved_app_config.tool_search.auto_promote_top_k,
     )
-    mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
+    mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(
+        authorized_tools,
+        deferred_names=setup.deferred_names,
+        deferred_auto_promoted=answer_bound_directly and mcp_routing_middleware is not None,
+    )
     # [argus patch #73] Adaptive reasoning: a no-thinking twin of the lead model
     # for routine follow-ups after deterministic tools.
     adaptive_config = getattr(resolved_app_config, "adaptive_reasoning", None)
