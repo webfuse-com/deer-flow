@@ -3067,6 +3067,12 @@ class ChannelManager:
             # route rather than a non-existent custom-agent route.
             if agent_name != DEFAULT_ASSISTANT_ID:
                 metadata[THREAD_AGENT_METADATA_KEY] = agent_name
+        elif (web_agent_name := self._web_agent_name(msg)) is not None:
+            # [argus patch #149] Record the agent the channel's runs use, without
+            # pinning it: opened in the browser, the thread routes to that
+            # agent's chat page instead of /workspace/chats/<id>, which runs the
+            # default agent (no SOUL, no base prompt).
+            metadata[THREAD_AGENT_METADATA_KEY] = web_agent_name
         owner_headers = _owner_headers(msg)
         # Some channels (notably GitHub) supply a deterministic preferred
         # thread id so a (repo, PR/issue number) always lands on the same
@@ -3184,6 +3190,8 @@ class ChannelManager:
                 msg.topic_id,
             )
             create_kwargs: dict[str, Any] = {"thread_id": thread_id, "metadata": _thread_channel_metadata(msg)}
+            if (web_agent_name := self._web_agent_name(msg, thread_id)) is not None:
+                create_kwargs["metadata"][THREAD_AGENT_METADATA_KEY] = web_agent_name  # [argus patch #149]
             if owner_headers:
                 create_kwargs["headers"] = owner_headers
             try:
@@ -3207,6 +3215,23 @@ class ChannelManager:
             return thread_id, False
         self._remember_registered(thread_id)
         return thread_id, False
+
+    def _web_agent_name(self, msg: InboundMessage, thread_id: str = "") -> str | None:
+        """[argus patch #149] The custom agent a run for ``msg`` would use, or None for the lead agent.
+
+        Same resolution as the run itself (``_resolve_run_params``): message
+        override, thread pin, then the session layers' ``agent_name`` /
+        ``assistant_id``. Never raises: an invalid session config fails the run
+        later with its own message, the thread is simply created without it.
+        """
+        try:
+            _assistant_id, run_config, run_context = self._resolve_run_params(msg, thread_id)
+        except Exception:  # noqa: BLE001 - metadata only, the run reports config errors
+            return None
+        agent_name = _select_carried_agent_name(run_config, run_context)
+        if not agent_name or agent_name.lower() == DEFAULT_ASSISTANT_ID:
+            return None
+        return agent_name
 
     def _remember_registered(self, thread_id: str) -> None:
         if len(self._registered_threads) > 4096:
