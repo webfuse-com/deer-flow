@@ -1457,6 +1457,9 @@ tool_output:
   # Default false = current behavior unchanged.
   # code_outline_enabled: false
   # code_outline_min_lines: 300
+  # [argus patch #144] A run whose tool allowlist leaves read_file out still
+  # gets read_file, restricted to this thread's offloaded results above.
+  # read_offloads_in_allowlisted_runs: false
   # tool_overrides:
   #   web_search: 8000
   #   bash: 20000

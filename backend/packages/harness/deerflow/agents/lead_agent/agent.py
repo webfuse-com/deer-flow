@@ -44,6 +44,7 @@ from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionM
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
 from deerflow.agents.middlewares.model_content_compatibility_middleware import ModelContentCompatibilityMiddleware
 from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
+from deerflow.agents.middlewares.offload_reader_middleware import offload_reader_grant  # [argus patch #144]
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummarizationMiddleware, create_summarization_middleware
@@ -1509,13 +1510,16 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         chat_model=chat_model,
     )
     configured_tools = raw_tools + extra_tools
+    offload_reader_scope = None
     if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "agent":
-        configured_tools = filter_tools_by_agent_allowed_tools(
+        allowlisted_tools = filter_tools_by_agent_allowed_tools(
             configured_tools,
             agent_config.allowed_tools if agent_config else None,
             skills=enabled_skills,
             extra_allowed=extra_allowed,
         )
+        # [argus patch #144] tool_output.read_offloads_in_allowlisted_runs
+        configured_tools, offload_reader_scope = offload_reader_grant(configured_tools, allowlisted_tools, resolved_app_config)
     configured_tools = [tool for tool in configured_tools if tool.name not in interaction_policy.disabled_tool_names]
     authorization_candidates = [*configured_tools]
     if skill_setup.describe_skill_tool:
@@ -1556,6 +1560,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         config,
         model_name=model_name,
         agent_name=agent_name,
+        custom_middlewares=[offload_reader_scope] if offload_reader_scope is not None else None,
         available_skills=available_skills,
         memory_enabled=memory_enabled,
         app_config=resolved_app_config,
