@@ -1616,6 +1616,13 @@ pii_redaction:
 #   max_tracked_threads: 100
 #   read_only_streak_threshold: 0       # Soft phase hint after N consecutive successful reads/searches; 0 disables
 #   bash_inspection_counts_as_read: false  # [argus patch #82] successful pure-read bash advances the read-only streak
+#   cause_aware_blocking: false    # [argus patch #143] argument errors are model-fixable, bash graded by exit code,
+#                                  # only auth on a never-worked tool blocks at once, dispatchers blocked per function
+#   dispatcher_tools:              # [argus patch #143] tool -> argument names that identify the function
+#     app_function_call: [app, function]
+#     atlas_app_function_call: [app, function]
+#     connector_call: [name, function]
+#     atlas_connector_call: [name, function]
 #   total_tool_call_threshold: 0        # Soft replan hint after N calls in one run; 0 disables
 #   total_tool_call_reminder_interval: 30 # Repeat the replan hint every N additional calls
 #   read_only_tools: [read_file, grep, glob, ls]

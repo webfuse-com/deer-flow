@@ -76,6 +76,7 @@ from deerflow.agents.middlewares.tool_result_meta import (
     TOOL_RESULT_NEXT_ACTIONS,
     TOOL_RESULT_STATUSES,
     ToolResultMeta,
+    tool_reported_status,
 )
 from deerflow.runtime.events.catalog import MIDDLEWARE_TOOL_PROGRESS_TAG
 from deerflow.sandbox.command_classify import classify_bash_command
@@ -90,11 +91,73 @@ _MAX_PENDING_PER_RUN = 3
 _MAX_CONTENT_FOR_WORDSET = 8192
 
 
+# ---------------------------------------------------------------------------
+# [argus patch #143] Cause-aware grading (``tool_progress.cause_aware_blocking``).
+# The shared classifier grades by keyword: atlas-mcp's "missing required
+# argument(s) for app_function_call: function" read as ``config``/stop and a
+# Python traceback in bash output saying "tesseract is not installed" blocked
+# bash itself, each for the rest of the run on the first occurrence
+# (atlas-quinten b4471658, 2026-10-16: 9 of 10 lead writes lost).
+
+INVALID_ARGS_ERROR_TYPE = "invalid_args"
+COMMAND_FAILED_ERROR_TYPE = "command_failed"
+_AUDIT_ERROR_TYPES = TOOL_RESULT_ERROR_TYPES | {INVALID_ARGS_ERROR_TYPE, COMMAND_FAILED_ERROR_TYPE}
+_BASH_TOOL_NAMES = frozenset({"bash", "bash_tool"})
+_REGRADE_SCAN_CHARS = 4000
+_BLOCK_DETAIL_CHARS = 200
+# A rejected call shape is the caller's to fix: atlas-mcp's argument check,
+# JSON-schema and pydantic validation wording, Python signature errors.
+_INVALID_ARGS_RE = re.compile(
+    r"missing required (?:argument|parameter|field|input|property|key)"
+    r"|missing \d+ required (?:positional |keyword-only )?argument"
+    r"|is a required property"
+    r"|additional properties are not allowed"
+    r"|unexpected keyword argument"
+    r"|invalid (?:inputs?|arguments?|parameters?|params)\b"
+    r"|validation errors? for\b"
+    r"|\bfield required\b"
+    r"|\binput should be\b"
+    r"|is not of type '"
+    r"|is not valid under any of the given schemas",
+    re.IGNORECASE,
+)
+
+
+def regrade_tool_meta(meta: ToolResultMeta, tool_name: str, content: str, *, tool_status: str = "success") -> ToolResultMeta:
+    """Re-grade a result by its cause before the progress state machine sees it.
+
+    - bash: a non-zero exit code is a failed command the model can change
+      (``command_failed``); without an exit marker the command exited 0 and is a
+      success whatever its output says. Tool-level failures (an exception, an
+      error status set by the tool or a middleware such as the sandbox audit's
+      "Command blocked", or the tool's own ``Error:`` reply such as a sandbox
+      that would not start) keep the shared classifier's grade.
+    - any other tool: an argument or schema rejection is ``invalid_args``,
+      recoverable by the model, unless the classifier saw auth or rate limiting.
+    """
+    if tool_name in _BASH_TOOL_NAMES:
+        if meta.source in ("exception", "progress_middleware") or tool_status == "error" or content.startswith("Error:"):
+            return meta
+        if meta.exit_code not in (None, 0):
+            return replace(meta, status="error", error_type=COMMAND_FAILED_ERROR_TYPE, recoverable_by_model=True, recommended_next_action="try_alternative")
+        if meta.status != "success":
+            return replace(meta, status="success", error_type=None, recoverable_by_model=True, recommended_next_action="continue")
+        return meta
+    if meta.status == "error" and meta.error_type not in ("auth", "rate_limited", PROGRESS_GUARD_ERROR_TYPE) and _INVALID_ARGS_RE.search(content[:_REGRADE_SCAN_CHARS]):
+        return replace(meta, error_type=INVALID_ARGS_ERROR_TYPE, recoverable_by_model=True, recommended_next_action="rewrite_query")
+    return meta
+
+
+def _dispatch_tool_name(state_key: str) -> str:
+    """The tool name inside a dispatcher state key ``tool[app/function]``."""
+    return state_key.split("[", 1)[0] if state_key.endswith("]") else state_key
+
+
 def _audit_error_type(value: object) -> str | None:
     """Project an untrusted tool stamp onto the bounded audit vocabulary."""
     if value is None:
         return None
-    return value if type(value) is str and value in TOOL_RESULT_ERROR_TYPES else "unknown"
+    return value if type(value) is str and value in _AUDIT_ERROR_TYPES else "unknown"
 
 
 def _audit_next_action(value: object) -> str:
@@ -127,6 +190,11 @@ class ToolPhaseState:
     # (problem paths) cannot accidentally share a mutable list between the old and new
     # state objects and cause silent cross-state corruption via .append().
     recent_word_sets: tuple[frozenset[str], ...] = field(default_factory=tuple)
+    # [argus patch #143] Run-scoped: a tool that already worked in this run is
+    # not blocked on its first failure. block_detail is the model-facing tail
+    # of the block message (last error, dispatcher scope); logs keep the reason.
+    ever_succeeded: bool = False
+    block_detail: str | None = None
 
 
 @dataclass(slots=True)
@@ -217,6 +285,11 @@ def _parse_tool_meta(meta_dict: object) -> ToolResultMeta | None:
 
 
 def _format_hint(meta: ToolResultMeta) -> str:
+    # [argus patch #143] Grades only cause_aware_blocking produces.
+    if meta.error_type == INVALID_ARGS_ERROR_TYPE:
+        return "[PROGRESS HINT] The tool keeps rejecting the call's arguments. Check its schema (required fields, allowed properties, types) and call it again with corrected arguments."
+    if meta.error_type == COMMAND_FAILED_ERROR_TYPE:
+        return "[PROGRESS HINT] The command keeps exiting with an error. Read its error output and change the command instead of repeating it."
     action_map = {
         "rewrite_query": "Try rephrasing your search query with different keywords or approach.",
         "try_alternative": "Consider using a different tool or strategy.",
@@ -280,7 +353,12 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         read_only_tools: set[str] | None = None,
         write_tools: set[str] | None = None,
         bash_inspection_counts_as_read: bool = False,
+        cause_aware_blocking: bool = False,
+        dispatcher_tools: dict[str, list[str]] | None = None,
     ) -> None:
+        # [argus patch #143]
+        self._cause_aware = cause_aware_blocking
+        self._dispatcher_tools: dict[str, tuple[str, ...]] = {name: tuple(keys) for name, keys in (dispatcher_tools or {}).items() if keys}
         self._stagnation_threshold = stagnation_threshold
         self._warn_escalation = warn_escalation_count
         self._inject_assessment = inject_assessment
@@ -324,6 +402,8 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             read_only_tools=set(config.read_only_tools),
             write_tools=set(config.write_tools),
             bash_inspection_counts_as_read=config.bash_inspection_counts_as_read,
+            cause_aware_blocking=config.cause_aware_blocking,
+            dispatcher_tools=config.dispatcher_tools,
         )
 
     # ------------------------------------------------------------------
@@ -361,6 +441,9 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         if recorder is None:
             return
 
+        # [argus patch #143] A dispatcher state key records the real tool name
+        # plus the key, so per-tool event queries keep working.
+        dispatch = {"dispatch_key": tool_name} if self._cause_aware and _dispatch_tool_name(tool_name) != tool_name else {}
         try:
             recorder.record_middleware(
                 tag=MIDDLEWARE_TOOL_PROGRESS_TAG,
@@ -368,9 +451,10 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                 hook=hook,
                 action=transition.action,
                 changes={
+                    **dispatch,
                     "is_subagent": is_subagent,
                     "agent_id": agent_id,
-                    "tool_name": tool_name,
+                    "tool_name": _dispatch_tool_name(tool_name) if dispatch else tool_name,
                     "from_phase": state.phase,
                     "to_phase": new_state.phase,
                     "consecutive_problems": new_state.consecutive_problems,
@@ -417,7 +501,36 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             # would keep blocked threads permanently warm in the LRU, preventing healthy active
             # threads from occupying those slots. Recency is updated only on _get_state writes.
             tool_state = thread_tools.get(tool_name)
-            return tool_state.block_reason if tool_state is not None and tool_state.phase == "blocked" else None
+            if tool_state is None or tool_state.phase != "blocked":
+                return None
+            # [argus patch #143] block_detail is set only under cause_aware_blocking.
+            return f"{tool_state.block_reason} {tool_state.block_detail}" if tool_state.block_detail else tool_state.block_reason
+
+    def _state_key(self, tool_name: str, tool_args: object) -> str:
+        """[argus patch #143] Progress-state key: the tool, or tool[app/function] for a dispatcher."""
+        arg_names = self._dispatcher_tools.get(tool_name) if self._cause_aware else None
+        if not arg_names:
+            return tool_name
+        args = tool_args
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                args = None
+        values = [args.get(name) if isinstance(args, dict) else None for name in arg_names]
+        label = "/".join(str(value)[:80] if value not in (None, "") else "(missing)" for value in values)
+        return f"{tool_name}[{label}]"
+
+    def _block_detail(self, state_key: str, tool_name: str, content: str) -> str:
+        """[argus patch #143] Model-facing tail of a block message: the last error and the scope."""
+        parts: list[str] = []
+        excerpt = " ".join(content.split())[:_BLOCK_DETAIL_CHARS]
+        if excerpt:
+            parts.append(f"Last error: {excerpt}")
+        if state_key != tool_name:
+            label = state_key[len(tool_name) + 1 : -1]
+            parts.append(f"Only calls for {label} are blocked; other functions of {tool_name} can still be called.")
+        return " ".join(parts)
 
     def _make_blocked_message(self, request: ToolCallRequest, tool_name: str, block_reason: str) -> ToolMessage:
         return ToolMessage(
@@ -444,6 +557,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         tool_call_id: str,
         *,
         hook: Literal["wrap_tool_call", "awrap_tool_call"],
+        state_key: str | None = None,
     ) -> ToolMessage | Command:
         """Update the state machine from a tool result; queue hints if warranted."""
         message = _result_tool_message(result, tool_call_id)
@@ -458,19 +572,25 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                 )
             return result
         content = _message_content_str(message)
+        # [argus patch #143] Grade by cause, and keep dispatcher state per function.
+        key = state_key or tool_name
+        if self._cause_aware:
+            meta = regrade_tool_meta(meta, tool_name, content, tool_status=tool_reported_status(message))
         thread_id = self._thread_id(runtime)
         phase_change: tuple[ToolPhaseState, ToolPhaseState, ToolPhaseTransition] | None = None
         with self._lock:
-            state = self._get_state(thread_id, tool_name)
+            state = self._get_state(thread_id, key)
             new_state, hint, transition = self._assess_and_transition(state, meta, content)
-            self._set_state(thread_id, tool_name, new_state)
+            if self._cause_aware and new_state.phase == "blocked" and state.phase != "blocked":
+                new_state = replace(new_state, block_detail=self._block_detail(key, tool_name, content) or None)
+            self._set_state(thread_id, key, new_state)
             if transition is not None:
                 phase_change = (state, new_state, transition)
         if phase_change is not None:
             old_state, changed_state, phase_transition = phase_change
             self._record_phase_transition(
                 runtime=runtime,
-                tool_name=tool_name,
+                tool_name=key,
                 state=old_state,
                 new_state=changed_state,
                 meta=meta,
@@ -591,12 +711,21 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         if state.phase == "blocked":
             return state, None, None
 
+        # [argus patch #143] A tool that returned anything usable in this run is
+        # known to work; remember that before grading this result.
+        if self._cause_aware and not state.ever_succeeded and meta.status in ("success", "partial_success"):
+            state = replace(state, ever_succeeded=True)
+
         # Count this call as a problem before branching so all exit paths leave
         # consecutive_problems in a consistent state (never 0 when the tool has failed).
         new_count = state.consecutive_problems + 1
 
         # Immediately block on unrecoverable stop signals (auth, config, internal).
-        if not meta.recoverable_by_model and meta.recommended_next_action == "stop":
+        # [argus patch #143] With cause_aware_blocking only an auth failure on a
+        # tool that has not worked in this run blocks at once; config and
+        # internal errors take the warn-then-escalate path below.
+        immediate_stop = not self._cause_aware or (meta.error_type == "auth" and not state.ever_succeeded)
+        if not meta.recoverable_by_model and meta.recommended_next_action == "stop" and immediate_stop:
             return (
                 replace(
                     state,
@@ -737,6 +866,9 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                     consecutive_problems=0,
                     block_reason=None,
                     recent_word_sets=(),
+                    # [argus patch #143] run-scoped
+                    ever_succeeded=False,
+                    block_detail=None,
                 )
                 thread_tools[tool_name] = new_state
                 if tool_state.phase != new_state.phase:
@@ -769,21 +901,23 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         runtime = getattr(request, "runtime", None)
         if runtime is None:
             return handler(request)
+        # [argus patch #143] tool[app/function] for a dispatcher under cause_aware_blocking.
+        state_key = self._state_key(tool_name, tool_args)
         if tool_name not in self._exempt_tools:
-            block_reason = self._get_block_reason(runtime, tool_name)
+            block_reason = self._get_block_reason(runtime, state_key)
             if block_reason:
                 logger.info(
                     "tool_progress: %s/%s call intercepted (blocked): %s",
                     self._thread_id(runtime),
-                    tool_name,
-                    block_reason,
+                    state_key,
+                    block_reason.split(" Last error: ", 1)[0],
                 )
                 result = self._make_blocked_message(request, tool_name, block_reason)
                 self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
                 return result
         result = handler(request)
         if tool_name not in self._exempt_tools:
-            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="wrap_tool_call")
+            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="wrap_tool_call", state_key=state_key)
         self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
         return result
 
@@ -800,21 +934,23 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         runtime = getattr(request, "runtime", None)
         if runtime is None:
             return await handler(request)
+        # [argus patch #143] tool[app/function] for a dispatcher under cause_aware_blocking.
+        state_key = self._state_key(tool_name, tool_args)
         if tool_name not in self._exempt_tools:
-            block_reason = self._get_block_reason(runtime, tool_name)
+            block_reason = self._get_block_reason(runtime, state_key)
             if block_reason:
                 logger.info(
                     "tool_progress: %s/%s call intercepted (blocked): %s",
                     self._thread_id(runtime),
-                    tool_name,
-                    block_reason,
+                    state_key,
+                    block_reason.split(" Last error: ", 1)[0],
                 )
                 result = self._make_blocked_message(request, tool_name, block_reason)
                 self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
                 return result
         result = await handler(request)
         if tool_name not in self._exempt_tools:
-            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="awrap_tool_call")
+            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="awrap_tool_call", state_key=state_key)
         self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
         return result
 
