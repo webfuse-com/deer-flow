@@ -6,7 +6,7 @@ import logging
 import posixpath
 import re
 from collections.abc import Collection, Mapping
-from html import escape
+from html import escape, unescape
 from typing import Any, TypedDict
 
 import yaml
@@ -197,19 +197,82 @@ def extract_skills(
     return entries
 
 
-def render_skill_context(entries: list[SkillEntry]) -> str:
-    """Render active-skill references as a compact reminder, not the body."""
+def _render_skill_line(entry: SkillEntry) -> str:
+    name = _escape_context_text(entry["name"])
+    path = _escape_context_text(entry["path"])
+    raw_description = entry.get("description") or ""
+    if isinstance(raw_description, str):
+        raw_description = " ".join(raw_description.split())[:_SKILL_DESCRIPTION_MAX_CHARS]
+    description = _escape_context_text(raw_description)
+    suffix = f": {description}" if description else ""
+    return f"- {name}{suffix} -> {path}"
+
+
+def render_skill_context(entries: list[SkillEntry], *, in_context_paths: Collection[str] | None = None) -> str:
+    """Render active-skill references as a compact reminder, not the body.
+
+    [argus patch #145] With ``in_context_paths`` (``skills.reread_only_after_summary``)
+    only skills whose body is no longer in the conversation are asked to be
+    re-read; the upstream header made models re-read skills they still held
+    (atlas-salome run 4f37f936: three extra turns of about 40k tokens each).
+    """
     if not entries:
         return ""
 
-    lines = ["## Active skills (loaded earlier - re-read the file before applying its instructions)"]
-    for entry in entries:
-        name = _escape_context_text(entry["name"])
-        path = _escape_context_text(entry["path"])
-        raw_description = entry.get("description") or ""
-        if isinstance(raw_description, str):
-            raw_description = " ".join(raw_description.split())[:_SKILL_DESCRIPTION_MAX_CHARS]
-        description = _escape_context_text(raw_description)
-        suffix = f": {description}" if description else ""
-        lines.append(f"- {name}{suffix} -> {path}")
+    if in_context_paths is None:
+        lines = ["## Active skills (loaded earlier - re-read the file before applying its instructions)"]
+        lines.extend(_render_skill_line(entry) for entry in entries)
+        return "\n".join(lines)
+
+    present = {posixpath.normpath(path) for path in in_context_paths}
+    held = [entry for entry in entries if posixpath.normpath(str(entry.get("path") or "")) in present]
+    dropped = [entry for entry in entries if entry not in held]
+    lines = []
+    if held:
+        lines.append("## Active skills (their instructions are above in this conversation; follow them without re-reading)")
+        lines.extend(_render_skill_line(entry) for entry in held)
+    if dropped:
+        lines.append("## Active skills summarized away (re-read the file before applying its instructions)")
+        lines.extend(_render_skill_line(entry) for entry in dropped)
     return "\n".join(lines)
+
+
+_ROUTED_SKILL_PATH_RE = re.compile(r'<skill name="[^"]*" path="([^"]+)">')
+
+
+def skill_paths_in_messages(
+    messages: list[AnyMessage],
+    *,
+    skills_root: str,
+    read_tool_names: Collection[str],
+) -> set[str]:
+    """[argus patch #145] Skill files whose body is still in ``messages``.
+
+    A successful read (the AI call plus its non-error ToolMessage) or an
+    ``auto_skill_activation`` block that carries the body inline.
+    """
+    normalized_root = posixpath.normpath(skills_root.rstrip("/") or "/")
+    read_names = frozenset(read_tool_names)
+    paths_by_id: dict[str, str] = {}
+    present: set[str] = set()
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for tool_call in message.tool_calls or []:
+                if _tool_call_name(tool_call) not in read_names:
+                    continue
+                tool_call_id = _tool_call_id(tool_call)
+                raw_path = _tool_call_path(tool_call)
+                path = _normalize_under_root(raw_path, normalized_root) if raw_path else None
+                if tool_call_id and path and _is_skill_file(path):
+                    paths_by_id[tool_call_id] = path
+        elif isinstance(message, ToolMessage):
+            path = paths_by_id.get(str(message.tool_call_id or ""))
+            content = message.content if isinstance(message.content, str) else ""
+            if path and getattr(message, "status", "success") != "error" and not _is_tool_error_text(content):
+                present.add(path)
+        elif getattr(message, "name", None) == "auto_skill_activation" and isinstance(message.content, str):
+            for raw in _ROUTED_SKILL_PATH_RE.findall(message.content):
+                path = _normalize_under_root(unescape(raw), normalized_root)
+                if path:
+                    present.add(path)
+    return present
