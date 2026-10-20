@@ -231,6 +231,8 @@ def _format_hint(meta: ToolResultMeta) -> str:
         "not_found": "[PROGRESS HINT] The resource was not found repeatedly.",
         "rate_limited": "[PROGRESS HINT] The tool is being rate-limited.",
         "transient": "[PROGRESS HINT] The tool encountered repeated transient failures.",
+        # [argus patch #153] a non-zero shell exit (tool_result_meta).
+        "command_failed": "[PROGRESS HINT] The command keeps exiting with an error. Read its error output and change the command instead of repeating it.",
         "partial_success": "[PROGRESS HINT] The tool has returned incomplete results multiple times.",
         # Jaccard near-duplicate success: the tool is returning the same content repeatedly.
         "success": "[PROGRESS HINT] The tool is returning duplicate results.",

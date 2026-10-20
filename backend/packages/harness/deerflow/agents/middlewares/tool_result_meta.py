@@ -127,7 +127,25 @@ _PAGE_CONTENT_TOOL_NAMES: frozenset[str] = frozenset({"web_fetch"})
 # _ERROR_RULES already declares. Derived rather than duplicated so a shell can
 # never drift from the recoverable/next-action contract of its own category.
 _ATTRS_BY_ERROR_TYPE: dict[str, dict[str, object]] = {str(attrs["error_type"]): attrs for _keywords, attrs in _ERROR_RULES}
-TOOL_RESULT_ERROR_TYPES = frozenset(_ATTRS_BY_ERROR_TYPE) | {"unknown", PROGRESS_GUARD_ERROR_TYPE}
+
+# [argus patch #153] A shell command that exited non-zero is graded by its exit
+# code. Its output is whatever the command printed (source code, logs, an HTTP
+# body), so keywords in it say nothing about the bash tool: a node script that
+# echoed ``mrr>500?'Medium'`` read as ``internal``/stop and blocked bash for the
+# rest of the run (atlas-marko bca67986, 2026-10-20). Codes with a fixed meaning
+# keep it; every other code is a failed command the model can change.
+COMMAND_FAILED_ERROR_TYPE = "command_failed"
+_COMMAND_FAILED_ATTRS: dict[str, object] = {
+    "error_type": COMMAND_FAILED_ERROR_TYPE,
+    "recoverable_by_model": True,
+    "recommended_next_action": "try_alternative",
+}
+_SHELL_EXIT_CODE_TYPES: dict[int, str] = {
+    124: "transient",  # timed out: the sandbox's hard timeout and timeout(1)
+    126: "permission",  # found but not executable
+    127: "not_found",  # command not found
+}
+TOOL_RESULT_ERROR_TYPES = frozenset(_ATTRS_BY_ERROR_TYPE) | {"unknown", PROGRESS_GUARD_ERROR_TYPE, COMMAND_FAILED_ERROR_TYPE}
 
 # Reason phrases (RFC 9110 §15 plus the wording real servers ship) mapped onto the
 # error_type they already have in _ERROR_RULES. Restricted to the statuses a fetch
@@ -231,6 +249,12 @@ def _classify_error_text(text: str) -> dict[str, object]:
         if any(_match_keyword(kw, lower) for kw in keywords):
             return {**attrs}
     return {**_UNKNOWN_ERROR}
+
+
+def _classify_shell_exit(exit_code: int) -> dict[str, object]:
+    """[argus patch #153] Category attributes for a non-zero shell exit code."""
+    error_type = _SHELL_EXIT_CODE_TYPES.get(exit_code)
+    return {**_ATTRS_BY_ERROR_TYPE[error_type]} if error_type else {**_COMMAND_FAILED_ATTRS}
 
 
 def _classify_error_shell(msg: ToolMessage, content: str) -> dict[str, object] | None:
@@ -366,7 +390,8 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     exit_code = int(shell_exit.group(1)) if shell_exit else None
 
     if exit_code not in (None, 0):
-        attrs = _classify_error_text(content)
+        # [argus patch #153] by exit code, never by the command's own output.
+        attrs = _classify_shell_exit(exit_code)
         meta = _make_meta(status="error", source="tool_return", exit_code=exit_code, **attrs)
     elif msg.status == "error" and not content.startswith(_ERROR_PREFIX):
         # [argus patch #83] If content is wrapped in a tool-wrapper error format, classify ONLY
