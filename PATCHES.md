@@ -196,6 +196,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#141](#patch-141) | Cross-tab preferences sync: a storage event refetches only when another tab's value disagrees on a field both know, throttled to one read per 2 s (two tabs on different bundles ping-ponged GET /api/v1/auth/preferences at network speed) | argus-edit | this PR |
 | [#142](#patch-142) | Open-mode sandbox replacement removes the restricted netproxy only when the sandbox itself was provisioned restricted (an engine proxy that admits only the stack's sandbox names refused the fixed `deer-flow-netproxy-*` stop, aborting every quarantine recycle) | argus-edit | this PR |
 | [#153](#patch-153) | A non-zero shell exit is graded by its trailing exit marker (126 permission, 127 not found, any other code including a 124 timeout `command_failed`, all model-recoverable), never by keywords in the command's output (a script that printed `mrr>500` read as an internal error and bash was blocked for the run) | argus-edit | this PR |
+| [#154](#patch-154) | A removed sandbox reads as absent when the socket proxy's `GET /info` denial sits next to "no such object" (excused only when every queried name is reported missing), so a thread whose container was removed gets a new one instead of failing every file and shell tool | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2718,6 +2719,17 @@ carry budget ledger.
 - Tests: `backend/tests/test_tool_result_meta_shell_exit.py` (the exact seq 114 output is `command_failed`, not internal, and the next bash call runs; keywords in failed-command output never grade it; 126/127 keep their meaning and 124 is `command_failed`; four failures and a silent timeout do not block bash; only the trailing marker counts; `bash_tool`; a clean exit printing "500" is a success; a tool-level `Error:` keeps the keyword rules; `web_fetch` still grades HTTP 500 as internal; repeated failures get the command hint). `test_tool_result_meta.py`, `test_tool_progress_middleware.py`, `test_sandbox_audit_middleware.py` unchanged and green.
 - Delete-when: upstream grades shell results by exit code rather than by output keywords.
 - Upstream status: generic-upstreamable (any coding run whose failing output prints a status-like number hits it).
+
+## Patch #154
+
+**Patch #154 - A removed sandbox reads as absent behind the socket proxy** (2026-10-20)
+
+- Class: argus-edit (harness; `LocalContainerBackend._inspect_container_entries` and `_is_container_running`).
+- Intent: `docker inspect <name>` without `--type` falls back through the other object types when no container has that name, and its swarm probes ask the engine for `GET /info`. The per-stack socket proxy (acropolis `services/acro-sockproxy`) refuses that route, so the CLI prints `Error response from daemon: sockproxy: GET /info is not on the allowlist` next to `error: no such object: <name>`. `_inspect_container_entries` is deliberately all-or-nothing on stderr and read the extra line as an inspect failure, so `is_absent` / `inspect_runtime` raised instead of reporting the container gone, and `_retire_absent_quarantine` could never retire the sandbox: atlas-aphiwe thread a7ea1a15 failed every file and shell tool from 2026-10-12 15:39 CEST ("Unexpected error initializing sandbox: RuntimeError: Failed to inspect containers with docker: ...", 9 failures in the week to 2026-10-20, the checkpoint still naming sandbox `fddadb70f132161c`). Fresh threads were unaffected; only a thread whose container had been removed was bricked. That exact denial line (version-stripped path, so always `GET /info`) is now dropped before the strict checks. In `_inspect_container_entries` it is excused only when every queried name is reported missing; with any name present, any other proxy refusal, or any other unrecognized line, the batch still fails. `_is_container_running` applies the same drop before its full-message missing-container match, so discovery stops logging "Could not verify container" for a removed sandbox.
+- Files: `backend/packages/harness/deerflow/community/aio_sandbox/local_backend.py`.
+- Tests: `backend/tests/test_aio_sandbox_sockproxy_info_probe.py` (the exact atlas-aphiwe stderr makes `is_absent` true, `inspect_runtime` None, `_is_container_running` false, discovery silent and strict `_batch_inspect` empty; one denial per missing name in a batch; the denial alone, another missing name, other proxy refusals, a non-proxy /info refusal, an extra unrecognized line and a daemon connection error all still raise; a partial batch with a present container still raises). `test_aio_sandbox_local_backend.py` (including the strict near-miss table) and `test_aio_sandbox_provider.py` unchanged and green.
+- Delete-when: the socket proxy answers `GET /info` (or the backend passes `--type container`), so the CLI never prints the denial next to a missing object.
+- Upstream status: argus-specific (the socket proxy is Argus's).
 
 ---
 
