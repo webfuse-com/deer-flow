@@ -70,6 +70,7 @@ from deerflow.agents.middlewares.audit_context import (
     resolve_audit_recorder,
 )
 from deerflow.agents.middlewares.tool_result_meta import (
+    COMMAND_FAILED_ERROR_TYPE,
     PROGRESS_GUARD_ERROR_TYPE,
     TOOL_META_KEY,
     TOOL_RESULT_ERROR_TYPES,
@@ -100,13 +101,13 @@ _MAX_CONTENT_FOR_WORDSET = 8192
 # (atlas-quinten b4471658, 2026-10-16: 9 of 10 lead writes lost).
 
 INVALID_ARGS_ERROR_TYPE = "invalid_args"
-COMMAND_FAILED_ERROR_TYPE = "command_failed"
-_AUDIT_ERROR_TYPES = TOOL_RESULT_ERROR_TYPES | {INVALID_ARGS_ERROR_TYPE, COMMAND_FAILED_ERROR_TYPE}
+# command_failed is #153's grade (tool_result_meta), the one exit-code table.
+_AUDIT_ERROR_TYPES = TOOL_RESULT_ERROR_TYPES | {INVALID_ARGS_ERROR_TYPE}
 _BASH_TOOL_NAMES = frozenset({"bash", "bash_tool"})
 _REGRADE_SCAN_CHARS = 4000
 _BLOCK_DETAIL_CHARS = 200
 # A rejected call shape is the caller's to fix: atlas-mcp's argument check,
-# JSON-schema and pydantic validation wording, Python signature errors.
+# JSON-schema validation wording, Python signature errors.
 _INVALID_ARGS_RE = re.compile(
     r"missing required (?:argument|parameter|field|input|property|key)"
     r"|missing \d+ required (?:positional |keyword-only )?argument"
@@ -114,36 +115,65 @@ _INVALID_ARGS_RE = re.compile(
     r"|additional properties are not allowed"
     r"|unexpected keyword argument"
     r"|invalid (?:inputs?|arguments?|parameters?|params)\b"
-    r"|validation errors? for\b"
-    r"|\bfield required\b"
-    r"|\binput should be\b"
     r"|is not of type '"
     r"|is not valid under any of the given schemas",
     re.IGNORECASE,
 )
+# Pydantic wording counts only from the tool-call layer: LangChain's argument
+# validation of the tool schema (ToolInvocationError), or a "validation error
+# for <Model>" whose model is the called tool or the function a dispatcher
+# call names. A server-side model ("1 validation error for Settings ... Field
+# required") is the tool failing, not the call's arguments.
+_TOOL_INVOCATION_ERROR_PREFIX = "Error invoking tool '"
+_PYDANTIC_HEADER_RE = re.compile(r"\b\d+ validation errors? for (?P<model>[A-Za-z_][\w.]*)")
+_CALL_NAME_ARG_KEYS = ("function", "name", "tool", "tool_name", "method")
+_SCHEMA_SUFFIXES = ("arguments", "parameters", "request", "schema", "params", "inputs", "input", "args")
 
 
-def regrade_tool_meta(meta: ToolResultMeta, tool_name: str, content: str, *, tool_status: str = "success") -> ToolResultMeta:
+def _schema_key(name: str) -> str:
+    key = re.sub(r"[^a-z0-9]", "", name.rsplit(".", 1)[-1].lower())
+    for suffix in _SCHEMA_SUFFIXES:
+        if key.endswith(suffix) and len(key) > len(suffix):
+            return key[: -len(suffix)]
+    return key
+
+
+def _is_call_argument_error(content: str, tool_name: str, call_args: object) -> bool:
+    """True when *content* is the tool-call layer rejecting this call's arguments."""
+    text = content[:_REGRADE_SCAN_CHARS]
+    if text.startswith(_TOOL_INVOCATION_ERROR_PREFIX) or _INVALID_ARGS_RE.search(text):
+        return True
+    names = {tool_name}
+    if isinstance(call_args, dict):
+        names.update(value for key in _CALL_NAME_ARG_KEYS if isinstance(value := call_args.get(key), str))
+    called = {_schema_key(name) for name in names if name}
+    return any(_schema_key(match["model"]) in called for match in _PYDANTIC_HEADER_RE.finditer(text))
+
+
+def regrade_tool_meta(meta: ToolResultMeta, tool_name: str, content: str, *, tool_status: str = "success", call_args: object = None) -> ToolResultMeta:
     """Re-grade a result by its cause before the progress state machine sees it.
 
-    - bash: a non-zero exit code is a failed command the model can change
-      (``command_failed``); without an exit marker the command exited 0 and is a
-      success whatever its output says. Tool-level failures (an exception, an
-      error status set by the tool or a middleware such as the sandbox audit's
-      "Command blocked", or the tool's own ``Error:`` reply such as a sandbox
-      that would not start) keep the shared classifier's grade.
-    - any other tool: an argument or schema rejection is ``invalid_args``,
-      recoverable by the model, unless the classifier saw auth or rate limiting.
+    - bash: a result with a non-zero exit marker keeps the shared classifier's
+      grade, which #153 already takes from the exit code alone (one table:
+      126 permission, 127 not_found, any other ``command_failed``). Without an
+      exit marker the command exited 0 and is a success whatever its output
+      says. Tool-level failures (an exception, an error status set by the tool
+      or a middleware such as the sandbox audit's "Command blocked", or the
+      tool's own ``Error:`` reply such as a sandbox that would not start) keep
+      the shared classifier's grade.
+    - any other tool: a rejection of the call's arguments by the tool-call
+      layer is ``invalid_args``, recoverable by the model, unless the
+      classifier saw auth or rate limiting.
     """
     if tool_name in _BASH_TOOL_NAMES:
+        if meta.exit_code not in (None, 0):
+            return meta
         if meta.source in ("exception", "progress_middleware") or tool_status == "error" or content.startswith("Error:"):
             return meta
-        if meta.exit_code not in (None, 0):
-            return replace(meta, status="error", error_type=COMMAND_FAILED_ERROR_TYPE, recoverable_by_model=True, recommended_next_action="try_alternative")
         if meta.status != "success":
             return replace(meta, status="success", error_type=None, recoverable_by_model=True, recommended_next_action="continue")
         return meta
-    if meta.status == "error" and meta.error_type not in ("auth", "rate_limited", PROGRESS_GUARD_ERROR_TYPE) and _INVALID_ARGS_RE.search(content[:_REGRADE_SCAN_CHARS]):
+    if meta.status == "error" and meta.error_type not in ("auth", "rate_limited", PROGRESS_GUARD_ERROR_TYPE) and _is_call_argument_error(content, tool_name, call_args):
         return replace(meta, error_type=INVALID_ARGS_ERROR_TYPE, recoverable_by_model=True, recommended_next_action="rewrite_query")
     return meta
 
@@ -288,8 +318,6 @@ def _format_hint(meta: ToolResultMeta) -> str:
     # [argus patch #143] Grades only cause_aware_blocking produces.
     if meta.error_type == INVALID_ARGS_ERROR_TYPE:
         return "[PROGRESS HINT] The tool keeps rejecting the call's arguments. Check its schema (required fields, allowed properties, types) and call it again with corrected arguments."
-    if meta.error_type == COMMAND_FAILED_ERROR_TYPE:
-        return "[PROGRESS HINT] The command keeps exiting with an error. Read its error output and change the command instead of repeating it."
     action_map = {
         "rewrite_query": "Try rephrasing your search query with different keywords or approach.",
         "try_alternative": "Consider using a different tool or strategy.",
@@ -305,7 +333,7 @@ def _format_hint(meta: ToolResultMeta) -> str:
         "rate_limited": "[PROGRESS HINT] The tool is being rate-limited.",
         "transient": "[PROGRESS HINT] The tool encountered repeated transient failures.",
         # [argus patch #153] a non-zero shell exit (tool_result_meta).
-        "command_failed": "[PROGRESS HINT] The command keeps exiting with an error. Read its error output and change the command instead of repeating it.",
+        COMMAND_FAILED_ERROR_TYPE: "[PROGRESS HINT] The command keeps exiting with an error. Read its error output and change the command instead of repeating it.",
         "partial_success": "[PROGRESS HINT] The tool has returned incomplete results multiple times.",
         # Jaccard near-duplicate success: the tool is returning the same content repeatedly.
         "success": "[PROGRESS HINT] The tool is returning duplicate results.",
@@ -560,6 +588,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         *,
         hook: Literal["wrap_tool_call", "awrap_tool_call"],
         state_key: str | None = None,
+        tool_args: object = None,
     ) -> ToolMessage | Command:
         """Update the state machine from a tool result; queue hints if warranted."""
         message = _result_tool_message(result, tool_call_id)
@@ -577,7 +606,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         # [argus patch #143] Grade by cause, and keep dispatcher state per function.
         key = state_key or tool_name
         if self._cause_aware:
-            meta = regrade_tool_meta(meta, tool_name, content, tool_status=tool_reported_status(message))
+            meta = regrade_tool_meta(meta, tool_name, content, tool_status=tool_reported_status(message), call_args=tool_args)
         thread_id = self._thread_id(runtime)
         phase_change: tuple[ToolPhaseState, ToolPhaseState, ToolPhaseTransition] | None = None
         with self._lock:
@@ -919,7 +948,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                 return result
         result = handler(request)
         if tool_name not in self._exempt_tools:
-            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="wrap_tool_call", state_key=state_key)
+            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="wrap_tool_call", state_key=state_key, tool_args=tool_args)
         self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
         return result
 
@@ -952,7 +981,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                 return result
         result = await handler(request)
         if tool_name not in self._exempt_tools:
-            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="awrap_tool_call", state_key=state_key)
+            result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="awrap_tool_call", state_key=state_key, tool_args=tool_args)
         self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
         return result
 

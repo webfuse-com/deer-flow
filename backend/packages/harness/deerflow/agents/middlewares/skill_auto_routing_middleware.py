@@ -47,12 +47,22 @@ _NEGATION_RE = re.compile(
 )
 
 
+# A negation governs the few words right after it in its phrase, not the rest
+# of the sentence: "if not, update the release-desk" asks for release-desk.
+_NEGATION_WINDOW = 8
+
+
 def _affirmed_tokens(text: str) -> set[str]:
-    """Tokens that appear before any negation word in their sentence."""
+    """Tokens that are not within a negation's reach (the next few words of its comma-delimited phrase)."""
     affirmed: set[str] = set()
     for clause in _CLAUSE_SPLIT_RE.split(text):
-        negation = _NEGATION_RE.search(clause)
-        affirmed |= _tokens(clause[: negation.start()] if negation else clause)
+        for phrase in clause.split(","):
+            tokens = list(_TOKEN_RE.finditer(phrase.lower()))
+            negated: set[int] = set()
+            for negation in _NEGATION_RE.finditer(phrase):
+                following = [index for index, token in enumerate(tokens) if token.start() >= negation.end()]
+                negated.update(following[:_NEGATION_WINDOW])
+            affirmed |= {token.group(0) for index, token in enumerate(tokens) if index not in negated}
     return affirmed
 
 

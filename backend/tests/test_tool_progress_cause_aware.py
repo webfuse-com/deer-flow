@@ -10,18 +10,21 @@ one malformed ``atlas_app_function_call`` blocked the tool for the run.
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from langchain_core.messages import ToolMessage
 
+from deerflow.agents.middlewares import tool_progress_middleware as progress_module
 from deerflow.agents.middlewares.tool_progress_middleware import (
-    COMMAND_FAILED_ERROR_TYPE,
     INVALID_ARGS_ERROR_TYPE,
     ToolProgressMiddleware,
+    _format_hint,
     regrade_tool_meta,
 )
-from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY, ToolResultMeta, normalize_tool_message, tool_reported_status
+from deerflow.agents.middlewares.tool_result_meta import COMMAND_FAILED_ERROR_TYPE, TOOL_META_KEY, ToolResultMeta, normalize_tool_message, tool_reported_status
 from deerflow.config.tool_progress_config import ToolProgressConfig
 
 _DISPATCHERS = ToolProgressConfig().dispatcher_tools
@@ -100,7 +103,7 @@ def test_argument_errors_regrade_as_invalid_args():
         "invalid inputs: segment must be one of ...",
     ):
         meta = _parse(_result(text, tool_name="atlas_app_function_call", status="error"))
-        regraded = regrade_tool_meta(meta, "atlas_app_function_call", text)
+        regraded = regrade_tool_meta(meta, "atlas_app_function_call", text, call_args={"app": "leads", "function": "get_leads"})
         assert regraded.error_type == INVALID_ARGS_ERROR_TYPE, text
         assert regraded.recoverable_by_model is True
         assert regraded.recommended_next_action == "rewrite_query"
@@ -117,9 +120,10 @@ def test_auth_and_rate_limit_grades_are_not_regraded():
 def test_bash_is_graded_by_exit_code_not_output_text():
     traceback = "Traceback (most recent call last):\n  ...\npytesseract.TesseractNotFoundError: tesseract is not installed\nExit Code: 1"
     meta = _parse(_result(traceback, tool_name="bash"))
-    assert meta.error_type == "config"  # the shared classifier's keyword grade
+    # #153 grades a non-zero exit by its code in the shared classifier, and the re-grade trusts it.
+    assert meta.error_type == COMMAND_FAILED_ERROR_TYPE
     regraded = regrade_tool_meta(meta, "bash", traceback)
-    assert regraded.error_type == COMMAND_FAILED_ERROR_TYPE
+    assert regraded is meta
     assert regraded.recoverable_by_model is True
 
     clean = "id,name\nno results found for segment x"
@@ -140,6 +144,71 @@ def test_bash_tool_level_errors_keep_their_grade():
     meta = _parse(message)
     assert meta.status == "error"
     assert regrade_tool_meta(meta, "bash", blocked, tool_status=tool_reported_status(message)) is meta
+
+
+@pytest.mark.parametrize(
+    ("content", "error_type"),
+    [
+        # The tool's own "Error:" text with an exit marker is still a failed command.
+        ("Error: upstream returned 500 Internal Server Error\nExit Code: 1", COMMAND_FAILED_ERROR_TYPE),
+        ("Command exited with code 124", COMMAND_FAILED_ERROR_TYPE),
+        ("bash: ./run.sh: Permission denied\nExit Code: 126", "permission"),
+        ("bash: tesseract: command not found\nExit Code: 127", "not_found"),
+    ],
+)
+def test_bash_with_an_exit_code_keeps_the_shared_grade(content, error_type):
+    meta = _parse(_result(content, tool_name="bash"))
+    assert meta.error_type == error_type
+    assert regrade_tool_meta(meta, "bash", content) is meta
+
+
+def test_an_error_text_with_an_exit_code_does_not_block_bash():
+    mw = _middleware()
+    rt = _runtime()
+    for _ in range(3):
+        out, ran = _call(mw, "bash", rt, "Error: upstream returned 500 Internal Server Error\nExit Code: 1")
+        assert ran
+    out, ran = _call(mw, "bash", rt, "ok")
+    assert ran and out.content == "ok"
+
+
+def test_one_exit_code_table_one_constant_one_hint():
+    assert progress_module.COMMAND_FAILED_ERROR_TYPE is COMMAND_FAILED_ERROR_TYPE
+    source = inspect.getsource(progress_module)
+    assert "COMMAND_FAILED_ERROR_TYPE = " not in source
+    hint = "The command keeps exiting with an error."
+    assert source.count(hint) == 1
+    assert hint in _format_hint(_meta(error_type=COMMAND_FAILED_ERROR_TYPE, recoverable_by_model=True, recommended_next_action="try_alternative"))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Server-side pydantic errors inside the tool are not the call's arguments.
+        "1 validation error for Settings\ndatabase_url\n  Field required [type=missing, input_value={}, input_type=dict]",
+        "2 validation errors for BigQueryJob\nschema.0.mode\n  Input should be 'NULLABLE' or 'REQUIRED' [type=literal_error]",
+        "upstream rejected the record: Field required (owner)",
+    ],
+)
+def test_server_side_validation_errors_are_not_invalid_args(text):
+    meta = _parse(_result(text, tool_name="bq_query", status="error"))
+    regraded = regrade_tool_meta(meta, "bq_query", text, call_args={"query": "select 1"})
+    assert regraded.error_type != INVALID_ARGS_ERROR_TYPE
+
+
+@pytest.mark.parametrize(
+    ("text", "tool_name", "call_args"),
+    [
+        # LangChain's own argument validation of the tool schema.
+        ("Error invoking tool 'get_leads' with kwargs {'segment': 3} with error:\n segment: Input should be a valid string\n Please fix the error and try again.", "get_leads", {"segment": 3}),
+        ("1 validation error for read_file\npath\n  Field required [type=missing]", "read_file", {}),
+        # A dispatcher's function schema, named by the call.
+        ("1 validation error for GetLeadsInput\nsegment\n  Field required [type=missing]", "atlas_app_function_call", {"app": "leads", "function": "get_leads"}),
+    ],
+)
+def test_call_layer_validation_errors_are_invalid_args(text, tool_name, call_args):
+    meta = _parse(_result(text, tool_name=tool_name, status="error"))
+    assert regrade_tool_meta(meta, tool_name, text, call_args=call_args).error_type == INVALID_ARGS_ERROR_TYPE
 
 
 # ---------------------------------------------------------------------------

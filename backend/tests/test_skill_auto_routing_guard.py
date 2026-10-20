@@ -99,6 +99,19 @@ def test_affirmed_mentions_still_route():
     assert _names(mw._select(text, [_skill("slack-send")])) == ["slack-send"]
 
 
+def test_a_negation_covers_only_the_words_right_after_it():
+    mw = _middleware(auto_route_guard=True)
+    release = [_skill("release-desk")]
+    # A comma ends the negated phrase.
+    assert _names(mw._select("Check the build first; if not, update the release-desk", release)) == ["release-desk"]
+    assert _names(mw._select("Never post on weekends, and send the summary with slack-send", [_skill("slack-send")])) == ["slack-send"]
+    # So does distance: the skill is far past what the negation governs.
+    far = "Nothing in the dashboard repository needs a change today and the team should use the release-desk for the notes"
+    assert _names(mw._select(far, release)) == ["release-desk"]
+    # A negated skill phrase still does not route.
+    assert _names(mw._select("Do not touch the release-desk this week", release)) == []
+
+
 # ---------------------------------------------------------------------------
 # Tool allowlist
 
