@@ -133,7 +133,9 @@ _ATTRS_BY_ERROR_TYPE: dict[str, dict[str, object]] = {str(attrs["error_type"]): 
 # body), so keywords in it say nothing about the bash tool: a node script that
 # echoed ``mrr>500?'Medium'`` read as ``internal``/stop and blocked bash for the
 # rest of the run (atlas-marko bca67986, 2026-10-20). Codes with a fixed meaning
-# keep it; every other code is a failed command the model can change.
+# keep it; every other code, a timeout (124) included, is a failed command the
+# model can change. This is the one table: ToolProgressMiddleware's #143
+# re-grade trusts it and imports COMMAND_FAILED_ERROR_TYPE from here.
 COMMAND_FAILED_ERROR_TYPE = "command_failed"
 _COMMAND_FAILED_ATTRS: dict[str, object] = {
     "error_type": COMMAND_FAILED_ERROR_TYPE,
@@ -141,7 +143,6 @@ _COMMAND_FAILED_ATTRS: dict[str, object] = {
     "recommended_next_action": "try_alternative",
 }
 _SHELL_EXIT_CODE_TYPES: dict[int, str] = {
-    124: "transient",  # timed out: the sandbox's hard timeout and timeout(1)
     126: "permission",  # found but not executable
     127: "not_found",  # command not found
 }
@@ -184,8 +185,11 @@ _NUMERIC_KW_RE: dict[str, re.Pattern[str]] = {kw: re.compile(rf"\b{kw}\b") for r
 
 _SEMANTIC_ZERO_ERROR_STRINGS: frozenset[str] = frozenset({"none", "null", "false", "no", "ok", "success", "n/a", ""})
 
+# [argus patch #153] Only the trailing marker is the command's exit: providers
+# append it at the very end (sandbox.tools._BASH_EXIT_MARKER_TAIL_RE), and an
+# earlier marker-shaped line ("exit=0", a log's "Exit Code: 0") is output.
 _SHELL_EXIT_CODE_RE = re.compile(
-    r"(?:^|\n)(?:Exit Code:|Command exited with code|exit=)\s*(-?\d+)\s*(?:$|\n)",
+    r"(?:^|\n)(?:Exit Code:|Command exited with code|exit=)\s*(-?\d+)\s*$",
     re.IGNORECASE,
 )
 

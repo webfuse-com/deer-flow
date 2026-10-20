@@ -109,12 +109,13 @@ def test_keywords_in_command_output_do_not_grade_a_failed_command(output):
 @pytest.mark.parametrize(
     ("content", "error_type"),
     [
-        # The sandbox's own hard timeout and the `timeout` utility both exit 124.
-        ("still building\nCommand timed out after 600 seconds.\nExit Code: 124", "transient"),
-        ("Command exited with code 124", "transient"),
         # The shell's structured codes: found but not executable, not found.
         ("bash: ./run.sh: Permission denied\nExit Code: 126", "permission"),
         ("bash: tesseract: command not found\nExit Code: 127", "not_found"),
+        # A timeout (the sandbox's hard timeout and timeout(1) both exit 124)
+        # is a command the model can change, like any other failure.
+        ("still building\nCommand timed out after 600 seconds.\nExit Code: 124", "command_failed"),
+        ("Command exited with code 124", "command_failed"),
         ("Command exited with code 2", "command_failed"),
         ("partial output\nexit=3", "command_failed"),
     ],
@@ -123,7 +124,37 @@ def test_exit_codes_with_a_fixed_meaning_keep_it(content, error_type):
     meta = _meta(normalize_tool_message(_bash(content)))
     assert meta["status"] == "error"
     assert meta["error_type"] == error_type
+    assert meta["recoverable_by_model"] is True
     assert meta["recommended_next_action"] != "stop"
+
+
+def test_a_silent_timeout_after_failed_commands_does_not_block_bash():
+    # Four failed commands and then `timeout 30 cmd` (coreutils prints nothing).
+    mw = ToolProgressMiddleware(stagnation_threshold=3, warn_escalation_count=2, inject_assessment=True, jaccard_threshold=0.8, min_words=5)
+    runtime = MagicMock()
+    runtime.context = {"thread_id": "t-timeout", "run_id": "r1"}
+    request = SimpleNamespace(tool_call={"name": "bash", "id": "tc-1"}, runtime=runtime)
+    outputs = [f"step {i} failed\nExit Code: 1" for i in range(4)] + ["Command exited with code 124"]
+    for output in outputs:
+        result = mw.wrap_tool_call(request, lambda _r, output=output: normalize_tool_message(_bash(output)))
+        assert "[TOOL_BLOCKED]" not in str(result.content)
+    assert mw._phase_states["t-timeout"]["bash"].phase != "blocked"
+
+
+@pytest.mark.parametrize(
+    ("content", "exit_code"),
+    [
+        # An earlier marker-shaped line in the output is not the command's exit.
+        ("exit=0\nrunning checks\nExit Code: 1", 1),
+        ("Exit Code: 0\nnext stage\nCommand exited with code 2", 2),
+        ("previous run: Exit Code: 3\nall good", None),
+        ("Exit Code: 1\nretry succeeded", None),
+    ],
+)
+def test_only_the_trailing_exit_marker_counts(content, exit_code):
+    meta = _meta(normalize_tool_message(_bash(content)))
+    assert meta.get("exit_code") == exit_code
+    assert meta["status"] == ("error" if exit_code else "success")
 
 
 def test_bash_tool_alias_is_graded_the_same_way():
