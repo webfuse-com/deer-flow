@@ -132,26 +132,23 @@ _FACT_CLASSIFICATION_FIELDS = ("scope", "durability", "authority")
 # [argus patch #148] The update prompt HTML-escapes every memory string
 # (``_escape_memory_for_prompt``) and the model copies that text back, so a
 # stored value gained one level per update cycle (``'`` -> ``&#x27;`` ->
-# ``&amp;#x27;`` ...). ``html.escape`` emits exactly these five entities (and
-# ``&#39;`` is its common variant); ``&amp;`` is undone last so one round is
-# one level. Other entities are left alone: they are not ours to decode.
+# ``&amp;#x27;`` ...). The prompt adds exactly one level, so exactly one round
+# is undone here: ``html.escape`` emits these five entities (``&#39;`` is its
+# common variant) and ``&amp;`` is undone last, so one round is one level. A
+# literal entity in a real memory ("Prefers &amp; over 'and'") survives;
+# levels that accumulated before this patch are the repair script's job
+# (scripts/argus_repair_deermem_escaping.py repeats the round until clean).
+# Other entities are left alone: they are not ours to decode.
 _PROMPT_ESCAPE_ENTITIES = (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#x27;", "'"), ("&#39;", "'"), ("&amp;", "&"))
-_PROMPT_UNESCAPE_MAX_ROUNDS = 16
 
 
 def _unescape_prompt_text(value: str) -> str:
-    """Undo prompt escaping until the text stops changing (idempotent)."""
-    current = value
-    for _ in range(_PROMPT_UNESCAPE_MAX_ROUNDS):
-        if "&" not in current:
-            return current
-        unescaped = current
-        for entity, char in _PROMPT_ESCAPE_ENTITIES:
-            unescaped = unescaped.replace(entity, char)
-        if unescaped == current:
-            return current
-        current = unescaped
-    return current
+    """Undo the one level of escaping the update prompt added."""
+    if "&" not in value:
+        return value
+    for entity, char in _PROMPT_ESCAPE_ENTITIES:
+        value = value.replace(entity, char)
+    return value
 
 
 def _unescape_summary_sections(sections: dict[str, Any]) -> dict[str, Any]:

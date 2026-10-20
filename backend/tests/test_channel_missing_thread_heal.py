@@ -11,6 +11,7 @@ starts over. The thread DELETE route evicts the cache too.
 """
 
 import asyncio
+import copy
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,9 +19,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from langgraph_sdk.errors import NotFoundError
 
-from app.channels.manager import MISSING_THREAD_NOTICE, ChannelManager, _is_missing_thread_error
+from app.channels.manager import MISSING_THREAD_NOTICE, ChannelManager, _is_missing_thread_error, _select_carried_agent_name
 from app.channels.message_bus import InboundMessage, MessageBus, OutboundMessage
 from app.channels.store import JsonChannelStore
 
@@ -56,6 +58,7 @@ class _Gateway:
         self.creates: list[dict] = []
         self.stream_calls: list[str] = []
         self.wait_calls: list[str] = []
+        self.run_kwargs: list[dict] = []
         self.client = MagicMock()
         self.client.threads.get = self._get
         self.client.threads.create = self._create
@@ -78,6 +81,7 @@ class _Gateway:
 
     def _stream(self, thread_id, assistant_id, **kwargs):
         self.stream_calls.append(thread_id)
+        self.run_kwargs.append(copy.deepcopy({key: kwargs.get(key) for key in ("config", "context")}))
 
         async def gen():
             if self.other_404:
@@ -91,19 +95,20 @@ class _Gateway:
 
     async def _wait(self, thread_id, assistant_id, **kwargs):
         self.wait_calls.append(thread_id)
+        self.run_kwargs.append(copy.deepcopy({key: kwargs.get(key) for key in ("config", "context")}))
         if self._missing(thread_id):
             raise _not_found(f"Thread {thread_id} not found")
         return {"messages": [{"type": "human", "content": "hi"}, {"type": "ai", "content": "Hello again"}]}
 
 
-async def _chat(gateway: _Gateway, msg: InboundMessage, *, cached: bool = True, bound: str = "thread-old") -> tuple[ChannelManager, list[OutboundMessage]]:
+async def _chat(gateway: _Gateway, msg: InboundMessage, *, cached: bool = True, bound: str = "thread-old", agent_pin: str | None = None) -> tuple[ChannelManager, list[OutboundMessage]]:
     manager = ChannelManager(bus=MessageBus(), store=JsonChannelStore(path=Path(tempfile.mkdtemp()) / "store.json"), channel_sessions=ATLAS_SESSIONS)
     await manager.store.set_thread_id(msg.channel_name, msg.chat_id, bound, topic_id=msg.topic_id, user_id=msg.user_id)
     manager._client = gateway.client
     if cached:
         # This process already verified the binding and loaded its pins.
         manager._registered_threads.add(bound)
-        manager._thread_agent_names[bound] = None
+        manager._thread_agent_names[bound] = agent_pin
     manager._thread_model_names[bound] = None
     outbound: list[OutboundMessage] = []
 
@@ -214,6 +219,78 @@ def test_loading_the_thread_agent_heals_a_thread_deleted_after_its_check():
     assert [c["thread_id"] for c in gateway.creates] == ["thread-old"]
     assert MISSING_THREAD_NOTICE in [m.text for m in outbound]
     assert [m.text for m in outbound if m.is_final] == ["Hello again"]
+
+
+def test_another_owners_thread_is_not_healed_and_no_notice_is_sent():
+    """The gateway answers a foreign thread with the same 404 as a deleted one; re-creating the id tells them apart."""
+    gateway = _Gateway(always_missing={"thread-old"})
+
+    async def foreign(**kwargs):
+        gateway.creates.append(kwargs)
+        if kwargs.get("thread_id") == "thread-old":
+            raise _not_found("Thread not found")
+        return {"thread_id": "thread-new"}
+
+    gateway.client.threads.create = foreign
+    manager, outbound = _run(_chat(gateway, _telegram()))
+    assert gateway.stream_calls == ["thread-old"]
+    assert all(m.text != MISSING_THREAD_NOTICE for m in outbound)
+    assert [m.text for m in outbound if m.is_final] == [GENERIC_ERROR]
+    assert _run(manager.store.get_thread_id("telegram", "111")) == "thread-old"
+    assert "thread-old" in manager._registered_threads
+
+
+def test_another_owners_thread_on_the_wait_path_is_not_healed():
+    gateway = _Gateway(always_missing={"thread-old"})
+
+    async def foreign(**kwargs):
+        gateway.creates.append(kwargs)
+        raise _not_found("Thread not found")
+
+    gateway.client.threads.create = foreign
+    msg = InboundMessage(channel_name="slack", chat_id="C1", user_id="U1", text="hi", metadata={"message_id": "1"})
+    outbound: list[OutboundMessage] = []
+
+    async def go():
+        manager = ChannelManager(bus=MessageBus(), store=JsonChannelStore(path=Path(tempfile.mkdtemp()) / "store.json"), channel_sessions=ATLAS_SESSIONS)
+        await manager.store.set_thread_id("slack", "C1", "thread-old", user_id="U1")
+        manager._client = gateway.client
+        manager._registered_threads.add("thread-old")
+        manager._thread_agent_names["thread-old"] = None
+        manager._thread_model_names["thread-old"] = None
+
+        async def capture(message: OutboundMessage) -> None:
+            outbound.append(message)
+
+        manager.bus.subscribe_outbound(capture)
+        with pytest.raises(NotFoundError):
+            # The original error goes to the dispatcher's generic handler, as before #150.
+            await manager._handle_chat(msg, bound_identity_checked=True)
+
+    _run(go())
+    assert gateway.wait_calls == ["thread-old"]
+    assert all(m.text != MISSING_THREAD_NOTICE for m in outbound)
+
+
+def test_the_retry_does_not_carry_the_deleted_threads_agent_pin():
+    """A cached /agent use pin belonged to the deleted thread; the retry resolves the run again."""
+    gateway = _Gateway(deleted={"thread-old"})
+    _manager, outbound = _run(_chat(gateway, _telegram(), agent_pin="coder"))
+    assert gateway.stream_calls == ["thread-old", "thread-old"]
+    first, retry = gateway.run_kwargs
+    assert _select_carried_agent_name(first["config"], first["context"]) == "coder"
+    assert _select_carried_agent_name(retry["config"], retry["context"]) == "atlas"
+    assert retry["context"]["thread_id"] == "thread-old" and retry["config"]["configurable"]["thread_id"] == "thread-old"
+    assert [m.text for m in outbound if m.is_final] == ["Hello again"]
+
+
+def test_the_wait_retry_does_not_carry_the_deleted_threads_agent_pin():
+    gateway = _Gateway(deleted={"thread-old"})
+    msg = InboundMessage(channel_name="slack", chat_id="C1", user_id="U1", text="hi", metadata={"message_id": "1"})
+    _run(_chat(gateway, msg, agent_pin="coder"))
+    first, retry = gateway.run_kwargs
+    assert _select_carried_agent_name(first["config"], first["context"]) == "coder"
+    assert _select_carried_agent_name(retry["config"], retry["context"]) == "atlas"
 
 
 def test_forget_thread_drops_every_cached_fact():

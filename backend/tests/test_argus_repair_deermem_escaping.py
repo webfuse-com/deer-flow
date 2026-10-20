@@ -94,3 +94,27 @@ def test_user_filter_limits_the_scopes(tmp_path, capsys):
 def test_missing_root_is_an_error(tmp_path, capsys):
     assert repair.run(["--root", str(tmp_path / "nowhere")]) == 1
     assert _lines(capsys)[-1]["error"] == "no users directory"
+
+
+def test_one_failing_scope_is_recorded_and_the_rest_still_run(tmp_path, capsys, monkeypatch):
+    _seed(tmp_path)
+    clean_document = repair._clean_document
+
+    def flaky(document, *, summaries, facts, unescape):
+        if summaries:
+            raise OSError("disk full while reading the summaries")
+        return clean_document(document, summaries=summaries, facts=facts, unescape=unescape)
+
+    monkeypatch.setattr(repair, "_clean_document", flaky)
+    assert repair.run(["--root", str(tmp_path), "--apply", "--backup-dir", str(tmp_path.parent / f"{tmp_path.name}-backup")]) == 1
+    lines = _lines(capsys)
+    failed = [line for line in lines if line.get("error")]
+    assert failed == [{"user": "u1", "agent": None, "saved": False, "error": "OSError: disk full while reading the summaries"}]
+    assert any(line.get("agent") == "atlas" and line.get("saved") is True for line in lines)
+    assert lines[-1]["failed"] == 1 and lines[-1]["changed_scopes"] == 1
+
+
+def test_the_repair_still_cleans_every_accumulated_level():
+    unescape = repair._load_unescape()
+    assert unescape("the &amp;amp;#x27;Augmented Web Proxy&amp;amp;#x27;") == "the 'Augmented Web Proxy'"
+    assert unescape("Builds &amp;lt;b&amp;gt;") == "Builds <b>"

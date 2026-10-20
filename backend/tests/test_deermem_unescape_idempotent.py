@@ -5,8 +5,11 @@ The update prompt HTML-escapes every memory string before the model sees it
 into its answer, and ``_apply_updates`` stored it verbatim, so each cycle
 added a level: ``'`` -> ``&#x27;`` -> ``&amp;#x27;``. On 2026-10-19 escaped
 summaries were on 8 stacks and double-escaped on atlas-nicholas and
-atlas-ashish. Model output is now unescaped to a fixed point before it is
-stored; injection safety stays with the escaping at render time.
+atlas-ashish. Model output is now unescaped exactly one level (the one the
+prompt added) before it is stored, so a literal entity in a real memory
+("Prefers &amp; over 'and'") survives; levels that already accumulated are
+the repair script's job. Injection safety stays with the escaping at render
+time.
 """
 
 import copy
@@ -85,20 +88,37 @@ def _copying_model_response(memory: dict, *, new_fact: str | None = None) -> str
 # -- the unescape itself --------------------------------------------------------
 
 
-def test_one_round_undoes_one_level_and_the_fixed_point_undoes_all():
+def test_one_round_undoes_exactly_the_one_level_the_prompt_adds():
     once = _escape_memory_for_prompt(PLAIN)
     twice = _escape_memory_for_prompt(once)
     assert twice != once != PLAIN
     assert _unescape_prompt_text(once) == PLAIN
-    assert _unescape_prompt_text(twice) == PLAIN
-    assert _unescape_prompt_text("the &amp;amp;#x27;Augmented Web Proxy&amp;amp;#x27;") == "the 'Augmented Web Proxy'"
+    assert _unescape_prompt_text(twice) == once
+    assert _unescape_prompt_text("the &amp;amp;#x27;Augmented Web Proxy&amp;amp;#x27;") == "the &amp;#x27;Augmented Web Proxy&amp;#x27;"
 
 
-def test_unescape_is_idempotent_and_leaves_plain_text_alone():
-    for text in (PLAIN, "R&D and AT&T", "no entities", "", "&", "&amp;amp;lt;"):
-        assert _unescape_prompt_text(_unescape_prompt_text(text)) == _unescape_prompt_text(text)
+def test_plain_text_is_left_alone():
     for plain in (PLAIN, "R&D and AT&T", "no entities", "", "&"):
         assert _unescape_prompt_text(plain) == plain
+
+
+LITERAL_ENTITIES = ("Prefers &amp; over 'and'", "Use &lt;br&gt; in Telegram HTML")
+
+
+def test_a_literal_entity_in_a_real_memory_survives_the_round_trip():
+    for text in LITERAL_ENTITIES:
+        assert _unescape_prompt_text(_escape_memory_for_prompt(text)) == text
+
+
+def test_literal_entities_survive_two_update_cycles():
+    for text in LITERAL_ENTITIES:
+        updater = _updater(_memory(text))
+        stored = updater._storage.memory
+        for _ in range(2):
+            update = _parse_memory_update_response(_copying_model_response(stored, new_fact=text))
+            stored = updater._apply_updates(copy.deepcopy(stored), update)
+            assert stored["user"]["workContext"]["summary"] == text
+        assert [fact["content"] for fact in stored["facts"]] == [text]
 
 
 def test_entities_the_prompt_never_produces_are_kept():
@@ -109,7 +129,7 @@ def test_entities_the_prompt_never_produces_are_kept():
 
 
 def test_parsed_summaries_and_facts_are_plain_text():
-    escaped = _escape_memory_for_prompt(_escape_memory_for_prompt(PLAIN))
+    escaped = _escape_memory_for_prompt(PLAIN)
     response = json.dumps(
         {
             "user": {"workContext": {"summary": escaped, "shouldUpdate": True, **SCOPE}},
@@ -139,12 +159,16 @@ def test_two_update_cycles_leave_the_summary_unchanged():
         assert stored["user"]["workContext"]["summary"] == PLAIN
 
 
-def test_an_already_escaped_summary_heals_on_the_next_cycle():
-    damaged = _memory(_escape_memory_for_prompt(_escape_memory_for_prompt(PLAIN)))
+def test_an_already_escaped_summary_does_not_grow():
+    """Accumulated levels stay as they are until the repair script cleans them; they no longer grow."""
+    level_two = _escape_memory_for_prompt(_escape_memory_for_prompt(PLAIN))
+    damaged = _memory(level_two)
     updater = _updater(damaged)
-    update = _parse_memory_update_response(_copying_model_response(damaged))
-    healed = updater._apply_updates(copy.deepcopy(damaged), update)
-    assert healed["user"]["workContext"]["summary"] == PLAIN
+    stored = damaged
+    for _ in range(2):
+        update = _parse_memory_update_response(_copying_model_response(stored))
+        stored = updater._apply_updates(copy.deepcopy(stored), update)
+        assert stored["user"]["workContext"]["summary"] == level_two
 
 
 def test_the_next_prompt_shows_exactly_one_escaping_level():

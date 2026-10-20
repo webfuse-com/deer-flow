@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import math
 import mimetypes
@@ -3272,13 +3273,20 @@ class ChannelManager:
         # An in-flight cold model-pin load must not republish what it read.
         self._model_cache_generation += 1
 
-    async def _heal_missing_thread(self, client, msg: InboundMessage, thread_id: str) -> str:
+    async def _heal_missing_thread(self, client, msg: InboundMessage, thread_id: str) -> str | None:
         """[argus patch #150] Re-establish a bound thread a run just found missing; return the id to retry on.
 
-        Same heal as the first check of a binding (``_ensure_thread_registered``):
-        the thread is registered again under its id, or a fresh thread is bound
-        if that is refused. The deleted thread's history is gone, so the person
-        is told this message starts over (not on an unattended fire).
+        The thread is registered again under its id (``threads.create`` with
+        the same id), or, if that fails for another reason, healed as the first
+        check of a binding does (``_ensure_thread_registered``: a fresh thread
+        is bound). The deleted thread's history is gone, so the person is told
+        this message starts over (not on an unattended fire).
+
+        The gateway answers a thread that belongs to another owner with the
+        same "Thread X not found" as a deleted one (authz hides existence), and
+        re-creating that id is refused with a 404. That is not a deleted
+        conversation: nothing is healed, nobody is told, and None is returned
+        so the caller re-raises the original error.
         """
         logger.warning(
             "[Manager] bound thread_id=%s is gone (channel=%s chat_id=%s topic_id=%s); healing the binding and retrying once",
@@ -3288,12 +3296,70 @@ class ChannelManager:
             msg.topic_id,
         )
         self.forget_thread(thread_id)
-        healed_thread_id, _created = await self._ensure_thread_registered(client, msg, thread_id)
+        create_kwargs: dict[str, Any] = {"thread_id": thread_id, "metadata": _thread_channel_metadata(msg)}
+        if (web_agent_name := self._web_agent_name(msg, thread_id)) is not None:
+            create_kwargs["metadata"][THREAD_AGENT_METADATA_KEY] = web_agent_name  # [argus patch #149]
+        if owner_headers := _owner_headers(msg):
+            create_kwargs["headers"] = owner_headers
+        try:
+            await client.threads.create(**create_kwargs)
+            healed_thread_id = thread_id
+            self._remember_registered(thread_id)
+        except ConflictError:
+            # A concurrent message re-registered it first; the id is valid again.
+            healed_thread_id = thread_id
+            self._remember_registered(thread_id)
+        except NotFoundError:
+            logger.warning(
+                "[Manager] bound thread_id=%s exists under another owner (channel=%s chat_id=%s); not healing it",
+                thread_id,
+                msg.channel_name,
+                msg.chat_id,
+            )
+            # Keep the binding trusted as before: the first check must not
+            # silently rebind it on the next message either.
+            self._remember_registered(thread_id)
+            return None
+        except Exception:
+            logger.warning("[Manager] could not re-register thread_id=%s; healing the binding as a first check does", thread_id, exc_info=True)
+            healed_thread_id, _created = await self._ensure_thread_registered(client, msg, thread_id)
         if not msg.unattended:
             await self._publish_progress_update(msg, healed_thread_id, MISSING_THREAD_NOTICE)
         return healed_thread_id
 
-    async def _stream_healing_missing_thread(self, client, msg: InboundMessage, thread_ref: list[str], assistant_id: str, stream_kwargs: dict[str, Any]):
+    def _resolve_run_again(self, msg: InboundMessage, thread_id: str, run_kwargs: dict[str, Any], resolved: tuple[str, dict[str, Any], dict[str, Any]] | None, assistant_id: str) -> str:
+        """[argus patch #150] Point a prepared run at the healed thread, resolved again; return its assistant id.
+
+        The first attempt was resolved with this process's cached pins for the
+        deleted thread (``/agent use``, ``/model``), which ``forget_thread``
+        dropped: the retry must not carry them. What the caller added to the
+        context after resolving (channel policy, extra context) is kept.
+        """
+        if resolved is None:
+            _retarget_run_kwargs(run_kwargs, thread_id)
+            return assistant_id
+        _resolved_assistant_id, _resolved_config, resolved_context = resolved
+        fresh_assistant_id, fresh_config, fresh_context = self._resolve_run_params(msg, thread_id)
+        current_context = run_kwargs.get("context")
+        if isinstance(current_context, dict):
+            for key, value in current_context.items():
+                if key == "thread_id":
+                    continue
+                if key not in resolved_context or resolved_context[key] != value:
+                    fresh_context[key] = value
+        run_kwargs["config"] = fresh_config
+        run_kwargs["context"] = fresh_context
+        return fresh_assistant_id
+
+    async def _stream_healing_missing_thread(
+        self,
+        client,
+        msg: InboundMessage,
+        thread_ref: list[str],
+        assistant_id: str,
+        stream_kwargs: dict[str, Any],
+        resolved: tuple[str, dict[str, Any], dict[str, Any]] | None = None,
+    ):
         """[argus patch #150] ``client.runs.stream`` that heals a deleted bound thread once.
 
         The refusal arrives before the first event, so nothing was published
@@ -3309,9 +3375,11 @@ class ChannelManager:
         except NotFoundError as exc:
             if received or not _is_missing_thread_error(exc, thread_id):
                 raise
-        healed_thread_id = await self._heal_missing_thread(client, msg, thread_id)
+            healed_thread_id = await self._heal_missing_thread(client, msg, thread_id)
+            if healed_thread_id is None:
+                raise
         thread_ref[0] = healed_thread_id
-        _retarget_run_kwargs(stream_kwargs, healed_thread_id)
+        assistant_id = self._resolve_run_again(msg, healed_thread_id, stream_kwargs, resolved, assistant_id)
         async for chunk in client.runs.stream(healed_thread_id, assistant_id, **stream_kwargs):
             yield chunk
 
@@ -3397,7 +3465,10 @@ class ChannelManager:
                 if not _is_missing_thread_error(exc, thread_id):
                     raise
                 # [argus patch #150] deleted after this process verified it.
-                thread_id = await self._heal_missing_thread(client, msg, thread_id)
+                healed_thread_id = await self._heal_missing_thread(client, msg, thread_id)
+                if healed_thread_id is None:
+                    raise
+                thread_id = healed_thread_id
             try:
                 await self._load_thread_model(client, msg, thread_id)
             except Exception:
@@ -3457,6 +3528,8 @@ class ChannelManager:
             storage_user_id = _channel_storage_user_id(msg)
 
         assistant_id, run_config, run_context = self._resolve_run_params(msg, thread_id)
+        # [argus patch #150] what the resolution alone produced, so a heal's retry can resolve again.
+        resolved_snapshot = (assistant_id, copy.deepcopy(run_config), copy.deepcopy(run_context))
         # The pin this run actually submits — stale-pin recovery compares the
         # rejected selection against it so a delayed rejection for an old pin
         # can never erase a newer /model choice committed mid-flight.
@@ -3503,6 +3576,7 @@ class ChannelManager:
                 run_context,
                 human_message,
                 storage_user_id=storage_user_id,
+                resolved_snapshot=resolved_snapshot,
             )
             return
 
@@ -3587,8 +3661,11 @@ class ChannelManager:
                 # report lands as Chronos's ok/unreported timeout fallback.
                 raise
             # [argus patch #150] the bound thread was deleted: heal, retry once.
-            thread_id = await self._heal_missing_thread(client, msg, thread_id)
-            _retarget_run_kwargs(run_kwargs, thread_id)
+            healed_thread_id = await self._heal_missing_thread(client, msg, thread_id)
+            if healed_thread_id is None:
+                raise
+            thread_id = healed_thread_id
+            assistant_id = self._resolve_run_again(msg, thread_id, run_kwargs, resolved_snapshot, assistant_id)
             result = await client.runs.wait(thread_id, assistant_id, **run_kwargs)
 
         response_text = _extract_response_text(result)
@@ -3680,6 +3757,7 @@ class ChannelManager:
         run_context: dict[str, Any],
         human_message: dict[str, Any],
         storage_user_id: str | None = None,
+        resolved_snapshot: tuple[str, dict[str, Any], dict[str, Any]] | None = None,
     ) -> None:
         logger.info("[Manager] invoking runs.stream(thread_id=%s, text_len=%d)", thread_id, len(msg.text or ""))
 
@@ -3713,7 +3791,7 @@ class ChannelManager:
 
         thread_ref = [thread_id]  # [argus patch #150] the heal may rebind
         try:
-            async for chunk in self._stream_healing_missing_thread(client, msg, thread_ref, assistant_id, stream_kwargs):
+            async for chunk in self._stream_healing_missing_thread(client, msg, thread_ref, assistant_id, stream_kwargs, resolved_snapshot):
                 thread_id = thread_ref[0]
                 event = getattr(chunk, "event", "")
                 data = getattr(chunk, "data", None)

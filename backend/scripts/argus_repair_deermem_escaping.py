@@ -45,24 +45,41 @@ SUMMARY_GROUPS = ("user", "history")
 FACT_TEXT_FIELDS = ("content", "category", "sourceError")
 
 
+_MAX_ROUNDS = 16
+
+
 def _load_unescape():
+    """The repair's unescape: the updater's one round, repeated until the text stops changing.
+
+    Only this one-off repair goes to a fixed point. The updater undoes exactly
+    the one level its prompt adds, so a literal entity in a real memory
+    survives every update; here the accumulated levels are what is cleaned.
+    """
     try:
         from deerflow.agents.memory.backends.deermem.deermem.core.updater import _unescape_prompt_text
     except ImportError:
         sys.exit("This DeerFlow build does not carry patch #148; repairing now would let the escaping grow back. Deploy the fix first.")
-    return _unescape_prompt_text
+
+    def unescape_fully(text: str) -> str:
+        current = text
+        for _ in range(_MAX_ROUNDS):
+            step = _unescape_prompt_text(current)
+            if step == current:
+                break
+            current = step
+        return current
+
+    unescape_fully.one_round = _unescape_prompt_text  # type: ignore[attr-defined]
+    return unescape_fully
 
 
 def _depth(text: str, unescape) -> int:
     """How many unescape rounds the text needs (0 = clean)."""
-    from deerflow.agents.memory.backends.deermem.deermem.core.updater import _PROMPT_ESCAPE_ENTITIES
-
+    one_round = getattr(unescape, "one_round", unescape)
     rounds = 0
     current = text
-    while rounds < 16:
-        step = current
-        for entity, char in _PROMPT_ESCAPE_ENTITIES:
-            step = step.replace(entity, char)
+    while rounds < _MAX_ROUNDS:
+        step = one_round(current)
         if step == current:
             break
         current = step
@@ -202,7 +219,12 @@ def run(argv: list[str] | None = None) -> int:
                     print(json.dumps({"user": user_id, "agent": agent_name, "skipped": "invalid agent directory name"}))
                     continue
             totals["scopes"] += 1
-            line = _repair_scope(storage, root, backup_dir, backed_up, user_id, agent_name, apply=args.apply, unescape=unescape, conflict=MemoryRevisionConflict)
+            try:
+                line = _repair_scope(storage, root, backup_dir, backed_up, user_id, agent_name, apply=args.apply, unescape=unescape, conflict=MemoryRevisionConflict)
+            except Exception as exc:  # noqa: BLE001 - one bad scope must not stop the others
+                print(json.dumps({"user": user_id, "agent": agent_name, "saved": False, "error": f"{type(exc).__name__}: {exc}"[:300]}))
+                totals["failed"] += 1
+                continue
             if line is None:
                 continue
             print(json.dumps(line))
