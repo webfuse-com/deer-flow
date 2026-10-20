@@ -196,6 +196,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#141](#patch-141) | Cross-tab preferences sync: a storage event refetches only when another tab's value disagrees on a field both know, throttled to one read per 2 s (two tabs on different bundles ping-ponged GET /api/v1/auth/preferences at network speed) | argus-edit | this PR |
 | [#142](#patch-142) | Open-mode sandbox replacement removes the restricted netproxy only when the sandbox itself was provisioned restricted (an engine proxy that admits only the stack's sandbox names refused the fixed `deer-flow-netproxy-*` stop, aborting every quarantine recycle) | argus-edit | this PR |
 | [#151](#patch-151) | An unattended run whose final text is a short closing note ("Brief delivered and topic log updated.") delivers the substantive text an earlier AI message of the same turn carried, followed by the note, instead of the note alone | argus-edit | this PR |
+| [#152](#patch-152) | A final reply that is raw tool-call markup (`<tool_call>`, `<function=...>`, chat-template tokens, Claude and Kimi forms; on unattended runs also a bare JSON tool call) is not delivered: unattended runs with nothing substantive left are reported failed and send nothing, interactive chats get a one-line notice | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2718,6 +2719,17 @@ carry budget ledger.
 - Tests: `backend/tests/test_channel_closing_note_delivery.py` (the three Dima runs' messages with verbatim AI texts are recovered; the two atlas-ashish runs are not; short real answers, a 160+ character note, a three-line note, no substantive earlier text, a previous turn's text, a clarification are left alone; hidden control messages and list content blocks; end to end through the streaming Telegram path with Chronos reporting the delivered text, the interactive path unchanged, and the `runs.wait` path).
 - Delete-when: upstream delivers the run's substantive output rather than its last AI message, or playbook prompts never end on a note (citizen fix DIM-F1 removes Dima's trigger, not the class).
 - Upstream status: argus-specific (unattended channel delivery is #30/#45).
+
+## Patch #152
+
+**Patch #152 - Raw tool-call markup is never delivered as a reply** (2026-10-20)
+
+- Class: argus-edit (`app/channels/_final_reply.py`, hooks in `app/channels/manager.py`).
+- Intent: when a model's tool call is not parsed, it can end the run with the call's text as its answer. atlas-vipin's hourly meeting-prep poll called `function=calendar_list_events` (not a valid tool) and then answered `<tool_call>\n<|im_start|>function_calendar_list_events>\n<parameter=days>...`; delivery sent it to Telegram at 23:51 CEST on Saturday 2026-10-17 and Chronos recorded the run as delivered (run 11f2d321, Chronos 45146; the same on 2026-09-29, Chronos 36546). The final reply of every channel run (both the `runs.wait` and the streaming paths, the streaming path only without a stream error) now has tool-call markup removed: an opener at the start of a line (`<tool_call>`, `<function=name>` and the observed `<functionfunction=name>`, `<function_calls>` / `<invoke name=`, `<|im_start|>`, Kimi's `<|tool_calls_section_begin|>` / `<|tool_call_begin|>`) through its closer and any closers right after it, or to the end. Fenced code blocks and mentions inside a line are untouched. On unattended runs a reply that is only a JSON tool-call object (`{"name", "arguments"}`, the `function` wrapper, `tool_calls`) counts as markup too; interactive chats keep it, since someone may have asked for that JSON. Then: an unattended reply with less than 200 characters left and no presented files is not sent and the run is reported to Chronos as `failed` ("final reply was raw tool-call markup ..."); with a substantive remainder or files, the remainder goes out. An interactive reply sends what is left, or a one-line notice when nothing is. Replayed over all 11,648 lead-agent final texts of the fleet's last 60 days: 3 hits (the two atlas-vipin deliveries and an atlas-quinten web reply that was a whole unparsed `write_file` call), no false positives (atlas-vamsi's answers about the `<tool_call>` format are untouched).
+- Files: `app/channels/_final_reply.py`, `app/channels/manager.py`.
+- Tests: `backend/tests/test_channel_tool_call_markup.py` (the verbatim atlas-vipin, atlas-nicholas `function=` and atlas-quinten replies strip to nothing; Claude, plain Qwen, chat-template and Kimi forms; text around markup kept; prose mentions, fenced examples, a brief and other JSON untouched; JSON tool-call blobs only on unattended runs; the delivery decision table; end to end: the Saturday-night poll sends nothing and reports failed, a brief with trailing markup is sent without it, an interactive chat gets the notice, the `runs.wait` path refuses too).
+- Delete-when: upstream refuses or strips unparsed tool-call text in the final answer (or the model runtime stops emitting it).
+- Upstream status: generic-upstreamable (any IM channel delivery).
 
 ---
 

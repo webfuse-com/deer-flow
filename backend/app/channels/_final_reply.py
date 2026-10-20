@@ -21,14 +21,26 @@ The heuristic is deliberately narrow, all of these must hold:
   least 200 characters of text and at least three times the note's length.
 
 Nothing is dropped: the note follows the recovered content.
+
+[argus patch #152] Raw tool-call markup is never delivered as a reply.
+
+A model whose tool call was not parsed can end the run with the call's text
+as its answer: atlas-vipin's meeting-prep poll sent "<tool_call>
+<|im_start|>function_calendar_list_events> ..." to Telegram at 23:51 on
+2026-10-17 and Chronos recorded it as delivered. Markup outside code fences
+is stripped from the final reply (and, on unattended runs, a reply that is
+only a JSON tool-call object). An unattended reply with nothing substantive
+left is not sent and the run is reported failed; an interactive one gets a
+one-line notice instead of the markup.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -124,3 +136,147 @@ def recover_unattended_reply(result: Any, response_text: str, *, thread_id: str)
         len(recovered),
     )
     return recovered
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #152] Raw tool-call markup
+
+TOOL_CALL_MARKUP_ERROR = "final reply was raw tool-call markup (the model's tool call was not parsed); it was not delivered"
+TOOL_CALL_MARKUP_NOTICE = "My reply came out as a raw tool call instead of an answer, so I did not send it. Please send your message again."
+
+# A tool-call opener at the start of a line: Qwen/Hermes <tool_call>, Qwen's
+# <function=name> (and the observed <functionfunction=name> slip), Claude-style
+# <function_calls>/<invoke name=...>, chat-template and Kimi special tokens.
+_TOOL_CALL_OPEN_RE = re.compile(
+    r"^[ \t]*(?:<tool_call>|<function_calls>|<invoke\s+name=|<function(?:function)?=[^>\n]*>|<\|(?:im_start|tool_calls_section_begin|tool_call_begin)\|>)",
+    re.MULTILINE | re.IGNORECASE,
+)
+_TOOL_CALL_CLOSE_RE = re.compile(r"</tool_call>|</function_calls>|</function>|<\|(?:im_end|tool_call_end|tool_calls_section_end)\|>", re.IGNORECASE)
+_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
+_BLANK_RUN_RE = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
+_JSON_FENCE_RE = re.compile(r"```(?:json)?[ \t]*\n(.*?)\n?```", re.DOTALL)
+_TOOL_NAME_RE = re.compile(r"[A-Za-z_][\w.:=-]{0,127}")
+_ARGUMENT_KEYS = ("arguments", "parameters", "args", "input")
+_CALL_KEYS = frozenset({"name", "id", "type", *_ARGUMENT_KEYS})
+
+
+class MarkupDecision(NamedTuple):
+    text: str
+    found: bool
+    refused: bool
+
+
+def _segments(text: str) -> list[tuple[bool, str]]:
+    """Split *text* into (fenced, segment) runs; an unclosed fence runs to the end."""
+    segments: list[tuple[bool, str]] = []
+    buffer: list[str] = []
+    fenced = False
+    for line in text.splitlines(keepends=True):
+        if _FENCE_RE.match(line):
+            if fenced:
+                buffer.append(line)
+                segments.append((True, "".join(buffer)))
+                buffer, fenced = [], False
+            else:
+                segments.append((False, "".join(buffer)))
+                buffer, fenced = [line], True
+            continue
+        buffer.append(line)
+    segments.append((fenced, "".join(buffer)))
+    return segments
+
+
+def _strip_plain(segment: str) -> tuple[str, bool]:
+    """Remove each opener through its closer (and the closers right after it), or to the end."""
+    out: list[str] = []
+    pos = 0
+    found = False
+    while (opener := _TOOL_CALL_OPEN_RE.search(segment, pos)) is not None:
+        found = True
+        out.append(segment[pos : opener.start()])
+        closer = _TOOL_CALL_CLOSE_RE.search(segment, opener.end())
+        if closer is None:
+            pos = len(segment)
+            break
+        end = closer.end()
+        while True:
+            rest = segment[end:]
+            following = _TOOL_CALL_CLOSE_RE.match(segment, end + len(rest) - len(rest.lstrip()))
+            if following is None:
+                break
+            end = following.end()
+        pos = end
+    out.append(segment[pos:])
+    return "".join(out), found
+
+
+def _is_tool_call_object(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    calls = obj.get("tool_calls")
+    if isinstance(calls, list) and calls and set(obj) <= {"tool_calls", "role", "content", "type"}:
+        return all(_is_tool_call_object(call) for call in calls)
+    function = obj.get("function")
+    if isinstance(function, dict) and set(obj) <= {"function", "id", "type"}:
+        obj = function
+    name = obj.get("name")
+    return isinstance(name, str) and _TOOL_NAME_RE.fullmatch(name) is not None and any(key in obj for key in _ARGUMENT_KEYS) and set(obj) <= _CALL_KEYS
+
+
+def _is_tool_call_json(text: str) -> bool:
+    body = text.strip()
+    if (fence := _JSON_FENCE_RE.fullmatch(body)) is not None:
+        body = fence.group(1).strip()
+    if not body.startswith(("{", "[")):
+        return False
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return False
+    items = data if isinstance(data, list) else [data]
+    return bool(items) and all(_is_tool_call_object(item) for item in items)
+
+
+def strip_tool_call_markup(text: str, *, unattended: bool) -> tuple[str, bool]:
+    """Return (*text* without tool-call markup, whether any was found).
+
+    Markup inside fenced code blocks and mentions inside a line are left
+    alone. A reply that is only a JSON tool-call object counts as markup on
+    unattended runs only (someone in a chat may have asked for that JSON).
+    Without markup *text* comes back unchanged.
+    """
+    if not text:
+        return text, False
+    if unattended and _is_tool_call_json(text):
+        return "", True
+    parts: list[str] = []
+    found = False
+    for fenced, segment in _segments(text):
+        if fenced:
+            parts.append(segment)
+            continue
+        cleaned, hit = _strip_plain(segment)
+        if hit:
+            found = True
+            cleaned = _BLANK_RUN_RE.sub("\n\n", cleaned)
+        parts.append(cleaned)
+    return ("".join(parts).strip(), True) if found else (text, False)
+
+
+def reply_without_tool_call_markup(text: str, *, unattended: bool, has_artifacts: bool, thread_id: str) -> MarkupDecision:
+    """[argus patch #152] What to deliver once tool-call markup is removed from a final reply.
+
+    Unattended: the remainder when it is substantive or files were presented,
+    otherwise refused (the caller reports the run failed and sends nothing).
+    Interactive: the remainder, or a one-line notice when nothing is left.
+    """
+    cleaned, found = strip_tool_call_markup(text, unattended=unattended)
+    if not found:
+        return MarkupDecision(text, False, False)
+    if unattended and len(cleaned) < SUBSTANTIVE_MIN_CHARS and not has_artifacts:
+        logger.warning("[Manager] unattended final reply was raw tool-call markup; not delivering it (thread_id=%s, reply_len=%d)", thread_id, len(text))
+        return MarkupDecision("", True, True)
+    if not unattended and not cleaned and not has_artifacts:
+        cleaned = TOOL_CALL_MARKUP_NOTICE
+    logger.warning("[Manager] removed raw tool-call markup from the final reply (thread_id=%s, reply_len=%d, delivered_len=%d)", thread_id, len(text), len(cleaned))
+    return MarkupDecision(cleaned, True, False)
