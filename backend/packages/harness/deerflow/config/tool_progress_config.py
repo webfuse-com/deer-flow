@@ -75,3 +75,27 @@ class ToolProgressConfig(BaseModel):
             "Default false preserves upstream behavior."
         ),
     )
+    # [argus patch #143] One malformed call must not block a working tool.
+    cause_aware_blocking: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #143] Grade argument/schema errors as model-fixable, grade bash by its exit code "
+            "instead of its output text, block on the first failure only for an auth error on a tool that has "
+            "not succeeded in this run (config and internal errors take the warn-then-escalate path), keep "
+            "dispatcher tools' state per tool and function, and name the last error in the block message. "
+            "Default false keeps upstream behavior."
+        ),
+    )
+    dispatcher_tools: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "app_function_call": ["app", "function"],
+            "atlas_app_function_call": ["app", "function"],
+            "connector_call": ["name", "function"],
+            "atlas_connector_call": ["name", "function"],
+        },
+        description=(
+            "[argus patch #143] With cause_aware_blocking: tools that dispatch to many functions, mapped to the "
+            "argument names that identify the function. Their progress state and blocks are kept per tool plus "
+            "those argument values, so one failing function does not block the others."
+        ),
+    )

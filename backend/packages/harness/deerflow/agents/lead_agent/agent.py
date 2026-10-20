@@ -44,6 +44,7 @@ from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionM
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
 from deerflow.agents.middlewares.model_content_compatibility_middleware import ModelContentCompatibilityMiddleware
 from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
+from deerflow.agents.middlewares.offload_reader_middleware import offload_reader_grant  # [argus patch #144]
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummarizationMiddleware, create_summarization_middleware
@@ -665,7 +666,10 @@ def build_middlewares(
     # summarization can compact them, then inject durable context channels
     # (summary + ledger + skills) into model calls.
     from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
+    from deerflow.config.prompt_cache_config import durable_context_layout
 
+    # [argus patch #147] tail layout per model; contract from call 1.
+    volatile_at_tail, contract_always = durable_context_layout(resolved_app_config, model_name)
     middlewares.append(
         DurableContextMiddleware(
             skills_container_path=resolved_app_config.skills.container_path,
@@ -679,7 +683,10 @@ def build_middlewares(
             skill_authorization=skill_authorization,
             entry_decisions_owner_token=slash_source_owner_token,
             # [argus patch #125]
-            volatile_at_tail=getattr(getattr(resolved_app_config, "prompt_cache", None), "durable_context_volatile_at_tail", False) is True,
+            volatile_at_tail=volatile_at_tail,
+            contract_always=contract_always,
+            # [argus patch #145]
+            reread_only_after_summary=getattr(resolved_app_config.skills, "reread_only_after_summary", False) is True,
         )
     )
 
@@ -1509,13 +1516,16 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         chat_model=chat_model,
     )
     configured_tools = raw_tools + extra_tools
+    offload_reader_scope = None
     if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "agent":
-        configured_tools = filter_tools_by_agent_allowed_tools(
+        allowlisted_tools = filter_tools_by_agent_allowed_tools(
             configured_tools,
             agent_config.allowed_tools if agent_config else None,
             skills=enabled_skills,
             extra_allowed=extra_allowed,
         )
+        # [argus patch #144] tool_output.read_offloads_in_allowlisted_runs
+        configured_tools, offload_reader_scope = offload_reader_grant(configured_tools, allowlisted_tools, resolved_app_config)
     configured_tools = [tool for tool in configured_tools if tool.name not in interaction_policy.disabled_tool_names]
     authorization_candidates = [*configured_tools]
     if skill_setup.describe_skill_tool:
@@ -1533,11 +1543,14 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     layer_one = layer_one_outcome(authorization_candidates, authorized_tools)
     configured_tools = [tool for tool in authorized_tools if id(tool) in configured_tool_ids]
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
+    # [argus patch #146] tool_search.answer_bound_directly
+    answer_bound_directly = getattr(resolved_app_config.tool_search, "answer_bound_directly", False) is True
     final_tools, setup = assemble_deferred_tools(
         configured_tools,
         enabled=resolved_app_config.tool_search.enabled,
         exclude=deferral_exclude(resolved_app_config.tool_search, extra_allowed),
         defer=getattr(resolved_app_config.tool_search, "defer", ()),
+        answer_bound_directly=answer_bound_directly,
     )
     final_tools.extend(late_tools)
     directly_bound_names = frozenset(t.name for t in final_tools if t.name not in setup.deferred_names)
@@ -1546,7 +1559,11 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         setup,
         top_k=resolved_app_config.tool_search.auto_promote_top_k,
     )
-    mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
+    mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(
+        authorized_tools,
+        deferred_names=setup.deferred_names,
+        deferred_auto_promoted=answer_bound_directly and mcp_routing_middleware is not None,
+    )
     # [argus patch #73] Adaptive reasoning: a no-thinking twin of the lead model
     # for routine follow-ups after deterministic tools.
     adaptive_config = getattr(resolved_app_config, "adaptive_reasoning", None)
@@ -1556,6 +1573,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         config,
         model_name=model_name,
         agent_name=agent_name,
+        custom_middlewares=[offload_reader_scope] if offload_reader_scope is not None else None,
         available_skills=available_skills,
         memory_enabled=memory_enabled,
         app_config=resolved_app_config,

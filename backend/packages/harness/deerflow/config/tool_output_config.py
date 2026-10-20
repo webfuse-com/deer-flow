@@ -133,3 +133,14 @@ class ToolOutputConfig(BaseModel):
         default=1,
         description="Never elide the content of the newest N successful write_file calls (counted across all paths), even when superseded, so the model can still say what it just wrote without a read. 0 keeps none.",
     )
+    # [argus patch #144] An offloaded result must stay readable when the run's
+    # tool allowlist (agent allowed_tools or a schedule's allowed-tools) leaves
+    # read_file out; the preview's only pointer to the data is read_file.
+    read_offloads_in_allowlisted_runs: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #144] When a run's tool allowlist excludes read_file, bind read_file anyway, restricted "
+            "to this thread's offloaded tool results (/mnt/user-data/outputs/<storage_subdir>/). Default false "
+            "keeps read_file out of such runs."
+        ),
+    )

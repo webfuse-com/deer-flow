@@ -57,6 +57,13 @@ class ToolSearchConfig(BaseModel):
         description="Bind every tool named in a playbook run's allowed-tools list instead of deferring it.",
     )
 
+    # [argus patch #146] tool_search for a tool the run already has is a
+    # round trip for nothing; keyword auto-promotion makes it common.
+    answer_bound_directly: bool = Field(
+        default=False,
+        description=("[argus patch #146] tool_search answers 'already available, call it directly' when every requested tool is already bound or promoted in this run, and routing hints for auto-promoted tools say they load by themselves."),
+    )
+
     defer: list[str] = Field(
         default_factory=list,
         description=(

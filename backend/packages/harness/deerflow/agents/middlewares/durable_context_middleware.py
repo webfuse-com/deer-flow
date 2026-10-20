@@ -26,7 +26,7 @@ from langgraph.runtime import Runtime
 from deerflow.agents.middlewares.delegation_ledger import extract_delegations, render_delegation_ledger
 from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages
 from deerflow.agents.middlewares.pii_redaction_middleware import redact_text
-from deerflow.agents.middlewares.skill_context import extract_skills, render_skill_context
+from deerflow.agents.middlewares.skill_context import extract_skills, render_skill_context, skill_paths_in_messages
 from deerflow.agents.task_continuity.state import normalize_task_history, normalize_task_notes
 from deerflow.agents.thread_state import _DELEGATION_LEDGER_MAX_ENTRIES, TERMINAL_STATUSES
 from deerflow.config.pii_redaction_config import PiiRedactionConfig
@@ -110,6 +110,7 @@ def _render_durable_context_data(
     artifacts: list | None = None,
     *,
     goal_objective: str | None = None,
+    skill_in_context_paths: set[str] | None = None,
 ) -> str:
     data_parts: list[str] = []
     # Goal first: it changes only when the user sets or clears it, so a new
@@ -126,7 +127,7 @@ def _render_durable_context_data(
     if ledger_block:
         data_parts.append(ledger_block)
 
-    skill_block = render_skill_context(skills or [])
+    skill_block = render_skill_context(skills or [], in_context_paths=skill_in_context_paths)
     if skill_block:
         data_parts.append(skill_block)
 
@@ -340,11 +341,18 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         pii_redaction_config: PiiRedactionConfig | None = None,
         skill_authorization=None,
         entry_decisions_owner_token: str | None = None,
+        contract_always: bool = False,
         volatile_at_tail: bool = False,
+        reread_only_after_summary: bool = False,
     ) -> None:
         super().__init__()
+        # [argus patch #145] skills.reread_only_after_summary
+        self._reread_only_after_summary = reread_only_after_summary
         # [argus patch #125] Changing parts go to a second data message at the tail.
         self._volatile_at_tail = volatile_at_tail
+        # [argus patch #147] The contract is part of the system message from
+        # the first call, not added once the first data appears mid-run.
+        self._contract_always = contract_always
         self._task_continuity_enabled = task_continuity_enabled
         self._pii_redaction_config = pii_redaction_config
         self._skills_root = _normalize_skills_root(skills_container_path)
@@ -446,6 +454,8 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         summary_text = redact_text(state.get("summary_text"), self._pii_redaction_config)
         ledger = state.get("delegations") or []
         skills = self._renderable_skills(request, state.get("skill_context") or [])
+        # [argus patch #145] Which skill bodies the model still holds.
+        skill_in_context = skill_paths_in_messages(list(request.messages), skills_root=self._skills_root, read_tool_names=self._skill_read_tool_names) if self._reread_only_after_summary and skills else None
         task_notes = (state.get("task_notes") or {}) if self._task_continuity_enabled else None
         task_history = state.get("task_history") if self._task_continuity_enabled else None
         tail_block = ""
@@ -455,7 +465,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
             # self-hosted prefix cache recompute the whole conversation each
             # time (40-75k tokens per call on atlas-nicholas, 2026-10-12).
             data_block = _render_durable_context_data(summary_text, [], [], None, None, [], goal_objective=goal_objective)
-            tail_block = _render_durable_context_data(None, ledger, skills, task_notes, task_history, artifacts)
+            tail_block = _render_durable_context_data(None, ledger, skills, task_notes, task_history, artifacts, skill_in_context_paths=skill_in_context)
         else:
             data_block = _render_durable_context_data(
                 summary_text,
@@ -465,8 +475,9 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
                 task_history,
                 artifacts=artifacts,
                 goal_objective=goal_objective,
+                skill_in_context_paths=skill_in_context,
             )
-        if not data_block and not tail_block:
+        if not data_block and not tail_block and not self._contract_always:
             return request
         head: list = [
             SystemMessage(
