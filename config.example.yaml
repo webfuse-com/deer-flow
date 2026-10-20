@@ -1396,6 +1396,9 @@ tool_search:
   # always_bind: ["pythia_*", "calendar_list_events"]
   # [argus patch #131] bind every tool a playbook run's allowed-tools names
   # bind_schedule_allowlist: false
+  # [argus patch #146] tool_search answers "already available" for tools the
+  # run already has; hints for auto-promoted tools stop sending it to search
+  # answer_bound_directly: false
   # [argus patch #59] fnmatch patterns of NON-MCP (builtin/config) tool names
   # to defer like MCP tools: name-only in <available-deferred-tools> until
   # promoted via an explicit tool_search call. For cold tools whose intrinsic
@@ -1457,6 +1460,9 @@ tool_output:
   # Default false = current behavior unchanged.
   # code_outline_enabled: false
   # code_outline_min_lines: 300
+  # [argus patch #144] A run whose tool allowlist leaves read_file out still
+  # gets read_file, restricted to this thread's offloaded results above.
+  # read_offloads_in_allowlisted_runs: false
   # tool_overrides:
   #   web_search: 8000
   #   bash: 20000
@@ -1616,6 +1622,13 @@ pii_redaction:
 #   max_tracked_threads: 100
 #   read_only_streak_threshold: 0       # Soft phase hint after N consecutive successful reads/searches; 0 disables
 #   bash_inspection_counts_as_read: false  # [argus patch #82] successful pure-read bash advances the read-only streak
+#   cause_aware_blocking: false    # [argus patch #143] argument errors are model-fixable, bash graded by exit code,
+#                                  # only auth on a never-worked tool blocks at once, dispatchers blocked per function
+#   dispatcher_tools:              # [argus patch #143] tool -> argument names that identify the function
+#     app_function_call: [app, function]
+#     atlas_app_function_call: [app, function]
+#     connector_call: [name, function]
+#     atlas_connector_call: [name, function]
 #   total_tool_call_threshold: 0        # Soft replan hint after N calls in one run; 0 disables
 #   total_tool_call_reminder_interval: 30 # Repeat the replan hint every N additional calls
 #   read_only_tools: [read_file, grep, glob, ls]
@@ -2249,6 +2262,14 @@ skills:
   # max_auto_activated: 2
   # [argus patch #130] delegate skills route only on an explicit @name mention
   # mention_only_skills: [claude, gpt, opencode, myrmidon]
+  # [argus patch #145] false: no auto routing in unattended (scheduled) runs
+  # auto_route_unattended: true
+  # [argus patch #145] skip negated mentions and skills whose tools a tool
+  # allowlist does not grant; routed workflows follow the request
+  # auto_route_guard: false
+  # [argus patch #145] ask to re-read an active skill only once its body was
+  # summarized away
+  # reread_only_after_summary: false
 
 # Use the normal reasoning model for user turns, research, and errors, but a
 # no-thinking variant after successful deterministic tools. Disabled by default.

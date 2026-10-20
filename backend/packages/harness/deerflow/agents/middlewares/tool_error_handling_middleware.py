@@ -772,6 +772,8 @@ def build_subagent_runtime_middlewares(
             # [argus patch #134] same cache-stable layout as the lead (#125).
             volatile_at_tail=volatile_at_tail,
             contract_always=contract_always,
+            # [argus patch #145] same re-read wording as the lead.
+            reread_only_after_summary=getattr(getattr(app_config, "skills", None), "reread_only_after_summary", False) is True,
         )
     )
 

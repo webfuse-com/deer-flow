@@ -30,6 +30,7 @@ from langchain.tools import BaseTool
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.utils.function_calling import convert_to_openai_function
+from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
 from deerflow.tools.mcp_metadata import get_mcp_routing, is_mcp_tool
@@ -139,7 +140,25 @@ class DeferredToolSetup:
     catalog_hash: str | None
 
 
-def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: frozenset[str] = frozenset()) -> BaseTool:
+def _requested_tool_names(query: str) -> set[str]:
+    clean_query = query.strip()
+    if clean_query.startswith("select:"):
+        return {n.strip() for n in clean_query[7:].split(",") if n.strip()}
+    return {clean_query} if clean_query else set()
+
+
+def _already_available_reply(requested: set[str], *, promoted: set[str], directly_bound_names: frozenset[str]) -> str | None:
+    """[argus patch #146] The reply when every requested tool is already bound in this run."""
+    if not requested or not requested <= (promoted | directly_bound_names):
+        return None
+    listed = ", ".join(f"`{name}`" for name in sorted(requested))
+    reply = f"Already available in this run: {listed}. Call it directly with the schema in your tool list; tool_search is not needed for it."
+    if requested & directly_bound_names:
+        reply += " If a schema is missing from your tool list, the current policy does not allow that tool."
+    return reply
+
+
+def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: frozenset[str] = frozenset(), *, answer_bound_directly: bool = False) -> BaseTool:
     catalog_hash = catalog.hash
 
     @tool
@@ -186,6 +205,36 @@ def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: f
             }
         )
 
+    if answer_bound_directly:  # [argus patch #146]
+        return _bound_aware_tool_search(tool_search, catalog_hash, directly_bound_names)
+    return tool_search
+
+
+def _bound_aware_tool_search(search: BaseTool, catalog_hash: str, directly_bound_names: frozenset[str]) -> BaseTool:
+    """[argus patch #146] ``tool_search.answer_bound_directly``.
+
+    A select for a tool this run already has (keyword auto-promotion, an
+    earlier promotion, or a directly bound tool) is answered "already
+    available" without a schema dump or a promotion; anything else goes to
+    the upstream tool unchanged. 67 of 175 selects in the week to 2026-10-19
+    asked for a tool that was already bound. Same name, description and
+    model-visible schema as the upstream tool.
+    """
+
+    @tool("tool_search", description=search.description)
+    def tool_search(query: str, tool_call_id: Annotated[str, InjectedToolCallId], state: Annotated[dict, InjectedState]) -> Command:
+        promoted_state = state.get("promoted") if isinstance(state, dict) else None
+        promoted = set(promoted_state.get("names") or []) if isinstance(promoted_state, dict) and promoted_state.get("catalog_hash") == catalog_hash else set()
+        reply = _already_available_reply(_requested_tool_names(query), promoted=promoted, directly_bound_names=directly_bound_names)
+        if reply is None:
+            return search.func(query=query, tool_call_id=tool_call_id)
+        return Command(
+            update={
+                "promoted": {"catalog_hash": catalog_hash, "names": []},
+                "messages": [ToolMessage(content=reply, tool_call_id=tool_call_id, name="tool_search")],
+            }
+        )
+
     return tool_search
 
 
@@ -212,7 +261,7 @@ def _is_deferrable(tool: BaseTool, *, defer=(), exclude=()) -> bool:
     return is_mcp_tool(tool) or _matches_any(tool.name, defer)
 
 
-def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=()) -> DeferredToolSetup:
+def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=(), answer_bound_directly: bool = False) -> DeferredToolSetup:
     """Build deferred-tool setup from one agent build's candidate tools.
 
     Lead agents pass their full configured tool list; ``SkillToolPolicyMiddleware``
@@ -235,10 +284,10 @@ def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool,
         return DeferredToolSetup(None, frozenset(), None)
     catalog = DeferredToolCatalog(tuple(deferred))
     directly_bound_names = frozenset(t.name for t in candidate_tools if t not in deferred)
-    return DeferredToolSetup(build_tool_search_tool(catalog, directly_bound_names), catalog.names, catalog.hash)
+    return DeferredToolSetup(build_tool_search_tool(catalog, directly_bound_names, answer_bound_directly=answer_bound_directly), catalog.names, catalog.hash)
 
 
-def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=()) -> tuple[list[BaseTool], DeferredToolSetup]:
+def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=(), answer_bound_directly: bool = False) -> tuple[list[BaseTool], DeferredToolSetup]:
     """Build the final tool list and deferred setup from candidate tools.
 
     Fail closed on deferral assembly itself: if tool_search is enabled and
@@ -251,7 +300,9 @@ def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, e
     Shared by every agent-build path (lead, embedded client, subagent) so they
     all get the same fail-closed guarantee from one place.
     """
-    deferred_setup = build_deferred_tool_setup(candidate_tools, enabled=enabled, exclude=exclude, defer=defer)
+    # [argus patch #146] keep upstream's call shape when the switch is off
+    bound_answer = {"answer_bound_directly": True} if answer_bound_directly else {}
+    deferred_setup = build_deferred_tool_setup(candidate_tools, enabled=enabled, exclude=exclude, defer=defer, **bound_answer)
     if enabled and not deferred_setup.deferred_names and any(_is_deferrable(t, defer=defer, exclude=exclude) for t in candidate_tools):
         raise RuntimeError("tool_search enabled and deferrable candidates exist, but no deferred set was recovered - refusing to bind their schemas (fail-closed).")
     final_tools = list(candidate_tools)
@@ -353,12 +404,17 @@ def _format_keyword_list(keywords: list[str]) -> str:
     return f"{', '.join(keywords[:-1])}, or {keywords[-1]}"
 
 
-def get_mcp_routing_hints_prompt_section(tools: Iterable[BaseTool], *, deferred_names: frozenset[str] = frozenset()) -> str:
+def get_mcp_routing_hints_prompt_section(tools: Iterable[BaseTool], *, deferred_names: frozenset[str] = frozenset(), deferred_auto_promoted: bool = False) -> str:
     """Render <mcp_routing_hints> from MCP tools carrying routing metadata.
 
     When tool_search has deferred an MCP tool, the hint must point the model at
     promotion first; otherwise it may try to call a schema that is hidden from
     the bound model request.
+
+    [argus patch #146] ``deferred_auto_promoted``: the run has
+    ``McpRoutingMiddleware``, which promotes these same tools from the same
+    keywords before the model call, so the hint says the tool loads by itself
+    and to search only when it is missing (``tool_search.answer_bound_directly``).
     """
     hints: list[tuple[int, str, list[str]]] = []
     for candidate in tools:
@@ -379,7 +435,9 @@ def get_mcp_routing_hints_prompt_section(tools: Iterable[BaseTool], *, deferred_
         # (keep the raw name for the deferred_names membership check above).
         esc_name = html.escape(tool_name, quote=False)
         lines.append(f"When the user's request involves {_format_keyword_list(keywords)}:")
-        if tool_name in deferred_names:
+        if tool_name in deferred_names and deferred_auto_promoted:
+            lines.append(f"  prefer the `{esc_name}` tool; it is loaded automatically for such requests. Use `tool_search` only if it is missing from your tool list.")
+        elif tool_name in deferred_names:
             lines.append(f"  use `tool_search` to fetch `{esc_name}`, then prefer that MCP tool.")
         else:
             lines.append(f"  prefer the `{esc_name}` tool.")

@@ -581,6 +581,27 @@ def _is_no_such_container_error(stderr: str, container_name: str) -> bool:
     return message in apple_errors
 
 
+# [argus patch #154] `docker inspect <name>` without --type falls back through
+# the other object types when no container has that name, and its swarm probes
+# ask the engine for GET /info. Argus's per-stack socket proxy refuses that
+# route, so the CLI prints this exact line next to "no such object: <name>".
+# It says nothing about the container, so it is dropped before the strict
+# missing-object checks; callers decide how much else must hold.
+_SOCKPROXY_INFO_DENIAL_RE = re.compile(r"(?i:error response from daemon: )?sockproxy: GET /info is not on the allowlist")
+
+
+def _split_info_probe_denials(stderr: str | None) -> tuple[list[str], int]:
+    """Return stderr's lines without the socket proxy's GET /info denial, and how many were dropped."""
+    kept: list[str] = []
+    dropped = 0
+    for line in (stderr or "").strip().splitlines():
+        if _SOCKPROXY_INFO_DENIAL_RE.fullmatch(line.strip()):
+            dropped += 1
+        else:
+            kept.append(line)
+    return kept, dropped
+
+
 def _is_no_such_network_error(stderr: str, network_name: str) -> bool:
     """Accept Docker's complete missing-network response for this exact name.
 
@@ -1916,13 +1937,20 @@ class LocalContainerBackend(SandboxBackend):
             # whole batch instead of risking a misread error as absence. Callers
             # like list_running treat this as "reconcile nothing this tick" and
             # retry; do not weaken this into per-container best effort.
-            for line in stderr.splitlines():
+            # [argus patch #154] The socket proxy's GET /info denial is not a
+            # line about any container; it is excused only when every queried
+            # name is reported missing (the bricked-thread case: a removed
+            # sandbox otherwise read as an inspect failure forever).
+            lines, info_probe_denials = _split_info_probe_denials(stderr)
+            for line in lines:
                 absent = {name for name in container_names if _is_no_such_container_error(line, name)}
                 if not absent:
                     raise RuntimeError(f"Failed to inspect containers with {self._runtime}: {stderr or '<empty>'}")
                 missing.update(absent)
             if not missing:
                 raise RuntimeError(f"Failed to inspect containers with {self._runtime}: {stderr or '<empty>'}")
+            if info_probe_denials and missing != set(container_names):
+                raise RuntimeError(f"Failed to inspect containers with {self._runtime}: {stderr}")
 
         try:
             payload = json.loads(result.stdout or ("[]" if missing else ""))
@@ -2301,7 +2329,10 @@ class LocalContainerBackend(SandboxBackend):
 
         if result.returncode == 0:
             return result.stdout.strip().lower() == "true"
-        if _is_no_such_container_error(result.stderr, container_name):
+        # [argus patch #154] the same exact missing-object rule, after dropping
+        # the socket proxy's GET /info denial (see _split_info_probe_denials).
+        lines, info_probe_denials = _split_info_probe_denials(result.stderr)
+        if _is_no_such_container_error("\n".join(lines) if info_probe_denials else result.stderr, container_name):
             return False
         raise RuntimeError(f"Failed to inspect container {container_name}: {result.stderr.strip()}")
 
