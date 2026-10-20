@@ -27,11 +27,11 @@ Nothing is dropped: the note follows the recovered content.
 A model whose tool call was not parsed can end the run with the call's text
 as its answer: atlas-vipin's meeting-prep poll sent "<tool_call>
 <|im_start|>function_calendar_list_events> ..." to Telegram at 23:51 on
-2026-10-17 and Chronos recorded it as delivered. Markup outside code fences
+2026-10-17 and Chronos recorded it as delivered. A call outside code blocks
 is stripped from the final reply (and, on unattended runs, a reply that is
-only a JSON tool-call object). An unattended reply with nothing substantive
-left is not sent and the run is reported failed; an interactive one gets a
-one-line notice instead of the markup.
+only a JSON tool-call object). An unattended reply with only trivial text
+left is not sent and the run is reported failed; an interactive reply that
+was nothing but markup becomes a one-line notice, any other is left as is.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
@@ -144,15 +144,27 @@ def recover_unattended_reply(result: Any, response_text: str, *, thread_id: str)
 TOOL_CALL_MARKUP_ERROR = "final reply was raw tool-call markup (the model's tool call was not parsed); it was not delivered"
 TOOL_CALL_MARKUP_NOTICE = "My reply came out as a raw tool call instead of an answer, so I did not send it. Please send your message again."
 
-# A tool-call opener at the start of a line: Qwen/Hermes <tool_call>, Qwen's
+# A tool-call opener at the start of a line (at most three spaces in: four
+# spaces or a tab make a markdown code block): Qwen/Hermes <tool_call>, Qwen's
 # <function=name> (and the observed <functionfunction=name> slip), Claude-style
 # <function_calls>/<invoke name=...>, chat-template and Kimi special tokens.
 _TOOL_CALL_OPEN_RE = re.compile(
-    r"^[ \t]*(?:<tool_call>|<function_calls>|<invoke\s+name=|<function(?:function)?=[^>\n]*>|<\|(?:im_start|tool_calls_section_begin|tool_call_begin)\|>)",
+    r"^ {0,3}(?:<tool_call>|<function_calls>|(?P<call><invoke\s+name=|<function(?:function)?=[^>\n]*>)|<\|(?:im_start|tool_calls_section_begin|tool_call_begin)\|>)",
     re.MULTILINE | re.IGNORECASE,
 )
 _TOOL_CALL_CLOSE_RE = re.compile(r"</tool_call>|</function_calls>|</function>|<\|(?:im_end|tool_call_end|tool_calls_section_end)\|>", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
+# What follows an opener when it really is a call: a parameter or invoke tag, a
+# Qwen function tag, Kimi's argument token, or a JSON object with a name and
+# its arguments. Prose about the format ("<tool_call> wraps a JSON object")
+# and chat-template explanations have none of these.
+_CALL_SHAPED_RE = re.compile(
+    r"<parameter[\s=>]|<invoke\s+name=|<function(?:function)?=|\|>function[\w=.-]*>|<\|tool_call_argument_begin\|>"
+    r"|\"name\"\s*:\s*\"[^\"\n]{1,128}\"[^<]{0,4000}?\"(?:arguments|parameters)\"\s*:"
+    r"|\"(?:arguments|parameters)\"\s*:[^<]{0,4000}?\"name\"\s*:",
+    re.IGNORECASE,
+)
+_CALL_SCAN_CHARS = 4000
 _BLANK_RUN_RE = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 _JSON_FENCE_RE = re.compile(r"```(?:json)?[ \t]*\n(.*?)\n?```", re.DOTALL)
 _TOOL_NAME_RE = re.compile(r"[A-Za-z_][\w.:=-]{0,127}")
@@ -187,14 +199,25 @@ def _segments(text: str) -> list[tuple[bool, str]]:
 
 
 def _strip_plain(segment: str) -> tuple[str, bool]:
-    """Remove each opener through its closer (and the closers right after it), or to the end."""
+    """Remove each call: an opener through its closer (and the closers right after it), or to the end.
+
+    An opener counts only when it is a call: the opener names one itself
+    (``<function=name>``, ``<invoke name=``), or what follows it up to its
+    closer (or the end) is empty or call-shaped. Otherwise it is prose about
+    the format and stays.
+    """
     out: list[str] = []
     pos = 0
     found = False
     while (opener := _TOOL_CALL_OPEN_RE.search(segment, pos)) is not None:
+        closer = _TOOL_CALL_CLOSE_RE.search(segment, opener.end())
+        body = segment[opener.end() : closer.start() if closer is not None else len(segment)]
+        if opener.group("call") is None and body.strip() and _CALL_SHAPED_RE.search(body[:_CALL_SCAN_CHARS]) is None:
+            out.append(segment[pos : opener.end()])
+            pos = opener.end()
+            continue
         found = True
         out.append(segment[pos : opener.start()])
-        closer = _TOOL_CALL_CLOSE_RE.search(segment, opener.end())
         if closer is None:
             pos = len(segment)
             break
@@ -263,20 +286,34 @@ def strip_tool_call_markup(text: str, *, unattended: bool) -> tuple[str, bool]:
     return ("".join(parts).strip(), True) if found else (text, False)
 
 
-def reply_without_tool_call_markup(text: str, *, unattended: bool, has_artifacts: bool, thread_id: str) -> MarkupDecision:
+def reply_without_tool_call_markup(
+    text: str,
+    *,
+    unattended: bool,
+    has_artifacts: bool,
+    thread_id: str,
+    is_trivial: Callable[[str], bool] | None = None,
+) -> MarkupDecision:
     """[argus patch #152] What to deliver once tool-call markup is removed from a final reply.
 
-    Unattended: the remainder when it is substantive or files were presented,
-    otherwise refused (the caller reports the run failed and sends nothing).
-    Interactive: the remainder, or a one-line notice when nothing is left.
+    Unattended: the remainder when it is not trivial on its own (*is_trivial*,
+    the manager's filler and silence-announcement check), an empty text when
+    files were presented, otherwise refused (the caller reports the run
+    failed and sends nothing). Interactive: the reply exactly as written
+    unless nothing but markup is left, then a one-line notice.
     """
     cleaned, found = strip_tool_call_markup(text, unattended=unattended)
     if not found:
         return MarkupDecision(text, False, False)
-    if unattended and len(cleaned) < SUBSTANTIVE_MIN_CHARS and not has_artifacts:
-        logger.warning("[Manager] unattended final reply was raw tool-call markup; not delivering it (thread_id=%s, reply_len=%d)", thread_id, len(text))
-        return MarkupDecision("", True, True)
-    if not unattended and not cleaned and not has_artifacts:
-        cleaned = TOOL_CALL_MARKUP_NOTICE
-    logger.warning("[Manager] removed raw tool-call markup from the final reply (thread_id=%s, reply_len=%d, delivered_len=%d)", thread_id, len(text), len(cleaned))
-    return MarkupDecision(cleaned, True, False)
+    trivial = is_trivial(cleaned) if is_trivial is not None else not cleaned.strip()
+    if unattended:
+        if trivial and not has_artifacts:
+            logger.warning("[Manager] unattended final reply was raw tool-call markup; not delivering it (thread_id=%s, reply_len=%d)", thread_id, len(text))
+            return MarkupDecision("", True, True)
+        delivered = "" if trivial else cleaned
+    elif cleaned:
+        return MarkupDecision(text, False, False)
+    else:
+        delivered = "" if has_artifacts else TOOL_CALL_MARKUP_NOTICE
+    logger.warning("[Manager] removed raw tool-call markup from the final reply (thread_id=%s, reply_len=%d, delivered_len=%d)", thread_id, len(text), len(delivered))
+    return MarkupDecision(delivered, True, False)

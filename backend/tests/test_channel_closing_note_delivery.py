@@ -452,3 +452,55 @@ async def test_the_non_streaming_path_recovers_the_brief_too(tmp_path):
     brief, note = _ai_texts(RUN_ddf9c4e4)
     assert [m.text for m in outbound] == [f"{brief}\n\n{note}"]
     assert report.await_args.kwargs["status"] == "delivered"
+
+
+# ---------------------------------------------------------------------------
+# A final text that is already silent stays silent (#34 wins over #151)
+
+NARRATION = (
+    "Checked the calendar for meetings starting in the next 15 to 20 minutes. The next one is the 14:00 product sync with "
+    "Harel, which already had its prep note sent this morning, and nothing else starts before 15:30. Gmail shows no new "
+    "threads from the attendees since then, so there is nothing to add."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "final",
+    [
+        "No new meetings; prep for the 14:00 was already sent.",
+        "Nothing new to report since the brief posted above.",
+        "No updates. Staying silent, prep already sent.",
+    ],
+)
+async def test_a_silent_poll_stays_silent_after_narration(monkeypatch, tmp_path, final):
+    assert len(NARRATION) >= 250
+    messages = [
+        {"type": "human", "content": "Check my calendar for meetings starting in the next 15-20 minutes"},
+        {"type": "ai", "content": NARRATION, "tool_calls": [{"name": "gmail_list_threads", "args": {}, "id": "call-1", "type": "tool_call"}]},
+        {"type": "tool", "name": "gmail_list_threads", "content": "[]"},
+        {"type": "ai", "content": final, "tool_calls": []},
+    ]
+    finals, report = await _stream(monkeypatch, tmp_path, messages=messages, unattended=True)
+    assert finals == []
+    assert [call.kwargs["status"] for call in report.await_args_list] == ["silent"]
+
+
+@pytest.mark.asyncio
+async def test_a_silent_poll_stays_silent_on_the_non_streaming_path(tmp_path):
+    messages = [
+        {"type": "human", "content": "poll"},
+        {"type": "ai", "content": NARRATION, "tool_calls": [{"name": "gmail_list_threads", "args": {}, "id": "call-1", "type": "tool_call"}]},
+        {"type": "tool", "name": "gmail_list_threads", "content": "[]"},
+        {"type": "ai", "content": "No updates. Staying silent, prep already sent.", "tool_calls": []},
+    ]
+    bus = MessageBus()
+    manager = ChannelManager(bus=bus, store=JsonChannelStore(path=tmp_path / "channels.json"))
+    client = SimpleNamespace(runs=SimpleNamespace(wait=AsyncMock(return_value={"messages": messages})))
+    outbound = []
+    bus.subscribe_outbound(lambda m: outbound.append(m) or _noop())
+    inbound = InboundMessage(channel_name="slack", chat_id="C1", user_id="u1", text="poll", unattended=True, report_url=REPORT_URL)
+    with patch("app.channels.manager.report_delivery", new=AsyncMock(return_value=True)) as report, patch.object(ChannelManager, "_channel_supports_streaming", return_value=False):
+        await manager._handle_chat_on_thread(client, inbound, "t-poll")
+    assert outbound == []
+    assert report.await_args.kwargs["status"] == "silent"

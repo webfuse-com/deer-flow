@@ -3475,13 +3475,14 @@ class ChannelManager:
             raise
 
         response_text = _extract_response_text(result)
-        if msg.unattended:
-            # [argus patch #151] content written before a closing note goes out with it.
+        if msg.unattended and not _is_trivial_unattended_text(response_text):
+            # [argus patch #151] content written before a closing note goes out
+            # with it; a final text that is already silent stays silent (#34).
             response_text = recover_unattended_reply(result, response_text, thread_id=thread_id)
         pending_clarification = _has_current_turn_clarification(result)
         artifacts = _extract_artifacts(result)
         # [argus patch #152] raw tool-call markup is never delivered as a reply.
-        markup = reply_without_tool_call_markup(response_text, unattended=msg.unattended, has_artifacts=bool(artifacts), thread_id=thread_id)
+        markup = reply_without_tool_call_markup(response_text, unattended=msg.unattended, has_artifacts=bool(artifacts), thread_id=thread_id, is_trivial=_is_trivial_unattended_text)
         if markup.refused:
             await self._report_unattended_outcome(msg, status="failed", error=TOOL_CALL_MARKUP_ERROR, thread_id=thread_id)
             return
@@ -3724,7 +3725,7 @@ class ChannelManager:
         finally:
             result = last_values if last_values is not None else {"messages": [{"type": "ai", "content": latest_text}]}
             response_text = _extract_response_text(result)
-            if msg.unattended and stream_error is None:
+            if msg.unattended and stream_error is None and not _is_trivial_unattended_text(response_text):
                 # [argus patch #151] as in the non-streaming path.
                 response_text = recover_unattended_reply(result, response_text, thread_id=thread_id)
             pending_clarification = _has_current_turn_clarification(result)
@@ -3733,7 +3734,7 @@ class ChannelManager:
             # partial (latest_text) must not bring the markup back below.
             markup_refused = False
             if stream_error is None:
-                markup = reply_without_tool_call_markup(response_text, unattended=msg.unattended, has_artifacts=bool(artifacts), thread_id=thread_id)
+                markup = reply_without_tool_call_markup(response_text, unattended=msg.unattended, has_artifacts=bool(artifacts), thread_id=thread_id, is_trivial=_is_trivial_unattended_text)
                 markup_refused = markup.refused
                 if markup.found:
                     response_text = latest_text = markup.text

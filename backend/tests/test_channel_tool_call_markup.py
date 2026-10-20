@@ -19,7 +19,7 @@ from _router_auth_helpers import make_authed_test_app
 from langgraph_sdk.client import LangGraphClient
 
 from app.channels._final_reply import TOOL_CALL_MARKUP_NOTICE, reply_without_tool_call_markup, strip_tool_call_markup
-from app.channels.manager import ChannelManager
+from app.channels.manager import ChannelManager, _is_trivial_unattended_text
 from app.channels.message_bus import InboundMessage, MessageBus
 from app.channels.store import JsonChannelStore
 from app.gateway.routers import thread_runs
@@ -79,10 +79,28 @@ def test_text_around_the_markup_is_kept():
         "Use <function=name> tags only inside the template, never in prose.",
         BRIEF,
         "",
+        # An opener at the start of a line followed by prose, closed or not.
+        "Here is how Qwen calls tools:\n<tool_call> wraps a JSON object with the call's name and arguments.\nThe parser reads it.",
+        "Here is how Qwen calls tools:\n<tool_call> wraps a JSON object, and </tool_call> closes it.\nThe parser reads it.",
+        # A line explaining the chat template.
+        "<|im_start|> and <|im_end|> delimit each turn in the ChatML template.\n<|im_start|> is followed by the role.",
+        # A 4-space-indented markdown code block is code.
+        'Qwen emits:\n\n    <tool_call>\n    {"name": "bash", "arguments": {"command": "ls"}}\n    </tool_call>\n\nThe parser reads the JSON between the tags.',
+        "\tQwen tab-indented example:\n\t<function=bash>\n\t<parameter=command>ls</parameter>\n\t</function>",
     ],
 )
 def test_prose_and_code_blocks_about_tool_calls_are_untouched(text):
     assert strip_tool_call_markup(text, unattended=True) == (text, False)
+    assert strip_tool_call_markup(text, unattended=False) == (text, False)
+
+
+def test_an_unclosed_opener_is_dropped_only_before_call_shaped_content():
+    assert strip_tool_call_markup('Done.\n<tool_call>\n{"name": "bash", "arguments": {"command": "ls"', unattended=True) == ("Done.", True)
+    assert strip_tool_call_markup("Done.\n<tool_call>\n<parameter=command>\nls", unattended=True) == ("Done.", True)
+    assert strip_tool_call_markup('Done.\n<function_calls>\n<invoke name="bash">', unattended=True) == ("Done.", True)
+    assert strip_tool_call_markup("Done.\n<tool_call>\n", unattended=True) == ("Done.", True)
+    prose = "Done.\n<tool_call> is the wrapper Qwen uses; nothing follows it here."
+    assert strip_tool_call_markup(prose, unattended=True) == (prose, False)
 
 
 @pytest.mark.parametrize(
@@ -105,21 +123,39 @@ def test_other_json_is_not_a_tool_call(text):
     assert strip_tool_call_markup(text, unattended=True) == (text, False)
 
 
-def test_the_delivery_decision():
-    # Unattended: refused unless something substantive is left.
-    assert reply_without_tool_call_markup(VIPIN_1017, unattended=True, has_artifacts=False, thread_id="t").refused is True
-    short = reply_without_tool_call_markup(f"Checking the calendar.{VIPIN_1017}", unattended=True, has_artifacts=False, thread_id="t")
-    assert short.refused is True
-    long = reply_without_tool_call_markup(f"{BRIEF}\n{VIPIN_1017}", unattended=True, has_artifacts=False, thread_id="t")
+def _decide(text: str, *, unattended: bool, has_artifacts: bool = False):
+    return reply_without_tool_call_markup(text, unattended=unattended, has_artifacts=has_artifacts, thread_id="t", is_trivial=_is_trivial_unattended_text)
+
+
+def test_the_unattended_delivery_decision():
+    # Nothing but markup: refused, the caller reports the run failed.
+    assert _decide(VIPIN_1017, unattended=True).refused is True
+    # A remainder that is only filler or a silence announcement: refused too.
+    assert _decide(f".{VIPIN_1017}", unattended=True).refused is True
+    assert _decide(f"No meetings in the window. Staying silent.{VIPIN_1017}", unattended=True).refused is True
+    # A genuine remainder is delivered without the markup, short or long.
+    short = _decide(f"Your 14:00 with Harel moved to 15:00.\n{VIPIN_1017}", unattended=True)
+    assert (short.text, short.found, short.refused) == ("Your 14:00 with Harel moved to 15:00.", True, False)
+    long = _decide(f"{BRIEF}\n{VIPIN_1017}", unattended=True)
     assert (long.text, long.found, long.refused) == (BRIEF, True, False)
-    files = reply_without_tool_call_markup(VIPIN_1017, unattended=True, has_artifacts=True, thread_id="t")
+    # Presented files go out with the artifact text the caller adds.
+    files = _decide(VIPIN_1017, unattended=True, has_artifacts=True)
     assert (files.text, files.refused) == ("", False)
-    # Interactive: whatever is left, or a one-line notice instead of the markup.
-    assert reply_without_tool_call_markup(VIPIN_1017, unattended=False, has_artifacts=False, thread_id="t").text == TOOL_CALL_MARKUP_NOTICE
-    kept = reply_without_tool_call_markup(f"Checking the calendar.{VIPIN_1017}", unattended=False, has_artifacts=False, thread_id="t")
-    assert (kept.text, kept.refused) == ("Checking the calendar.", False)
-    # No markup: the text is returned as it is.
-    plain = reply_without_tool_call_markup("\n\nAll clear.", unattended=True, has_artifacts=False, thread_id="t")
+
+
+def test_the_interactive_delivery_decision():
+    # Nothing but markup: a one-line notice instead.
+    assert _decide(VIPIN_1017, unattended=False).text == TOOL_CALL_MARKUP_NOTICE
+    assert _decide(QUINTEN_WRITE_FILE, unattended=False).text == TOOL_CALL_MARKUP_NOTICE
+    # Anything else in the reply: the chat gets the reply exactly as written.
+    mixed = f"Checking the calendar.{VIPIN_1017}"
+    assert _decide(mixed, unattended=False) == (mixed, False, False)
+    files = _decide(VIPIN_1017, unattended=False, has_artifacts=True)
+    assert (files.text, files.refused) == ("", False)
+
+
+def test_no_markup_means_the_text_as_it_is():
+    plain = _decide("\n\nAll clear.", unattended=True)
     assert (plain.text, plain.found, plain.refused) == ("\n\nAll clear.", False, False)
 
 
@@ -208,3 +244,11 @@ async def test_the_non_streaming_path_refuses_it_too(tmp_path):
         await manager._handle_chat_on_thread(client, inbound, "48c5f843")
     assert outbound == []
     assert report.await_args.kwargs["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_an_interactive_reply_with_text_is_sent_as_written(monkeypatch, tmp_path):
+    reply = f"Here is the brief.\n{VIPIN_1017}"
+    finals, report = await _stream(monkeypatch, tmp_path, messages=_vipin_run(reply), unattended=False)
+    assert [m.text for m in finals] == [reply]
+    report.assert_not_awaited()
