@@ -27,6 +27,7 @@ from langgraph_sdk.errors import ConflictError, NotFoundError
 from app.channels import buzz_run_policy as _buzz_run_policy  # noqa: F401
 from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
 from app.channels._delivery_report import report_delivery
+from app.channels._final_reply import TOOL_CALL_MARKUP_ERROR, recover_unattended_reply, reply_without_tool_call_markup
 from app.channels.capabilities import CHANNEL_CAPABILITIES
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.connection_identity import lookup_thread_id
@@ -3669,8 +3670,18 @@ class ChannelManager:
             result = await client.runs.wait(thread_id, assistant_id, **run_kwargs)
 
         response_text = _extract_response_text(result)
+        if msg.unattended and not _is_trivial_unattended_text(response_text):
+            # [argus patch #151] content written before a closing note goes out
+            # with it; a final text that is already silent stays silent (#34).
+            response_text = recover_unattended_reply(result, response_text, thread_id=thread_id)
         pending_clarification = _has_current_turn_clarification(result)
         artifacts = _extract_artifacts(result)
+        # [argus patch #152] raw tool-call markup is never delivered as a reply.
+        markup = reply_without_tool_call_markup(response_text, unattended=msg.unattended, has_artifacts=bool(artifacts), thread_id=thread_id, is_trivial=_is_trivial_unattended_text)
+        if markup.refused:
+            await self._report_unattended_outcome(msg, status="failed", error=TOOL_CALL_MARKUP_ERROR, thread_id=thread_id)
+            return
+        response_text = markup.text
 
         logger.info(
             "[Manager] agent response received: thread_id=%s, response_len=%d, artifacts=%d",
@@ -3909,8 +3920,19 @@ class ChannelManager:
             thread_id = thread_ref[0]
             result = last_values if last_values is not None else {"messages": [{"type": "ai", "content": latest_text}]}
             response_text = _extract_response_text(result)
+            if msg.unattended and stream_error is None and not _is_trivial_unattended_text(response_text):
+                # [argus patch #151] as in the non-streaming path.
+                response_text = recover_unattended_reply(result, response_text, thread_id=thread_id)
             pending_clarification = _has_current_turn_clarification(result)
             artifacts = _extract_artifacts(result)
+            # [argus patch #152] as in the non-streaming path; the streamed
+            # partial (latest_text) must not bring the markup back below.
+            markup_refused = False
+            if stream_error is None:
+                markup = reply_without_tool_call_markup(response_text, unattended=msg.unattended, has_artifacts=bool(artifacts), thread_id=thread_id, is_trivial=_is_trivial_unattended_text)
+                markup_refused = markup.refused
+                if markup.found:
+                    response_text = latest_text = markup.text
             # Reuse the storage owner resolved by _handle_chat so artifact delivery
             # matches the upload bucket and we avoid re-running _safe_user_id_for_run
             # (and its possible filesystem touch) on the streaming-error path.
@@ -3922,7 +3944,7 @@ class ChannelManager:
             # delivered, and interactive turns are untouched. Use a flag (NOT a
             # bare return) because we are inside a finally block: returning here
             # would swallow any in-flight exception from the try body.
-            suppress_final = bool(msg.unattended and not attachments and not stream_error and _is_trivial_unattended_text(response_text) and _is_trivial_unattended_text(latest_text))
+            suppress_final = markup_refused or bool(msg.unattended and not attachments and not stream_error and _is_trivial_unattended_text(response_text) and _is_trivial_unattended_text(latest_text))
 
             # [argus patch #36] _is_blank_text (not `if not response_text`): the
             # model can end a turn with empty final content while the last
@@ -3947,7 +3969,9 @@ class ChannelManager:
                 else:
                     response_text = "(No response from agent)"
 
-            if suppress_final:
+            if markup_refused:
+                await self._report_unattended_outcome(msg, status="failed", error=TOOL_CALL_MARKUP_ERROR, thread_id=thread_id)
+            elif suppress_final:
                 logger.info("[Manager] unattended streaming turn produced no content; staying silent (channel=%s chat_id=%s)", msg.channel_name, msg.chat_id)
                 await self._report_unattended_outcome(msg, status="silent", thread_id=thread_id)
             else:
