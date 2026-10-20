@@ -946,6 +946,18 @@ async def _delete_thread_data_with_reservation(thread_id: str, request: Request)
     except Exception:
         logger.debug("Could not close MCP sessions for %s (not critical)", sanitize_log_param(thread_id))
 
+    # [argus patch #150] An IM chat bound to this thread re-checks it on its next
+    # message instead of trusting this process's earlier check (best-effort).
+    try:
+        from app.channels.service import get_channel_service
+
+        channel_service = get_channel_service()
+        channel_manager = getattr(channel_service, "manager", None) if channel_service is not None else None
+        if channel_manager is not None:
+            channel_manager.forget_thread(thread_id)
+    except Exception:
+        logger.debug("Could not evict channel caches for %s (not critical)", sanitize_log_param(thread_id))
+
     return response
 
 

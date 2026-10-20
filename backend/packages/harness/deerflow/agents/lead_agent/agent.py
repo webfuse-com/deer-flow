@@ -666,7 +666,10 @@ def build_middlewares(
     # summarization can compact them, then inject durable context channels
     # (summary + ledger + skills) into model calls.
     from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
+    from deerflow.config.prompt_cache_config import durable_context_layout
 
+    # [argus patch #147] tail layout per model; contract from call 1.
+    volatile_at_tail, contract_always = durable_context_layout(resolved_app_config, model_name)
     middlewares.append(
         DurableContextMiddleware(
             skills_container_path=resolved_app_config.skills.container_path,
@@ -680,7 +683,8 @@ def build_middlewares(
             skill_authorization=skill_authorization,
             entry_decisions_owner_token=slash_source_owner_token,
             # [argus patch #125]
-            volatile_at_tail=getattr(getattr(resolved_app_config, "prompt_cache", None), "durable_context_volatile_at_tail", False) is True,
+            volatile_at_tail=volatile_at_tail,
+            contract_always=contract_always,
             # [argus patch #145]
             reread_only_after_summary=getattr(resolved_app_config.skills, "reread_only_after_summary", False) is True,
         )

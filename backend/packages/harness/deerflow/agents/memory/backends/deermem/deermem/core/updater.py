@@ -129,6 +129,38 @@ _REQUIRED_MEMORY_UPDATE_TOP_LEVEL_KEYS = frozenset({"user", "history", "newFacts
 _FACT_CLASSIFICATION_FIELDS = ("scope", "durability", "authority")
 
 
+# [argus patch #148] The update prompt HTML-escapes every memory string
+# (``_escape_memory_for_prompt``) and the model copies that text back, so a
+# stored value gained one level per update cycle (``'`` -> ``&#x27;`` ->
+# ``&amp;#x27;`` ...). The prompt adds exactly one level, so exactly one round
+# is undone here: ``html.escape`` emits these five entities (``&#39;`` is its
+# common variant) and ``&amp;`` is undone last, so one round is one level. A
+# literal entity in a real memory ("Prefers &amp; over 'and'") survives;
+# levels that accumulated before this patch are the repair script's job
+# (scripts/argus_repair_deermem_escaping.py repeats the round until clean).
+# Other entities are left alone: they are not ours to decode.
+_PROMPT_ESCAPE_ENTITIES = (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#x27;", "'"), ("&#39;", "'"), ("&amp;", "&"))
+
+
+def _unescape_prompt_text(value: str) -> str:
+    """Undo the one level of escaping the update prompt added."""
+    if "&" not in value:
+        return value
+    for entity, char in _PROMPT_ESCAPE_ENTITIES:
+        value = value.replace(entity, char)
+    return value
+
+
+def _unescape_summary_sections(sections: dict[str, Any]) -> dict[str, Any]:
+    """[argus patch #148] Copy of model ``user``/``history`` sections with plain summaries."""
+    normalized: dict[str, Any] = {}
+    for name, section in sections.items():
+        if isinstance(section, dict) and isinstance(section.get("summary"), str):
+            section = {**section, "summary": _unescape_prompt_text(section["summary"])}
+        normalized[name] = section
+    return normalized
+
+
 def _normalize_gate_label(value: Any) -> str | None:
     """Normalize a model-produced scope-gate label without validating policy."""
     if not isinstance(value, str):
@@ -182,12 +214,13 @@ def _normalize_memory_update_fact(fact: Any) -> dict[str, Any] | None:
     raw_content = fact.get("content")
     if not isinstance(raw_content, str):
         return None
-    content = raw_content.strip()
+    # [argus patch #148] store plain text, not the prompt's escaping.
+    content = _unescape_prompt_text(raw_content).strip()
     if not content:
         return None
 
     raw_category = fact.get("category")
-    category = raw_category.strip() if isinstance(raw_category, str) and raw_category.strip() else "context"
+    category = _unescape_prompt_text(raw_category).strip() if isinstance(raw_category, str) and raw_category.strip() else "context"
 
     raw_confidence = fact.get("confidence", 0.5)
     if isinstance(raw_confidence, bool):
@@ -215,7 +248,7 @@ def _normalize_memory_update_fact(fact: Any) -> dict[str, Any] | None:
     }
     source_error = fact.get("sourceError")
     if isinstance(source_error, str):
-        normalized_source_error = source_error.strip()
+        normalized_source_error = _unescape_prompt_text(source_error).strip()
         if normalized_source_error:
             normalized_fact["sourceError"] = normalized_source_error
 
@@ -371,6 +404,7 @@ def _normalize_memory_update_data(update_data: dict[str, Any]) -> dict[str, Any]
             content = consolidated.get("content")
             if not isinstance(content, str) or not content.strip():
                 continue
+            content = _unescape_prompt_text(content)  # [argus patch #148]
             # Normalize confidence: reject booleans (bool subclasses int, so the
             # isinstance check alone would silently accept True/False), coerce to float,
             # and reject non-finite values - matching _normalize_memory_update_fact.
@@ -381,7 +415,7 @@ def _normalize_memory_update_data(update_data: dict[str, Any]) -> dict[str, Any]
                 _f = float(_raw_conf)
                 _norm_conf = _f if math.isfinite(_f) else 0.9
             _raw_cat = consolidated.get("category")
-            _norm_cat = _raw_cat.strip() if isinstance(_raw_cat, str) and _raw_cat.strip() else "context"
+            _norm_cat = _unescape_prompt_text(_raw_cat).strip() if isinstance(_raw_cat, str) and _raw_cat.strip() else "context"
             normalized_consolidation.append(
                 {
                     "sourceIds": clean_ids,
@@ -395,8 +429,9 @@ def _normalize_memory_update_data(update_data: dict[str, Any]) -> dict[str, Any]
             )
 
     return {
-        "user": user if isinstance(user, dict) else {},
-        "history": history if isinstance(history, dict) else {},
+        # [argus patch #148] summaries are stored as plain text.
+        "user": _unescape_summary_sections(user) if isinstance(user, dict) else {},
+        "history": _unescape_summary_sections(history) if isinstance(history, dict) else {},
         "newFacts": normalized_new_facts,
         "factsToReinforce": normalized_facts_to_reinforce,
         "factsToRemove": normalized_facts_to_remove,
@@ -467,7 +502,9 @@ def _strip_upload_mentions_from_memory(memory_data: dict[str, Any]) -> dict[str,
 def _fact_content_key(content: Any) -> str | None:
     if not isinstance(content, str):
         return None
-    stripped = content.strip()
+    # [argus patch #148] an escaped stored copy and its plain new copy are the
+    # same fact, so the duplicate check holds before the stored copy is repaired.
+    stripped = _unescape_prompt_text(content).strip()
     if not stripped:
         return None
     return stripped.casefold()

@@ -341,6 +341,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         pii_redaction_config: PiiRedactionConfig | None = None,
         skill_authorization=None,
         entry_decisions_owner_token: str | None = None,
+        contract_always: bool = False,
         volatile_at_tail: bool = False,
         reread_only_after_summary: bool = False,
     ) -> None:
@@ -349,6 +350,9 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
         self._reread_only_after_summary = reread_only_after_summary
         # [argus patch #125] Changing parts go to a second data message at the tail.
         self._volatile_at_tail = volatile_at_tail
+        # [argus patch #147] The contract is part of the system message from
+        # the first call, not added once the first data appears mid-run.
+        self._contract_always = contract_always
         self._task_continuity_enabled = task_continuity_enabled
         self._pii_redaction_config = pii_redaction_config
         self._skills_root = _normalize_skills_root(skills_container_path)
@@ -473,7 +477,7 @@ class DurableContextMiddleware(AgentMiddleware[AgentState]):
                 goal_objective=goal_objective,
                 skill_in_context_paths=skill_in_context,
             )
-        if not data_block and not tail_block:
+        if not data_block and not tail_block and not self._contract_always:
             return request
         head: list = [
             SystemMessage(
