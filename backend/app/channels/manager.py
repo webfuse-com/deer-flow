@@ -26,6 +26,7 @@ from langgraph_sdk.errors import ConflictError, NotFoundError
 from app.channels import buzz_run_policy as _buzz_run_policy  # noqa: F401
 from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
 from app.channels._delivery_report import report_delivery
+from app.channels._final_reply import recover_unattended_reply
 from app.channels.capabilities import CHANNEL_CAPABILITIES
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.connection_identity import lookup_thread_id
@@ -3474,6 +3475,9 @@ class ChannelManager:
             raise
 
         response_text = _extract_response_text(result)
+        if msg.unattended:
+            # [argus patch #151] content written before a closing note goes out with it.
+            response_text = recover_unattended_reply(result, response_text, thread_id=thread_id)
         pending_clarification = _has_current_turn_clarification(result)
         artifacts = _extract_artifacts(result)
 
@@ -3714,6 +3718,9 @@ class ChannelManager:
         finally:
             result = last_values if last_values is not None else {"messages": [{"type": "ai", "content": latest_text}]}
             response_text = _extract_response_text(result)
+            if msg.unattended and stream_error is None:
+                # [argus patch #151] as in the non-streaming path.
+                response_text = recover_unattended_reply(result, response_text, thread_id=thread_id)
             pending_clarification = _has_current_turn_clarification(result)
             artifacts = _extract_artifacts(result)
             # Reuse the storage owner resolved by _handle_chat so artifact delivery

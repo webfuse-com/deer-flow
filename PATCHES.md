@@ -195,6 +195,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#135](#patch-135) | DeerMem update runaway guards: `max_tokens`, `request_timeout_seconds`, `max_retries`, `max_failed_batch_attempts` | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#141](#patch-141) | Cross-tab preferences sync: a storage event refetches only when another tab's value disagrees on a field both know, throttled to one read per 2 s (two tabs on different bundles ping-ponged GET /api/v1/auth/preferences at network speed) | argus-edit | this PR |
 | [#142](#patch-142) | Open-mode sandbox replacement removes the restricted netproxy only when the sandbox itself was provisioned restricted (an engine proxy that admits only the stack's sandbox names refused the fixed `deer-flow-netproxy-*` stop, aborting every quarantine recycle) | argus-edit | this PR |
+| [#151](#patch-151) | An unattended run whose final text is a short closing note ("Brief delivered and topic log updated.") delivers the substantive text an earlier AI message of the same turn carried, followed by the note, instead of the note alone | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2706,6 +2707,17 @@ carry budget ledger.
 - Tests: `backend/tests/test_aio_sandbox_local_backend.py` (`test_open_mode_replacement_destroy_touches_sidecar_only_for_restricted_sandbox`: an open-labelled sandbox is stopped with no sidecar or network cleanup; absent and unreadable sandboxes keep the cleanup. The upstream `test_open_mode_replacement_destroy_removes_restricted_sidecar_and_networks` now states that its sandbox was labelled `allowlist`).
 - Delete-when: upstream records the provisioned mode on `SandboxInfo`, or treats a refused sidecar teardown as absent for open-provisioned sandboxes.
 - Upstream status: generic-upstreamable (any deployment that scopes engine access by sandbox name hits it).
+
+## Patch #151
+
+**Patch #151 - A closing note does not replace the content it closes** (2026-10-20)
+
+- Class: argus-edit (`app/channels/_final_reply.py` new, two hook lines in `app/channels/manager.py`).
+- Intent: channel delivery sends the text of the run's last AI message. atlas-dima's morning brief told the model to append the day's topic keys to a log "after delivering"; the model wrote the brief in the AI message that also carried the `write_file` call, then ended on a closing note, so Telegram got only "Brief above; log updated." (2026-10-13, Chronos 42764), "Brief is delivered above, nothing further pending." (10-14, 43020) and "Brief delivered and topic log updated." (10-20, 46257). 2 of 5 briefs that week, with real action items, and Chronos recorded all of them as delivered. For an unattended run (both the `runs.wait` and the streaming path; the streaming path only without a stream error), when the final text is a closing note and an earlier AI message of the same turn carries substantive text, the delivery is that text followed by the note. Closing note: at most 160 characters on at most two lines, and it refers to a delivery that already happened (`above`, `delivered`, `sent`, `posted`). Substantive: at least 200 characters and three times the note. The turn ends at the last human message that is not hidden from the UI, as for `_extract_response_text`. Interactive runs (the web chat shows every message) and clarifications are unchanged. Measured on the fleet's runs of the 30 days to 2026-10-20 (every run whose final lead-agent text was at most 300 characters while an earlier one had at least 200): 3 channel runs match and all 3 are Dima's lost briefs; the 2 other channel runs of that shape (atlas-ashish FDE trial reports, narration then the real report) are left alone by both the wording and the length rules.
+- Files: `app/channels/_final_reply.py` (new), `app/channels/manager.py`.
+- Tests: `backend/tests/test_channel_closing_note_delivery.py` (the three Dima runs' messages with verbatim AI texts are recovered; the two atlas-ashish runs are not; short real answers, a 160+ character note, a three-line note, no substantive earlier text, a previous turn's text, a clarification are left alone; hidden control messages and list content blocks; end to end through the streaming Telegram path with Chronos reporting the delivered text, the interactive path unchanged, and the `runs.wait` path).
+- Delete-when: upstream delivers the run's substantive output rather than its last AI message, or playbook prompts never end on a note (citizen fix DIM-F1 removes Dima's trigger, not the class).
+- Upstream status: argus-specific (unattended channel delivery is #30/#45).
 
 ---
 
