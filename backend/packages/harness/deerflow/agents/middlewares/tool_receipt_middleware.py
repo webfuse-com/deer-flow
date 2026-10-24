@@ -27,7 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
-from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages, is_genuine_user_message
+from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages, insert_at_tail, is_genuine_user_message
 from deerflow.agents.middlewares.tool_receipt import (
     TOOL_RECEIPT_KEY,
     TOOL_RECEIPT_LEDGER_KEY,
@@ -51,15 +51,21 @@ class ToolReceiptMiddleware(AgentMiddleware[AgentState]):
     the message stream contains a completed subagent result (lead chain —
     the one place the lead needs citation context), avoiding the always-on
     token tax in ordinary conversation turns.
+
+    at_tail ([argus patch #155]): render the ledger at the end of the request
+    instead of after the system prompt. The ledger is a window over the latest
+    receipts, so it changes on every model call; after the system prompt it
+    made a self-hosted prefix cache recompute the whole conversation each time.
     """
 
     state_schema = AgentState
 
-    def __init__(self, *, render_mode: str = "always") -> None:
+    def __init__(self, *, render_mode: str = "always", at_tail: bool = False) -> None:
         super().__init__()
         if render_mode not in {"always", "delegation_only"}:
             raise ValueError(f"Unknown render_mode: {render_mode}")
         self._render_mode = render_mode
+        self._at_tail = at_tail
 
     def _stamp_message(self, message: ToolMessage, request: ToolCallRequest) -> None:
         try:
@@ -139,7 +145,10 @@ class ToolReceiptMiddleware(AgentMiddleware[AgentState]):
             content=ledger,
             additional_kwargs={"hide_from_ui": True, _RECEIPT_CONTEXT_KEY: True},
         )
-        messages = insert_after_leading_system_messages(list(request.messages), [ledger_message])
+        if self._at_tail:
+            messages = insert_at_tail(list(request.messages), ledger_message)
+        else:
+            messages = insert_after_leading_system_messages(list(request.messages), [ledger_message])
         return request.override(messages=messages)
 
     def _prepare_model_call(self, request: ModelRequest) -> tuple[ModelRequest, list[ToolReceipt] | None]:

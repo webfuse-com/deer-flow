@@ -374,6 +374,7 @@ def _build_runtime_middlewares(
     include_dangling_tool_call_patch: bool,
     lazy_init: bool = True,
     receipts_render_mode: str = "delegation_only",
+    receipts_at_tail: bool = False,
     authorization_provider=None,
     authorization_infrastructure_tools: Iterable[object] = (),
     available_skills: set[str] | None = None,
@@ -451,7 +452,7 @@ def _build_runtime_middlewares(
     if verification_config.receipts_enabled:
         from deerflow.agents.middlewares.tool_receipt_middleware import ToolReceiptMiddleware
 
-        tail.append(ToolReceiptMiddleware(render_mode=receipts_render_mode))
+        tail.append(ToolReceiptMiddleware(render_mode=receipts_render_mode, at_tail=receipts_at_tail))
 
     # Resolve handles before any policy inspects arguments. Receipts enclose
     # this layer too, so unknown-handle errors remain part of the ledger.
@@ -562,6 +563,7 @@ def build_lead_runtime_middlewares(
     *,
     app_config: AppConfig,
     lazy_init: bool = True,
+    receipts_at_tail: bool = False,
     authorization_provider=None,
     deferred_setup: "DeferredToolSetup | None" = None,
     available_skills: set[str] | None = None,
@@ -578,6 +580,8 @@ def build_lead_runtime_middlewares(
         # The lead renders the receipt ledger only while processing subagent
         # results (default "delegation_only"); stamping stays always-on.
         receipts_render_mode=app_config.verification.receipts_render_mode,
+        # [argus patch #155] build_middlewares sets it from the durable-context layout (#125/#147).
+        receipts_at_tail=receipts_at_tail,
         authorization_provider=authorization_provider,
         available_skills=available_skills,
         owns_agent_skill_projection=owns_agent_skill_projection,
@@ -607,6 +611,7 @@ def build_subagent_runtime_middlewares(
 
         app_config = get_app_config()
 
+    from deerflow.config.prompt_cache_config import durable_context_layout
     from deerflow.extensions import get_agent_build_extensions
 
     resolved_extensions = extensions if extensions is not None else get_agent_build_extensions()
@@ -619,6 +624,8 @@ def build_subagent_runtime_middlewares(
         # Subagent chains always render the ledger: citations are produced in
         # the subagent context — no ledger, no citations, Layer 1 goes inert.
         receipts_render_mode="always",
+        # [argus patch #155] the subagent's own model picks the layout (#147).
+        receipts_at_tail=durable_context_layout(app_config, model_name)[0],
         authorization_provider=authorization_provider,
         authorization_infrastructure_tools=((deferred_setup.tool_search_tool,) if authorization_provider is not None and deferred_setup is not None and deferred_setup.tool_search_tool is not None else ()),
         owns_agent_skill_projection=False,

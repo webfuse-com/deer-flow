@@ -24,7 +24,7 @@ from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, Too
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares.delegation_ledger import extract_delegations, render_delegation_ledger
-from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages
+from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages, insert_at_tail
 from deerflow.agents.middlewares.pii_redaction_middleware import redact_text
 from deerflow.agents.middlewares.skill_context import extract_skills, render_skill_context, skill_paths_in_messages
 from deerflow.agents.task_continuity.state import normalize_task_history, normalize_task_notes
@@ -312,20 +312,8 @@ def _data_message(block: str) -> HumanMessage:
     )
 
 
-def _insert_at_tail(messages: list, message: HumanMessage) -> list:
-    """[argus patch #125] Append, but keep a trailing user request last.
-
-    Inside a run the request ends with tool results, and the data message goes
-    after them. On a run's first call it ends with the user's message, which
-    must stay the last thing the model reads, so the data message goes just
-    before the trailing run of HumanMessages instead.
-    """
-    index = len(messages)
-    while index > 0 and isinstance(messages[index - 1], HumanMessage):
-        index -= 1
-    if index == len(messages):
-        return [*messages, message]
-    return [*messages[:index], message, *messages[index:]]
+# [argus patch #125] shared with the receipt ledger since #155.
+_insert_at_tail = insert_at_tail
 
 
 class DurableContextMiddleware(AgentMiddleware[AgentState]):

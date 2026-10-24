@@ -43,6 +43,7 @@ import threading
 import weakref
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future, InvalidStateError
+from contextlib import ExitStack
 from typing import Any, override
 
 from langchain.agents.middleware import AgentMiddleware
@@ -54,6 +55,7 @@ from langgraph.types import Command
 from deerflow.agents.middlewares.tool_call_args import pair_tool_call_results, rewrite_messages_tool_call_args
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY, normalize_tool_result, stamp_exception_meta
 from deerflow.config.read_before_write_config import ReadBeforeWriteConfig
+from deerflow.sandbox.command_classify import files_shown_by_inspection
 from deerflow.sandbox.exceptions import SandboxAuthorizationError
 from deerflow.sandbox.read_file_contract import READ_FILE_EMPTY, READ_FILE_NO_CONTENT_RESULTS, count_file_lines
 from deerflow.sandbox.tools import (
@@ -65,6 +67,8 @@ from deerflow.sandbox.tools import (
 logger = logging.getLogger(__name__)
 
 READ_MARK_KEY = "deerflow_read_mark"
+#: [argus patch #156] Marks a pure-read ``bash`` call stamps: a list of ``{"path", "hash"}``.
+READ_MARKS_KEY = "deerflow_read_marks"
 #: Stamped on the error ToolMessage of a gate-blocked call: ``{"path", "tool"}``.
 WRITE_BLOCK_KEY = "deerflow_write_block"
 
@@ -265,6 +269,19 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
                         return result
             except SandboxAuthorizationError as exc:
                 return self._authorization_error_result(request, exc)
+        if name == "bash":
+            paths = self._bash_shown_paths(request)
+            if paths:
+                try:
+                    with sandbox_authorization_scope(request.runtime):
+                        with ExitStack() as held:
+                            for path in paths:
+                                held.enter_context(self._lock_for(request, path))
+                            result = handler(request)
+                            self._attach_bash_read_marks(request, result, paths)
+                            return result
+                except SandboxAuthorizationError as exc:
+                    return self._authorization_error_result(request, exc)
         return handler(request)
 
     @override
@@ -314,6 +331,26 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
                         lock.release()
             except SandboxAuthorizationError as exc:
                 return self._authorization_error_result(request, exc)
+        if name == "bash":
+            paths = self._bash_shown_paths(request)
+            if paths:
+                try:
+                    async with sandbox_authorization_scope_async(request.runtime):
+                        held: list[_GateLock] = []
+                        try:
+                            for path in paths:
+                                lock = self._lock_for(request, path)
+                                await _acquire_gate_lock(lock)
+                                held.append(lock)
+                            result = await handler(request)
+                            mark_task = asyncio.create_task(asyncio.to_thread(self._attach_bash_read_marks, request, result, paths))
+                            await _await_off_thread(mark_task)
+                            return result
+                        finally:
+                            for lock in reversed(held):
+                                lock.release()
+                except SandboxAuthorizationError as exc:
+                    return self._authorization_error_result(request, exc)
         return await handler(request)
 
     @staticmethod
@@ -430,11 +467,27 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
         for message in reversed(messages):
             if not isinstance(message, ToolMessage):
                 continue
-            mark = (message.additional_kwargs or {}).get(READ_MARK_KEY)
-            if isinstance(mark, dict) and mark.get("path") == norm_path:
-                mark_hash = mark.get("hash")
-                return mark_hash if isinstance(mark_hash, str) else None
+            kwargs = message.additional_kwargs or {}
+            marks = [kwargs.get(READ_MARK_KEY)]
+            # [argus patch #156] a pure-read bash call can show several files.
+            bash_marks = kwargs.get(READ_MARKS_KEY)
+            if isinstance(bash_marks, list):
+                marks.extend(bash_marks)
+            for mark in marks:
+                if isinstance(mark, dict) and mark.get("path") == norm_path:
+                    mark_hash = mark.get("hash")
+                    return mark_hash if isinstance(mark_hash, str) else None
         return None
+
+    def _bash_shown_paths(self, request: ToolCallRequest) -> list[str]:
+        """[argus patch #156] Files a pure-read bash call prints, sorted (the lock order)."""
+        if not self._config.bash_reads_mark:
+            return []
+        args = request.tool_call.get("args") or {}
+        command = args.get("command") if isinstance(args, dict) else None
+        if not isinstance(command, str) or not command.strip():
+            return []
+        return sorted(set(files_shown_by_inspection(command)))
 
     # -- model-bound payload elision --------------------------------------
 
@@ -507,6 +560,34 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
             "path": _normalize_mark_path(path),
             "hash": _content_hash(content),
         }
+
+    def _attach_bash_read_marks(self, request: ToolCallRequest, result: ToolMessage | Command, paths: list[str]) -> None:
+        """[argus patch #156] Stamp the current version of each file a successful pure-read bash call printed.
+
+        Inspecting a file with ``sed -n '200,230p'`` and then editing it was
+        blocked as "not read", which threw away the whole edit call (atlas-nicholas
+        2026-10-23: a 97 s model call, then a re-read). A printed range counts the
+        way a ranged read_file does; the hash is taken under the same locks."""
+        message = self._extract_tool_message(result, tool_call_id=str(request.tool_call.get("id") or ""))
+        if message is None or message.status == "error":
+            return
+        meta = (message.additional_kwargs or {}).get(TOOL_META_KEY)
+        if isinstance(meta, dict) and meta.get("status") != "success":
+            return
+        marks = []
+        for path in paths:
+            try:
+                content = self._content_reader(request.runtime, path)
+            except SandboxAuthorizationError:
+                raise
+            except Exception:
+                logger.debug("read-before-write bash mark skipped for %r: file not hashable", path, exc_info=True)
+                continue
+            if content.startswith(_UNINSPECTABLE_CONTENT_PREFIX):
+                continue
+            marks.append({"path": _normalize_mark_path(path), "hash": _content_hash(content)})
+        if marks:
+            message.additional_kwargs[READ_MARKS_KEY] = marks
 
     def _attach_write_mark(self, request: ToolCallRequest, result: ToolMessage | Command) -> None:
         """Stamp the post-write version only when the write really succeeded."""

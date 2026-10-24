@@ -207,6 +207,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#152](#patch-152) | A final reply that is raw tool-call markup (`<tool_call>`, `<function=...>`, chat-template tokens, Claude and Kimi forms; on unattended runs also a bare JSON tool call) is not delivered: unattended runs with only trivial text left are reported failed and send nothing, an interactive reply that is nothing but markup becomes a one-line notice | argus-edit | this PR |
 | [#153](#patch-153) | A non-zero shell exit is graded by its trailing exit marker (126 permission, 127 not found, any other code including a 124 timeout `command_failed`, all model-recoverable), never by keywords in the command's output (a script that printed `mrr>500` read as an internal error and bash was blocked for the run) | argus-edit | this PR |
 | [#154](#patch-154) | A removed sandbox reads as absent when the socket proxy's `GET /info` denial sits next to "no such object" (excused only when every queried name is reported missing), so a thread whose container was removed gets a new one instead of failing every file and shell tool | argus-edit | this PR |
+| [#155](#patch-155) | The tool-receipt ledger renders at the end of the request for models with the cache-stable tail layout (#125/#147), so its sliding window stops making a self-hosted prefix cache re-read the conversation on every call after a subagent returns | config-expressed | this PR |
+| [#156](#patch-156) | With `read_before_write.bash_reads_mark`, a successful pure-read bash call (`cat`, `head`, `tail`, `sed -n '<range>p'`) marks each file it printed as read at its current version, so an edit after a shell inspection is not blocked | config-expressed | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2855,6 +2857,30 @@ carry budget ledger.
 - Tests: `backend/tests/test_aio_sandbox_sockproxy_info_probe.py` (the exact atlas-aphiwe stderr makes `is_absent` true, `inspect_runtime` None, `_is_container_running` false, discovery silent and strict `_batch_inspect` empty; one denial per missing name in a batch; the denial alone, another missing name, other proxy refusals, a non-proxy /info refusal, an extra unrecognized line and a daemon connection error all still raise; a partial batch with a present container still raises). `test_aio_sandbox_local_backend.py` (including the strict near-miss table) and `test_aio_sandbox_provider.py` unchanged and green.
 - Delete-when: the socket proxy answers `GET /info` (or the backend passes `--type container`), so the CLI never prints the denial next to a missing object.
 - Upstream status: argus-specific (the socket proxy is Argus's).
+
+
+## Patch #155
+
+**Patch #155 - The receipt ledger follows the cache-stable layout** (2026-10-24)
+
+- Class: config-expressed (follows `prompt_cache.durable_context_volatile_at_tail` and `volatile_tail_models`, #125/#147; no new switch).
+- Intent: `ToolReceiptMiddleware` inserts its hidden receipt ledger right after the system prompt. The ledger is a 2,000-character window over the newest receipts ("older receipts omitted"), so it changes on every model call, and every change made SGLang's radix cache recompute the whole conversation. The lead renders it only while a subagent result is in the turn (`delegation_only`); subagents render it always. atlas-nicholas thread 4447dd29 (2026-10-23, Ariadne): after a `task` returned, every lead call re-read 40-70k tokens (consecutive inputs first differ at message 2, the ledger, from 16:20 to 16:27 CEST), and the subagent's first-token time grew from 0.7 s to 6.4 s as its uncached tail grew to 60k. #125 moved the durable-context parts to the tail but not this ledger. Now a chain whose model has the tail layout inserts the ledger at the end of the request, before a trailing user message (the shared `message_utils.insert_at_tail`, which `DurableContextMiddleware` now uses too). Other models keep the head layout their cloud cache extends.
+- Files: `agents/middlewares/tool_receipt_middleware.py` (`at_tail`), `agents/middlewares/message_utils.py` (`insert_at_tail`), `agents/middlewares/durable_context_middleware.py` (uses it), `agents/middlewares/tool_error_handling_middleware.py` (`receipts_at_tail`; the subagent builder reads its own model's layout), `agents/lead_agent/agent.py` (`build_middlewares` asks for the tail for a tail-layout model), `agents/middlewares/AGENTS.md`.
+- Tests: `backend/tests/test_tool_receipt_ledger_tail.py` (default stays after the system prompt; tail goes after the newest tool result; a trailing user request stays last; with 30 then 31 receipts the prompt before the ledger is identical while the ledger slid; the head layout changes the prefix, the behaviour removed; the subagent builder follows its model's layout and `build_middlewares` passes `receipts_at_tail` only for a tail-layout model). `test_tool_receipt_middleware.py`, `test_durable_context_volatile_tail.py`, `test_prompt_cache_per_model.py` unchanged and green.
+- Delete-when: upstream keeps run-volatile context out of the prompt prefix (with #125).
+- Upstream status: generic-upstreamable (same reasoning as #125).
+
+
+## Patch #156
+
+**Patch #156 - A pure-read bash call counts as a read for the write gate** (2026-10-24)
+
+- Class: config-expressed (`read_before_write.bash_reads_mark`, default false keeps upstream's read_file-only rule).
+- Intent: the read-before-write gate (#3857) accepts only a `read_file` mark, so an agent that inspected a file with `sed -n '203,230p'` and then wrote a `str_replace` was blocked ("you have not read its current version"), and the whole edit call was thrown away. atlas-nicholas thread 4447dd29 (2026-10-23 15:55 CEST): a 97 s model call (6,265 reasoning tokens, a three-part edit to a 1,891-line connector), then three ranged read_file calls and the same edit again. With the switch, a successful bash call that only prints files stamps `deerflow_read_marks` for each file it printed, hashed under the same per-path gate locks (taken in sorted order) the way a ranged read_file stamps the full-file hash. Only `cat`, `head`, `tail` and `sed -n '<ADDR[,ADDR]>p'` count (`sandbox.command_classify.files_shown_by_inspection`); every other stage must grade `inspection` under #81, except a plain `echo`/`printf` separator without substitution or redirection; relative paths resolve only after an absolute `cd` in the same command; at most eight files. `grep` shows matching lines, not the file, and does not count. A failed call stamps nothing, a later change still blocks, and `classify_bash_command` itself is unchanged.
+- Files: `sandbox/command_classify.py` (`files_shown_by_inspection`), `agents/middlewares/read_before_write_middleware.py`, `config/read_before_write_config.py`, `agents/middlewares/AGENTS.md`.
+- Tests: `backend/tests/test_read_before_write_bash_reads.py` (the thread's own command verbatim; sed ranges incl. regex addresses and `$`; cat/head/tail; cd chains; grep, wc, sed substitutions, `-e`, `-i`, redirection, substitution, execution and unknown directories excluded; the cap; an edit after a sed range passes; off by default; a later change blocks; failed calls stamp nothing; a missing file is skipped; the async path). `test_command_classify.py` and the three `test_read_before_write_*` suites unchanged and green.
+- Delete-when: upstream's gate accepts shell reads, or agents stop inspecting with shell commands before editing.
+- Upstream status: generic-upstreamable (any agent that inspects with the shell hits the block).
 
 ---
 

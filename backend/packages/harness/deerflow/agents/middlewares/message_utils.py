@@ -59,3 +59,21 @@ def insert_after_leading_system_messages(messages: list, injected: list) -> list
     while index < len(messages) and isinstance(messages[index], SystemMessage):
         index += 1
     return [*messages[:index], *injected, *messages[index:]]
+
+
+def insert_at_tail(messages: list, message: HumanMessage) -> list:
+    """[argus patch #125, #155] Append, but keep a trailing user request last.
+
+    For context that changes on most model calls of a run: after the system
+    prompt it makes a self-hosted prefix cache recompute the whole conversation
+    on every call. Inside a run the request ends with tool results, and the
+    message goes after them. On a run's first call it ends with the user's
+    message, which must stay the last thing the model reads, so the message
+    goes just before the trailing run of HumanMessages instead.
+    """
+    index = len(messages)
+    while index > 0 and isinstance(messages[index - 1], HumanMessage):
+        index -= 1
+    if index == len(messages):
+        return [*messages, message]
+    return [*messages[:index], message, *messages[index:]]

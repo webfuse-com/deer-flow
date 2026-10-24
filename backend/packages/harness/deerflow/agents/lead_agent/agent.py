@@ -565,6 +565,11 @@ def build_middlewares(
         "app_config": resolved_app_config,
         "lazy_init": True,
     }
+    from deerflow.config.prompt_cache_config import durable_context_layout
+
+    if durable_context_layout(resolved_app_config, model_name)[0]:
+        # [argus patch #155] the receipt ledger follows the durable-context layout (#125/#147).
+        runtime_middleware_kwargs["receipts_at_tail"] = True
     if available_skills is not None:
         runtime_middleware_kwargs["available_skills"] = available_skills
     if not owns_agent_skill_projection:
