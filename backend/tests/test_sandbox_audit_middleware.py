@@ -1202,3 +1202,87 @@ class TestCommandTooLongMessage:
         request.runtime = None
         result = mw.wrap_tool_call(request, lambda r: pytest.fail("handler must not run"))
         assert result.content == "Command blocked: null byte detected. Please use a safer alternative approach."
+
+
+class TestInternalAddressRefusal:
+    """[argus patch #158] A network client aimed at an internal IPv4 literal
+    (10.89.0.0/16 containers, 100.64.0.0/10 tailnet) is refused with a reason
+    the agent can act on; hostnames, loopback and public addresses pass."""
+
+    # atlas-salome 2026-10-24 (Cerberus 11867), verbatim: the client's address
+    # and source port from a Lexis access-log line, curled as the service.
+    TRIGGER = "curl -s http://10.89.0.43:33306/lexis/people/jeroen || curl -s http://argus-lexis/lexis/people/jeroen"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            TRIGGER,
+            "nc -z 10.89.0.5 5432",
+            "ssh client@100.82.200.213",
+            "x=$(curl -s http://10.89.0.4/y)",
+            "echo $(wget -qO- http://10.89.7.2/x)",
+            "timeout 10 wget http://10.89.3.2/",
+            "echo hi && curl 10.89.0.2:4000",
+            "env A=1 curl http://10.89.0.9",
+            "cd /tmp; curl -sS --max-time 5 http://100.100.1.1:9090/",
+            "http GET 10.89.0.12:8000/health",
+        ],
+    )
+    def test_internal_literals_are_refused(self, command):
+        mw = SandboxAuditMiddleware()
+        result = mw.wrap_tool_call(_make_request(command), lambda r: pytest.fail("handler must not run"))
+        assert result.status == "error"
+        assert result.content.startswith("Command blocked: ")
+        assert "Nothing ran" in result.content
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl http://argus-atlas-salome-nginx:4000/v1/models",
+            "curl -s http://127.0.0.1:8080/",
+            "curl -sL https://example.com/a.json",
+            "grep 10.89.0.43 access.log",
+            "echo curl 10.89.0.43",
+            "ping -c1 10.89.0.4",
+            "curl http://10.90.0.1/",
+            "curl http://192.168.1.1/",
+            "wget 10.89.0.4.nip.io",
+            "python3 parse.py --ip 10.89.0.43",
+        ],
+    )
+    def test_other_commands_pass(self, command):
+        mw = SandboxAuditMiddleware()
+        handler = _make_handler()
+        mw.wrap_tool_call(_make_request(command), handler)
+        handler.assert_called_once()
+
+    def test_message_names_the_address_the_network_and_the_way_out(self):
+        mw = SandboxAuditMiddleware()
+        result = mw.wrap_tool_call(_make_request(self.TRIGGER), lambda r: pytest.fail("handler must not run"))
+        assert "curl targets 10.89.0.43" in result.content
+        assert "internal container network (10.89.0.0/16)" in result.content
+        assert "would only hang" in result.content
+        assert "CLIENT's address" in result.content
+        assert "model gate" in result.content
+
+    def test_tailnet_is_named(self):
+        mw = SandboxAuditMiddleware()
+        result = mw.wrap_tool_call(_make_request("nc 100.82.200.213 5432"), lambda r: pytest.fail("handler must not run"))
+        assert "100.82.200.213" in result.content and "tailnet (100.64.0.0/10)" in result.content
+
+    def test_refusal_is_audited_as_block(self, caplog):
+        mw = SandboxAuditMiddleware()
+        with caplog.at_level("INFO", logger="deerflow.agents.middlewares.sandbox_audit_middleware"):
+            mw.wrap_tool_call(_make_request(self.TRIGGER), lambda r: pytest.fail("handler must not run"))
+        audit = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[SandboxAudit] {")]
+        assert len(audit) == 1 and '"verdict": "block"' in audit[0]
+
+    @pytest.mark.anyio
+    async def test_async_path_refuses_too(self):
+        mw = SandboxAuditMiddleware()
+
+        async def handler(_r):
+            pytest.fail("handler must not run")
+
+        result = await mw.awrap_tool_call(_make_request(self.TRIGGER), handler)
+        assert result.status == "error" and "10.89.0.43" in result.content

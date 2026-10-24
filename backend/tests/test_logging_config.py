@@ -1195,3 +1195,50 @@ def test_url_redaction_filter_collapses_space_carrying_targets_in_every_retry_sh
     # does not start with ``/`` keeps passing through untouched, which
     # test_url_redaction_filter_covers_urllib3_retry_lines already pins.
     assert _formatted("Retry: /tmp/build.sock went away", ()) == "Retry: /<redacted>"
+
+
+def test_url_redaction_keeps_a_json_audit_line_parseable() -> None:
+    """[argus patch #159] A URL inside a JSON string ends at the string's closing
+    double quote when ``,``/``;``/``}``/``]`` follows, so a structured log line
+    stays valid JSON after its URL paths collapse. The 2026-10-24 SandboxAudit
+    line lost ``",`` to the rest group and no longer parsed."""
+    import json
+
+    from deerflow.logging_config import UrlRedactionFilter
+
+    filt = UrlRedactionFilter()
+    command = "curl -s http://10.89.0.43:33306/lexis/people/jeroen || curl -s http://argus-lexis/lexis/people/jeroen"
+    entry = {"timestamp": "2026-10-24T14:17:43+00:00", "thread_id": "t-1", "command": command, "verdict": "pass"}
+    record = logging.LogRecord("deerflow.agents.middlewares.sandbox_audit_middleware", logging.INFO, __file__, 1, "[SandboxAudit] %s", (json.dumps(entry),), None)
+    assert filt.filter(record) is True
+    payload = json.loads(record.getMessage().split("[SandboxAudit] ", 1)[1])
+    assert payload["verdict"] == "pass" and payload["thread_id"] == "t-1"
+    assert payload["command"] == "curl -s http://10.89.0.43:33306/<redacted> || curl -s http://argus-lexis/<redacted>"
+    assert "jeroen" not in record.getMessage()
+
+    # A list element and an object end close it as well.
+    for wrapped in ('["https://h.example/p?tok=Secret"]', '{"u": "https://h.example/p?tok=Secret"}', '"https://h.example/p?tok=Secret";'):
+        rec = logging.LogRecord("some.lib", logging.INFO, __file__, 1, "%s", (wrapped,), None)
+        assert filt.filter(rec) is True
+        assert "Secret" not in rec.getMessage()
+        assert rec.getMessage() == wrapped.replace("/p?tok=Secret", "/<redacted>")
+
+
+def test_url_redaction_escaped_or_single_quotes_never_close_early() -> None:
+    """[argus patch #159] Only an unescaped double quote gains the JSON
+    boundaries: a JSON-escaped embedded quote (``\\"``) is consumed as a pair,
+    and a single quote, a legal URL sub-delimiter, keeps the old rule."""
+    import json
+
+    from deerflow.logging_config import UrlRedactionFilter
+
+    filt = UrlRedactionFilter()
+    entry = {"command": 'curl "http://h.example/a",b?token=EscapedSecret'}
+    record = logging.LogRecord("some.lib", logging.INFO, __file__, 1, "[SandboxAudit] %s", (json.dumps(entry),), None)
+    assert filt.filter(record) is True
+    assert "EscapedSecret" not in record.getMessage()
+    json.loads(record.getMessage().split("[SandboxAudit] ", 1)[1])
+
+    single = logging.LogRecord("some.lib", logging.INFO, __file__, 1, "%s", ("https://h.example/q?a='x',token=SingleSecret",), None)
+    assert filt.filter(single) is True
+    assert "SingleSecret" not in single.getMessage()

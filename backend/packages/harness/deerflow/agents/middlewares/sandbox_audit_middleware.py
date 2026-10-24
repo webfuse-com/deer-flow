@@ -1,7 +1,9 @@
 """SandboxAuditMiddleware - bash command security auditing."""
 
+import ipaddress
 import json
 import logging
+import os
 import re
 import shlex
 from collections.abc import Awaitable, Callable
@@ -122,6 +124,90 @@ _MEDIUM_RISK_PATTERNS: list[re.Pattern[str]] = [
 # output too, so the warning never lands after either form.
 _EXIT_MARKER_TAIL_RE = re.compile(r"(?:(?:^|\n)Exit Code: -?\d+|\n?Command exited with code -?\d+)\s*$")
 _SILENT_EXIT_MARKER_RE = re.compile(r"Command exited with code -?\d+")
+
+
+# [argus patch #158] Network clients aimed at an internal address. On Argus a
+# sandbox sits on its own Podman network; other containers live in 10.89.0.0/16
+# and the host's tailnet in 100.64.0.0/10, and the sandbox egress guard drops
+# every packet the sandbox sends there. A client pointed at such a literal can
+# only hang until its own timeout (curl has none), so the shell call stalls and
+# the sandbox is recycled as an uncertain outcome. 2026-10-24 (atlas-salome,
+# Cerberus 11867): the agent read an access-log line
+# ``10.89.0.43:33306 - "GET /lexis/people/jeroen"`` and curled the CLIENT's
+# address and source port as if it were the service. Refusing up front gives
+# the agent a reason it can act on instead of a hang. Hostnames are never
+# refused: ``argus-<stack>-nginx:4000`` is the sandbox's own model gate.
+_NETWORK_CLIENTS = frozenset({"curl", "wget", "nc", "ncat", "netcat", "telnet", "ssh", "http", "https"})
+_INTERNAL_NETWORKS = (
+    (ipaddress.IPv4Network("10.89.0.0/16"), "the internal container network (10.89.0.0/16)"),
+    (ipaddress.IPv4Network("100.64.0.0/10"), "the host's tailnet (100.64.0.0/10)"),
+)
+# Words that run the rest of the line as the command (``timeout`` also takes a duration).
+_CLIENT_WRAPPERS = frozenset({"env", "sudo", "doas", "command", "exec", "nohup", "time", "timeout", "nice", "stdbuf", "xargs"})
+_IPV4_LITERAL_RE = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])")
+# ``x=$(``, ``$(``, a backtick or ``(`` opening a token: the word after it runs.
+_SUBSTITUTION_OPENER_RE = re.compile(r"^(?:\w+=)?(?:\$\(|`|\()+")
+
+
+def _internal_address(token: str) -> tuple[str, str] | None:
+    for literal in _IPV4_LITERAL_RE.findall(token):
+        try:
+            address = ipaddress.IPv4Address(literal)
+        except ValueError:
+            continue
+        for network, label in _INTERNAL_NETWORKS:
+            if address in network:
+                return literal, label
+    return None
+
+
+def _client_words(tokens: list[str]) -> list[int]:
+    """Indexes of tokens that run as a command: the command word (after
+    assignments and wrappers) and any word a substitution opens."""
+    found: list[int] = []
+    in_command = False
+    skip_value = False
+    for index, token in enumerate(tokens):
+        opener = _SUBSTITUTION_OPENER_RE.match(token)
+        word = token[opener.end() :] if opener else token
+        if opener and word:
+            found.append(index)
+            continue
+        if in_command:
+            continue
+        if skip_value:
+            skip_value = False
+            continue
+        if re.fullmatch(r"\w+=\S*", word) or (found and word.startswith("-")):
+            continue
+        base = os.path.basename(word)
+        if base in _CLIENT_WRAPPERS:
+            skip_value = base == "timeout"
+            found.append(-1)  # marks "a wrapper was seen" so its flags are skipped
+            continue
+        found.append(index)
+        in_command = True
+    return [i for i in found if i >= 0]
+
+
+def _internal_network_target(command: str) -> tuple[str, str, str] | None:
+    """(client, address, network label) when a network client in *command*
+    targets an internal IPv4 literal, else None."""
+    for sub in _split_compound_command(command, split_pipes=True):
+        try:
+            tokens = shlex.split(sub)
+        except ValueError:
+            tokens = sub.split()
+        for index in _client_words(tokens):
+            word = _SUBSTITUTION_OPENER_RE.sub("", tokens[index])
+            client = os.path.basename(word)
+            if client not in _NETWORK_CLIENTS:
+                continue
+            for token in tokens[index + 1 :]:
+                hit = _internal_address(token)
+                if hit:
+                    return client, hit[0], hit[1]
+    return None
 
 
 def _matches_high_risk(candidate: str) -> bool:
@@ -335,6 +421,24 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
                 name="bash",
                 status="error",
             )
+        if reason == "internal network address":
+            # [argus patch #158] Say why it would fail and what works instead.
+            raw = request.tool_call.get("args", {}).get("command")
+            target = _internal_network_target(raw if isinstance(raw, str) else "")
+            client, address, network = target or ("this client", "that address", "the internal network")
+            return ToolMessage(
+                content=(
+                    f"Command blocked: {client} targets {address}, which is on {network}. Nothing ran. "
+                    "This sandbox cannot reach other containers or the host there: the egress guard drops every "
+                    "packet, so the call would only hang until it timed out. If you copied the address from a log "
+                    "line, it is most likely the CLIENT's address and port, not the service's. To use a service, "
+                    "call the tool or MCP server that fronts it; for models, use the model gate URL already in "
+                    "your environment (a hostname, which is allowed)."
+                ),
+                tool_call_id=tool_call_id,
+                name="bash",
+                status="error",
+            )
         return ToolMessage(
             content=f"Command blocked: {reason}. Please use a safer alternative approach.",
             tool_call_id=tool_call_id,
@@ -411,6 +515,12 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
             self._write_audit(thread_id, command, "block", truncate=True)
             logger.warning("[SandboxAudit] INVALID INPUT thread=%s reason=%s", thread_id, reject_reason)
             return command, thread_id, "block", reject_reason
+
+        # [argus patch #158] refuse a client aimed at an internal address
+        if _internal_network_target(command):
+            self._write_audit(thread_id, command, "block")
+            logger.warning("[SandboxAudit] BLOCKED (internal address) thread=%s cmd=%r", thread_id, command)
+            return command, thread_id, "block", "internal network address"
 
         # ② classify command
         verdict = _classify_command(command)
