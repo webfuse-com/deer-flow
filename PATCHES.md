@@ -210,6 +210,8 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#155](#patch-155) | The tool-receipt ledger renders at the end of the request for models with the cache-stable tail layout (#125/#147), so its sliding window stops making a self-hosted prefix cache re-read the conversation on every call after a subagent returns | config-expressed | this PR |
 | [#156](#patch-156) | With `read_before_write.bash_reads_mark`, a successful pure-read bash call (`cat`, `head`, `tail`, `sed -n '<range>p'`) marks each file it printed as read at its current version, so an edit after a shell inspection is not blocked | config-expressed | this PR |
 | [#157](#patch-157) | Telegram inbound file fetches (voice notes, photos, documents) use their own timeouts (connect 10 s, read 60 s, pool 10 s) and retry a network error once, never a `BadRequest`; the voice handler runs off the webhook (`block=False`); a failed voice fetch replies "couldn't fetch", not "couldn't transcribe", and logs its cause chain. | argus-edit | this PR |
+| [#158](#patch-158) | The sandbox audit refuses a network client (`curl`, `wget`, `nc`, `telnet`, `ssh`, `http`) aimed at an IPv4 literal in 10.89.0.0/16 or 100.64.0.0/10, which the egress guard drops, with a message that says why and what to use instead | argus-edit | this PR |
+| [#159](#patch-159) | The log URL redactor ends a URL at a JSON string's closing double quote, so structured lines such as `[SandboxAudit] {...}` stay valid JSON after redaction | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2893,6 +2895,29 @@ carry budget ledger.
 - Tests: `backend/tests/test_channels.py` (a timeout retries once with the download timeouts and succeeds; a second network failure raises; a `BadRequest` is not retried; a failed voice fetch replies "couldn't fetch", publishes nothing and never calls STT; the voice fetch log names `TimedOut caused_by=ReadTimeout` without the token; only the voice handler is non-blocking). Existing fakes take the timeout kwargs; `get_file` / `download_as_bytearray` call-shape assertions name them.
 - Delete-when: upstream fetches inbound Telegram files with download-sized timeouts and a retry, and runs slow inbound handlers off the webhook.
 - Upstream status: generic-upstreamable for the timeouts and retry (any webhook or polling stack fetching a large file hits PTB's 5 s default); the voice parts follow #62.
+
+
+## Patch #158
+
+**Patch #158 - The sandbox audit refuses a client aimed at an internal address** (2026-10-24)
+
+- Class: argus-edit (`agents/middlewares/sandbox_audit_middleware.py`, beside #84 and #129).
+- Intent: atlas-salome 2026-10-24 16:17 CEST (Cerberus `sandbox_lateral_probe` 11867, critical): the agent searched the logs, read an argus-lexis access line `10.89.0.43:33306 - "GET /lexis/people/jeroen"` and ran `curl -s http://10.89.0.43:33306/lexis/people/jeroen || curl -s http://argus-lexis/...`. 10.89.0.43 is the edge proxy (the CLIENT) and 33306 its source port. The sandbox egress guard dropped the 11 SYNs, so the boundary held, but curl has no timeout: the call hung until the shell gave up, the sandbox was recycled as an uncertain outcome, and an operator spent an hour attributing a critical page. `_internal_network_target` now refuses, before classification, a network client (`curl`, `wget`, `nc`/`ncat`/`netcat`, `telnet`, `ssh`, `http`/`https`) in command position (after assignments and exec wrappers, `timeout` skipping its duration) or opened by a substitution (`x=$(curl ...)`, `echo $(wget ...)`), when a later word of the same sub-command carries an IPv4 literal in 10.89.0.0/16 (Podman container networks) or 100.64.0.0/10 (the host's tailnet). The block names the client, the address and the network, says the call would only hang, that an address copied from a log line is most likely the client's, and to use the tool or MCP server that fronts the service or the model gate URL already in the environment. It is audited as `block`. Hostnames (`argus-<stack>-nginx:4000` is the sandbox's own model gate), loopback, other private and public addresses, and DNS names that merely embed an address (`10.89.0.4.nip.io`) pass.
+- Files: `agents/middlewares/sandbox_audit_middleware.py` (`_internal_network_target`, `_pre_process`, `_build_block_message`), `agents/middlewares/AGENTS.md`.
+- Tests: `backend/tests/test_sandbox_audit_middleware.py::TestInternalAddressRefusal` (the 11867 command verbatim; nc, ssh user@tailnet, assignment and argument substitutions, `timeout`, `env`, `&&`/`;` chains, httpie; the message names address, network and the way out; the tailnet label; audited as block; the async path; hostname gate, loopback, public, 10.90/192.168, grep/echo/ping/python arguments and a nip.io name pass). The rest of the suite is unchanged and green.
+- Delete-when: sandboxes no longer share an address plan with the host's containers and tailnet, or the egress guard rejects (rather than drops) these packets so clients fail fast on their own.
+- Upstream status: argus-specific (the ranges are this host's Podman pool and NetBird range).
+
+## Patch #159
+
+**Patch #159 - A URL inside a JSON string keeps the string's closing quote** (2026-10-24)
+
+- Class: argus-edit (upstream `logging_config.py`, `_URL_REDACT_RE`).
+- Intent: `UrlRedactionFilter` collapses every URL path to `/<redacted>`, and its `rest` group treats a quote as closing only before whitespace, `)` or end of string, so a quote embedded in a URL stays redacted. Inside a JSON-encoded log line the closing quote of a string is followed by `,` or `}`, so it was swallowed with the comma: the 2026-10-24 `[SandboxAudit] {"command": "... http://argus-lexis/lexis/people/jeroen", "verdict": "pass"}` line became `... http://argus-lexis/<redacted> "verdict": "pass"}`, which is not JSON, and the host tooling that parses audit lines (Cerberus attribution of a lateral-probe finding) could not read it. An unescaped DOUBLE quote now also closes `rest` before `,`, `;`, `}` or `]`. Only the double quote: RFC 3986 never allows it raw in a URL (it must be `%22`), while `'` is a legal sub-delimiter that can precede a comma inside a query, so the single quote keeps the old rule. A backslash-escaped character is consumed as a pair and never closes, so a JSON-escaped embedded quote (`\"`) stays inside the redacted span.
+- Files: `backend/packages/harness/deerflow/logging_config.py`.
+- Tests: `backend/tests/test_logging_config.py` (the 11867 SandboxAudit line parses as JSON after filtering with both URLs collapsed; list, object and `;` endings; an escaped embedded quote before a comma stays redacted and the line still parses; a single quote before a comma keeps the query redacted). The existing embedded-quote test (`path'quoted'`, `pa"th`, prose quoting, the urllib3 increment line) is unchanged and green, as are the channel, attachment and serper redaction suites.
+- Delete-when: upstream's redactor recognises JSON string boundaries, or structured log lines stop embedding URLs.
+- Upstream status: generic-upstreamable (any JSON-formatted log line carrying a URL breaks the same way).
 
 ---
 
