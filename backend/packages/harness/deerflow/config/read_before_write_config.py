@@ -25,6 +25,15 @@ class ReadBeforeWriteConfig(BaseModel):
             "message history, receipts, and the run journal keep the original arguments."
         ),
     )
+    bash_reads_mark: bool = Field(
+        default=False,
+        description=(
+            "[argus patch #156] Count a successful pure-read bash call (cat, head, tail or sed -n '<range>p' on "
+            "absolute paths, or relative to an absolute cd in the same command) as a read of each file it prints, "
+            "like a ranged read_file: the current version is hashed under the gate lock. Default false keeps "
+            "upstream's read_file-only rule."
+        ),
+    )
     elide_min_chars: int = Field(
         default=2000,
         ge=0,

@@ -14,6 +14,7 @@ Efficiency steering, NOT a security boundary:
     tool commands.
 """
 
+import posixpath
 import re
 import shlex
 from typing import Literal
@@ -492,3 +493,125 @@ def classify_bash_command(cmd: str) -> Literal["inspection", "execution", "unkno
             return "execution"
 
     return "inspection"
+
+
+# [argus patch #156] What a pure-read command shows. ReadBeforeWriteMiddleware
+# accepts these as reads of the file's current version, like a ranged read_file.
+_SHOWING_BINARIES = frozenset({"cat", "head", "tail", "sed"})
+# head/tail options that take a value as the next argument.
+_HEAD_TAIL_VALUE_OPTIONS = frozenset({"-n", "-c", "--lines", "--bytes"})
+# A sed print script: ADDR[,ADDR]p, where ADDR is a line number, $ or /regex/.
+_SED_ADDRESS = r"(?:\d+|\$|/(?:[^/\\]|\\.)*/)"
+_SED_PRINT_SCRIPT = re.compile(rf"^\s*{_SED_ADDRESS}(?:\s*,\s*{_SED_ADDRESS})?\s*p\s*$")
+_MAX_SHOWN_FILES = 8
+
+
+def _command_tokens(subcmd: str) -> list[str] | None:
+    """shlex tokens from the command position on (env assignments and wrappers dropped)."""
+    try:
+        tokens = shlex.split(subcmd)
+    except ValueError:
+        return None
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if "=" in token and _is_valid_env_var_name(token.split("=", 1)[0]):
+            idx += 1
+            continue
+        if token in _COMMAND_PREFIX_BINARIES:
+            idx += 1
+            continue
+        break
+    return tokens[idx:]
+
+
+def _is_plain_echo(stage: str) -> bool:
+    tokens = _command_tokens(stage)
+    if not tokens or tokens[0].rsplit("/", 1)[-1] not in ("echo", "printf"):
+        return False
+    return not _has_unquoted_substitutions_or_output_redirection(stage)
+
+
+def _shown_file_args(binary: str, args: list[str]) -> list[str] | None:
+    """File arguments whose content the command prints, or None when it is not a plain print."""
+    if binary == "cat":
+        return [arg for arg in args if not arg.startswith("-")]
+    if binary in ("head", "tail"):
+        files: list[str] = []
+        skip_value = False
+        for arg in args:
+            if skip_value:
+                skip_value = False
+                continue
+            if arg in _HEAD_TAIL_VALUE_OPTIONS:
+                skip_value = True
+                continue
+            if arg.startswith("-"):
+                continue
+            files.append(arg)
+        return files
+    if binary == "sed":
+        quiet = any(arg in ("-n", "--quiet", "--silent") for arg in args)
+        positional = [arg for arg in args if not arg.startswith("-")]
+        if not quiet or any(arg in ("-e", "-f", "--expression", "--file") or arg.startswith(("--expression=", "--file=")) for arg in args):
+            return None
+        if not positional or not _SED_PRINT_SCRIPT.match(positional[0]):
+            return None
+        return positional[1:]
+    return None
+
+
+def files_shown_by_inspection(cmd: str) -> list[str]:
+    """Absolute paths of the files a pure-read command prints, in order.
+
+    Only ``cat``, ``head``, ``tail`` and ``sed -n '<range>p'`` count, on a
+    command :func:`classify_bash_command` grades ``inspection``; a ``cd`` to an
+    absolute directory earlier in the same command resolves relative paths, and
+    a relative path with no known directory is left out. ``grep`` shows only
+    matching lines and is not a read. At most eight files. A plain ``echo`` or
+    ``printf`` (no substitution, no redirection) may separate the reads, as
+    agents print section headers between them; ``classify_bash_command`` keeps
+    grading those as execution for the read-only streak.
+    """
+    if not cmd.strip():
+        return []
+    try:
+        shlex.split(cmd)
+    except ValueError:
+        return []
+    for stage in split_compound_command(cmd, split_pipes=True):
+        if not stage.strip() or _is_plain_echo(stage):
+            continue
+        if _classify_subcommand(stage) != "inspection":
+            return []
+    shown: list[str] = []
+    cwd: str | None = None
+    for statement in split_compound_command(cmd):
+        for stage in split_compound_command(statement, split_pipes=True):
+            tokens = _command_tokens(stage)
+            if not tokens:
+                continue
+            binary, args = tokens[0].rsplit("/", 1)[-1], tokens[1:]
+            if binary == "cd":
+                target = args[0] if args else ""
+                if target.startswith("/"):
+                    cwd = posixpath.normpath(target)
+                elif target and cwd is not None and not target.startswith("~"):
+                    cwd = posixpath.normpath(posixpath.join(cwd, target))
+                else:
+                    cwd = None
+                continue
+            if binary not in _SHOWING_BINARIES:
+                continue
+            for arg in _shown_file_args(binary, args) or []:
+                if arg.startswith("/"):
+                    path = posixpath.normpath(arg)
+                elif cwd is not None and not arg.startswith("~"):
+                    path = posixpath.normpath(posixpath.join(cwd, arg))
+                else:
+                    continue
+                if path not in shown:
+                    shown.append(path)
+                if len(shown) >= _MAX_SHOWN_FILES:
+                    return shown
+    return shown
