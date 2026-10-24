@@ -209,6 +209,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#154](#patch-154) | A removed sandbox reads as absent when the socket proxy's `GET /info` denial sits next to "no such object" (excused only when every queried name is reported missing), so a thread whose container was removed gets a new one instead of failing every file and shell tool | argus-edit | this PR |
 | [#155](#patch-155) | The tool-receipt ledger renders at the end of the request for models with the cache-stable tail layout (#125/#147), so its sliding window stops making a self-hosted prefix cache re-read the conversation on every call after a subagent returns | config-expressed | this PR |
 | [#156](#patch-156) | With `read_before_write.bash_reads_mark`, a successful pure-read bash call (`cat`, `head`, `tail`, `sed -n '<range>p'`) marks each file it printed as read at its current version, so an edit after a shell inspection is not blocked | config-expressed | this PR |
+| [#157](#patch-157) | Telegram inbound file fetches (voice notes, photos, documents) use their own timeouts (connect 10 s, read 60 s, pool 10 s) and retry a network error once, never a `BadRequest`; the voice handler runs off the webhook (`block=False`); a failed voice fetch replies "couldn't fetch", not "couldn't transcribe", and logs its cause chain. | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2881,6 +2882,17 @@ carry budget ledger.
 - Tests: `backend/tests/test_read_before_write_bash_reads.py` (the thread's own command verbatim; sed ranges incl. regex addresses and `$`; cat/head/tail; cd chains; grep, wc, sed substitutions, `-e`, `-i`, redirection, substitution, execution and unknown directories excluded; the cap; an edit after a sed range passes; off by default; a later change blocks; failed calls stamp nothing; a missing file is skipped; the async path). `test_command_classify.py` and the three `test_read_before_write_*` suites unchanged and green.
 - Delete-when: upstream's gate accepts shell reads, or agents stop inspecting with shell commands before editing.
 - Upstream status: generic-upstreamable (any agent that inspects with the shell hits the block).
+
+## Patch #157
+
+**Patch #157 - Telegram inbound fetches survive a slow Bot API, and a failed voice fetch says so** (2026-10-24)
+
+- Class: argus-edit (app; `channels/telegram.py`, on top of #62's voice handler and upstream #5581's download path).
+- Intent: atlas-nicholas 2026-10-24 10:21 CEST: a Dutch voice note asking for an Asana task with subtasks was answered "I couldn't transcribe that voice note. Please type it instead." It never reached STT: `[Telegram] failed to download voice note: TimedOut`, and the edge logged the webhook at 5.13 s. `get_file` and `download_as_bytearray` ran on PTB's request defaults (5 s read, 1 s pool), which are sized for Bot API method calls; `getFile` has the Bot API fetch the file from Telegram's storage before it answers, and the download then streams it. Both calls now pass `TELEGRAM_DOWNLOAD_TIMEOUTS` (connect 10 s, read 60 s, write 10 s, pool 10 s) and a `NetworkError` (timeout, reset) retries the pair once (`TELEGRAM_DOWNLOAD_ATTEMPTS = 2`). `BadRequest` subclasses `NetworkError` in PTB but means a wrong or expired file id, so it is raised at once. This is the one fetch path, so photos and documents get the same bound. The voice handler is registered `block=False`: with fetch + STT able to take a minute, a webhook held that long is redelivered by Telegram (a second turn for one note) and holds back the chat's next updates; text, photo and document handlers stay blocking (their bytes are fetched later, by the manager). A failed voice fetch replies `_VOICE_DOWNLOAD_FAILED` ("I couldn't fetch that voice note from Telegram. Please send it again.") instead of blaming transcription, which is what made this read as a Dutch STT bug, and logs the token-safe cause chain (`_describe_download_cause`) like attachments already did; the voice log had only the class name. STT failures keep `_VOICE_TRANSCRIBE_FAILED`.
+- Files: `backend/app/channels/telegram.py`, `backend/app/channels/AGENTS.md`.
+- Tests: `backend/tests/test_channels.py` (a timeout retries once with the download timeouts and succeeds; a second network failure raises; a `BadRequest` is not retried; a failed voice fetch replies "couldn't fetch", publishes nothing and never calls STT; the voice fetch log names `TimedOut caused_by=ReadTimeout` without the token; only the voice handler is non-blocking). Existing fakes take the timeout kwargs; `get_file` / `download_as_bytearray` call-shape assertions name them.
+- Delete-when: upstream fetches inbound Telegram files with download-sized timeouts and a retry, and runs slow inbound handlers off the webhook.
+- Upstream status: generic-upstreamable for the timeouts and retry (any webhook or polling stack fetching a large file hits PTB's 5 s default); the voice parts follow #62.
 
 ---
 

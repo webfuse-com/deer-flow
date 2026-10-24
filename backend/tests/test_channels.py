@@ -11209,8 +11209,8 @@ class TestTelegramSendRetry:
         def fake_command_handler(command, callback):
             return SimpleNamespace(kind="command", command=command, callback=callback)
 
-        def fake_message_handler(filter_expr, callback):
-            return SimpleNamespace(kind="message", filter_expr=filter_expr, callback=callback)
+        def fake_message_handler(filter_expr, callback, block=True):
+            return SimpleNamespace(kind="message", filter_expr=filter_expr, callback=callback, block=block)
 
         telegram_mod = ModuleType("telegram")
         telegram_ext_mod = ModuleType("telegram.ext")
@@ -11257,6 +11257,11 @@ class TestTelegramSendRetry:
                 message_filters = {handler.filter_expr.expr for handler in fake_app.handlers if handler.kind == "message"}
                 assert {"TEXT&COMMAND", "TEXT&~COMMAND"} <= message_filters
                 assert "PHOTO|DOCUMENT" in message_filters
+                # [argus patch #157] only the voice handler leaves the webhook
+                # before its slow download + STT finish.
+                blocking = {handler.filter_expr.expr: handler.block for handler in fake_app.handlers if handler.kind == "message"}
+                assert blocking.pop("VOICE") is False
+                assert all(blocking.values())
             finally:
                 await ch.stop()
 
@@ -11651,8 +11656,131 @@ class TestTelegramInboundMessages:
 
         _run(go())
 
-    def test_receive_file_downloads_bytes_without_retaining_telegram_file_id(self):
+    # -- [argus patch #157] inbound downloads: timeouts, one retry, honest replies --
+
+    @staticmethod
+    def _flaky_bot(failures: list[BaseException]):
+        """A Bot whose get_file raises the queued errors first, then succeeds."""
+        calls: list[tuple[str, dict]] = []
+
+        class FakeFile:
+            file_size = 9
+
+            async def download_as_bytearray(self, **timeouts):
+                calls.append(("download", timeouts))
+                return bytearray(b"ogg-bytes")
+
+        class FakeBot:
+            async def get_file(self, file_id, **timeouts):
+                calls.append(("get_file", timeouts))
+                if failures:
+                    raise failures.pop(0)
+                return FakeFile()
+
+        return FakeBot(), calls
+
+    def test_download_inbound_file_retries_a_timeout_once_with_download_timeouts(self):
+        from telegram.error import TimedOut
+
+        from app.channels.telegram import TELEGRAM_DOWNLOAD_TIMEOUTS, TelegramChannel
+
+        async def go():
+            ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "test-token"})
+            bot, calls = self._flaky_bot([TimedOut("Timed out")])
+
+            size, content = await ch._download_inbound_file(bot, "voice-id")
+
+            assert (size, bytes(content)) == (9, b"ogg-bytes")
+            assert [name for name, _ in calls] == ["get_file", "get_file", "download"]
+            assert all(timeouts == TELEGRAM_DOWNLOAD_TIMEOUTS for _, timeouts in calls)
+            # The 5 s request default is what failed on 2026-10-24.
+            assert TELEGRAM_DOWNLOAD_TIMEOUTS["read_timeout"] >= 30
+
+        _run(go())
+
+    def test_download_inbound_file_gives_up_after_the_retry(self):
+        from telegram.error import NetworkError, TimedOut
+
+        from app.channels.telegram import TELEGRAM_DOWNLOAD_ATTEMPTS, TelegramChannel
+
+        async def go():
+            ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "test-token"})
+            bot, calls = self._flaky_bot([NetworkError("reset"), TimedOut("Timed out"), TimedOut("Timed out")])
+
+            with pytest.raises(TimedOut):
+                await ch._download_inbound_file(bot, "voice-id")
+            assert len(calls) == TELEGRAM_DOWNLOAD_ATTEMPTS == 2
+
+        _run(go())
+
+    def test_download_inbound_file_does_not_retry_a_bad_request(self):
+        from telegram.error import BadRequest
+
         from app.channels.telegram import TelegramChannel
+
+        async def go():
+            ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "test-token"})
+            bot, calls = self._flaky_bot([BadRequest("Wrong file_id")])
+
+            with pytest.raises(BadRequest):
+                await ch._download_inbound_file(bot, "voice-id")
+            assert len(calls) == 1
+
+        _run(go())
+
+    def test_voice_download_failure_says_fetch_not_transcribe(self, monkeypatch):
+        from app.channels.telegram import TelegramChannel
+
+        async def never(audio, content_type="audio/ogg"):
+            raise AssertionError("STT must not run without audio")
+
+        monkeypatch.setitem(sys.modules, "argus_telegram_stt", SimpleNamespace(transcribe_voice=never))
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_running_loop()
+            ch._download_voice_bytes = AsyncMock(return_value=None)
+            voice = SimpleNamespace(file_id="voice-id", mime_type="audio/ogg", file_size=9)
+            update = _make_telegram_update("private", message_id=55, text=None, voice=voice)
+
+            await ch._on_voice(update, None)
+
+            update.message.reply_text.assert_awaited_once_with(TelegramChannel._VOICE_DOWNLOAD_FAILED)
+            assert "transcribe" not in TelegramChannel._VOICE_DOWNLOAD_FAILED
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(bus.get_inbound(), timeout=0.05)
+
+        _run(go())
+
+    def test_voice_download_failure_logs_its_cause_without_the_token(self, caplog):
+        import httpx
+        from telegram.error import TimedOut
+
+        from app.channels.telegram import TelegramChannel
+
+        class TimingOutBot:
+            async def get_file(self, file_id, **timeouts):
+                try:
+                    raise httpx.ReadTimeout("read timed out on https://api.telegram.org/botsecret-token/getFile")
+                except httpx.ReadTimeout as exc:
+                    raise TimedOut("Timed out") from exc
+
+        async def go():
+            ch = TelegramChannel(bus=MessageBus(), config={"bot_token": "secret-token"})
+            ch._application = SimpleNamespace(bot=TimingOutBot())
+
+            with caplog.at_level("ERROR", logger="app.channels.telegram"):
+                assert await ch._download_voice_bytes("voice-id") is None
+
+            line = [r.getMessage() for r in caplog.records if "voice note" in r.getMessage()][-1]
+            assert "TimedOut caused_by=ReadTimeout" in line
+            assert "secret-token" not in line
+
+        _run(go())
+
+    def test_receive_file_downloads_bytes_without_retaining_telegram_file_id(self):
+        from app.channels.telegram import TELEGRAM_DOWNLOAD_TIMEOUTS, TelegramChannel
 
         async def go():
             bus = MessageBus()
@@ -11680,8 +11808,8 @@ class TestTelegramInboundMessages:
 
             result = await ch.receive_file(msg, "thread-1")
 
-            bot.get_file.assert_awaited_once_with("document-id")
-            telegram_file.download_as_bytearray.assert_awaited_once_with()
+            bot.get_file.assert_awaited_once_with("document-id", **TELEGRAM_DOWNLOAD_TIMEOUTS)
+            telegram_file.download_as_bytearray.assert_awaited_once_with(**TELEGRAM_DOWNLOAD_TIMEOUTS)
             assert result.text == "caption"
             assert result.files[0]["_content"] is downloaded
             assert result.files == [
@@ -11718,12 +11846,12 @@ class TestTelegramInboundMessages:
                 class LoopBoundFile:
                     file_size = 4
 
-                    async def download_as_bytearray(self):
+                    async def download_as_bytearray(self, **timeouts):
                         assert asyncio.get_running_loop() is telegram_loop
                         return bytearray(b"data")
 
                 class LoopBoundBot:
-                    async def get_file(self, file_id):
+                    async def get_file(self, file_id, **timeouts):
                         assert asyncio.get_running_loop() is telegram_loop
                         assert file_id == "document-id"
                         return LoopBoundFile()
@@ -11768,7 +11896,7 @@ class TestTelegramInboundMessages:
             class SlowTelegramFile:
                 file_size = 4
 
-                async def download_as_bytearray(self):
+                async def download_as_bytearray(self, **timeouts):
                     download_started.set()
                     try:
                         await asyncio.Event().wait()
@@ -11776,7 +11904,7 @@ class TestTelegramInboundMessages:
                         download_cancelled.set()
 
             class LoopBoundBot:
-                async def get_file(self, file_id):
+                async def get_file(self, file_id, **timeouts):
                     assert asyncio.get_running_loop() is telegram_loop
                     assert file_id == "document-id"
                     return SlowTelegramFile()
@@ -12121,8 +12249,8 @@ class TestTelegramInboundMessages:
         def fake_command_handler(command, callback):
             return SimpleNamespace(kind="command", command=command, callback=callback)
 
-        def fake_message_handler(filter_expr, callback):
-            return SimpleNamespace(kind="message", filter_expr=filter_expr, callback=callback)
+        def fake_message_handler(filter_expr, callback, block=True):
+            return SimpleNamespace(kind="message", filter_expr=filter_expr, callback=callback, block=block)
 
         telegram_mod = ModuleType("telegram")
         telegram_ext_mod = ModuleType("telegram.ext")
@@ -12190,11 +12318,11 @@ class TestTelegramInboundMessages:
             class LoopBoundFile:
                 file_size = 4
 
-                async def download_as_bytearray(self):
+                async def download_as_bytearray(self, **timeouts):
                     seen["download"] = asyncio.get_running_loop()
                     return bytearray(b"data")
 
-            async def get_file(file_id):
+            async def get_file(file_id, **timeouts):
                 seen["get_file"] = asyncio.get_running_loop()
                 assert file_id == "photo-id"
                 return LoopBoundFile()
@@ -12458,7 +12586,7 @@ class TestTelegramInboundMessages:
         _run(go())
 
     def test_receive_file_uses_download_bot_not_application_bot(self):
-        from app.channels.telegram import TelegramChannel
+        from app.channels.telegram import TELEGRAM_DOWNLOAD_TIMEOUTS, TelegramChannel
 
         async def go():
             bus = MessageBus()
@@ -12486,7 +12614,7 @@ class TestTelegramInboundMessages:
 
             result = await ch.receive_file(msg, "thread-1")
 
-            download_bot.get_file.assert_awaited_once_with("document-id")
+            download_bot.get_file.assert_awaited_once_with("document-id", **TELEGRAM_DOWNLOAD_TIMEOUTS)
             app_bot.get_file.assert_not_awaited()
             assert result.files[0]["_content"] == b"data"
 
@@ -12675,7 +12803,7 @@ class TestTelegramInboundMessages:
             bus = MessageBus()
             ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
 
-            def boom(file_id: str) -> None:
+            def boom(file_id: str, **timeouts) -> None:
                 raise RuntimeError("download aborted") from ConnectionResetError("GET https://api.telegram.org/file/bottest-token/ABC123/photo.jpg")
 
             ch._download_bot = SimpleNamespace(get_file=AsyncMock(side_effect=boom))

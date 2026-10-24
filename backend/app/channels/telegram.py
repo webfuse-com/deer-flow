@@ -33,6 +33,13 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_MAX_RICH_MESSAGE_LENGTH = 32768
 # Telegram's hosted Bot API documents this as 20 MB (decimal bytes).
 TELEGRAM_MAX_INBOUND_FILE_BYTES = 20_000_000
+# [argus patch #157] Inbound file fetches get their own timeouts and one retry.
+# PTB's request defaults (5 s read, 1 s pool) are sized for Bot API method
+# calls, but getFile makes the Bot API fetch the file from Telegram's storage
+# before it answers, and the download then streams it: atlas-nicholas's voice
+# note of 2026-10-24 failed on the 5 s read (TimedOut, webhook held 5.13 s).
+TELEGRAM_DOWNLOAD_TIMEOUTS = {"connect_timeout": 10.0, "read_timeout": 60.0, "write_timeout": 10.0, "pool_timeout": 10.0}
+TELEGRAM_DOWNLOAD_ATTEMPTS = 2
 # Keep Telegram cleanup inside the Gateway's five-second shutdown-hook budget.
 TELEGRAM_SHUTDOWN_TIMEOUT_SECONDS = 4.0
 TELEGRAM_BRIDGE_DRAIN_TIMEOUT_SECONDS = 1.0
@@ -228,7 +235,10 @@ class TelegramChannel(Channel):
         # Voice notes do not match TEXT/PHOTO/Document. Soft-imported overlay
         # STT turns them into inbound text; missing hook or STT failure replies
         # in chat and never starts an agent turn.
-        app.add_handler(MessageHandler(filters.VOICE, self._on_voice))
+        # [argus patch #157] block=False: download + STT can take a minute, and
+        # a webhook held that long is redelivered by Telegram (a second agent
+        # turn for one note) and holds back the chat's next updates.
+        app.add_handler(MessageHandler(filters.VOICE, self._on_voice, block=False))
 
         self._application = app
 
@@ -718,12 +728,32 @@ class TelegramChannel(Channel):
         return await self._run_on_telegram_loop(_init())
 
     async def _download_inbound_file(self, bot: Any, file_id: str) -> tuple[int | None, bytearray | None]:
-        """Fetch one file entirely on the event loop that owns PTB's HTTP client."""
-        telegram_file = await bot.get_file(file_id)
-        resolved_size = self._file_size(getattr(telegram_file, "file_size", None))
-        if resolved_size is not None and resolved_size > TELEGRAM_MAX_INBOUND_FILE_BYTES:
-            return resolved_size, None
-        return resolved_size, await telegram_file.download_as_bytearray()
+        """Fetch one file entirely on the event loop that owns PTB's HTTP client.
+
+        [argus patch #157] Both calls take ``TELEGRAM_DOWNLOAD_TIMEOUTS``, and a
+        network failure (a timeout, a reset) retries the pair once. A
+        ``BadRequest`` is also a ``NetworkError`` in PTB but means the file id
+        is wrong or expired, so it is never retried.
+        """
+        from telegram.error import BadRequest, NetworkError
+
+        for attempt in range(1, TELEGRAM_DOWNLOAD_ATTEMPTS + 1):
+            try:
+                telegram_file = await bot.get_file(file_id, **TELEGRAM_DOWNLOAD_TIMEOUTS)
+                resolved_size = self._file_size(getattr(telegram_file, "file_size", None))
+                if resolved_size is not None and resolved_size > TELEGRAM_MAX_INBOUND_FILE_BYTES:
+                    return resolved_size, None
+                return resolved_size, await telegram_file.download_as_bytearray(**TELEGRAM_DOWNLOAD_TIMEOUTS)
+            except NetworkError as exc:
+                if isinstance(exc, BadRequest) or attempt == TELEGRAM_DOWNLOAD_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "[Telegram] inbound file download attempt %d failed, retrying: %s%s",
+                    attempt,
+                    type(exc).__name__,
+                    self._describe_download_cause(exc),
+                )
+        raise AssertionError("unreachable")
 
     async def _track_telegram_bridge_task(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
         """Keep a main-loop submission visible to Telegram-loop shutdown."""
@@ -1338,15 +1368,18 @@ class TelegramChannel(Channel):
             logger.warning("[Telegram] Main loop not running. Cannot publish inbound message.")
 
     _VOICE_TRANSCRIBE_FAILED = "I couldn't transcribe that voice note. Please type it instead."
+    # [argus patch #157] A failed fetch is not a failed transcription: the
+    # 2026-10-24 note never reached STT, yet the reply blamed transcription.
+    _VOICE_DOWNLOAD_FAILED = "I couldn't fetch that voice note from Telegram. Please send it again."
 
-    async def _reply_voice_error(self, update) -> None:
+    async def _reply_voice_error(self, update, text: str | None = None) -> None:
         message = getattr(update, "message", None)
         reply = getattr(message, "reply_text", None)
         if not callable(reply):
             logger.warning("[Telegram] cannot send voice-note error reply")
             return
         try:
-            await reply(self._VOICE_TRANSCRIBE_FAILED)
+            await reply(text or self._VOICE_TRANSCRIBE_FAILED)
         except Exception:
             logger.exception("[Telegram] voice-note error reply failed")
 
@@ -1357,7 +1390,7 @@ class TelegramChannel(Channel):
         try:
             resolved_size, content = await self._run_on_telegram_loop(self._download_inbound_file(bot, file_id))
         except Exception as exc:
-            logger.error("[Telegram] failed to download voice note: %s", type(exc).__name__)
+            logger.error("[Telegram] failed to download voice note: %s%s", type(exc).__name__, self._describe_download_cause(exc))
             return None
         if content is None:
             return None
@@ -1394,7 +1427,7 @@ class TelegramChannel(Channel):
 
         audio = await self._download_voice_bytes(file_id)
         if not audio:
-            await self._reply_voice_error(update)
+            await self._reply_voice_error(update, self._VOICE_DOWNLOAD_FAILED)
             return
 
         mime_type = getattr(voice, "mime_type", None)
