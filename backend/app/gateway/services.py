@@ -1223,7 +1223,7 @@ def resolve_agent_factory(assistant_id: str | None):
 # ceiling are configurable via ``AppConfig.recursion_limit`` and
 # ``AppConfig.max_recursion_limit``.
 _DEFAULT_RECURSION_LIMIT = 100
-_DEFAULT_MAX_RECURSION_LIMIT = 10000
+_DEFAULT_MAX_RECURSION_LIMIT = 1000
 
 
 def _resolve_gateway_recursion_limits() -> tuple[int, int]:

@@ -6,12 +6,12 @@ import {
   sanitizeRunStreamOptions,
 } from "@/core/api/stream-mode";
 
-test("drops unsupported modes when at least one requested mode is supported", () => {
-  expect(
+test("rejects mixed supported and unsupported stream modes", () => {
+  expect(() =>
     sanitizeRunStreamOptions({
       streamMode: ["values", "events", "tools"],
     }),
-  ).toEqual({ streamMode: ["values"] });
+  ).toThrow("Unsupported LangGraph stream mode(s): events, tools");
 });
 
 test("rejects payloads when every requested stream mode is unsupported", () => {
@@ -108,19 +108,10 @@ test("preserves a direct AbortSignal while adding chat stream modes", () => {
   });
 });
 
-test("drops unsupported chat stream modes before replacing them", () => {
-  // [argus patch #91] upstream throws on any unsupported mode; this fork drops
-  // the unsupported ones while a supported mode remains (see src/AGENTS.md,
-  // "Run stream options") and still refuses a request with none left.
-  expect(
-    forceChatRunStreamOptions({
-      streamMode: ["messages-tuple", "events"],
-    }),
-  ).toEqual({ streamMode: [...CHAT_RUN_STREAM_MODES] });
-
+test("rejects unsupported chat stream modes before replacing them", () => {
   expect(() =>
     forceChatRunStreamOptions({
-      streamMode: ["events"],
+      streamMode: ["messages-tuple", "events"],
     }),
   ).toThrow("Unsupported LangGraph stream mode(s): events");
 });

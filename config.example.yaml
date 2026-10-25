@@ -121,7 +121,7 @@ recursion_limit: 100
 # The Gateway never trusts a configured or client-supplied value above this
 # ceiling, preventing runaway API cost / DoS. Raise it only if you legitimately
 # run very deeply nested subagent graphs.
-max_recursion_limit: 10000
+max_recursion_limit: 1000
 
 
 # ============================================================================

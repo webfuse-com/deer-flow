@@ -237,7 +237,7 @@ test.describe("Sidebar navigation", () => {
             });
             const headerNewAgentButton = newAgentButtons.first();
             await expect(title).toBeVisible();
-            // [argus patch #79/#110] The empty gallery has no second New
+            // [argus patch #110] The empty gallery has no second New
             // Agent button; the header one opens the create dialog.
             await expect(newAgentButtons).toHaveCount(1);
             await page.evaluate(() =>

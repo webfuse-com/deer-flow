@@ -76,7 +76,8 @@ alias. Baseline facts:
   sync branches like `skill-review`. Each touched section carries a "Sync
   2026-10-25" bullet. Follow-up commits on the sync branch dropped #143-#146
   (decision d6) and #4, #5, #7/#18, #41, #42, #54 and #73's adaptive
-  reasoning (decision d5).
+  reasoning (decision d5), retired #91 (upstream #5159) and #35 (upstream
+  #4622), thinned #61 to its two frontend lines and folded #79 into #110.
 - Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
   `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
 
@@ -118,7 +119,6 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#31/#32](#patch-3132) | unattended-silence: empty/filler turns | argus-edit | 488fe077 |
 | [#33](#patch-33) | sandbox network-DNS mode: `container_network` (legacy `sandbox.network: <name>`), no host-port publish | generic-upstreamable | 7e238127, sync 2026-09-11 |
 | [#34](#patch-34) | unattended-silence: narrated-silence announcements | argus-edit | 8bf85a9c |
-| [#35](#patch-35) | landing-galaxy CPU/GPU cost cut | generic-upstreamable | ccf1b69f |
 | [#36](#patch-36) | surface `(No response from agent)` on blank final | argus-edit | 89ea4d2f |
 | [#37](#patch-37) | retry a filler-only final turn + web display guard (the empty-final retry retired 2026-10-25 onto upstream #5080) | argus-edit | 4a19e4fe |
 | [#38](#patch-38) | per-thread debug-sandbox link | argus-additive | 1aad692a, cd03995e, 2df36c99 (merge) |
@@ -141,7 +141,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#58](#patch-58) | ~~Honor agent-source tool policy at runtime~~ RETIRED 2026-10-25 (upstream #6935) | argus-edit | this PR |
 | [#59](#patch-59) | WebUI `onDisconnect: continue` | generic-upstreamable | this PR |
 | [#60](#patch-60) | `tool_search.defer`: latency-tiered deferral for builtin tools (+`always_bind` alias; upstream's `inspect_run_status` always deferred since 2026-10-25) | config-expressed | this PR |
-| [#61](#patch-61) | WebUI and server default `max_recursion_limit` bump to 10000 | generic-upstreamable | this PR |
+| [#61](#patch-61) | WebUI `recursion_limit` 10000 (the server default bump retired 2026-10-25: stack configs set `max_recursion_limit: 10000`) | generic-upstreamable | this PR |
 | [#62](#patch-62) | Telegram voice-note inbound via overlay Deepgram STT | argus-additive | this PR |
 | [#64](#patch-64) | Config-gated subagent delegation posture | config-expressed | 09af0482 |
 | [#65](#patch-65) | Sidebar navigation, running-title glyph and serialized Telegram stage cleanup (the chat UI half dropped 2026-10-25, decision d9) | argus-edit | this PR |
@@ -158,7 +158,6 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#76](#reverted-patch-76) | reduce multi-file work-cycle churn (REVERTED 2026-08-31) | argus-edit | d29c414d, fb89651a |
 | [#77](#reverted-patch-77) | optional write-file narration (REVERTED 2026-08-31) | argus-edit | 187d7e28, 8f1d49cb |
 | [#78](#patch-78) | ~~Merge model profile and runtime constructor kwargs~~ RETIRED 2026-09-23 (upstream #5403) | generic-upstreamable | this PR |
-| [#79](#patch-79) | Restore agents gallery navigation; drop in-UI agent creation (creation restored by #110) | argus-edit | this PR |
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
 | [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
@@ -169,7 +168,6 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#88](#patch-88) | Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend | argus-additive | this PR |
 | [#89](#patch-89) | UI round 2: ~~star brand mark~~ (test ids dropped 2026-10-25), Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
 | [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
-| [#91](#patch-91) | Graceful run stream options: accept `stream_resumable`, drop unsupported stream modes while one remains (back-filled) | generic-upstreamable | aeb52487 |
 | [#92](#patch-92) | Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides | argus-additive | this PR |
 | [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
@@ -948,7 +946,9 @@ carry budget ledger.
   lock).
 - Tests: `frontend/tests/e2e/sidebar.spec.ts`,
   `frontend/tests/e2e/argus-chat-header.spec.ts` (was
-  `workspace-simplification.spec.ts`), `thread-title.test.ts`, and
+  `workspace-simplification.spec.ts`), `frontend/tests/e2e/ui-polish-mobile.spec.ts`
+  (the mobile sidebar shows Chronos and Agents; listed under #79 until
+  2026-10-25), `thread-title.test.ts`, and
   `backend/tests/test_telegram_send.py::test_concurrent_stage_changes_are_serialized_and_final_cleans_latest`.
 - Delete-when: the sidebar part moves into deployment-owned frontend
   composition if DeerFlow gains supported nav slots. Drop the lock only if
@@ -962,24 +962,21 @@ carry budget ledger.
 
 ## Patch #61
 
-**Patch #61 - WebUI and server default `max_recursion_limit` bump to 10000**
+**Patch #61 - WebUI `recursion_limit` 10000** (was "WebUI and server default `max_recursion_limit` bump to 10000")
 
 - Class: generic-upstreamable
 - Intent: LangGraph counts every middleware Pregel hop as a super-step (~17 hops
   per model turn with lead middlewares attached). A normal coding turn with ~59
   LLM calls hits the 1000 super-step ceiling and terminates with `GraphRecursionError`.
-  Bumps WebUI client `recursion_limit` from 1000 to 10000 (submit and regenerate)
-  and raises the Gateway clamp ceiling `max_recursion_limit` default from 1000 to 10000,
+  Bumps WebUI client `recursion_limit` from 1000 to 10000 (submit and regenerate),
   providing ~580 LLM turns of headroom while loop detection and token budgets continue
-  to catch real runaway loops.
-- Files: `frontend/src/core/threads/hooks.ts` (EDITED: 1000 -> 10000 x2),
-  `config.example.yaml` (EDITED: 1000 -> 10000),
-  `backend/packages/harness/deerflow/config/app_config.py` (EDITED: default 1000 -> 10000),
-  `backend/app/gateway/services.py` (EDITED: _DEFAULT_MAX_RECURSION_LIMIT 1000 -> 10000),
-  `backend/tests/test_gateway_services.py` (EDITED: test assertions updated).
-- Tests: `backend/tests/test_gateway_services.py` (run-config clamping tests updated).
-- Delete-when: upstream raises `max_recursion_limit` / frontend `recursion_limit` to 10000 or counts turns instead of graph nodes.
+  to catch real runaway loops. The Gateway clamp ceiling is stack config
+  (`max_recursion_limit: 10000`).
+- Files: `frontend/src/core/threads/hooks.ts` (EDITED: 1000 -> 10000 x2).
+- Tests: none (two literals; the server clamp tests are upstream's).
+- Delete-when: upstream raises the frontend `recursion_limit` to 10000 or counts turns instead of graph nodes.
 - Upstream status: clean generic PR candidate.
+- Sync 2026-10-25 (follow-up commit): THINNED to the frontend. The backend default edits are gone: `AppConfig.max_recursion_limit` and `services._DEFAULT_MAX_RECURSION_LIMIT` are upstream's 1000 again, and `config.example.yaml` and `test_gateway_services.py` are upstream's. The 22 atlas templates, pyrrhus and `projects/_template` set `max_recursion_limit: 10000`. Pythia's host `config.yaml` does not: until it sets it, its web runs (which send 10000) are clamped to 1000 with a WARNING per run.
 
 ## Patch #62
 
@@ -1263,26 +1260,6 @@ carry budget ledger.
   droppable if the lead model reliably stops narrating silence (model bump,
   verified over a canary window of scheduled polls).
 - Upstream status: none.
-
-## Patch #35
-
-**Patch #35 - cut landing-galaxy CPU/GPU cost**
-
-- Class: generic-upstreamable (pure perf fix to upstream's own landing hero)
-- Intent: The WebGL galaxy (OGL fragment shader) ran a never-pausing full-rate
-  rAF loop at full DPR with a 4-layer per-pixel star shader, heavy on
-  weak/software-GL machines and even in backgrounded tabs. Adaptive loop:
-  pause on hidden tab, honor `prefers-reduced-motion` (single static frame),
-  cap ~30fps, cap backing-store DPR at 1.5, skip mouse lerp + listeners when
-  `mouseRepulsion` is off. Lighter visuals: `NUM_LAYER` 4 -> 3, hero density
-  0.6 -> 0.45, glowIntensity 0.35 -> 0.25.
-- Files: `frontend/src/components/ui/galaxy.jsx` (EDITED),
-  `frontend/src/components/landing/hero.tsx` (EDITED)
-- Tests: none (no unit surface; validated via full `pnpm build`, the
-  frontend/Dockerfile prod target)
-- Delete-when: upstream fixes galaxy.jsx performance or replaces the landing
-  hero.
-- Upstream status: none (PR candidate).
 
 ## Patch #36
 
@@ -1958,53 +1935,6 @@ carry budget ledger.
   `test_model_factory.py` and `models/AGENTS.md` equal upstream; the README
   note is removed.
 
-## Patch #79
-
-**Patch #79 - Restore agents gallery navigation; drop in-UI agent creation**
-
-- 2026-10-11: part (2) is superseded by #110. New Agent is back and commits to the stack's GitHub repository through the #109 store; the navigation part stays.
-
-- Class: argus-edit (frontend-only edits to upstream workspace files).
-- Intent: fork patch #65 removed the sidebar "Agents" entry, which was the
-  only navigation path to `/workspace/agents` - the gallery that also hosts
-  the per-agent settings dialog and the "New Agent" button. The removal was
-  meant to retire in-UI custom-agent creation, but it also orphaned viewing
-  and editing of existing agents: `workspace-nav-chat-list.tsx` no longer
-  linked anywhere into the agents segment, so citizens could not reach their
-  agents' cards, edit their settings, or open a chat with a non-default agent
-  (only `atlas` is reachable via the nginx/console hardcoded entry points).
-  This patch (1) re-adds the feature-gated "Agents" sidebar entry (restoring
-  the pre-#65 block incl. the disabled-tooltip state from feature-gating
-  commit 21b35102), (2) removes the two "New Agent" buttons from
-  `agent-gallery.tsx` so creation is done through the stack's GitHub
-  repository (`config.yaml` + `SOUL.md`, commit, merge) instead of the web
-  UI, (3) redirects the old `/workspace/agents/new` wizard to the gallery so
-  stale links and bookmarks land somewhere useful, and (4) aligns the gallery
-  copy (en + zh) with the repo-driven creation flow. View/edit/delete of
-  existing agents is unchanged (`AgentCard` settings dialog and delete stay).
-  Agent creation remains possible via the `/api/agents` routes (still gated
-  on `agents_api.enabled`, which is also the view/edit gate) - UI-only
-  retirement, matching the "through GitHub" policy.
-- Files: `frontend/src/components/workspace/workspace-nav-chat-list.tsx`
-  (EDITED), `frontend/src/components/workspace/agents/agent-gallery.tsx`
-  (EDITED), `frontend/src/app/workspace/agents/new/page.tsx` (EDITED to a
-  redirect), `frontend/src/core/i18n/locales/en-US.ts` (EDITED),
-  `frontend/src/core/i18n/locales/zh-CN.ts` (EDITED),
-  `frontend/tests/e2e/sidebar.spec.ts` (EDITED),
-  `frontend/tests/e2e/ui-polish-mobile.spec.ts` (EDITED).
-- Tests: `frontend/tests/e2e/sidebar.spec.ts` and
-  `frontend/tests/e2e/ui-polish-mobile.spec.ts` updated to assert the restored
-  Agents entry (desktop + mobile) against the default agents-api-enabled
-  mock; `agents-feature-disabled.spec.ts` still covers the disabled state and
-  the no-API-call gate (unchanged).
-- Delete-when: not tied to an upstream regression; revisit if upstream adds a
-  first-class agents page/nav that we can adopt instead of carrying the
-  gallery nav entry.
-- Upstream status: not upstreamable as-is (the copy and the exact affordances
-  are Argus policy); the separate gallery/view surfaces are upstream code so
-  this is pure carry cost.
-- Sync 2026-10-25: `app/workspace/agents/new/page.tsx` stays the redirect. Upstream #6628 (dbebd18dd) edited the wizard and added `tests/unit/app/new-agent-save.dom.test.tsx`, which is removed from the merge (it tests the wizard we do not ship); new `frontend/tests/unit/app/new-agent-redirect.test.ts` covers the redirect. `tests/e2e/sidebar.spec.ts` adapts upstream's new "Agents gallery header" cases: the empty gallery has one New Agent button and New Agent opens #110's create dialog instead of navigating to `/workspace/agents/new`.
-
 ## Patch #88
 
 **Patch #88 - Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend**
@@ -2203,35 +2133,6 @@ carry budget ledger.
 - Upstream status: none sent yet (clean PR candidate -- the failure mode needs no Argus context).
 - Sync 2026-09-11: kept; `_ensure_thread_registered` now runs alongside upstream's `_load_thread_agent` (two `threads.get` per thread on first sight). `ConflictError` and fresh-thread branches remain untested.
 
-## Patch #91
-
-**Patch #91 - Graceful run stream options** (record back-filled 2026-09-11 at the upstream sync; landed 2026-08-15 as `aeb52487`, "accept stream_resumable and filter unsupported stream modes gracefully")
-
-- Class: generic-upstreamable (robustness of the SDK <-> Gateway contract).
-- Intent: the LangGraph SDK sends run options the Gateway does not implement.
-  Upstream rejected the whole request when any requested stream mode was
-  unsupported and when `stream_resumable` was `true`, so a client that asked
-  for one extra mode got no stream at all. This fork accepts
-  `stream_resumable` as a compatibility placeholder (`run_models.py`), keeps
-  the supported modes and drops the unsupported ones with one warning per
-  mode when at least one supported mode remains, and still refuses a request
-  whose modes are all unsupported (`runtime/stream_modes.py`, frontend
-  `core/api/stream-mode.ts`). The contract is documented in
-  `frontend/src/AGENTS.md` ("Run stream options").
-- Files: `backend/app/gateway/run_models.py`,
-  `backend/packages/harness/deerflow/runtime/stream_modes.py`,
-  `frontend/src/core/api/stream-mode.ts`.
-- Tests: `frontend/tests/unit/core/api/stream-mode.test.ts` (drop / all-
-  unsupported / `messages` cases), `backend/tests/test_run_request_validation.py`,
-  `backend/tests/test_gateway_services.py`.
-- Sync 2026-09-11: upstream #5159 added `forceChatRunStreamOptions` with a
-  test expecting a throw on `["messages-tuple", "events"]`; that test is
-  adapted to this contract (drops `events`, still throws on `["events"]`).
-- Delete-when: upstream stops rejecting mixed mode lists, or the SDK stops
-  sending modes the Gateway does not implement.
-- Upstream status: none sent (small PR candidate).
-- Sync 2026-10-25: `frontend/src/AGENTS.md` is upstream's byte for byte (its byte budget), so this section is the only description of the contract. Note: upstream's text there now says any unsupported mode throws before HTTP, while our `core/api/stream-mode.ts` still drops unsupported modes and forwards the rest.
-
 ## Patch #92
 
 **Patch #92 - Per-subagent `thinking_enabled` opt-in**
@@ -2405,10 +2306,11 @@ carry budget ledger.
 - Intent: with agent definitions stored in each stack's GitHub repository (#109), the Agents page is their editor. The settings dialog edits the description and the soul (the CodeEditor from #108, full screen), shows the store's refusal text, and links to the agent's folder on GitHub with the commit. Cards link there too. New agent is back (patch #79 had removed it because agents were only made in GitHub); it creates through the API, which commits.
 - Tests: `frontend/tests/unit/components/workspace/agents/agent-github-store.dom.test.tsx` (soul shown and saved, description sent only when changed, store refusal text shown, GitHub link with short commit only when `source` is set, New agent validates the name and creates), `frontend/tests/unit/core/agents/api.test.ts` (string and validation-list `detail` become the error message for create, update and import). Tool groups are not editable yet (no frontend list of configured groups).
 - 2026-10-11 follow-up: the settings dialog is 42rem wide (56rem from the `lg` breakpoint) instead of upstream's 32rem; `tests/e2e/agent-settings-layout.spec.ts` uses longer worker names so its wrapping check still bites.
-- Files: `frontend/src/components/workspace/agents/agent-settings-dialog.tsx`, `frontend/src/components/workspace/agents/agent-create-dialog.tsx` (NEW), `frontend/src/components/workspace/agents/agent-card.tsx`, `frontend/src/components/workspace/agents/agent-gallery.tsx`, `frontend/src/core/agents/types.ts`, i18n (commits 8a2f0a76a, 778e6625e, 24664fbc2).
+- Files: `frontend/src/components/workspace/agents/agent-settings-dialog.tsx`, `frontend/src/components/workspace/agents/agent-create-dialog.tsx` (NEW), `frontend/src/components/workspace/agents/agent-card.tsx`, `frontend/src/components/workspace/agents/agent-gallery.tsx`, `frontend/src/core/agents/types.ts`, `frontend/src/app/workspace/agents/new/page.tsx` (the old wizard URL redirects to the gallery; from #79), i18n including the gallery copy `agents.description` and `agents.emptyDescription` (en + zh, from #79) (commits 8a2f0a76a, 778e6625e, 24664fbc2).
 - Delete-when: upstream's agent editor covers soul and description and a store-provided source link.
 - Upstream status: none sent.
 - Sync 2026-10-25: `agent-settings-dialog.tsx` keeps our description and soul spreads next to upstream's `(knowledgeChanged || clearKnowledgeDefault)` knowledge spread (#6995). Upstream #6630's Tool access selector auto-merged in, which closes the "Tool groups are not editable yet" gap above; it calls `GET /api/agent-tool-groups`, which needs an nginx/Caddy location on the Argus side. `agent-github-store.dom.test.tsx`'s `@/core/agents` mock gains upstream's `useAgentToolGroups`.
+- Sync 2026-10-25 (follow-up commit): patch #79 folded in. What remained of it was the `/workspace/agents/new` redirect and the gallery copy (Files above); the Agents sidebar entry it restored matches upstream's block. Upstream edits the wizard behind that URL every sync (#6628 this time), so it is a modify/delete conflict each time; its `tests/unit/app/new-agent-save.dom.test.tsx` is not carried. Tests: `frontend/tests/unit/app/new-agent-redirect.test.ts` (the redirect) and `frontend/tests/e2e/sidebar.spec.ts` ("Agents gallery header": one New Agent button, which opens the create dialog). Delete-when for the redirect: Argus adopts upstream's chat-driven wizard (its `setup_agent` also commits through `get_agent_store()`), or the old URL no longer needs to resolve.
 
 ---
 
@@ -3000,6 +2902,20 @@ carry budget ledger.
   `preserve_thinking` on local-qwen comes back.
 - **#73's adaptive reasoning** (`adaptive_reasoning`): decision d5; the rest of
   #73 stays (see its section).
+- **#91 graceful run stream options**: upstream #5159 (in the base since the
+  2026-09-11 sync): the frontend strips `streamResumable` and forces the chat
+  stream modes, and `RunCreateRequest.stream_resumable` accepts the SDK's
+  `false`. `run_models.py`, `runtime/stream_modes.py`, `core/api/stream-mode.ts`
+  and their tests are upstream's; a client that sends `stream_resumable: true`
+  or an unsupported mode gets a 422 again (no Argus caller does: atlas-mcp and
+  Aeacus use `runs/wait`, the channel manager streams `messages-tuple` and
+  `values`). #59's sanitizer test (`onDisconnect` kept) stays.
+- **#35 landing-galaxy CPU/GPU cut**: upstream #4622 (`useRenderActivity`
+  unmounts the galaxy when hidden, off screen or under reduced motion).
+  `galaxy.jsx` and `landing/hero.tsx` are upstream's; only non-Atlas stacks
+  show that page.
+- **#79 Agents navigation and no in-UI creation**: folded into #110 (the
+  redirect and the gallery copy); the navigation part is upstream's block.
 - Thinned in the merge (sections kept): #37's empty-final retry (upstream
   #5080), #44's httpx pin (upstream `UrlRedactionFilter`), #53's subagent half
   and the `tool_policy.source` switch, #57's prompt guidance (upstream #6935),

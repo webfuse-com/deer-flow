@@ -1,4 +1,4 @@
-// [argus patch #79/#110] Agents are created with New agent in the gallery;
+// [argus patch #110] Agents are created with New agent in the gallery;
 // the old wizard URL redirects there (upstream's wizard and its save test,
 // new-agent-save.dom.test.tsx, are not carried).
 import { expect, rs, test } from "@rstest/core";
