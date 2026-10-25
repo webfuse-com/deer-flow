@@ -73,6 +73,7 @@ import { labelOfChannelProvider } from "@/core/threads/utils";
 import { cn } from "@/lib/utils";
 
 import { DeleteTaskDialog } from "./delete-task-dialog";
+import { NotificationGroupSummary } from "./notification-group";
 import { RenewLimitsDialog } from "./renew-limits-dialog";
 import { RunRow } from "./run-row";
 import {
@@ -267,8 +268,9 @@ export function TaskDetail({
   const status = presentTaskStatus(task);
   const StatusIcon = status.icon;
   // [argus patch #116] What the scheduler offers (an external one, fewer).
+  const scheduledTasksFeature = useScheduledTasksFeature();
   const supports =
-    useScheduledTasksFeature().supports ?? ALL_SCHEDULED_TASK_FEATURES;
+    scheduledTasksFeature.supports ?? ALL_SCHEDULED_TASK_FEATURES;
   const actions = availableActions(task, { createBlocked, supports });
   // The notice describes the current pause, so it reads the newest runs
   // whichever history page is shown.
@@ -546,6 +548,16 @@ export function TaskDetail({
           </p>
         )}
       </Section>
+
+      {/* [argus patch #116] An external scheduler has no notification groups. */}
+      {!scheduledTasksFeature.external &&
+        task.notification_group_connection_id && (
+          <Section label={st.notificationGroup.detailLabel}>
+            <NotificationGroupSummary
+              connectionId={task.notification_group_connection_id}
+            />
+          </Section>
+        )}
 
       {(supports.limits || supports.stop_condition) && (
         <Section label={st.detail.stopsWhen}>

@@ -17,6 +17,20 @@ SandboxNetworkApproval = Literal["deny", "prompt"]
 _REDIS_MAX_SAFE_TTL_MILLISECONDS = (2**63 - 1) // 2
 
 
+def normalize_container_path(value: str) -> str:
+    """Strip trailing slashes from a container mount/virtual path.
+
+    LocalSandboxProvider normalizes when building path mappings, but the tool
+    path gates compare the configured value as-is; one spelling at config load
+    keeps both layers in agreement. An empty result (the container root or a
+    blank value) cannot be expressed in the gates and is rejected instead.
+    """
+    normalized = value.rstrip("/")
+    if not normalized:
+        raise ValueError("container_path must be a non-empty mount point below the container root")
+    return normalized
+
+
 class SandboxNetworkConfig(BaseModel):
     """Outbound network policy for locally managed AIO sandboxes."""
 
@@ -165,6 +179,13 @@ class VolumeMountConfig(BaseModel):
     container_path: str = Field(..., description="Path inside the container")
     read_only: bool = Field(default=False, description="Whether the mount is read-only")
 
+    @field_validator("container_path")
+    @classmethod
+    def _normalize_container_path(cls, value: str) -> str:
+        # Keep a natural "/mnt/reports/" spelling from producing a mount the
+        # tool gates reject with a confusing PermissionError.
+        return normalize_container_path(value)
+
 
 class SandboxConfig(BaseModel):
     """Config section for a sandbox.
@@ -182,9 +203,10 @@ class SandboxConfig(BaseModel):
             process-local accounting.
         idle_timeout: Idle timeout in seconds before released warm sandboxes/VMs are stopped (default: 600 = 10 minutes). Set to 0 to disable.
         environment: Environment variables to inject into the sandbox (values starting with $ are
-            resolved from host env). Injected entries bypass the env-policy scrubber as
-            operator-authorized values; LocalSandboxProvider masks injected credentials from bash
-            tool output and command errors while preserving benign configuration values.
+            resolved from host env when config is loaded; providers use them verbatim). Injected
+            entries bypass the env-policy scrubber as operator-authorized values;
+            LocalSandboxProvider masks injected credentials from bash tool output and command
+            errors while preserving benign configuration values.
 
     BoxliteProvider specific options:
         health_check_skip_seconds: Optional reclaim-time skip window in seconds for recently released warm VMs. Default behavior is 0.0 = always validate before reuse.
@@ -219,6 +241,15 @@ class SandboxConfig(BaseModel):
     allow_host_bash: bool = Field(
         default=False,
         description="Allow the bash tool to execute directly on the host when using LocalSandboxProvider. Dangerous; intended only for fully trusted local environments.",
+    )
+    prewarm: bool = Field(
+        default=False,
+        description=("Start an AioSandboxProvider acquire in parallel with the first model call when the user input contains a strong sandbox-use signal. Disabled by default; ignored by other sandbox providers."),
+    )
+    prewarm_max_concurrent: int = Field(
+        default=1,
+        ge=1,
+        description=("Maximum pending or ready-but-unused AIO prewarms per provider instance in this process. When full, skip speculation without delaying foreground tools. This is not a total container or deployment-wide limit."),
     )
     image: str | None = Field(
         default=None,
@@ -260,6 +291,7 @@ class SandboxConfig(BaseModel):
     )
 
     @field_validator(
+        "prewarm_max_concurrent",
         "port",
         "replicas",
         "acquire_timeout",
@@ -336,24 +368,8 @@ class SandboxConfig(BaseModel):
         ge=0,
         description="Maximum characters to keep from bash tool output. Output exceeding this limit is middle-truncated (head + tail), preserving the first and last half. Set to 0 to disable truncation.",
     )
-    prewarm: bool = Field(
-        default=False,
-        description=(
-            "[argus patch #124] Start reclaiming a thread's sandbox when a run starts, in the background, "
-            "for threads that already used one. The first sandbox tool then finds it ready instead of "
-            "paying the 3.5-5 s reclaim after the first model call. A run that never touches the sandbox "
-            "releases it at its end as usual. Default false matches upstream (lazy acquisition)."
-        ),
-    )
-    prewarm_playbook_runs: bool = Field(
-        default=False,
-        description=(
-            "[argus patch #132] Also prewarm on a NEW thread when the run is an unattended playbook fire whose "
-            "allowed-tools list includes a sandbox tool. With `history: none` every fire starts a new thread, so "
-            "#124 (which needs a sandbox already named in the checkpoint) never fired and each fire paid the "
-            "3.4-3.7 s acquire on its first file or shell call. Default false keeps lazy acquisition."
-        ),
-    )
+    # [argus] Stack configs still set `prewarm_playbook_runs` (retired patch
+    # #132); `extra="allow"` keeps it loading and nothing reads it.
     command_max_chars: int = Field(
         default=10000,
         ge=1,
@@ -383,10 +399,10 @@ class SandboxConfig(BaseModel):
             "(1.9.3+, recommended 1.11.0) enforce it server-side through "
             "`hard_timeout`; the frozen legacy `all-in-one-sandbox:latest` image "
             "only gets the bounded host-side request. `bash_command_timeout` is "
-            "used by providers that explicitly wire this setting (currently "
-            "LocalSandbox, AioSandbox, and OpenSandbox). Other providers retain "
-            "their provider-specific command defaults unless a caller supplies an "
-            "explicit timeout."
+            "forwarded to each provider's command API. LocalSandbox, AioSandbox, "
+            "OpenSandbox, E2B, BoxLite, and Tenki apply it to bash commands; "
+            "providers without per-command timeout support retain their own "
+            "defaults."
         ),
     )
 

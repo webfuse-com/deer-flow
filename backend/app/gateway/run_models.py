@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from deerflow.runtime.stream_modes import UnsupportedStreamModeError, normalize_stream_modes
+from deerflow.runtime.stream_modes import RunStreamMode, UnsupportedStreamModeError, normalize_stream_modes
 from deerflow.utils.thread_id import validate_thread_id
 
 # Upper bound on explicit conversation references per run; ``/api/features``
@@ -36,7 +36,7 @@ class RunCreateRequest(BaseModel):
     command: dict[str, Any] | None = Field(default=None, description="LangGraph Command")
     metadata: dict[str, Any] | None = Field(default=None, description="Run metadata")
     config: dict[str, Any] | None = Field(default=None, description="RunnableConfig overrides")
-    context: dict[str, Any] | None = Field(default=None, description="DeerFlow context overrides (model_name, thinking_enabled, etc.)")
+    context: dict[str, Any] | None = Field(default=None, description="DeerFlow context overrides (model_name, thinking_enabled, etc.). May include client capabilities under context.client.")
     conversation_references: list[ConversationReference] = Field(
         default_factory=list,
         max_length=MAX_CONVERSATION_REFERENCES,
@@ -47,9 +47,9 @@ class RunCreateRequest(BaseModel):
     checkpoint: dict[str, Any] | None = Field(default=None, description="Full checkpoint object")
     interrupt_before: list[str] | Literal["*"] | None = Field(default=None, description="Nodes to interrupt before")
     interrupt_after: list[str] | Literal["*"] | None = Field(default=None, description="Nodes to interrupt after")
-    stream_mode: list[str] | str | None = Field(default=None, description="Supported stream mode(s)")
+    stream_mode: list[RunStreamMode] | RunStreamMode | None = Field(default=None, description="Supported stream mode(s)")
     stream_subgraphs: bool = Field(default=False, description="Include subgraph events")
-    stream_resumable: bool | None = Field(default=None, description="Compatibility placeholder")
+    stream_resumable: Literal[False] | None = Field(default=None, description="Compatibility placeholder; only the SDK's non-resumable default (null/false) is accepted")
     on_disconnect: Literal["cancel", "continue"] = Field(default="cancel", description="Behaviour on SSE disconnect")
     on_completion: None = Field(default=None, description="Compatibility placeholder; completion behavior is not supported")
     multitask_strategy: Literal["reject", "rollback", "interrupt"] = Field(default="reject", description="Concurrency strategy")
@@ -96,6 +96,25 @@ class RunCreateRequest(BaseModel):
             raise PydanticCustomError("conversation_references_conflict", "Pass conversation_references at the top level or in context, not both")
         lifted["conversation_references"] = references
         return lifted
+
+    @field_validator("config")
+    @classmethod
+    def reject_non_object_config_sections(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        """``config.configurable`` and ``config.context`` are objects or null.
+
+        Run admission and the stateless thread selector read both as mappings,
+        so any other JSON value must be a validation error, not a Gateway fault.
+        """
+        if value is None:
+            return value
+        for section in ("configurable", "context"):
+            if value.get(section) is not None and not isinstance(value[section], dict):
+                raise PydanticCustomError(
+                    "invalid_run_config_section",
+                    "config.{section} must be an object or null",
+                    {"section": section},
+                )
+        return value
 
     @model_validator(mode="after")
     def validate_configurable_thread_id(self) -> RunCreateRequest:
@@ -148,8 +167,16 @@ class RunCreateRequest(BaseModel):
     @field_validator("stream_resumable", mode="before")
     @classmethod
     def reject_resumable_streams(cls, value: Any) -> Any:
-        # Compatibility: accept both boolean and None without hard-failing
-        return None
+        # LangGraph SDK clients always send this field (its default is ``False``, which the
+        # payload's ``None`` filter keeps). ``False`` asks for the non-resumable stream
+        # DeerFlow already serves, so only an explicit ``True`` requests the unsupported feature.
+        if value is None or value is False:
+            return value
+        raise PydanticCustomError(
+            "unsupported_run_option",
+            "Run option '{option}' is not supported by DeerFlow",
+            {"option": "stream_resumable"},
+        )
 
     @field_validator("stream_mode", mode="before")
     @classmethod

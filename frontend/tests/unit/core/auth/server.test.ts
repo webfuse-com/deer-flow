@@ -192,6 +192,263 @@ describe("getServerSideUser — gateway_unavailable contract (issue #3493)", () 
   });
 });
 
+// ── account_disabled contract (RFC #4063 gap 3) ────────────────────
+
+describe("getServerSideUser — account_disabled contract", () => {
+  let saved: EnvSnapshot;
+
+  beforeEach(() => {
+    saved = snapshotEnv();
+    setEnv("DEER_FLOW_AUTH_DISABLED", undefined);
+    setEnv("NEXT_PUBLIC_STATIC_WEBSITE_ONLY", undefined);
+    rs.doMock("next/headers", () => ({
+      cookies: rs.fn(async () => ({
+        get: (name: string) =>
+          name === "access_token" ? { value: "stub-token" } : undefined,
+      })),
+      // [argus patch #15] server.ts also reads the SSO request headers.
+      headers: rs.fn(async () => ({ get: () => null })),
+    }));
+  });
+
+  afterEach(() => {
+    restoreEnv(saved);
+    rs.unstubAllGlobals();
+    rs.doUnmock("next/headers");
+  });
+
+  function stubMeResponse(body: unknown, status = 401) {
+    rs.stubGlobal(
+      "fetch",
+      rs.fn(
+        async () =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+  }
+
+  test("maps a 401 account_disabled session to the account_disabled tag", async () => {
+    stubMeResponse({
+      detail: { code: "account_disabled", message: "Account disabled" },
+    });
+
+    const { getServerSideUser } = await loadFreshServerAuth();
+
+    await expect(getServerSideUser()).resolves.toEqual({
+      tag: "account_disabled",
+    });
+  });
+
+  test("keeps every other 401 a plain unauthenticated result", async () => {
+    stubMeResponse({
+      detail: { code: "token_expired", message: "Token expired" },
+    });
+
+    const { getServerSideUser } = await loadFreshServerAuth();
+
+    await expect(getServerSideUser()).resolves.toEqual({
+      tag: "unauthenticated",
+    });
+  });
+
+  test("a non-JSON 401 body still degrades to unauthenticated", async () => {
+    rs.stubGlobal(
+      "fetch",
+      rs.fn(async () => new Response("nope", { status: 401 })),
+    );
+
+    const { getServerSideUser } = await loadFreshServerAuth();
+
+    await expect(getServerSideUser()).resolves.toEqual({
+      tag: "unauthenticated",
+    });
+  });
+});
+
+// ── [argus patch #15] SSO identity headers ─────────────────────────
+
+describe("getServerSideUser — trusted SSO headers without a session", () => {
+  let saved: EnvSnapshot;
+
+  beforeEach(() => {
+    saved = snapshotEnv();
+    setEnv("DEER_FLOW_AUTH_DISABLED", undefined);
+    setEnv("NEXT_PUBLIC_STATIC_WEBSITE_ONLY", undefined);
+    rs.doMock("next/headers", () => ({
+      cookies: rs.fn(async () => ({ get: () => undefined })),
+      headers: rs.fn(async () => ({
+        get: (name: string) =>
+          ({
+            "x-auth-email": "citizen@example.com",
+            "x-auth-proxy-secret": "proxy-secret",
+          })[name] ?? null,
+      })),
+    }));
+  });
+
+  afterEach(() => {
+    restoreEnv(saved);
+    rs.unstubAllGlobals();
+    rs.doUnmock("next/headers");
+  });
+
+  function stubResponses(meStatus: number, meBody: unknown) {
+    const fetchSpy = rs.fn(async (url: string) =>
+      url.endsWith("/api/v1/auth/me")
+        ? new Response(JSON.stringify(meBody), {
+            status: meStatus,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response(JSON.stringify({ needs_setup: false }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+    );
+    rs.stubGlobal("fetch", fetchSpy);
+    return fetchSpy;
+  }
+
+  test("authenticates off the forwarded SSO identity", async () => {
+    const fetchSpy = stubResponses(200, {
+      id: "u-1",
+      email: "citizen@example.com",
+      system_role: "user",
+      needs_setup: false,
+      oauth_provider: null,
+      permissions: null,
+    });
+
+    const { getServerSideUser } = await loadFreshServerAuth();
+
+    await expect(getServerSideUser()).resolves.toMatchObject({
+      tag: "authenticated",
+      user: { email: "citizen@example.com" },
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/auth/me"),
+      expect.objectContaining({
+        headers: {
+          "X-Auth-Email": "citizen@example.com",
+          "X-Auth-Proxy-Secret": "proxy-secret",
+        },
+      }),
+    );
+  });
+
+  test("a disabled SSO account gets the account_disabled tag", async () => {
+    stubResponses(403, {
+      detail: { code: "account_disabled", message: "Account disabled" },
+    });
+
+    const { getServerSideUser } = await loadFreshServerAuth();
+
+    await expect(getServerSideUser()).resolves.toEqual({
+      tag: "account_disabled",
+    });
+  });
+
+  test("any other SSO refusal falls back to the no-session path", async () => {
+    stubResponses(403, {
+      detail: { code: "permission_denied", message: "Forbidden" },
+    });
+
+    const { getServerSideUser } = await loadFreshServerAuth();
+
+    await expect(getServerSideUser()).resolves.toEqual({
+      tag: "unauthenticated",
+    });
+  });
+});
+
+// ── email contract ─────────────────────────────────────────────────
+
+// Each address is one the backend registers with EmailStr and returns from
+// /auth/me as shown (IDN domains come back in Unicode).
+const BACKEND_ACCEPTED_EMAILS = [
+  "a&b@example.com",
+  "a@b.c",
+  "a~b@example.com",
+  "josé@example.com",
+  "user@exämple.com",
+];
+
+describe("getServerSideUser — accepts every address the backend accepts", () => {
+  let saved: EnvSnapshot;
+
+  beforeEach(() => {
+    saved = snapshotEnv();
+    setEnv("DEER_FLOW_AUTH_DISABLED", undefined);
+    setEnv("NEXT_PUBLIC_STATIC_WEBSITE_ONLY", undefined);
+    rs.doMock("next/headers", () => ({
+      cookies: rs.fn(async () => ({
+        get: (name: string) =>
+          name === "access_token" ? { value: "stub-token" } : undefined,
+      })),
+      // [argus patch #15] server.ts also reads the SSO request headers.
+      headers: rs.fn(async () => ({ get: () => null })),
+    }));
+  });
+
+  afterEach(() => {
+    restoreEnv(saved);
+    rs.unstubAllGlobals();
+    rs.doUnmock("next/headers");
+  });
+
+  test.each(BACKEND_ACCEPTED_EMAILS)(
+    "authenticates a session for %s",
+    async (email) => {
+      const me = {
+        id: "u-1",
+        email,
+        system_role: "user",
+        needs_setup: false,
+        oauth_provider: null,
+        permissions: null,
+      };
+      rs.stubGlobal(
+        "fetch",
+        rs.fn(
+          async () =>
+            new Response(JSON.stringify(me), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+        ),
+      );
+
+      const { getServerSideUser } = await loadFreshServerAuth();
+
+      await expect(getServerSideUser()).resolves.toMatchObject({
+        tag: "authenticated",
+        user: { email },
+      });
+    },
+  );
+});
+
+describe("userSchema email", () => {
+  test.each(BACKEND_ACCEPTED_EMAILS)("keeps %s verbatim", (email) => {
+    const parsed = userSchema.parse({
+      id: "1",
+      email,
+      system_role: "user",
+    });
+
+    expect(parsed.email).toBe(email);
+  });
+
+  test("still rejects an empty or missing email", () => {
+    expect(() =>
+      userSchema.parse({ id: "1", email: "", system_role: "user" }),
+    ).toThrow();
+    expect(() => userSchema.parse({ id: "1", system_role: "user" })).toThrow();
+  });
+});
+
 // ── system_role contract (RFC #4063 gap 2) ─────────────────────────
 
 describe("userSchema system_role", () => {

@@ -314,34 +314,59 @@ def _hash_tool_calls(tool_calls: list[dict]) -> str:
     return hashlib.md5(blob.encode()).hexdigest()[:12]
 
 
-_WARNING_MSG = "[LOOP DETECTED] You are repeating the same tool calls. Stop calling tools and produce your final answer now. If you cannot complete the task, summarize what you accomplished so far."
+# Warn-level messages ask the agent to wrap up, but must not make it drop work
+# it was asked to persist: a subagent whose task names an output file would
+# otherwise stop *all* tool calls, including the write that delivers its
+# result, and finish as "completed" with nothing on disk. So the wrap-up
+# allows a bounded save/read/retry before the final answer, without reusing
+# a looping writer or bypassing the read-before-write gate. The hard-stop
+# path below is unchanged (it strips tool calls).
+_WRAP_UP_INSTRUCTIONS = (
+    "If your task asks you to save results to a file, first write what you have collected so far to that file "
+    "with a file-writing tool (for example write_file, unless it is the looping tool). "
+    "If the writer is itself looping, use a different available file-writing tool. "
+    "If a save is blocked by a read-before-write check, read the target file and retry the save once. "
+    "Do not use a tool that this warning tells you to stop, or repeat a failed save loop. "
+    "If no permitted save path is available or the retry fails, include the collected results in your final answer "
+    "and state that the file was not saved. Then stop calling tools and produce your final answer. "
+    "If you cannot complete the task, summarize what you accomplished so far."
+)
+
+_WARNING_MSG = "[LOOP DETECTED] You are repeating the same tool calls. Stop repeating them and wrap up now. " + _WRAP_UP_INSTRUCTIONS
 
 # [argus patch #68] Actionable variants: name the tools and the repeat count
-# so the model can tell WHICH call is looping and how far it has gone.
+# so the model can tell WHICH call is looping and how far it has gone. The
+# wrap-up they offer is upstream's save-first one (#6804).
 _TOOL_LOOP_WARNING_MSG = (
-    "[LOOP DETECTED] The same tool call(s) to {tools} have now been repeated {count} times. An identical call will not produce a different result. Vary the arguments meaningfully, or stop calling tools and produce your final answer."
+    "[LOOP DETECTED] The same tool call(s) to {tools} have now been repeated {count} times. An identical call will not produce a different result. "
+    "Vary the arguments meaningfully, or stop repeating them and wrap up now. " + _WRAP_UP_INSTRUCTIONS
 )
 
 _RECOVERABLE_RETRY_MSG = (
     "[LOOP DETECTED] {tools} keeps returning {outcome}, and you have now repeated the identical "
     "call {count} times.{action} Repeating the exact same arguments will not change the outcome. "
-    "Change the approach or conclude with the results collected so far."
+    "Change the approach, or stop repeating the call and wrap up now. " + _WRAP_UP_INSTRUCTIONS
 )
 
 _TOOL_EXEMPT_RETRY_MSG = (
-    "[LOOP DETECTED] {tools} has been called with identical arguments {count} times. This tool is exempt from the loop hard stop, but an identical call cannot produce a different result: vary the arguments or conclude with what you have."
+    "[LOOP DETECTED] {tools} has been called with identical arguments {count} times. This tool is exempt from the loop hard stop, but an identical call cannot produce a different result: "
+    "vary the arguments, or stop repeating it and wrap up now. " + _WRAP_UP_INSTRUCTIONS
 )
 
 # [argus patch #94] A frequency warning is a checkpoint, not a stop order.
-# Models obey "stop calling tools" literally, so the old wording made the warn
-# threshold the real ceiling and hard_limit unreachable (deep research ended
-# at exactly warn searches per researcher, 2026-09-24). The hard stop still
-# enforces the ceiling; this message names it so the model can budget.
+# Models obey "stop calling tools" (and upstream's "Stop calling X and wrap up
+# now") literally, so that wording made the warn threshold the real ceiling and
+# hard_limit unreachable (deep research ended at exactly warn searches per
+# researcher, 2026-09-24). The hard stop still enforces the ceiling; this
+# message names it so the model can budget, and carries upstream's save-first
+# clause (#6804) so a force-stop cannot lose a file the task asked for.
 _TOOL_FREQ_WARNING_MSG = (
     "[LOOP DETECTED] You have called {tool_name} {count} times in this task. Take stock before the next call: "
     "save or summarize what you have found so far, then continue only to close specific gaps you can name, "
-    "and change approach if recent calls stopped adding new information. {tool_name} is force-stopped at "
-    "{hard_limit} calls, after which you must answer with what you have."
+    "and change approach if recent calls stopped adding new information. If your task asks you to save results "
+    "to a file, write what you have collected so far to that file first, with a file-writing tool such as "
+    "write_file; if a read-before-write check blocks the save, read the target file and retry the save once. "
+    "{tool_name} is force-stopped at {hard_limit} calls, after which you must answer with what you have."
 )
 
 _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."

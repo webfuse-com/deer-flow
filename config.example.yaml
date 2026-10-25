@@ -20,7 +20,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 58
+config_version: 62
 
 # Optional operator-owned literal prompt extensions (see CONFIGURATION.md):
 # lead_prompt_overlay:
@@ -121,7 +121,7 @@ recursion_limit: 100
 # The Gateway never trusts a configured or client-supplied value above this
 # ceiling, preventing runaway API cost / DoS. Raise it only if you legitimately
 # run very deeply nested subagent graphs.
-max_recursion_limit: 10000
+max_recursion_limit: 1000
 
 
 # ============================================================================
@@ -157,6 +157,8 @@ models:
   # Example: Volcengine (Doubao) model
   # - name: doubao-seed-1.8
   #   display_name: Doubao-Seed-1.8
+  #   aliases: [doubao, seed 1.8]  # Optional names for selecting this model in chat
+  #   # Model-name aliases differ from reasoning.effort.aliases (effort values).
   #   use: deerflow.models.patched_deepseek:PatchedChatDeepSeek
   #   model: doubao-seed-1-8-251228
   #   api_base: https://ark.cn-beijing.volces.com/api/v3
@@ -886,6 +888,19 @@ tools:
   #   group: knowledge
   #   use: deerflow.community.ragflow.tools:list_knowledge_bases_tool
 
+  # Jsonify dataset rows (read-only). Jsonify pipelines run on a schedule,
+  # repair themselves when a source changes, and publish the result as a
+  # dataset. Each dataset has a serve URL (Integrations > REST API in Jsonify)
+  # that returns its latest rows as JSON. The URL is the credential: keep it in
+  # an env var, never in the prompt. Name each dataset; the model picks by name.
+  # - name: jsonify_dataset_rows
+  #   group: data
+  #   use: deerflow.community.jsonify.tools:dataset_rows_tool
+  #   datasets:
+  #     llm_api_pricing: $JSONIFY_LLM_PRICING_URL  # https://factory.jsonify.com/api/serve/<id>
+  #   max_rows: 100   # Cap per call; the model's limit is clamped to this
+  #   timeout: 30
+
   # LightRAG knowledge retrieval (read-only). Alternative provider for the same
   # knowledge_search tool; uncomment this entry instead of the RAGFlow one —
   # duplicate names keep the first entry, so configure exactly one. Requires
@@ -1011,6 +1026,7 @@ tools:
   #   search_type: auto  # Options: auto, neural, keyword
   #   contents_max_characters: 1000
   #   # api_key: $EXA_API_KEY
+  #   # base_url: https://api.exa.ai  # Exa-compatible endpoint; overrides EXA_BASE_URL
 
   # Web search tool (uses Firecrawl. Cloud requires FIRECRAWL_API_KEY; self-host may need no key.)
   # - name: web_search
@@ -1053,6 +1069,18 @@ tools:
   #   # search_depth: basic         # basic reads the result pages, snippets returns snippets only
   #   contents_max_characters: 2000 # per-result content cap; 0 disables it
   #   # api_key: $SOFYA_API_KEY     # Optional explicit env-var reference
+
+  # Web search tool (uses You.com; YDC_API_KEY optional)
+  # You.com runs its own web index and returns extracted page snippets rather
+  # than a single meta description, so results are usable without a follow-up
+  # fetch. With no key it uses the keyless endpoint (free tier, currently 100
+  # searches/day); set YDC_API_KEY and it switches to the full Search API.
+  # Get a key at https://you.com/platform
+  # - name: web_search
+  #   group: web
+  #   use: deerflow.community.youcom.tools:web_search_tool
+  #   max_results: 5                  # Clamped to 1-100 by You.com
+  #   # api_key: $YDC_API_KEY         # Omit to use the keyless free tier
 
   # Web fetch tool (uses Browserless - headless Chrome, self-hosted or cloud)
   # Browserless renders pages with a real headless Chrome, ideal for JavaScript-heavy
@@ -1204,6 +1232,7 @@ tools:
   #   group: web
   #   use: deerflow.community.exa.tools:web_fetch_tool
   #   # api_key: $EXA_API_KEY
+  #   # base_url: https://api.exa.ai  # Exa-compatible endpoint; overrides EXA_BASE_URL
 
   # Web fetch tool (uses Jina AI reader)
   - name: web_fetch
@@ -1396,30 +1425,25 @@ tool_search:
   # always_bind: ["pythia_*", "calendar_list_events"]
   # [argus patch #131] bind every tool a playbook run's allowed-tools names
   # bind_schedule_allowlist: false
-  # [argus patch #146] tool_search answers "already available" for tools the
-  # run already has; hints for auto-promoted tools stop sending it to search
-  # answer_bound_directly: false
   # [argus patch #59] fnmatch patterns of NON-MCP (builtin/config) tool names
   # to defer like MCP tools: name-only in <available-deferred-tools> until
   # promoted via an explicit tool_search call. For cold tools whose intrinsic
   # latency dwarfs one promotion round-trip (e.g. spinning up a browser).
   # always_bind/exclude wins when both match. Keyword auto-promotion does NOT
   # cover deferred builtins (routing metadata exists only for MCP servers).
+  # inspect_run_status is always deferred [argus]; always_bind it to bind it.
   # defer: ["browser_*"]
 
 # ============================================================================
 # Tool Authorization Policy [argus patch #53]
 # ============================================================================
-# Which allowed-tools declarations gate the run's toolset.
-# - "skills" (default, upstream): the union of enabled skills' allowed-tools
-#   frontmatter is the whitelist; falls open only when no enabled skill
-#   declares the field. The firing schedule's allowed-tools union in.
-# - "agent": AgentConfig.allowed_tools is the whitelist (None/omitted = no
-#   restriction, [] = no tools, [names] = exactly those + the schedule's).
-#   Skill allowed-tools become documentation; declarations outside a
-#   restrictive agent ceiling are logged at agent build, never granted.
+# An agent's AgentConfig.allowed_tools is the run's whitelist whenever it is
+# declared (None/omitted = no restriction, [] = no tools, [names] = exactly
+# those + the firing schedule's allowed-tools). Skill allowed-tools are
+# compatibility metadata (upstream #6935). `source` no longer selects
+# anything; existing values load and are ignored.
 # tool_policy:
-#   source: skills
+#   source: agent
 
 # ============================================================================
 # Tool Output Budget Protection
@@ -1460,9 +1484,6 @@ tool_output:
   # Default false = current behavior unchanged.
   # code_outline_enabled: false
   # code_outline_min_lines: 300
-  # [argus patch #144] A run whose tool allowlist leaves read_file out still
-  # gets read_file, restricted to this thread's offloaded results above.
-  # read_offloads_in_allowlisted_runs: false
   # tool_overrides:
   #   web_search: 8000
   #   bash: 20000
@@ -1622,13 +1643,6 @@ pii_redaction:
 #   max_tracked_threads: 100
 #   read_only_streak_threshold: 0       # Soft phase hint after N consecutive successful reads/searches; 0 disables
 #   bash_inspection_counts_as_read: false  # [argus patch #82] successful pure-read bash advances the read-only streak
-#   cause_aware_blocking: false    # [argus patch #143] argument errors are model-fixable, bash graded by exit code,
-#                                  # only auth on a never-worked tool blocks at once, dispatchers blocked per function
-#   dispatcher_tools:              # [argus patch #143] tool -> argument names that identify the function
-#     app_function_call: [app, function]
-#     atlas_app_function_call: [app, function]
-#     connector_call: [name, function]
-#     atlas_connector_call: [name, function]
 #   total_tool_call_threshold: 0        # Soft replan hint after N calls in one run; 0 disables
 #   total_tool_call_reminder_interval: 30 # Repeat the replan hint every N additional calls
 #   read_only_tools: [read_file, grep, glob, ls]
@@ -1733,6 +1747,12 @@ projects:
   # Caller-side wait limit in seconds for one summary model call (range:
   # 5-300); abandons the wait, not the remote work.
   summary_timeout_seconds: 60
+  # Shelf search budgets (search_project_documents), in decoded CHARACTERS
+  # not bytes (CJK differs 3x). Per-document cap and whole-shelf total; the
+  # total must be >= the per-document cap, otherwise both reset to defaults.
+  # Read per call — edits apply without a restart.
+  search_max_chars_per_document: 1000000
+  search_max_total_chars: 8000000
 
 # ============================================================================
 # Provider Safety Termination Configuration
@@ -1806,12 +1826,22 @@ sandbox:
   # not a secure isolation boundary for shell access. Enable only for fully
   # trusted, single-user local workflows.
   allow_host_bash: false
+  # For AioSandboxProvider only: overlap likely sandbox work with the first
+  # model call. It is disabled by default and ignored by other providers.
+  prewarm: false
+  # Bound pending/ready-unused speculation per provider instance, per process.
+  # A full budget skips prewarming; foreground tools still acquire normally.
+  # This is not a total container or deployment-wide capacity limit.
+  prewarm_max_concurrent: 1
   # Optional: Mount additional host directories into the sandbox.
-  # Each mount maps a host path to a virtual container path accessible by the agent.
+  # host_path: existing absolute source path; container_path: agent-facing /mnt/... path.
+  # Native Windows source example: 'D:/data'; WSL source example: /mnt/d/data.
+  # Keep container_path POSIX-style on every OS (for example, /mnt/my-project).
   # Note: with LocalSandboxProvider under `make up` (docker-compose), host_path is
   # checked from inside the deer-flow-gateway container — you must also bind-mount
   # the same directory into services.gateway.volumes in docker/docker-compose.yaml
-  # for this mount to take effect (see issue #3244).
+  # for this mount to take effect. AIO Docker mounts instead use Docker-host paths.
+  # Platform examples: backend/docs/CONFIGURATION.md#skills-and-sandbox-paths
   # mounts:
   #   - host_path: /home/user/my-project    # Absolute path; see note above for Docker mode
   #     container_path: /mnt/my-project     # Virtual path inside the sandbox
@@ -1831,9 +1861,9 @@ sandbox:
   # semver line (1.9.3+, recommended 1.11.0) enforce it server-side through
   # `hard_timeout`; the frozen legacy `all-in-one-sandbox:latest` image only
   # gets the bounded host-side request. `bash_command_timeout` is used by
-  # providers that explicitly wire this setting (currently LocalSandbox,
-  # AioSandbox, and OpenSandbox). Other providers retain their provider-specific
-  # command defaults unless a caller supplies an explicit timeout. For providers
+  # providers that expose a per-command timeout (LocalSandbox, AioSandbox,
+  # OpenSandbox, E2B, BoxLite, and Tenki). Providers without per-command timeout
+  # support retain their provider-specific command defaults. For providers
   # that enforce this deadline server- or process-side, blocking foreground
   # commands are terminated at the configured deadline. Long-lived processes
   # should be started in the background with output redirected; unredirected
@@ -2232,13 +2262,17 @@ verification:
 # Configure skills directory for specialized agent workflows
 
 skills:
-  # Path to skills directory on the host (relative to project root or absolute)
-  # Default: skills under the project root
+  # Skills source root read by the Gateway (contains public/ and legacy custom/).
+  # Absolute, or relative to DEER_FLOW_PROJECT_ROOT (process cwd when unset).
+  # Default: skills under that root, with a source-checkout fallback to repo skills/.
   # Override with DEER_FLOW_SKILLS_PATH when this field is omitted.
+  # In Docker, use a Gateway-visible path, such as the bundled /app/skills mount.
+  # Native Windows: 'D:/deer-flow/skills'; WSL: /mnt/d/deer-flow/skills.
+  # See backend/docs/CONFIGURATION.md#skills-and-sandbox-paths for mappings.
   # Uncomment to customize:
   # path: /absolute/path/to/custom/skills
 
-  # Path where skills are mounted in the sandbox container
+  # Agent-facing POSIX path; keep /mnt/skills even when the Gateway runs on Windows.
   # This is used by the agent to access skills in both local and Docker sandbox
   # AIO/provisioner and E2B modes require a canonical absolute non-root path
   # that does not overlap reserved platform mounts. Providers snapshot this
@@ -2262,30 +2296,6 @@ skills:
   # max_auto_activated: 2
   # [argus patch #130] delegate skills route only on an explicit @name mention
   # mention_only_skills: [claude, gpt, opencode, myrmidon]
-  # [argus patch #145] false: no auto routing in unattended (scheduled) runs
-  # auto_route_unattended: true
-  # [argus patch #145] skip negated mentions and skills whose tools a tool
-  # allowlist does not grant; routed workflows follow the request
-  # auto_route_guard: false
-  # [argus patch #145] ask to re-read an active skill only once its body was
-  # summarized away
-  # reread_only_after_summary: false
-
-# Use the normal reasoning model for user turns, research, and errors, but a
-# no-thinking variant after successful deterministic tools. Disabled by default.
-adaptive_reasoning:
-  enabled: false
-  routine_tools:
-    - read_file
-    - workspace_inspect
-    - write_file
-    - str_replace
-    - workspace_patch
-    - grep
-    - glob
-    - ls
-    - bash
-    - write_todos
 
 # ============================================================================
 # SkillScan Configuration
@@ -2351,13 +2361,14 @@ summarization:
     # - type: messages
     #   value: 50
     # Uncomment to trigger when 80% of model's max input tokens is reached.
-    # The percentage resolves from the SUMMARY model's declared `context_window`
-    # (summarization.model_name when set, else the run's own model): declare it
-    # on that models entry — third-party OpenAI-compatible models carry no
-    # built-in profile. Without it the fraction clause is dropped with a warning
-    # and any remaining absolute clauses keep working. If a separate summary
-    # model with a larger window is configured, prefer absolute `tokens`
-    # thresholds sized for the run model instead.
+    # The percentage resolves from the RUN model's declared `context_window`
+    # (the lead's selected model, a subagent's own model, or the model resolved
+    # for /compact), even when summarization.model_name names a separate
+    # generator: declare it on every models entry, because third-party
+    # OpenAI-compatible models carry no built-in profile. Without it the
+    # fraction clause is dropped with a warning and any remaining absolute
+    # clauses keep working. Clauses are ORed, so an absolute `tokens` clause
+    # fires for every run model at that size, large windows included.
     # - type: fraction
     #   value: 0.8
 
@@ -2378,7 +2389,7 @@ summarization:
   # Set to null to skip trimming (not recommended for very long conversations)
   trim_tokens_to_summarize: 15564
 
-  # Custom summary prompt template (null = use default LangChain prompt)
+  # Custom summary prompt template (null = DeerFlow's execution-ledger prompt)
   # The prompt should guide the model to extract important context
   summary_prompt: null
 
@@ -2418,7 +2429,8 @@ summarization:
 #                         filesystems; peers would rebuild or delete each other's index).
 #   model               - LLM config for memory extraction: {provider, model, api_key, base_url,
 #                         temperature}. Omit all fields = no extraction (non-LLM ops still work).
-#   debounce_seconds    - Debounce wait before processing queued updates (default: 30)
+#   debounce_seconds    - Per-conversation quiet period (default: 30)
+#   max_wait_seconds    - Maximum debounce deferral; not a completion timeout (default: 300)
 #   max_facts           - Maximum facts to store (default: 100)
 #   fact_confidence_threshold - Minimum confidence for storing facts (default: 0.7)
 #   max_injection_tokens     - Token budget for memory injection (default: 2000)
@@ -2569,7 +2581,8 @@ memory:
     file_lock_timeout_seconds: 10 # per-scope cross-process advisory lock timeout (single-machine local filesystem)
     retrieval_adapter: fts5     # fts5 (default), empty to disable, or a dotted RetrievalPort factory(config)
     retrieval_index_path: ""    # empty = {storage_path}/.retrieval; relative = below storage_path; absolute as-is. Rebuildable derived data: keep it instance-local when Gateway instances share storage_path (the Helm chart uses an emptyDir)
-    debounce_seconds: 30 # Wait time before processing queued updates
+    debounce_seconds: 30 # Per-conversation quiet period before extraction is eligible
+    max_wait_seconds: 300 # Cap debounce deferral from first pending update; not an LLM/completion timeout
     # Backpressure cap on pending items. 0 = unlimited. At the cap, new
     # non-signal updates are rejected (QueueFull); signal updates are always
     # admitted so important memories are never shed.
@@ -3049,8 +3062,10 @@ mcp_tasks:
 # DEER_FLOW_MULTI_INSTANCE=1, which deploy tooling such as a Helm chart can
 # set from its replica count) startup requires database.backend: postgres, run_events.backend: db,
 # run_ownership.heartbeat_enabled: true and a Redis stream bridge, and refuses
-# an explicit sandbox.ownership.type: memory, process-local browser tools, and
-# scheduler.enabled: true without scheduler.multi_instance: true.
+# an explicit sandbox.ownership.type: memory, process-local browser tools,
+# scheduler.enabled: true without scheduler.multi_instance: true, and
+# channels.leader_lease.enabled: false while an IM channel other than GitHub
+# is enabled (see the IM Channels section below).
 # Restart required; apply the same value to every instance.
 deployment:
   multi_instance: false
@@ -3114,6 +3129,11 @@ run_ownership:
 #   stream_ttl_seconds: 86400    # rolling TTL for retained stream buffers.
 #                                # Refreshed on each publish/publish_end; set 0
 #                                # to disable. This is not a run timeout.
+#   producer_lease_recovery_enabled: false  # restart-required activation gate.
+#                                # First roll this binary to every Gateway and
+#                                # drain pre-upgrade runs; then enable on every
+#                                # instance together. Never enable during a
+#                                # mixed-version rollout.
 #   recovered_stream_cleanup_delay_seconds: 60  # seconds to wait after
 #                                # publishing END for a recovered orphan run
 #                                # before deleting the stream key (max: 86400).
@@ -3207,6 +3227,27 @@ run_ownership:
 #   # outer shutdown timeout remains the process-level bound for incomplete cleanup.
 #   shutdown_grace_period_seconds: 3
 #   #
+#   # Leader lease: with more than one Gateway instance, only one instance may
+#   # hold a provider's platform connection (Telegram rejects a second poller
+#   # with 409, Discord answers every message twice). Each provider gets a row
+#   # in the shared channel_leases table, held by one instance and renewed on a
+#   # heartbeat; only the holder connects (GitHub webhooks stay on every
+#   # instance). A crashed holder is replaced within lease_seconds +
+#   # grace_seconds plus one renewal interval, a cleanly stopped one on the
+#   # next heartbeat. Credentials saved or a disconnect made from the web UI
+#   # on any instance reach the holder within one renewal interval. The
+#   # leader_lease block itself is restart-required.
+#   leader_lease:
+#     # auto (default): on whenever the Gateway sees a multi-process signal
+#     # (GATEWAY_WORKERS / WEB_CONCURRENCY > 1, deployment.multi_instance: true
+#     # or DEER_FLOW_MULTI_INSTANCE=1), off on a single instance. true: always
+#     # on (needs database.backend sqlite or postgres). false: never -- a
+#     # multi-process deployment with an IM channel other than GitHub enabled
+#     # then refuses to start.
+#     enabled: auto
+#     lease_seconds: 30   # validity of a held lease; renewed every lease_seconds // 3
+#     grace_seconds: 10   # extra time before a peer may take an expired lease
+#   #
 #   # Docker Compose note:
 #   # If channels run inside the gateway container, use container DNS names instead
 #   # of localhost, for example:
@@ -3230,7 +3271,7 @@ run_ownership:
 #     enabled: false
 #     app_id: $QQ_APP_ID
 #     client_secret: $QQ_CLIENT_SECRET
-#     allowed_users: []  # QQ OpenIDs, not numeric QQ account numbers; empty allows all
+#     allowed_users: []  # QQ OpenIDs, not numeric QQ account numbers; empty allows all; a single ID is one entry; unparseable non-empty lists fail closed
 #     sandbox: false    # REST sandbox host only; console sandbox membership is separate
 #
 #   feishu:
@@ -3239,12 +3280,17 @@ run_ownership:
 #     app_secret: $FEISHU_APP_SECRET
 #     # domain: https://open.feishu.cn       # China (default)
 #     # domain: https://open.larksuite.com   # International
+#     # card_interaction_enabled: false      # render option clarifications as clickable button
+#                                            # cards; requires subscribing card.action.trigger
+#                                            # under the console's callback-configuration tab
+#                                            # (separate from event subscriptions) and
+#                                            # publishing a new app version
 #
 #   slack:
 #     enabled: false
 #     bot_token: $SLACK_BOT_TOKEN     # xoxb-...
 #     app_token: $SLACK_APP_TOKEN     # xapp-... (Socket Mode)
-#     allowed_users: []               # empty = allow all; can also be a single Slack user ID string, e.g. U123456, but list form is recommended
+#     allowed_users: []               # Slack user IDs, e.g. U123456; empty or blank allows all; a single ID is one entry; non-empty lists with no valid ID fail closed
 #
 #   telegram:
 #     enabled: false
@@ -3320,7 +3366,7 @@ run_ownership:
 #     enabled: false
 #     client_id: $DINGTALK_CLIENT_ID
 #     client_secret: $DINGTALK_CLIENT_SECRET
-#     allowed_users: []               # empty = allow all
+#     allowed_users: []               # staff IDs (senderStaffId); empty or blank allows all; quote IDs with leading zeros; non-empty lists with no valid ID fail closed
 #     card_template_id: ""            # Optional: AI Card template ID for streaming updates
 #
 #   # Discord joins as a bot; requires the `discord` dependency extra
@@ -3347,11 +3393,13 @@ run_ownership:
 #     enabled: false
 #     relay_url: wss://buzz.example.com
 #     private_key: $BUZZ_PRIVATE_KEY        # hex or nsec1…
-#     allowed_users: []                     # pubkeys (hex or npub) allowed to trigger runs.
+#     allowed_users: []                     # pubkeys (hex or npub) allowed to trigger runs:
+#                                           # one pubkey (hex or npub) or a YAML list.
 #                                           # DENY-BY-DEFAULT (unlike other channels): empty
 #                                           # means nobody, and DeerFlow logs a startup warning.
 #     require_mention: true                 # @mention needed in channels
-#     mention_free_channels: []             # channel UUIDs that respond to every message
+#     mention_free_channels: []             # Channel UUIDs that respond to every message:
+#                                           # one UUID (quoted or unquoted) or a YAML list.
 
 # ============================================================================
 # Guardrails Configuration
@@ -3420,6 +3468,24 @@ run_ownership:
 #       #           timeout / deadline_seconds / max_attempts / retry_backoff /
 #       #           max_state_chars / cache_size / cache_ttl_seconds /
 #       #           instructions / criteria
+
+# --- Option 4b: the same risk gate over OpenAI Decisions -------------------
+#   Same provider semantics, another endpoint: one `predicate` question about the
+#   call to POST /v1/decisions, denied when its probability reaches `threshold`.
+#   Nothing in the gate is re-decided -- the strict-JSON local preflight, the
+#   character-count limit, the cache and fail_closed are the Option 4 ones, and
+#   every other Option 4 setting below applies here unchanged.
+# guardrails:
+#   enabled: true
+#   fail_closed: true
+#   provider:
+#     use: deerflow.guardrails.openai_decisions:OpenAIDecisionsGuardrailProvider
+#     config:
+#       model: <name the decision model this deployment uses>   # required: this
+#           # backend ships no default model, so batches cannot go to a model nobody chose
+#       api_key_env: OPENAI_API_KEY        # default; base_url defaults to https://api.openai.com
+#       threshold: 0.5
+#       tools: ["bash"]
 
 # ============================================================================
 # TypeSafe (Jev) Client Defaults (optional)
@@ -3721,6 +3787,19 @@ authorization:
 #     package: deerflow-extension-example # Python distribution managed by uv
 #     use: deerflow_extension_example:install
 #     enabled: true                       # false skips import and registration
+#     # Optional, restart-required host grants. Omit for legacy behavior.
+#     # Requires durable database + run_events.backend: db for automatic updates.
+#     # Only enable on one POSIX host with local disk and ALL writers upgraded.
+#     # SQLite additionally requires exactly one Gateway process.
+#     # host_access:
+#     #   evidence:
+#     #     owners: ["exact-user-id"]
+#     #   skill_mutations:
+#     #     owners: ["exact-user-id"]     # subset of evidence.owners
+#     #     operations: [stage, check, commit, revert]
+#     #     trigger_agents: [lead_agent]  # canonical agent name, not display name
+#     #     target_skills: [example-skill]
+#     #     topology: single_host_local   # operator assertion; excludes NFS/CSI
 #     required: false                     # true makes load failure abort Gateway startup
 #                                         # (install --required opts in)
 #     host_access:                        # optional host-owned grants (restart required)

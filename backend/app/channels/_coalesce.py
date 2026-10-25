@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.channels.message_bus import InboundMessage
 
@@ -31,8 +31,10 @@ DEFAULT_COALESCE_WINDOW = 0.8  # seconds of quiet before a burst is dispatched.
 # 2026-05-29 had a max inter-chunk gap of ~0.44s. Keeps the per-turn latency
 # tax low on normal single messages. Override via channels.coalesce_window.
 
-# dispatch(combined_message) -> awaitable
-Dispatch = Callable[[InboundMessage], Awaitable[None]]
+# dispatch(combined_message) -> awaitable; with ``pass_parts=True``,
+# dispatch(combined_message, parts) so the caller can settle every part's
+# dedupe key (the manager does).
+Dispatch = Callable[..., Awaitable[None]]
 
 
 def _key(msg: InboundMessage) -> tuple[str, str, str | None]:
@@ -41,8 +43,10 @@ def _key(msg: InboundMessage) -> tuple[str, str, str | None]:
 
 def combine_messages(msgs: list[InboundMessage]) -> InboundMessage:
     """Merge a buffered burst into one InboundMessage. Texts joined in arrival
-    order with blank lines; the first message donates identity (chat/user/
-    topic/thread_ts/type); file attachments from all parts are concatenated."""
+    order with blank lines; the first message donates everything else (chat,
+    user, topic, thread_ts, type, connection and owner, metadata and so the
+    dedupe and idempotency key, the playbook fields); file attachments from
+    all parts are concatenated."""
     if len(msgs) == 1:
         return msgs[0]
     head = msgs[0]
@@ -51,17 +55,9 @@ def combine_messages(msgs: list[InboundMessage]) -> InboundMessage:
     for m in msgs:
         if m.files:
             files.extend(m.files)
-    return InboundMessage(
-        channel_name=head.channel_name,
-        chat_id=head.chat_id,
-        user_id=head.user_id,
-        text=text,
-        msg_type=head.msg_type,
-        thread_ts=head.thread_ts,
-        topic_id=head.topic_id,
-        files=files,
-        metadata=head.metadata,
-    )
+    # replace() keeps every field of the head; building a fresh message lost
+    # the connection, owner and playbook fields (unattended, report_url).
+    return replace(head, text=text, files=files)
 
 
 @dataclass
@@ -75,10 +71,20 @@ class MessageCoalescer:
     message; the coalescer fires ``dispatch(combined)`` once a conversation has
     been quiet for ``window`` seconds."""
 
-    def __init__(self, dispatch: Dispatch, *, window: float = DEFAULT_COALESCE_WINDOW) -> None:
+    def __init__(self, dispatch: Dispatch, *, window: float = DEFAULT_COALESCE_WINDOW, pass_parts: bool = False) -> None:
         self._dispatch = dispatch
         self._window = window
+        self._pass_parts = pass_parts
         self._pending: dict[tuple[str, str, str | None], _Pending] = {}
+        # Debounce timers and the bursts they dispatch, so shutdown can wait
+        # for a running burst and cancel it like a worker (flush_nowait).
+        self._tasks: set[asyncio.Task] = set()
+
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     def add(self, msg: InboundMessage) -> None:
         """Buffer a message and (re)arm its conversation's debounce timer."""
@@ -90,7 +96,7 @@ class MessageCoalescer:
         pending.buffer.append(msg)
         if pending.timer and not pending.timer.done():
             pending.timer.cancel()
-        pending.timer = asyncio.ensure_future(self._fire_after_quiet(k))
+        pending.timer = self._spawn(self._fire_after_quiet(k))
 
     async def _fire_after_quiet(self, k: tuple[str, str, str | None]) -> None:
         try:
@@ -100,7 +106,6 @@ class MessageCoalescer:
         pending = self._pending.pop(k, None)
         if not pending or not pending.buffer:
             return
-        combined = combine_messages(pending.buffer)
         if len(pending.buffer) > 1:
             logger.info(
                 "[Coalesce] merged %d messages for chat=%s topic=%s into one turn",
@@ -108,10 +113,31 @@ class MessageCoalescer:
                 k[1],
                 k[2],
             )
-        await self._dispatch(combined)
+        await self._dispatch_buffer(pending.buffer)
+
+    async def _dispatch_buffer(self, buffer: list[InboundMessage]) -> None:
+        combined = combine_messages(buffer)
+        if self._pass_parts:
+            await self._dispatch(combined, list(buffer))
+        else:
+            await self._dispatch(combined)
+
+    def flush_nowait(self) -> set[asyncio.Task]:
+        """Start every buffered burst now and return the tasks still running.
+
+        For shutdown: the caller waits for the returned tasks within its grace
+        period and cancels what is left, as it does with its workers.
+        """
+        for k in list(self._pending):
+            pending = self._pending.pop(k)
+            if pending.timer and not pending.timer.done():
+                pending.timer.cancel()
+            if pending.buffer:
+                self._spawn(self._dispatch_buffer(pending.buffer))
+        return {task for task in self._tasks if not task.done()}
 
     async def flush(self) -> None:
-        """Dispatch any buffered messages immediately (e.g. on shutdown)."""
+        """Dispatch any buffered messages immediately, inline."""
         keys = list(self._pending.keys())
         for k in keys:
             pending = self._pending.pop(k, None)
@@ -120,4 +146,4 @@ class MessageCoalescer:
             if pending.timer and not pending.timer.done():
                 pending.timer.cancel()
             if pending.buffer:
-                await self._dispatch(combine_messages(pending.buffer))
+                await self._dispatch_buffer(pending.buffer)

@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator
 from langgraph.types import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
-from deerflow.persistence.postgres_schema import create_schema_sql, dsn_with_search_path, normalize_libpq_dsn
+from deerflow.persistence.postgres_schema import create_schema_sql, dsn_with_search_path
 from deerflow.runtime.cancellation import drained_async_context
 from deerflow.runtime.checkpointer.provider import (
     POSTGRES_CONN_REQUIRED,
@@ -74,7 +74,12 @@ def _build_postgres_pool(conn_string: str, schema: str = ""):
         "keepalives_interval": 10,
         "keepalives_count": 6,
     }
-    dsn = dsn_with_search_path(normalize_libpq_dsn(conn_string), schema)
+    # Inject search_path into the DSN (merging with any libpq options already in
+    # the conn string) rather than via kwargs["options"], which psycopg applies
+    # *on top of* the conninfo and would silently drop a DSN-supplied option
+    # such as statement_timeout. This also strips a SQLAlchemy ``+driver``
+    # suffix so libpq can parse the DSN. Matches the sync/DSN paths.
+    dsn = dsn_with_search_path(conn_string, schema)
 
     return AsyncConnectionPool(
         dsn,
@@ -109,12 +114,6 @@ def _ensure_postgres_imports():
         from psycopg_pool import AsyncConnectionPool
     except ImportError as exc:
         raise ImportError(POSTGRES_INSTALL) from exc
-
-    # [argus] Install AsyncPostgresSaver.aprune (absent from
-    # langgraph-checkpoint-postgres) so operators can bound checkpoint history
-    # in-process. Self-activating + idempotent on import; no-op if upstream
-    # ever ships a native aprune. See _postgres_aprune.py.
-    from deerflow.runtime.checkpointer import _postgres_aprune  # noqa: F401
 
     return AsyncPostgresSaver, AsyncConnectionPool
 

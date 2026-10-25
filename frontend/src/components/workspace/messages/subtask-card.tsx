@@ -1,3 +1,4 @@
+import type { Message } from "@langchain/langgraph-sdk";
 import {
   CheckCircleIcon,
   ChevronUp,
@@ -17,6 +18,7 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
 import { ShineBorder } from "@/components/ui/shine-border";
+import { readKnowledgeSources } from "@/core/citations/sources";
 import { useI18n } from "@/core/i18n/hooks";
 import { hasToolCalls } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
@@ -31,7 +33,10 @@ import {
 import type { Subtask } from "@/core/tasks";
 import { fetchSubtaskSteps } from "@/core/tasks/api";
 import { useSubtask, useUpdateSubtask } from "@/core/tasks/context";
-import { resolveSubtaskModelLabel } from "@/core/tasks/presentation";
+import {
+  formatSubtaskTokenUsage,
+  resolveSubtaskModelLabel,
+} from "@/core/tasks/presentation";
 import { stepsForDisplay } from "@/core/tasks/steps";
 import { resolveRenderedSubtask } from "@/core/tasks/subtask-render";
 import { explainLastToolCall } from "@/core/tools/utils";
@@ -41,6 +46,7 @@ import { CitationLink } from "../citations/citation-link";
 import { FlipDisplay } from "../flip-display";
 
 import { MarkdownContent } from "./markdown-content";
+import { createMarkdownLinkComponent } from "./markdown-link";
 
 export function SubtaskCard({
   className,
@@ -49,6 +55,7 @@ export function SubtaskCard({
   runId,
   isLoading,
   fallbackTask,
+  resultMessage,
 }: {
   className?: string;
   taskId: string;
@@ -56,13 +63,39 @@ export function SubtaskCard({
   runId?: string;
   isLoading: boolean;
   fallbackTask: Subtask;
+  resultMessage?: Message;
 }) {
   const { t } = useI18n();
+  const reportSources = useMemo(
+    () =>
+      resultMessage?.type === "tool" &&
+      resultMessage.name === "task" &&
+      resultMessage.tool_call_id === taskId
+        ? readKnowledgeSources([resultMessage])
+        : [],
+    [resultMessage, taskId],
+  );
+  const reportComponents = useMemo(
+    () => ({
+      a: createMarkdownLinkComponent(threadId, reportSources),
+    }),
+    [reportSources, threadId],
+  );
   const [collapsed, setCollapsed] = useState(true);
   const task = resolveRenderedSubtask(useSubtask(taskId), fallbackTask)!;
-  const { models } = useModels();
+  const { models, tokenUsageEnabled } = useModels();
   const updateSubtask = useUpdateSubtask();
   const modelLabel = resolveSubtaskModelLabel(task.modelName, models);
+  const tokenLabel = tokenUsageEnabled
+    ? formatSubtaskTokenUsage(task.usage)
+    : undefined;
+  const runtimeUsageLabel = tokenUsageEnabled
+    ? tokenLabel
+      ? `${tokenLabel} ${t.tokenUsage.label}`
+      : task.status === "in_progress"
+        ? t.tokenUsage.collecting
+        : t.tokenUsage.unavailableShort
+    : undefined;
 
   // The card shows the subagent's step timeline (#3779): its reasoning turns
   // (AI text) interleaved with the tools it ran (by name). See stepsForDisplay
@@ -161,6 +194,14 @@ export function SubtaskCard({
                         {modelLabel}
                       </span>
                     )}
+                    {runtimeUsageLabel && (
+                      <span
+                        className="max-w-28 truncate"
+                        title={runtimeUsageLabel}
+                      >
+                        {runtimeUsageLabel}
+                      </span>
+                    )}
                     {icon}
                     <FlipDisplay
                       className="max-w-[420px] truncate pb-1"
@@ -217,7 +258,11 @@ export function SubtaskCard({
                     (step.tool_name ?? t.subtasks[task.status])
                   ) : (
                     <div className="text-muted-foreground line-clamp-3 text-sm">
-                      <MarkdownContent content={step.text} isLoading={false} />
+                      <MarkdownContent
+                        content={step.text}
+                        isLoading={false}
+                        components={reportComponents}
+                      />
                     </div>
                   )
                 }
@@ -234,7 +279,14 @@ export function SubtaskCard({
               <ChainOfThoughtStep
                 label={
                   task.result ? (
-                    <MarkdownContent content={task.result} isLoading={false} />
+                    <MarkdownContent
+                      // Streamdown caches blocks by text. Re-resolve unchanged
+                      // report text when its validated evidence arrives/changes.
+                      key={reportSources.map((source) => source.id).join(",")}
+                      content={task.result}
+                      isLoading={false}
+                      components={reportComponents}
+                    />
                   ) : null
                 }
               ></ChainOfThoughtStep>

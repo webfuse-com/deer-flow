@@ -59,6 +59,8 @@ class _Gateway:
         self.stream_calls: list[str] = []
         self.wait_calls: list[str] = []
         self.run_kwargs: list[dict] = []
+        # Per run request: the Idempotency-Key header and the human message id.
+        self.run_keys: list[tuple[str | None, str | None]] = []
         self.client = MagicMock()
         self.client.threads.get = self._get
         self.client.threads.create = self._create
@@ -79,9 +81,15 @@ class _Gateway:
         self.deleted.discard(kwargs.get("thread_id", ""))
         return {"thread_id": kwargs.get("thread_id") or "thread-new"}
 
+    def _record_keys(self, kwargs) -> None:
+        headers = kwargs.get("headers") or {}
+        messages = (kwargs.get("input") or {}).get("messages") or [{}]
+        self.run_keys.append((headers.get("Idempotency-Key"), messages[0].get("id")))
+
     def _stream(self, thread_id, assistant_id, **kwargs):
         self.stream_calls.append(thread_id)
         self.run_kwargs.append(copy.deepcopy({key: kwargs.get(key) for key in ("config", "context")}))
+        self._record_keys(kwargs)
 
         async def gen():
             if self.other_404:
@@ -96,6 +104,7 @@ class _Gateway:
     async def _wait(self, thread_id, assistant_id, **kwargs):
         self.wait_calls.append(thread_id)
         self.run_kwargs.append(copy.deepcopy({key: kwargs.get(key) for key in ("config", "context")}))
+        self._record_keys(kwargs)
         if self._missing(thread_id):
             raise _not_found(f"Thread {thread_id} not found")
         return {"messages": [{"type": "human", "content": "hi"}, {"type": "ai", "content": "Hello again"}]}
@@ -359,3 +368,160 @@ def test_thread_delete_route_without_channels_still_succeeds(tmp_path):
     ):
         with TestClient(app) as client:
             assert client.delete("/api/threads/thread-x").status_code == 200
+
+
+# -- sync 2026-10-25: the heal under upstream's idempotent run admission (#7104) --
+
+
+@pytest.mark.parametrize("path", ["stream", "wait"])
+@pytest.mark.parametrize("refused", [False, True], ids=["same-id", "fresh-thread"])
+def test_the_retry_keeps_the_messages_idempotency_key_and_message_id(path, refused):
+    """The healed retry is the same request as far as admission is concerned:
+    the same Idempotency-Key and the same keyed human message id, also when it
+    lands on a fresh thread. The Gateway refused the first attempt before it
+    admitted anything (see the start_run test below), so the retry is
+    admitted as this message's run."""
+    gateway = _Gateway(deleted={"thread-old"})
+    if refused:
+
+        async def refuse_same_id(**kwargs):
+            gateway.creates.append(kwargs)
+            if kwargs.get("thread_id"):
+                raise RuntimeError("refused")
+            return {"thread_id": "thread-new"}
+
+        gateway.client.threads.create = refuse_same_id
+    if path == "stream":
+        msg = _telegram()
+    else:
+        msg = InboundMessage(channel_name="slack", chat_id="C1", user_id="U1", text="hi", metadata={"message_id": "1", "team_id": "T1"})
+    _manager, outbound = _run(_chat(gateway, msg))
+
+    key = ChannelManager._run_idempotency_key(msg)
+    message_id = ChannelManager._human_message_id(msg)
+    assert key and message_id
+    assert gateway.run_keys == [(key, message_id), (key, message_id)]
+    calls = gateway.stream_calls if path == "stream" else gateway.wait_calls
+    assert calls == ["thread-old", "thread-new" if refused else "thread-old"]
+    assert "Hello again" in [m.text for m in outbound]
+
+
+def test_a_healed_thread_tells_the_adapter_the_old_one_was_replaced(monkeypatch):
+    """Upstream's ``on_thread_replaced`` (#7357) retires per-thread adapter state
+    (pending interactive cards) when a conversation moves on, as ``/new`` does."""
+    replaced: list[str] = []
+    channel = SimpleNamespace(on_thread_replaced=replaced.append)
+    service = SimpleNamespace(get_channel=lambda name: channel if name == "telegram" else None)
+    monkeypatch.setattr("app.channels.service.get_channel_service", lambda: service)
+    monkeypatch.setattr(ChannelManager, "_channel_supports_streaming", staticmethod(lambda name: True))
+
+    gateway = _Gateway(deleted={"thread-old"})
+    _run(_chat(gateway, _telegram()))
+    assert replaced == ["thread-old"]
+
+    replaced.clear()
+    gateway = _Gateway(deleted={"thread-old"})
+
+    async def refuse_same_id(**kwargs):
+        gateway.creates.append(kwargs)
+        if kwargs.get("thread_id"):
+            raise RuntimeError("refused")
+        return {"thread_id": "thread-new"}
+
+    gateway.client.threads.create = refuse_same_id
+    _run(_chat(gateway, _telegram()))
+    assert replaced == ["thread-old"]
+
+
+@pytest.mark.anyio
+async def test_the_gateway_refuses_a_missing_thread_before_admission_so_the_keyed_retry_is_admitted():
+    """The Gateway half of the contract the heal relies on.
+
+    ``start_run`` answers "Thread X not found" before ``create_or_reject`` sees
+    the Idempotency-Key, so nothing is recorded for the refused attempt. The
+    retry with the same key and input, on the re-registered thread or on a
+    fresh one, is admitted as a new run, not attached to a run of the deleted
+    thread and not refused as "Idempotency-Key already used".
+    """
+    from fastapi import HTTPException
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.store.memory import InMemoryStore
+
+    from app.channels.manager import _human_input_message
+    from app.gateway.run_models import RunCreateRequest
+    from app.gateway.services import start_run
+    from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
+    from deerflow.runtime import RunManager
+    from deerflow.runtime.events.store.memory import MemoryRunEventStore
+    from deerflow.runtime.runs.store.memory import MemoryRunStore
+
+    msg = _telegram()
+    key = f"internal-run:{ChannelManager._run_idempotency_key(msg)}"
+
+    def body() -> RunCreateRequest:
+        return RunCreateRequest(input={"messages": [_human_input_message(msg.text, message_id=ChannelManager._human_message_id(msg))]}, on_disconnect="continue")
+
+    store = InMemoryStore()
+    thread_store = MemoryThreadMetaStore(store)
+    run_store = MemoryRunStore()
+    run_manager = RunManager(store=run_store, worker_id="worker-a")
+    request = SimpleNamespace(
+        headers={},
+        state=SimpleNamespace(auth_source=None, user=None),
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                stream_bridge=SimpleNamespace(),
+                run_manager=run_manager,
+                checkpointer=InMemorySaver(),
+                store=store,
+                run_event_store=MemoryRunEventStore(),
+                run_events_config=None,
+                thread_store=thread_store,
+            )
+        ),
+    )
+
+    async def fake_run_agent(*args, **kwargs):
+        del args, kwargs
+        await asyncio.Event().wait()
+
+    set_app_config(AppConfig.model_validate({"sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"}}))
+    admitted = []
+    try:
+        with (
+            patch("app.gateway.services.resolve_agent_factory", return_value=object()),
+            patch("app.gateway.services.run_agent", side_effect=fake_run_agent),
+        ):
+            with pytest.raises(HTTPException) as excinfo:
+                await start_run(body(), "thread-old", request, idempotency_key=key, require_existing_thread=True)
+            assert excinfo.value.status_code == 404
+            assert "Thread thread-old not found" in str(excinfo.value.detail)
+            assert await run_store.list_by_thread("thread-old") == []
+
+            # The heal: the same id registered again, or a fresh thread bound.
+            for thread_id in ("thread-old", "thread-new"):
+                await thread_store.create(thread_id)
+            record = await start_run(body(), "thread-old", request, idempotency_key=key, require_existing_thread=True)
+            admitted.append(record)
+            assert record.idempotency_reused is False
+            assert [r["run_id"] for r in await run_store.list_by_thread("thread-old")] == [record.run_id]
+
+        # The fresh-thread variant on its own Gateway (one key per owner).
+        run_store_b = MemoryRunStore()
+        request.app.state.run_manager = RunManager(store=run_store_b, worker_id="worker-b")
+        with (
+            patch("app.gateway.services.resolve_agent_factory", return_value=object()),
+            patch("app.gateway.services.run_agent", side_effect=fake_run_agent),
+        ):
+            with pytest.raises(HTTPException):
+                await start_run(body(), "thread-gone", request, idempotency_key=key, require_existing_thread=True)
+            record_b = await start_run(body(), "thread-new", request, idempotency_key=key, require_existing_thread=True)
+            admitted.append(record_b)
+            assert record_b.idempotency_reused is False
+    finally:
+        for record in admitted:
+            if record.task is not None:
+                record.task.cancel()
+                await asyncio.gather(record.task, return_exceptions=True)
+        reset_app_config()

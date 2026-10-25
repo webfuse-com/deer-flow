@@ -1,5 +1,4 @@
 import base64
-import errno
 import logging
 import math
 import re
@@ -10,8 +9,11 @@ from dataclasses import dataclass, field
 import httpx
 from agent_sandbox import Sandbox as AioSandboxClient
 from agent_sandbox.core.api_error import ApiError
+from pydantic import ValidationError
 
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
+from deerflow.sandbox.download import DEFAULT_DOWNLOAD_LIMIT as _MAX_DOWNLOAD_SIZE
+from deerflow.sandbox.download import download_limit, read_download_stream
 from deerflow.sandbox.remote_list_dir import parse_remote_list_dir_output, remote_list_dir_command
 from deerflow.sandbox.sandbox import Sandbox, _validate_extra_env
 from deerflow.sandbox.search import GrepMatch, path_matches, should_ignore_path_under_root, truncate_line
@@ -19,8 +21,6 @@ from deerflow.sandbox.search import GrepMatch, path_matches, should_ignore_path_
 from .backend import sandbox_http_trust_env
 
 logger = logging.getLogger(__name__)
-
-_MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
 _ERROR_OBSERVATION_SIGNATURE = "'ErrorObservation' object has no attribute 'exit_code'"
 
@@ -57,6 +57,18 @@ class _SessionCreationState:
 # [argus patch #104] Builtins whose effect applies when later lines are
 # parsed; a brace group around them changes how the rest of the command parses.
 _PARSE_TIME_BUILTINS = re.compile(r"(?:^|[;&|({\s])(?:shopt|alias|enable)(?=\s|$)", re.MULTILINE)
+# [argus patch #1] Ends the base64 heredoc; base64 lines never contain "_".
+_B64_DELIMITER = "__ARGUS_B64__"
+# [argus patch #1] The pinned image's shell drops, without running it and
+# reporting exit 0 with no output, a command over about 16,340 UTF-8 bytes or
+# one with a line over about 2,114-2,175 bytes (measured 2026-10-25 against
+# the pinned image; the line limit varies with the characters).
+_PANE_COMMAND_MAX_BYTES = 16_000
+_PANE_LINE_MAX_BYTES = 2_000
+
+
+def _longest_line_bytes(text: str) -> int:
+    return max(len(line.encode("utf-8")) for line in text.split("\n"))
 
 
 class AioSandbox(Sandbox):
@@ -431,6 +443,20 @@ class AioSandbox(Sandbox):
         So is one that runs ``shopt``, ``alias`` or ``enable``: bash parses a
         brace group whole before running it, so an ``extglob`` pattern or an
         alias defined earlier in the same command would no longer parse.
+
+        [argus patch #1, inside #104] The pane's shell is interactive, so
+        history expansion is on and a `!` in a typed line (`"#!/bin/bash"`,
+        `"<!DOCTYPE html>"`) fails with "event not found" while the call
+        reports exit 0. `set +H` cannot help: expansion happens as the line is
+        read, and a call without a session id gets a fresh shell. A body with
+        a `!`, or with a line over ``_PANE_LINE_MAX_BYTES`` (which the pane
+        drops unrun), therefore travels base64-encoded in a heredoc of
+        76-character lines and runs through `eval`, whose string is never
+        history-expanded; it stays in the same brace group. Base64 is about a
+        third longer, so when the encoded form would pass
+        ``_PANE_COMMAND_MAX_BYTES`` the plain form is sent (a `!` inside a
+        heredoc body or single quotes was never expanded), and
+        :meth:`_pane_refusal` stops whatever still cannot run.
         """
         body = command.rstrip()
         if not body or body.endswith("\\"):
@@ -439,7 +465,32 @@ class AioSandbox(Sandbox):
             return command
         if all(not line.strip() or line.lstrip().startswith("#") for line in body.splitlines()):
             return command
-        return "{ " + body + "\n} </dev/null"
+        plain = "{ " + body + "\n} </dev/null"
+        if "!" in body or _longest_line_bytes(plain) > _PANE_LINE_MAX_BYTES:
+            encoded = base64.encodebytes(body.encode("utf-8")).decode("ascii")
+            wrapped = "{ eval \"$(base64 -d <<'" + _B64_DELIMITER + "'\n" + encoded + _B64_DELIMITER + '\n)"\n} </dev/null'
+            if len(wrapped) <= _PANE_COMMAND_MAX_BYTES:
+                return wrapped
+        return plain
+
+    @staticmethod
+    def _pane_refusal(sent: str) -> str | None:
+        """[argus patch #1] Why the pane would drop ``sent`` unrun, as a tool error.
+
+        The pinned image reports such a command as exit 0 with no output, so
+        the model took a heredoc that never ran for a written file. This runs
+        below ``sandbox.command_max_chars`` (25,000 on the fleet), which the
+        audit middleware enforces first.
+        """
+        size = len(sent.encode("utf-8"))
+        if size > _PANE_COMMAND_MAX_BYTES:
+            reason = f"it is {size:,} bytes as sent, and the sandbox shell drops a command over {_PANE_COMMAND_MAX_BYTES:,} bytes"
+        else:
+            longest = _longest_line_bytes(sent)
+            if longest <= _PANE_LINE_MAX_BYTES:
+                return None
+            reason = f"it has a line of {longest:,} bytes, and the sandbox shell drops a line over {_PANE_LINE_MAX_BYTES:,} bytes"
+        return f"Error: this command was not run: {reason} without running it. Write the script or data to a file with write_file, then run that file with a short bash command."
 
     def _exec_shell(
         self,
@@ -449,11 +500,17 @@ class AioSandbox(Sandbox):
         session_id: str | None,
         timeout: float,
     ) -> tuple[str, int | None, str | None]:
+        sent = self._noninteractive(command)
+        refusal = self._pane_refusal(sent)
+        if refusal is not None:
+            # [argus patch #1] Not sent: a failed call, where the pane would
+            # have reported exit 0 without running anything.
+            return refusal, 1, "completed"
         kwargs = {
             # [argus patch #104] Upstream keeps the /v1/shell PTY stdin for its
             # Lark broker shim, which Argus does not run; we give each command
             # stdin from /dev/null so nothing waits on a prompt.
-            "command": self._noninteractive(command),
+            "command": sent,
             "no_change_timeout": self._effective_no_change_timeout(timeout),
             "hard_timeout": timeout,
             "request_options": self._command_request_options(timeout),
@@ -1071,11 +1128,21 @@ class AioSandbox(Sandbox):
                 kwargs["end_line"] = max(end_line, 0)
             result = self._client.file.read_file(file=path, **kwargs)
             return result.data.content if result.data else ""
+        except ValidationError as e:
+            # The server reports read failures (e.g. ENOENT) as an error
+            # envelope with ``data: {}``, which cannot satisfy the required
+            # ``content``/``file`` fields of the SDK's FileReadResult model,
+            # so the SDK raises a ValidationError. A missing file is an
+            # expected outcome (ReadBeforeWrite probes every new-file write),
+            # so log quietly and return an explicit, model-actionable result
+            # instead of leaking the pydantic error text.
+            logger.debug("Sandbox read_file validation failure for %r: %s", path, e)
+            return f"Error: file not found or unreadable: {path}"
         except Exception as e:
             logger.error(f"Failed to read file in sandbox: {e}")
             return f"Error: {e}"
 
-    def download_file(self, path: str) -> bytes:
+    def download_file(self, path: str, *, max_bytes: int | None = None) -> bytes:
         """Download file bytes from the sandbox.
 
         Raises:
@@ -1083,6 +1150,7 @@ class AioSandbox(Sandbox):
                 outside ``VIRTUAL_PATH_PREFIX``.
             OSError: If the file cannot be retrieved from the sandbox.
         """
+        limit = download_limit(max_bytes, _MAX_DOWNLOAD_SIZE)
         # Reject path traversal before sending to the container API.
         # LocalSandbox gets this implicitly via _resolve_path;
         # here the path is forwarded verbatim so we must check explicitly.
@@ -1098,20 +1166,14 @@ class AioSandbox(Sandbox):
             logger.error("Refused download outside allowed directory: path=%s, allowed_prefix=%s", path, VIRTUAL_PATH_PREFIX)
             raise PermissionError(f"Access denied: path must be under '{VIRTUAL_PATH_PREFIX}': '{path}'")
 
+        # Keep the lock through iteration and stream cleanup: the SDK iterator
+        # opens its HTTP response lazily, and close() detaches this client under
+        # the same lock before closing its pooled connections. Request-level
+        # concurrency does not make a download safe against concurrent close.
         with self._lock:
             try:
-                chunks: list[bytes] = []
-                total = 0
-                for chunk in self._client.file.download_file(path=path):
-                    total += len(chunk)
-                    if total > _MAX_DOWNLOAD_SIZE:
-                        raise OSError(
-                            errno.EFBIG,
-                            f"File exceeds maximum download size of {_MAX_DOWNLOAD_SIZE} bytes",
-                            path,
-                        )
-                    chunks.append(chunk)
-                return b"".join(chunks)
+                stream = self._client.file.download_file(path=path)
+                return read_download_stream(stream, limit, path)
             except OSError:
                 raise
             except Exception as e:

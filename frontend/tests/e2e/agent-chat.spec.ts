@@ -306,16 +306,16 @@ test.describe("Agent chat", () => {
     mock,
   } of [
     {
-      name: "hides the Browser header trigger for an explicit browser tool group",
+      name: "shows Browser Live for an explicit browser tool group",
       toolGroups: ["browser"],
       browserControlEnabled: true,
-      expectedVisible: false,
+      expectedVisible: true,
     },
     {
-      name: "hides the Browser header trigger when tool groups are unrestricted",
+      name: "shows Browser Live when tool groups are unrestricted",
       toolGroups: null,
       browserControlEnabled: true,
-      expectedVisible: false,
+      expectedVisible: true,
     },
     {
       name: "hides Browser Live without the browser tool group",

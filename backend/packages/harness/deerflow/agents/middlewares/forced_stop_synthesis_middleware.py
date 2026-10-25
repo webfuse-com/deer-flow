@@ -25,8 +25,11 @@ Bounded by construction: one synthesis per run. Tools are removed rather than
 ``tool_choice="none"`` because some routes reject ``tool_choice`` (LiteLLM
 ``gpt-5.6-luna`` with reasoning effort answers 400) while every route tested
 accepts a tool history with no tools bound. If the synthesis call raises or
-comes back blank after ``EmptyFinalRetryMiddleware``'s one retry, the stored
-notice is returned, which is exactly what the user got before this patch.
+comes back blank after one retry, the stored notice is returned, which is
+exactly what the user got before this patch. The retry is this middleware's own
+for an empty answer (upstream's model-boundary empty-response retry never sees
+it, because the notice replaces it first) and ``EmptyFinalRetryMiddleware``'s
+for filler (``.``); unattended runs take neither (#44).
 
 Lead agent only. A subagent's banner goes to the lead, which synthesizes, and
 the subagent turn budget treats jumping hooks as unbounded.
@@ -46,6 +49,8 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.errors import GraphBubbleUp
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.empty_final_retry_middleware import is_unattended_run
+from deerflow.agents.middlewares.model_response import has_visible_content, last_ai_message
 from deerflow.utils.messages import is_blank_text
 
 logger = logging.getLogger(__name__)
@@ -172,6 +177,12 @@ class ForcedStopSynthesisMiddleware(AgentMiddleware):
         return request.override(tools=[], tool_choice=None, messages=[*request.messages, instruction])
 
     @staticmethod
+    def _needs_retry(request: ModelRequest, response: ModelCallResult) -> bool:
+        """An empty synthesis (no visible text) on an attended run gets one more call."""
+        message = last_ai_message(response)
+        return message is not None and not has_visible_content(message) and not is_unattended_run(getattr(request, "runtime", None))
+
+    @staticmethod
     def _fallback(pending: dict[str, str]) -> AIMessage:
         return AIMessage(
             content=pending["notice"] or "[FORCED STOP] This run reached a safety limit.",
@@ -207,8 +218,12 @@ class ForcedStopSynthesisMiddleware(AgentMiddleware):
         pending = self._take_pending(request)
         if pending is None:
             return handler(request)
+        synthesis_request = self._synthesis_request(request, pending)
         try:
-            response = handler(self._synthesis_request(request, pending))
+            response = handler(synthesis_request)
+            if self._needs_retry(request, response):
+                logger.warning("Forced-stop synthesis came back empty; retrying once")
+                response = handler(synthesis_request)
         except GraphBubbleUp:
             raise
         except Exception:  # noqa: BLE001 - the notice is the pre-patch outcome
@@ -225,8 +240,12 @@ class ForcedStopSynthesisMiddleware(AgentMiddleware):
         pending = self._take_pending(request)
         if pending is None:
             return await handler(request)
+        synthesis_request = self._synthesis_request(request, pending)
         try:
-            response = await handler(self._synthesis_request(request, pending))
+            response = await handler(synthesis_request)
+            if self._needs_retry(request, response):
+                logger.warning("Forced-stop synthesis came back empty; retrying once")
+                response = await handler(synthesis_request)
         except GraphBubbleUp:
             raise
         except Exception:  # noqa: BLE001 - the notice is the pre-patch outcome

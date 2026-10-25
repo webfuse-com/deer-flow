@@ -51,7 +51,7 @@ test("a new project chat files its first message under the project", async () =>
     { wrapper },
   );
   expect(result.current.projectParam).toBe("p1");
-  await result.current.prepareSubmission();
+  await result.current.ensureProjectThread();
   expect(mocks.createThread).toHaveBeenCalledWith("t1", "p1");
   expect(client.getQueryData(["thread", "metadata", "t1", false])).toEqual(
     created,
@@ -65,7 +65,7 @@ test("an existing chat ignores the project parameter", async () => {
     { wrapper },
   );
   expect(result.current.projectParam).toBeNull();
-  await result.current.prepareSubmission();
+  await result.current.ensureProjectThread();
   expect(mocks.createThread).not.toHaveBeenCalled();
 });
 
@@ -76,20 +76,24 @@ test("an unavailable project refuses the send and says so", async () => {
     () => useProjectNewChat({ threadId: "t1", isNewThread: true }),
     { wrapper },
   );
-  await expect(result.current.prepareSubmission()).rejects.toThrow("404");
+  await expect(result.current.ensureProjectThread()).rejects.toThrow("404");
   expect(mocks.toastError).toHaveBeenCalledWith("Project unavailable");
 });
 
-test("switching conversation during the pre-create drops the stale send", async () => {
+test("switching conversation or project scope moves the submission fence", () => {
   mocks.search = "project=p1";
-  let resolve: (value: unknown) => void = () => undefined;
-  mocks.createThread.mockReturnValue(new Promise((r) => (resolve = r)));
   const { result, rerender } = renderHook(
     ({ threadId }) => useProjectNewChat({ threadId, isNewThread: true }),
     { wrapper, initialProps: { threadId: "t1" } },
   );
-  const pending = result.current.prepareSubmission();
+  const fence = result.current.submissionEpochRef;
+  const submissionEpoch = fence.current;
+  rerender({ threadId: "t1" });
+  expect(fence.current).toBe(submissionEpoch);
   rerender({ threadId: "t2" });
-  resolve({ thread_id: "t1" });
-  await expect(pending).rejects.toThrow("thread-submission-stale");
+  expect(fence.current).not.toBe(submissionEpoch);
+  const afterSwitch = fence.current;
+  mocks.search = "";
+  rerender({ threadId: "t2" });
+  expect(fence.current).not.toBe(afterSwitch);
 });

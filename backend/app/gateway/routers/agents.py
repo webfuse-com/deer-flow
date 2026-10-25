@@ -6,10 +6,11 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from app.gateway.authz import require_permission
+from app.gateway.deps import get_config
 from app.gateway.persistent_writes import run_drained_write
 from deerflow.agents.memory.manager import get_memory_manager
 from deerflow.config.agents_api_config import get_agents_api_config
@@ -22,7 +23,7 @@ from deerflow.config.agents_config import (
     load_agent_soul,
     preserve_non_managed_fields,
 )
-from deerflow.config.app_config import get_app_config
+from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.paths import get_paths
 from deerflow.knowledge_scope import KnowledgeScope, canonicalize_knowledge_scope
 from deerflow.persistence.agents import AgentDeleteOutcome, AgentExistsError, AgentStoreError, get_agent_store
@@ -75,6 +76,12 @@ class AgentsListResponse(BaseModel):
     """Response model for listing all custom agents."""
 
     agents: list[AgentResponse]
+
+
+class ToolGroupsResponse(BaseModel):
+    """Configured tool groups safe to present in Agent settings."""
+
+    tool_groups: list[str]
 
 
 class AgentCreateRequest(BaseModel):
@@ -292,6 +299,11 @@ def _build_agent_config(body: AgentCreateRequest, normalized_name: str, *, memor
     return config_data
 
 
+def _configured_tool_group_names(config: AppConfig) -> list[str]:
+    """Project configured group names without exposing tool definitions."""
+    return list(dict.fromkeys(group.name for group in config.tool_groups))
+
+
 async def _persist_new_agent(body: AgentCreateRequest, normalized_name: str, user_id: str, *, memory_enabled: bool = True) -> AgentResponse:
     """Atomically create and reload one user-scoped agent."""
     config_data = _build_agent_config(body, normalized_name, memory_enabled=memory_enabled)
@@ -334,7 +346,23 @@ async def list_agents(request: Request) -> AgentsListResponse:
         return await asyncio.to_thread(_list)
     except Exception as e:
         logger.error(f"Failed to list agents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list agents")
+
+
+@router.get(
+    "/agent-tool-groups",
+    response_model=ToolGroupsResponse,
+    summary="List Agent Tool Groups",
+    description="List configured tool-group names available for custom-agent allowlists.",
+)
+@require_permission("agents", "read")
+async def list_agent_tool_groups(
+    request: Request,
+    config: AppConfig = Depends(get_config),
+) -> ToolGroupsResponse:
+    """Return names only; tool implementations and configuration stay private."""
+    _require_agents_api_enabled()
+    return ToolGroupsResponse(tool_groups=_configured_tool_group_names(config))
 
 
 @router.get(
@@ -490,7 +518,7 @@ async def get_agent(name: str, request: Request) -> AgentResponse:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     except Exception as e:
         logger.error(f"Failed to get agent '{name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get agent")
 
 
 @router.post(
@@ -528,7 +556,7 @@ async def create_agent_endpoint(body: AgentCreateRequest, request: Request) -> A
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to create agent '{body.name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create agent")
 
 
 @router.put(
@@ -561,11 +589,14 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
         agent_cfg = await asyncio.to_thread(load_agent_config, name, user_id=user_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    except Exception as e:
+        logger.error(f"Failed to update agent '{name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update agent")
 
     def _is_legacy_only_layout() -> bool:
         # [argus patch #109] The store decides (file backend: config.yaml only
-        # in the legacy shared layout, see #3390; a store that owns that layout
-        # says no). Filesystem IO, so off the event loop.
+        # in the legacy shared layout, see #3390; SQL stores and a store that
+        # owns that layout say no). Filesystem IO, so off the event loop.
         return bool(_store_hook(get_agent_store(), "is_legacy_only", lambda *_a, **_k: False)(name, user_id=user_id))
 
     if await asyncio.to_thread(_is_legacy_only_layout):
@@ -629,7 +660,7 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
             # ``github:`` binding — which would otherwise leave the next
             # webhook delivery unable to find the agent in the registry and
             # silently no-op.
-            for key, value in preserve_non_managed_fields(agent_cfg).items():
+            for key, value in preserve_non_managed_fields(agent_cfg, new_tool_groups=new_tool_groups).items():
                 updated.setdefault(key, value)
 
         # Persist config (when changed) and/or soul (when provided) off the
@@ -656,7 +687,7 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to update agent '{name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update agent")
 
 
 class UserProfileResponse(BaseModel):
@@ -705,7 +736,7 @@ async def get_user_profile(request: Request) -> UserProfileResponse:
         return UserProfileResponse(content=raw or None)
     except Exception as e:
         logger.error(f"Failed to read user profile: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to read user profile: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to read user profile")
 
 
 @router.put(
@@ -745,7 +776,7 @@ async def update_user_profile(body: UserProfileUpdateRequest, request: Request) 
         return UserProfileResponse(content=body.content or None)
     except Exception as e:
         logger.error(f"Failed to update user profile: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to update user profile: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update user profile")
 
 
 @router.delete(
@@ -778,7 +809,7 @@ async def delete_agent(name: str, request: Request) -> None:
         raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to delete agent '{name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete agent")
 
     if outcome == "legacy":
         raise HTTPException(

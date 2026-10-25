@@ -146,8 +146,26 @@ def test_blank_synthesis_after_retry_falls_back_to_the_notice():
 
     final = result["messages"][-1]
     assert "[FORCED STOP]" in final.content
-    # EmptyFinalRetryMiddleware retried the blank synthesis once, tools still off.
+    # The empty synthesis was retried once (by this middleware: upstream's
+    # empty-response retry never sees it), tools still off.
     assert [c["tools"] for c in model.calls[-2:]] == [[], []]
+    assert sum(1 for c in model.calls if not c["tools"]) == 2
+
+
+def test_filler_synthesis_is_retried_once_by_empty_final_retry():
+    model = _model(synthesis=".")
+    result = _run(_graph(model))
+
+    assert "[FORCED STOP]" in result["messages"][-1].content
+    assert sum(1 for c in model.calls if not c["tools"]) == 2
+
+
+def test_unattended_blank_synthesis_is_not_retried():
+    model = _model(synthesis="")
+    result = _run(_graph(model), context={"thread_id": "t1", "run_id": f"r-{time.monotonic_ns()}", "unattended": True})
+
+    assert "[FORCED STOP]" in result["messages"][-1].content
+    assert sum(1 for c in model.calls if not c["tools"]) == 1
 
 
 def test_without_run_id_the_notice_is_kept():

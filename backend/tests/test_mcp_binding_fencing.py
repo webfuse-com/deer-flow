@@ -105,6 +105,62 @@ async def test_reconcile_detaches_only_changed_server_and_preserves_registry_key
 
 
 @pytest.mark.asyncio
+async def test_reconcile_force_rebind_reepochs_same_fingerprint_and_preserves_others():
+    """A shared generation change re-epochs A even though its fingerprint is unchanged.
+
+    ``force_rebind`` lets a caller that already knows a
+    server's shared lifecycle version changed install a fresh binding in the
+    same non-awaiting critical section, without a second teardown owner and
+    without touching any other domain or server.
+    """
+    pool = MCPSessionPool()
+    loop = asyncio.get_running_loop()
+    a = pool.ensure_binding("A", "same-fp")
+    b = pool.ensure_binding("B", "b-fp")
+    personal_a = pool.ensure_binding("A", "same-fp", domain="personal")
+    cm_a = _GatedSessionCm()
+    cm_b = _GatedSessionCm()
+    cm_personal = _GatedSessionCm()
+
+    with patch("langchain_mcp_adapters.sessions.create_session", side_effect=[cm_a, cm_b, cm_personal]):
+        session_a = await pool.get_session("A", "u:t", _CONNECTION, binding=a)
+        session_b = await pool.get_session("B", "u:t", _CONNECTION, binding=b)
+        session_personal = await pool.get_session("A", "u:p", _CONNECTION, binding=personal_a)
+
+    prepared = pool.reconcile_bindings({"A": "same-fp", "B": "b-fp"}, (), force_rebind={"A"})
+
+    current_a = pool._bindings[("deployment", "A")]
+    assert current_a is not a
+    assert current_a.fingerprint == "same-fp"
+    assert current_a.epoch > a.epoch
+
+    # Only the forced server changed; its sibling and the personal same-name
+    # binding keep their exact capability objects.
+    assert pool._bindings[("deployment", "B")] is b
+    assert pool._bindings[("personal", "A")] is personal_a
+
+    # Only the forced server's established session is detached and signalled.
+    assert [entry[0] for entry in prepared.entries] == [session_a]
+    assert prepared.inflight == ()
+    assert pool._entries[("B", "u:t", loop, "deployment")][0] is session_b
+    assert pool._entries[("A", "u:p", loop, "personal")][0] is session_personal
+    assert cm_b.closed is False
+    assert cm_personal.closed is False
+
+    # The old capability can no longer create or return the session.
+    with pytest.raises(StaleMCPBindingError):
+        await pool.get_session("A", "u:t", _CONNECTION, binding=a)
+
+    await asyncio.wait_for(prepared.entries[0][2], timeout=1)
+    assert cm_a.closed is True
+
+    # Re-consuming an already-applied generation is a no-op: A stays stable.
+    again = pool.reconcile_bindings({"A": "same-fp", "B": "b-fp"}, ())
+    assert again.entries == ()
+    assert pool._bindings[("deployment", "A")] is current_a
+
+
+@pytest.mark.asyncio
 async def test_stale_binding_fails_before_session_creation():
     pool = MCPSessionPool()
     old = pool.ensure_binding("A", "a1")
@@ -261,8 +317,11 @@ async def test_durable_stdio_call_binds_base_connection_before_workspace_augment
     )
     result = SimpleNamespace(structuredContent={"status": "running"}, isError=False)
     session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
+    cm = _GatedSessionCm()
+    cm.session = session
+    session.initialize = cm.initialize
     pool = MCPSessionPool()
-    pool.get_session = AsyncMock(return_value=session)
+    pool.get_session = AsyncMock(wraps=pool.get_session)
 
     prepared = {
         "transport": "stdio",
@@ -273,27 +332,31 @@ async def test_durable_stdio_call_binds_base_connection_before_workspace_augment
     }
 
     caller = McpTaskToolCaller(config)
-    with (
-        patch("deerflow.mcp.task_tool_caller.get_session_pool", return_value=pool),
-        patch("deerflow.mcp.task_tool_caller._prepare_stdio_connection", return_value=prepared),
-    ):
-        actual = await caller.call_tool(
-            server_name="reports",
-            tool_name="status_report",
-            arguments={"task_id": "1"},
-            user_id="u1",
-            thread_id="t1",
-        )
+    try:
+        with (
+            patch("deerflow.mcp.task_tool_caller.get_session_pool", return_value=pool),
+            patch("deerflow.mcp.task_tool_caller._prepare_stdio_connection", return_value=prepared),
+            patch("langchain_mcp_adapters.sessions.create_session", return_value=cm),
+        ):
+            actual = await caller.call_tool(
+                server_name="reports",
+                tool_name="status_report",
+                arguments={"task_id": "1"},
+                user_id="u1",
+                thread_id="t1",
+            )
 
-    assert actual is result
-    binding = pool._bindings[("deployment", "reports")]
-    assert binding.fingerprint == normalized_connection_fingerprint({"transport": "stdio", "command": "report-mcp", "args": []})
-    pool.get_session.assert_awaited_once_with(
-        "reports",
-        "u1:t1",
-        prepared,
-        binding=binding,
-    )
+        assert actual is result
+        binding = pool._bindings[("deployment", "reports")]
+        assert binding.fingerprint == normalized_connection_fingerprint({"transport": "stdio", "command": "report-mcp", "args": []})
+        pool.get_session.assert_awaited_once_with(
+            "reports",
+            "u1:t1",
+            prepared,
+            binding=binding,
+        )
+    finally:
+        await pool.close_all()
 
 
 def test_ensure_binding_rejects_changed_fingerprint():

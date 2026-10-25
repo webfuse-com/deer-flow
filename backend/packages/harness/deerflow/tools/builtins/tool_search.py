@@ -24,16 +24,17 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
+from time import monotonic
 from typing import TYPE_CHECKING, Annotated, Any
 
+import regex
 from langchain.tools import BaseTool
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.utils.function_calling import convert_to_openai_function
-from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
-from deerflow.tools.mcp_metadata import get_mcp_routing, is_mcp_tool
+from deerflow.tools.mcp_metadata import get_mcp_routing, get_mcp_source, is_mcp_tool
 
 if TYPE_CHECKING:
     from langchain.agents.middleware import AgentMiddleware
@@ -41,18 +42,65 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 5  # Max tools returned per search
+MAX_REGEX_PATTERN_CHARS = 256
+MAX_REGEX_FIELD_CHARS = 65_536
+REGEX_QUERY_TIMEOUT_SECONDS = 0.1
+MAX_KEYWORD_QUERY_CHARS = 256
+MAX_KEYWORD_QUERY_TERMS = 16
 
 
-def _compile_catalog_regex(pattern: str) -> re.Pattern[str]:
+class ToolSearchLimitError(ValueError):
+    """The query exceeded the discovery budget; no partial ranking is valid."""
+
+    def __init__(self, message: str, *, retry_hint: str = "Use a simpler query, keywords: for literal search, or select: with exact tool names."):
+        super().__init__(message)
+        self.retry_hint = retry_hint
+
+
+def _compile_catalog_regex(pattern: str) -> regex.Pattern[str]:
     """Compile ``pattern`` case-insensitively, falling back to a literal match.
 
     Search queries come from the model, so an invalid regex (e.g. an unbalanced
     paren) must degrade to a literal substring match rather than raise.
     """
+    if len(pattern) > MAX_REGEX_PATTERN_CHARS:
+        raise ToolSearchLimitError(f"Regex pattern exceeds the {MAX_REGEX_PATTERN_CHARS}-character budget.")
     try:
-        return re.compile(pattern, re.IGNORECASE)
+        # Keep Python re's accepted syntax and invalid-pattern literal fallback;
+        # do not accidentally enable regex-only features such as recursion.
+        re.compile(pattern, re.IGNORECASE)
     except re.error:
-        return re.compile(re.escape(pattern), re.IGNORECASE)
+        pattern = re.escape(pattern)
+    except (RecursionError, OverflowError) as exc:
+        raise ToolSearchLimitError("Regex compilation exceeds the supported query budget.") from exc
+    try:
+        return regex.compile(pattern, regex.IGNORECASE | regex.VERSION0)
+    except (regex.error, RecursionError, OverflowError) as exc:
+        raise ToolSearchLimitError("Regex compilation exceeds the supported query budget.") from exc
+
+
+def _remaining_regex_time(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ToolSearchLimitError("Regex search exceeded its execution budget.")
+    return remaining
+
+
+def _catalog_searchable(t: BaseTool) -> str:
+    description = t.description or ""
+    for field, value in (("name", t.name), ("description", description)):
+        if len(value) > MAX_REGEX_FIELD_CHARS:
+            # Names and source labels are external data; keep diagnostics bounded
+            # even when the name itself is the oversized field.
+            tool_label = repr(t.name[:128]) + (" (truncated)" if len(t.name) > 128 else "")
+            source = get_mcp_source(t)
+            server_name = source["server_name"][:128] if source else None
+            logger.warning("Deferred tool regex field limit: tool=%s field=%s length=%d limit=%d server=%r", tool_label, field, len(value), MAX_REGEX_FIELD_CHARS, server_name)
+            raise ToolSearchLimitError(
+                f"Tool {tool_label} {field} has {len(value)} characters, exceeding the {MAX_REGEX_FIELD_CHARS}-character regex search budget.",
+                retry_hint="Use keywords: for literal search or select: with exact tool names from <available-deferred-tools>.",
+            )
+    return f"{t.name} {description}"
 
 
 # ── Catalog ──
@@ -90,6 +138,9 @@ class DeferredToolCatalog:
             wanted = {n.strip() for n in query[7:].split(",")}
             return [t for t in self.tools if t.name in wanted]
 
+        if query.startswith("keywords:"):
+            return _rank_catalog_keywords(query[len("keywords:") :], self.tools)
+
         if query.startswith("+"):
             parts = query[1:].split(None, 1)
             if not parts:
@@ -97,22 +148,61 @@ class DeferredToolCatalog:
             required = parts[0].lower()
             candidates = [t for t in self.tools if required in t.name.lower()]
             if len(parts) > 1:
-                candidates.sort(key=lambda t: _catalog_regex_score(parts[1], t), reverse=True)
+                deadline = monotonic() + REGEX_QUERY_TIMEOUT_SECONDS
+                compiled = _compile_catalog_regex(parts[1])
+                try:
+                    candidates.sort(key=lambda t: _catalog_regex_score(compiled, t, deadline), reverse=True)
+                except TimeoutError as exc:
+                    raise ToolSearchLimitError("Regex search exceeded its execution budget.") from exc
+                _remaining_regex_time(deadline)
             return candidates[:MAX_RESULTS]
 
-        regex = _compile_catalog_regex(query)
+        deadline = monotonic() + REGEX_QUERY_TIMEOUT_SECONDS
+        compiled = _compile_catalog_regex(query)
         scored: list[tuple[int, BaseTool]] = []
-        for t in self.tools:
-            searchable = f"{t.name} {t.description or ''}"
-            if regex.search(searchable):
-                scored.append((2 if regex.search(t.name) else 1, t))
+        try:
+            for t in self.tools:
+                searchable = _catalog_searchable(t)
+                if compiled.search(searchable, timeout=_remaining_regex_time(deadline)):
+                    scored.append((2 if compiled.search(t.name, timeout=_remaining_regex_time(deadline)) else 1, t))
+        except TimeoutError as exc:
+            raise ToolSearchLimitError("Regex search exceeded its execution budget.") from exc
         scored.sort(key=lambda x: x[0], reverse=True)
+        _remaining_regex_time(deadline)
         return [t for _, t in scored][:MAX_RESULTS]
 
 
-def _catalog_regex_score(pattern: str, t: BaseTool) -> int:
-    regex = _compile_catalog_regex(pattern)
-    return len(regex.findall(f"{t.name} {t.description or ''}"))
+def _rank_catalog_keywords(query: str, tools: tuple[BaseTool, ...]) -> list[BaseTool]:
+    """Rank literal terms by coverage, then name hits, preserving catalog ties.
+
+    Bound the query before case folding or splitting. Unlike skill intent
+    search, punctuation stays literal so tool names such as ``c++`` and dotted
+    namespaces remain searchable without interpreting model text as regex.
+    """
+    terms = tuple(dict.fromkeys(query[:MAX_KEYWORD_QUERY_CHARS].casefold().split()))[:MAX_KEYWORD_QUERY_TERMS]
+    if not terms:
+        return []
+    scored: list[tuple[tuple[int, int], BaseTool]] = []
+    for candidate in tools:
+        name = candidate.name.casefold()
+        description = (candidate.description or "").casefold()
+        name_hits = sum(term in name for term in terms)
+        coverage = sum(term in name or term in description for term in terms)
+        if coverage:
+            scored.append(((coverage, name_hits), candidate))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [candidate for _, candidate in scored[:MAX_RESULTS]]
+
+
+def _catalog_regex_score(compiled: regex.Pattern[str], t: BaseTool, deadline: float) -> int:
+    # Count without materializing every captured substring in findall(). The
+    # same deadline covers every candidate and every match, including empty ones.
+    matches = compiled.finditer(_catalog_searchable(t), timeout=_remaining_regex_time(deadline))
+    count = 0
+    for _ in matches:
+        _remaining_regex_time(deadline)
+        count += 1
+    return count
 
 
 # ── Setup / tool ──
@@ -147,18 +237,20 @@ def _requested_tool_names(query: str) -> set[str]:
     return {clean_query} if clean_query else set()
 
 
-def _already_available_reply(requested: set[str], *, promoted: set[str], directly_bound_names: frozenset[str]) -> str | None:
-    """[argus patch #146] The reply when every requested tool is already bound in this run."""
-    if not requested or not requested <= (promoted | directly_bound_names):
-        return None
-    listed = ", ".join(f"`{name}`" for name in sorted(requested))
-    reply = f"Already available in this run: {listed}. Call it directly with the schema in your tool list; tool_search is not needed for it."
-    if requested & directly_bound_names:
-        reply += " If a schema is missing from your tool list, the current policy does not allow that tool."
-    return reply
+def _no_match_reply(query: str, directly_bound_names: frozenset[str]) -> str:
+    """[argus patch #57] A directly bound tool is not in the deferred catalog.
+
+    Without this the model reads "No tools found" for a tool it already has
+    and keeps searching instead of calling it.
+    """
+    already_bound = _requested_tool_names(query) & directly_bound_names
+    if not already_bound:
+        return f"No tools found matching: {query}"
+    listed = ", ".join(sorted(already_bound))
+    return f"Tool(s) '{listed}' are directly bound, not deferred, so tool_search cannot promote them. Call them directly with the schema in your tool list. Do NOT retry tool_search for them."
 
 
-def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: frozenset[str] = frozenset(), *, answer_bound_directly: bool = False) -> BaseTool:
+def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: frozenset[str] = frozenset()) -> BaseTool:
     catalog_hash = catalog.hash
 
     @tool
@@ -172,66 +264,31 @@ def build_tool_search_tool(catalog: DeferredToolCatalog, directly_bound_names: f
 
         Query forms:
           - "select:Read,Edit" -- fetch these exact tools by name
-          - "notebook jupyter" -- keyword search, up to max_results best matches
-          - "+slack send" -- require "slack" in the name, rank by remaining terms
+          - "keywords:notebook jupyter" -- literal terms in any order; rank by
+            term coverage, then name hits; up to 5 matches. Uses the first 256
+            characters after the prefix and at most 16 unique whitespace-separated
+            terms, case-insensitively. Punctuation is literal; ties keep catalog order.
+          - "jupyter.*notebook" -- regex on name and description, name matches first
+          - "+slack send" -- require "slack" in the name, rank by the remaining regex
+        Queries without a prefix keep regex semantics (invalid regex is literal).
+        Regex patterns are capped at 256 characters; each name or description
+        at 65,536 characters. Regex searches share a 100 ms budget across candidates
+        and ranking. Prefer keywords: or select: for broad catalogs.
         """
-        matched = catalog.search(query)
-        if not matched:
-            # Build-time binding does not guarantee runtime policy kept the schema visible.
-            clean_query = query.strip()
-            if clean_query.startswith("select:"):
-                requested = {n.strip() for n in clean_query[7:].split(",") if n.strip()}
-            else:
-                requested = {clean_query}
-            already_active = requested.intersection(directly_bound_names)
-            if already_active:
-                active_list = ", ".join(sorted(already_active))
-                content = (
-                    f"Tool(s) '{active_list}' are configured as directly bound, not deferred, so tool_search cannot promote them. "
-                    "Call a tool directly only if its schema is present in your current tool list. If its schema is absent, "
-                    "the current runtime policy does not allow it; use an allowed alternative or explain that limitation. "
-                    "Do NOT retry tool_search for it."
-                )
-            else:
-                content = f"No tools found matching: {query}"
-            names = []
+        try:
+            matched = catalog.search(query)
+        except ToolSearchLimitError as exc:
+            content, names = f"Tool search stopped: {exc} {exc.retry_hint}", []
         else:
-            content = json.dumps([convert_to_openai_function(t) for t in matched], indent=2, ensure_ascii=False)
-            names = [t.name for t in matched]
+            if matched:
+                content = json.dumps([convert_to_openai_function(t) for t in matched], indent=2, ensure_ascii=False)
+                names = [t.name for t in matched]
+            else:
+                content, names = _no_match_reply(query, directly_bound_names), []
         return Command(
             update={
                 "promoted": {"catalog_hash": catalog_hash, "names": names},
                 "messages": [ToolMessage(content=content, tool_call_id=tool_call_id, name="tool_search")],
-            }
-        )
-
-    if answer_bound_directly:  # [argus patch #146]
-        return _bound_aware_tool_search(tool_search, catalog_hash, directly_bound_names)
-    return tool_search
-
-
-def _bound_aware_tool_search(search: BaseTool, catalog_hash: str, directly_bound_names: frozenset[str]) -> BaseTool:
-    """[argus patch #146] ``tool_search.answer_bound_directly``.
-
-    A select for a tool this run already has (keyword auto-promotion, an
-    earlier promotion, or a directly bound tool) is answered "already
-    available" without a schema dump or a promotion; anything else goes to
-    the upstream tool unchanged. 67 of 175 selects in the week to 2026-10-19
-    asked for a tool that was already bound. Same name, description and
-    model-visible schema as the upstream tool.
-    """
-
-    @tool("tool_search", description=search.description)
-    def tool_search(query: str, tool_call_id: Annotated[str, InjectedToolCallId], state: Annotated[dict, InjectedState]) -> Command:
-        promoted_state = state.get("promoted") if isinstance(state, dict) else None
-        promoted = set(promoted_state.get("names") or []) if isinstance(promoted_state, dict) and promoted_state.get("catalog_hash") == catalog_hash else set()
-        reply = _already_available_reply(_requested_tool_names(query), promoted=promoted, directly_bound_names=directly_bound_names)
-        if reply is None:
-            return search.func(query=query, tool_call_id=tool_call_id)
-        return Command(
-            update={
-                "promoted": {"catalog_hash": catalog_hash, "names": []},
-                "messages": [ToolMessage(content=reply, tool_call_id=tool_call_id, name="tool_search")],
             }
         )
 
@@ -249,27 +306,34 @@ def _is_excluded(name: str, exclude) -> bool:
     return _matches_any(name, exclude)
 
 
+# [argus] Builtins deferred on every stack on top of ``tool_search.defer``
+# (#60). Upstream #7297 binds ``inspect_run_status`` on every model call even
+# though a run rarely needs it, so it waits behind tool_search like
+# ``browser_*``. ``always_bind`` still wins for a stack that wants it bound.
+ALWAYS_DEFERRED_BUILTINS: frozenset[str] = frozenset({"inspect_run_status"})
+
+
 def _is_deferrable(tool: BaseTool, *, defer=(), exclude=()) -> bool:
     """Single deferral-eligibility predicate shared by setup and the fail-closed guard.
 
     MCP tools defer by default; non-MCP (builtin/config) tools defer only when
-    named by a ``tool_search.defer`` pattern. ``always_bind``/``exclude`` wins
-    over both — a pinned name never leaves the per-call schema set.
+    named by a ``tool_search.defer`` pattern or ``ALWAYS_DEFERRED_BUILTINS``.
+    ``always_bind``/``exclude`` wins over all of them: a pinned name never
+    leaves the per-call schema set.
     """
     if _is_excluded(tool.name, exclude):
         return False
-    return is_mcp_tool(tool) or _matches_any(tool.name, defer)
+    return is_mcp_tool(tool) or tool.name in ALWAYS_DEFERRED_BUILTINS or _matches_any(tool.name, defer)
 
 
-def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=(), answer_bound_directly: bool = False) -> DeferredToolSetup:
+def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=()) -> DeferredToolSetup:
     """Build deferred-tool setup from one agent build's candidate tools.
 
-    Lead agents pass their full configured tool list; ``SkillToolPolicyMiddleware``
-    later filters model-visible schemas, execution, and ``tool_search`` results
-    for the active skill while keeping the discovery tool itself available.
-    Subagents may pass a statically policy-filtered list because their configured
-    skills are loaded at startup. The downstream deferred-schema middleware still
-    hides unpromoted MCP schemas in either case.
+    Lead agents and subagents pass their authorized tool list. Skill
+    `allowed-tools` declarations are compatibility metadata and never filter
+    this assembly; agent assembly/execution authorization owns the ceiling.
+    The downstream deferred-schema middleware still hides unpromoted MCP
+    schemas in either case.
 
     Returns an empty setup (see :class:`DeferredToolSetup`) in two distinct
     cases: deferral is disabled, or it is enabled but no MCP tool survived
@@ -284,25 +348,23 @@ def build_deferred_tool_setup(candidate_tools: list[BaseTool], *, enabled: bool,
         return DeferredToolSetup(None, frozenset(), None)
     catalog = DeferredToolCatalog(tuple(deferred))
     directly_bound_names = frozenset(t.name for t in candidate_tools if t not in deferred)
-    return DeferredToolSetup(build_tool_search_tool(catalog, directly_bound_names, answer_bound_directly=answer_bound_directly), catalog.names, catalog.hash)
+    return DeferredToolSetup(build_tool_search_tool(catalog, directly_bound_names), catalog.names, catalog.hash)
 
 
-def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=(), answer_bound_directly: bool = False) -> tuple[list[BaseTool], DeferredToolSetup]:
+def assemble_deferred_tools(candidate_tools: list[BaseTool], *, enabled: bool, exclude=(), defer=()) -> tuple[list[BaseTool], DeferredToolSetup]:
     """Build the final tool list and deferred setup from candidate tools.
 
     Fail closed on deferral assembly itself: if tool_search is enabled and
     deferrable candidates exist (MCP tools, or builtins named by ``defer``)
     but no deferred set was recovered, raise rather than silently binding
-    their full schemas to the model. Lead-agent authorization is enforced
-    separately at runtime by ``SkillToolPolicyMiddleware``; subagents may already
-    have applied their static skill policy to ``candidate_tools``.
+    their full schemas to the model. Agent authorization (provider
+    filtering plus runtime Guardrails) owns the permission ceiling; skill
+    `allowed-tools` is compatibility metadata and does not participate.
 
     Shared by every agent-build path (lead, embedded client, subagent) so they
     all get the same fail-closed guarantee from one place.
     """
-    # [argus patch #146] keep upstream's call shape when the switch is off
-    bound_answer = {"answer_bound_directly": True} if answer_bound_directly else {}
-    deferred_setup = build_deferred_tool_setup(candidate_tools, enabled=enabled, exclude=exclude, defer=defer, **bound_answer)
+    deferred_setup = build_deferred_tool_setup(candidate_tools, enabled=enabled, exclude=exclude, defer=defer)
     if enabled and not deferred_setup.deferred_names and any(_is_deferrable(t, defer=defer, exclude=exclude) for t in candidate_tools):
         raise RuntimeError("tool_search enabled and deferrable candidates exist, but no deferred set was recovered - refusing to bind their schemas (fail-closed).")
     final_tools = list(candidate_tools)
@@ -372,12 +434,18 @@ def build_mcp_routing_middleware(
 # Prompt rendering
 
 
-def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozenset(), directly_bound_names: frozenset[str] = frozenset()) -> str:
-    """Generate <available-deferred-tools> and direct-tools guidance.
+def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozenset()) -> str:
+    """Generate <available-deferred-tools> from an explicit deferred-name set.
 
-    Lists deferred names so the agent knows what exists and can use tool_search to
-    load them. If directly bound tools exist, explains how to distinguish them
-    without claiming that runtime policy left every configured schema visible.
+    Lists only names so the agent knows what exists and can use tool_search to
+    load them. Returns empty string when there are no deferred tools. The set is
+    computed at agent build time and passed in. Lead-agent sets contain the full
+    configured MCP catalog; subagent sets may already have been narrowed by the
+    subagent's tool configuration and authorization.
+
+    Lives here, next to the assembly that produces ``deferred_names``, so every
+    agent-build path (lead, embedded client, subagent) renders the section the
+    same way without coupling back to ``lead_agent.prompt``.
     """
     if not deferred_names:
         return ""
@@ -385,17 +453,7 @@ def get_deferred_tools_prompt_section(*, deferred_names: frozenset[str] = frozen
     # name cannot close this block and forge a framework tag. Mirrors
     # get_skill_index_prompt_section.
     names = "\n".join(html.escape(name, quote=False) for name in sorted(deferred_names))
-    direct_note = ""
-    if any(name for name in directly_bound_names if not name.startswith("__") and name not in {"tool_search", "setup_agent", "update_agent"}):
-        direct_note = (
-            "\n\n<direct-tool-guidance>\n"
-            "`tool_search` can promote only names listed in `<available-deferred-tools>`. Other configured tools may be "
-            "directly bound, but runtime policy can hide their schemas. Call a non-deferred tool directly only when its "
-            "schema is present in your current tool list. If absent, it is unavailable under the current policy; "
-            "`tool_search` cannot activate it, so do not retry the search.\n"
-            "</direct-tool-guidance>"
-        )
-    return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>{direct_note}"
+    return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>"
 
 
 def _format_keyword_list(keywords: list[str]) -> str:
@@ -404,17 +462,12 @@ def _format_keyword_list(keywords: list[str]) -> str:
     return f"{', '.join(keywords[:-1])}, or {keywords[-1]}"
 
 
-def get_mcp_routing_hints_prompt_section(tools: Iterable[BaseTool], *, deferred_names: frozenset[str] = frozenset(), deferred_auto_promoted: bool = False) -> str:
+def get_mcp_routing_hints_prompt_section(tools: Iterable[BaseTool], *, deferred_names: frozenset[str] = frozenset()) -> str:
     """Render <mcp_routing_hints> from MCP tools carrying routing metadata.
 
     When tool_search has deferred an MCP tool, the hint must point the model at
     promotion first; otherwise it may try to call a schema that is hidden from
     the bound model request.
-
-    [argus patch #146] ``deferred_auto_promoted``: the run has
-    ``McpRoutingMiddleware``, which promotes these same tools from the same
-    keywords before the model call, so the hint says the tool loads by itself
-    and to search only when it is missing (``tool_search.answer_bound_directly``).
     """
     hints: list[tuple[int, str, list[str]]] = []
     for candidate in tools:
@@ -435,9 +488,7 @@ def get_mcp_routing_hints_prompt_section(tools: Iterable[BaseTool], *, deferred_
         # (keep the raw name for the deferred_names membership check above).
         esc_name = html.escape(tool_name, quote=False)
         lines.append(f"When the user's request involves {_format_keyword_list(keywords)}:")
-        if tool_name in deferred_names and deferred_auto_promoted:
-            lines.append(f"  prefer the `{esc_name}` tool; it is loaded automatically for such requests. Use `tool_search` only if it is missing from your tool list.")
-        elif tool_name in deferred_names:
+        if tool_name in deferred_names:
             lines.append(f"  use `tool_search` to fetch `{esc_name}`, then prefer that MCP tool.")
         else:
             lines.append(f"  prefer the `{esc_name}` tool.")

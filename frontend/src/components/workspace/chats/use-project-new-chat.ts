@@ -68,13 +68,14 @@ export function useProjectNewChat({
   }, [threadId, projectParam, queryClient, t]);
 
   // Submission fence. The cleanup runs when `threadId` changes (conversation
-  // switch on a persisted page — sidebar navigation keeps the page mounted),
+  // switch on a persisted page; sidebar navigation keeps the page mounted),
   // when the new-chat project scope changes (the sidebar "New chat" link can
   // drop `?project=` without a pathname change), or on unmount. A submit
-  // awaits the project pre-create before sending, and a navigation during
-  // that await must not let the stale continuation start a run for the
-  // abandoned conversation: its onStart would rewrite the newly selected
-  // conversation's URL and its completion would clear the new composer.
+  // captures the epoch before its first await (the model-choice prompt, the
+  // project pre-create) and drops itself, silently, when it moved meanwhile:
+  // a stale continuation would rewrite the newly selected conversation's URL
+  // and its completion would clear the new composer. Same shape as upstream's
+  // inline fence, so the page's `handleSubmit` stays upstream's.
   const submissionEpochRef = useRef(0);
   useEffect(() => {
     return () => {
@@ -82,18 +83,5 @@ export function useProjectNewChat({
     };
   }, [threadId, projectParam]);
 
-  /**
-   * Await the project pre-create, then reject (silently — the user has
-   * already moved on, so a toast would land on the new conversation) when
-   * the conversation changed meanwhile. PromptInput keeps the composer text.
-   */
-  const prepareSubmission = useCallback(async () => {
-    const submissionEpoch = submissionEpochRef.current;
-    await ensureProjectThread();
-    if (submissionEpochRef.current !== submissionEpoch) {
-      throw new Error("thread-submission-stale");
-    }
-  }, [ensureProjectThread]);
-
-  return { projectParam, ensureProjectThread, prepareSubmission };
+  return { projectParam, ensureProjectThread, submissionEpochRef };
 }

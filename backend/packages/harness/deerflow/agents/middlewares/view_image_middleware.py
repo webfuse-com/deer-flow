@@ -15,32 +15,25 @@ from langchain.agents.middleware.types import ModelCallResult, ModelRequest, Mod
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
 from deerflow.agents.thread_state import ThreadState
+from deerflow.sandbox.download import MAX_IMAGE_BYTES as _MAX_IMAGE_BYTES
 from deerflow.sandbox.lease import run_sync_lifecycle_operation
 
 logger = logging.getLogger(__name__)
 
-# Mirror the tool-side size cap as a defense-in-depth check. The tool
-# enforces this at write time; the middleware re-checks at read time in
-# case the file grew between view and injection.
-_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_CONTEXT_IMAGES = 4
+_MAX_CONTEXT_BASE64_BYTES = 28 * 1024 * 1024
 _IMAGE_CONTEXT_MESSAGE_ID_PREFIX = "view-image-context:"
 _IMAGE_CONTEXT_MESSAGE_MARKER_KEY = "deerflow_view_image_context"
 
 # [argus patch #97] Anthropic models reject a request carrying more than 20
 # images when any of them is over 2000 px on a side (Bedrock 2000, Vertex 2576),
-# and each view_image call re-sends every image the thread has viewed. A long
-# visual-review thread crosses both lines and then fails on every later view.
-# Images are downscaled to this edge when injected, and only the most recent
-# ones are re-sent (``merge_viewed_images`` keeps the dict in view order).
-# Both limits are tighter than Anthropic's: atlas-nicholas thread 60e3181f
-# (2026-09-30) re-sent 24 screenshots (35 MP, ~37k vision tokens) on local-qwen,
-# whose SGLang CPU image preprocessing then outlived the 600 s request timeout
-# on every call, so each new user message timed out the same way. 1568 px is
-# Anthropic's recommended long edge (larger images are downscaled server-side
-# anyway), and four images cover "the one just viewed plus the few before it";
-# older ones are listed and can be viewed again.
+# and on local-qwen SGLang's CPU image preprocessing of large screenshots
+# outlived the 600 s request timeout on every call (atlas-nicholas thread
+# 60e3181f, 2026-09-30: 24 screenshots, 35 MP). Upstream's per-request budget
+# (``_MAX_CONTEXT_IMAGES``, newest first) bounds how many are re-sent; each
+# admitted image is also downscaled to this long edge, Anthropic's recommended
+# one (larger images are downscaled server-side anyway).
 _MAX_IMAGE_EDGE_PX = 1568
-_MAX_CONTEXT_IMAGES = 4
 
 # [argus patch #97] A model call that carried image context and timed out is
 # retried once without the images, so an oversized image context degrades to a
@@ -59,13 +52,6 @@ def _is_timeout(exc: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
-
-
-def _recent_viewed_images(viewed_images: dict) -> tuple[list[tuple[str, dict]], int]:
-    """[argus patch #97] Return the most recently viewed images and how many were left out."""
-    items = list(viewed_images.items())
-    omitted = max(0, len(items) - _MAX_CONTEXT_IMAGES)
-    return items[omitted:], omitted
 
 
 def _fit_image_edge(data_url: str) -> tuple[str, tuple[int, int] | None]:
@@ -111,7 +97,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
     1. Wraps each LLM call
     2. Checks if the last assistant message contains view_image tool calls
     3. Verifies all tool calls in that message have been completed (have corresponding ToolMessages)
-    4. If conditions are met, appends a human message with all viewed image details (including base64 data)
+    4. If conditions are met, appends a human message with recent viewed image details (including base64 data)
     5. Hands the augmented request to the model so it can see and analyze the images
 
     This enables the LLM to automatically receive and analyze images that were loaded via view_image tool,
@@ -140,13 +126,38 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         "speculate about code; report only what is visible."
     )
 
-    def __init__(self, *, vision_model_name: str | None = None, app_config=None) -> None:
-        """[argus patch #20] ``vision_model_name``: when set, the LEAD model is
-        non-vision, so route each viewed image through this vision-capable model
-        for a TEXT description that is injected instead of the raw image. When
-        None, the lead model is vision-capable and the image is injected directly
-        (upstream behaviour)."""
+    def __init__(
+        self,
+        *,
+        max_injected_images: int = 4,
+        max_injected_total_chars: int = 32_000_000,
+        vision_model_name: str | None = None,
+        app_config=None,
+    ) -> None:
+        """Bound the per-request image context injected after view_image rounds.
+
+        ``viewed_images`` only grows (#6825): every model call that follows a
+        ``view_image`` round re-encodes and re-sends every entry ever viewed,
+        so a long PDF-inspection thread pushes the request body past provider
+        limits (e.g. Anthropic's 32 MB) even though each single image is
+        capped. A request admits at most four images and 28 MiB of base64.
+        These knobs may further cap how many images and how much payload
+        (in data-url characters) may be injected per model call; admission
+        runs newest-first so the most recently viewed images survive, and
+        over-budget entries keep their text bullet with a placeholder, so
+        nothing silently disappears. The 32M-character default keeps a single
+        max-size image injectable (20 MiB source -> ~27 MB base64) while
+        bounding accumulation below typical provider request limits.
+
+        [argus patch #20] ``vision_model_name``: when set, the LEAD model is
+        non-vision, so each admitted image goes through this vision-capable
+        model for a TEXT description that is injected instead of the raw image.
+        When None, the lead model is vision-capable and the image is injected
+        directly (upstream behaviour).
+        """
         super().__init__()
+        self._max_injected_images = max(1, int(max_injected_images))
+        self._max_injected_total_chars = max(1, int(max_injected_total_chars))
         self._vision_model_name = vision_model_name
         self._app_config = app_config
 
@@ -363,7 +374,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
                     if host_data_url is not None:
                         return host_data_url
                 try:
-                    image_bytes = sandbox.download_file(image_path)
+                    image_bytes = sandbox.download_file(image_path, max_bytes=_MAX_IMAGE_BYTES)
                 except Exception:
                     logger.warning(
                         "Failed to recover viewed image %s from replacement sandbox %s",
@@ -386,7 +397,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
                 return None
 
             try:
-                image_bytes = sandbox.download_file(image_path)
+                image_bytes = sandbox.download_file(image_path, max_bytes=_MAX_IMAGE_BYTES)
             except Exception:
                 logger.warning("Failed to read viewed image %s from sandbox %s", image_path, sandbox_id, exc_info=True)
                 return None
@@ -412,13 +423,18 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         *,
         host_path_allowed: Callable[[str, str], bool] | None = None,
     ) -> list[str | dict]:
-        """Create a formatted message with all viewed image details.
+        """Create bounded image context, prioritizing the most recently viewed paths.
 
         Reads image files on-demand from the active sandbox when available and
         encodes them as base64 for the model. The base64 data is NOT persisted in
         state -- only lightweight metadata (path, mime_type, size, digest, and
         source sandbox id when applicable) is stored in ``viewed_images``,
         avoiding large duplicate payloads across every checkpoint (see #4138).
+
+        Content blocks are emitted oldest-first, but budget admission itself
+        runs newest-first (reversed insertion order) so the most recently
+        viewed images survive the caps (see #6825); an entry over budget keeps
+        its text bullet plus a placeholder instead of its base64 payload.
 
         Args:
             state: Current state containing viewed_images
@@ -431,19 +447,34 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
             # Return a properly formatted text block, not a plain string array
             return [{"type": "text", "text": "No images have been viewed."}]
 
-        # Build the message with image information
+        # Select newest first so older entries cannot consume the budget before
+        # the image that triggered this model call. Preserve chronological
+        # output and the upstream per-image omission placeholders.
         content_blocks: list[str | dict] = [{"type": "text", "text": "Here are the images you've viewed:"}]
-        recent_images, omitted = _recent_viewed_images(viewed_images)
-        if omitted:
-            content_blocks.append({"type": "text", "text": f"({omitted} earlier viewed image(s) not re-sent; call view_image again to see one.)"})
-
-        for image_path, image_data in recent_images:
+        selected: list[list[dict]] = []
+        encoded_bytes = 0
+        admitted_chars = 0
+        attempted_images = 0
+        omitted = 0
+        for image_path, image_data in reversed(list(viewed_images.items())):
             mime_type = image_data.get("mime_type", "unknown")
             actual_path = image_data.get("actual_path", "")
             expected_size = image_data.get("size", 0)
             expected_sha256 = image_data.get("sha256")
             source_sandbox_id = image_data.get("source_sandbox_id")
             blob_ref = image_data.get("blob_ref")
+
+            estimated_bytes = 4 * ((expected_size + 2) // 3) if isinstance(expected_size, int) and expected_size >= 0 else _MAX_CONTEXT_BASE64_BYTES + 1
+            estimated_chars = estimated_bytes + len(f"data:{mime_type};base64,")
+            blocks = [{"type": "text", "text": f"\n- **{image_path}** ({mime_type})"}]
+            # Failed reads also consume slots, bounding potentially remote read attempts.
+            if attempted_images >= min(_MAX_CONTEXT_IMAGES, self._max_injected_images) or encoded_bytes + estimated_bytes > _MAX_CONTEXT_BASE64_BYTES or admitted_chars + estimated_chars > self._max_injected_total_chars:
+                omitted += 1
+                blocks.append({"type": "text", "text": "  (omitted: image injection budget reached; call view_image again to re-view this image)"})
+                selected.append(blocks)
+                continue
+            attempted_images += 1
+            admitted_chars += estimated_chars
 
             # Read the image file on-demand and encode as base64 for the model
             data_url = self._read_image_as_data_url(
@@ -457,25 +488,27 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
                 blob_ref if isinstance(blob_ref, Mapping) else None,
                 allow_host_copy=host_path_allowed(image_path, actual_path) if host_path_allowed is not None else False,
             )
-            original_size = None
             if data_url:
+                # [argus patch #97] Size and digest were checked on the original
+                # bytes above; the budget keeps counting the original size.
                 data_url, original_size = _fit_image_edge(data_url)
-
-            # Add text description
-            description = f"\n- **{image_path}** ({mime_type})"
-            if original_size:
-                description += f", downscaled from {original_size[0]}x{original_size[1]} to fit {_MAX_IMAGE_EDGE_PX} px; crop a region and view it for detail"
-            content_blocks.append({"type": "text", "text": description})
-
-            if data_url:
-                content_blocks.append(
+                if original_size:
+                    blocks[0]["text"] += f", downscaled from {original_size[0]}x{original_size[1]} to fit {_MAX_IMAGE_EDGE_PX} px; crop a region and view it for detail"
+                encoded_bytes += estimated_bytes
+                blocks.append(
                     {
                         "type": "image_url",
                         "image_url": {"url": data_url},
                     }
                 )
             else:
-                content_blocks.append({"type": "text", "text": f"  (file unavailable or changed: {image_path})"})
+                blocks.append({"type": "text", "text": f"  (file unavailable or changed: {image_path})"})
+            selected.append(blocks)
+
+        if omitted:
+            content_blocks.append({"type": "text", "text": f"Omitted viewed images: {omitted}. Call view_image again to inspect a specific image."})
+        for blocks in reversed(selected):
+            content_blocks.extend(blocks)
 
         return content_blocks
 
@@ -534,7 +567,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
 
     # ── [argus patch #20] vision-describe path for non-vision lead models ────
 
-    async def _describe_image(self, path: Path, mime_type: str, b64_data: str) -> str:
+    async def _describe_image(self, data_url: str, label: str) -> str:
         """Ask the configured vision model for a text description; best-effort."""
         try:
             from deerflow.models import create_chat_model
@@ -542,74 +575,53 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
             model = create_chat_model(name=self._vision_model_name, app_config=self._app_config)
             content = [
                 {"type": "text", "text": self._DESCRIBE_PROMPT},
-                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_data}"}},
+                {"type": "image_url", "image_url": {"url": data_url}},
             ]
             response = await model.ainvoke([HumanMessage(content=content)])
             text = response.content if isinstance(response.content, str) else str(response.content)
-            return f"**Visual description of `{path.name}`** (rendered by vision model `{self._vision_model_name}`):\n\n{text}"
+            return f"  Visual description (rendered by vision model `{self._vision_model_name}`):\n\n{text}"
         except Exception as e:
-            logger.warning("[view_image_middleware] vision description failed for %s: %s", path, e)
-            return f"**Visual description of `{path.name}`**: (vision description unavailable: {e})"
+            logger.warning("[view_image_middleware] vision description failed for %s: %s", label, e)
+            return f"  (vision description unavailable: {e})"
 
-    def _describe_inputs(self, request: ModelRequest) -> list[tuple[str, str, str, str | None]]:
-        """Blocking half of the describe path: read each viewed image's bytes.
+    def _describe_inputs(self, request: ModelRequest) -> list[str | dict]:
+        """Blocking half of the describe path: the image context a vision lead would get.
 
-        Uses the same provenance-checked reader (blob store, live sandbox,
-        request-bound host copy) as the vision-lead path, so a replacement
-        sandbox or a changed file is never described as if it were the image
-        ``view_image`` saw. Returns ``(image_path, mime_type, actual_path,
-        base64 | None)`` per viewed image.
+        Built by :meth:`_create_image_details_message`, so the images to describe
+        are admitted exactly as on the raw-image path (newest first, upstream's
+        count and payload budget, the omission line), read through the same
+        provenance-checked reader (blob store, live sandbox, request-bound host
+        copy) and downscaled like them (#97).
         """
-        state = request.state or {}
-        inputs: list[tuple[str, str, str, str | None]] = []
-        recent_images, _ = _recent_viewed_images(state.get("viewed_images", {}))
-        for image_path, image_data in recent_images:
-            mime_type = image_data.get("mime_type", "unknown")
-            actual_path = image_data.get("actual_path", "")
-            expected_size = image_data.get("size", 0)
-            expected_sha256 = image_data.get("sha256")
-            source_sandbox_id = image_data.get("source_sandbox_id")
-            blob_ref = image_data.get("blob_ref")
-            data_url = self._read_image_as_data_url(
-                state,
-                image_path,
-                actual_path,
-                mime_type,
-                expected_size,
-                expected_sha256 if isinstance(expected_sha256, str) else None,
-                source_sandbox_id if isinstance(source_sandbox_id, str) else None,
-                blob_ref if isinstance(blob_ref, Mapping) else None,
-                allow_host_copy=self._host_path_matches_request(request, image_path, actual_path),
-            )
-            if data_url:
-                data_url, _ = _fit_image_edge(data_url)
-                mime_type = data_url.partition(";")[0].removeprefix("data:") or mime_type
-            b64_data = data_url.split(",", 1)[1] if data_url and "," in data_url else None
-            inputs.append((image_path, mime_type, actual_path, b64_data))
-        return inputs
+        return self._create_image_details_message(
+            request.state or {},
+            host_path_allowed=lambda image_path, actual_path: self._host_path_matches_request(request, image_path, actual_path),
+        )
 
     async def _ainject_described(self, request: ModelRequest) -> ModelRequest:
         """Async counterpart of :meth:`_inject` that injects TEXT descriptions.
 
         Same sweep/dedup rules as ``_inject``; the payload handed to the model is
-        a hidden HumanMessage of text blocks (one per viewed image) instead of
-        ``image_url`` blocks, because the lead model cannot consume pixels.
+        a hidden HumanMessage with the same text blocks as the raw-image context
+        and a vision-model description in place of each ``image_url`` block,
+        because the lead model cannot consume pixels.
         """
         messages = [message for message in request.messages if not self._is_image_context_message(message)]
         dropped_stranded = len(messages) != len(request.messages)
-        if not self._should_inject_image_message(messages):
+        if not self._should_inject_image_message(messages) or not (request.state or {}).get("viewed_images"):
             return request.override(messages=messages) if dropped_stranded else request
-        inputs = await run_sync_lifecycle_operation(self._describe_inputs, request)
-        if not inputs:
-            return request.override(messages=messages) if dropped_stranded else request
+        blocks = await run_sync_lifecycle_operation(self._describe_inputs, request)
         text_blocks: list[str | dict] = []
-        for image_path, mime_type, actual_path, b64_data in inputs:
-            path = Path(actual_path or image_path)
-            if b64_data is None:
-                text_blocks.append({"type": "text", "text": f"**Visual description of `{path.name}`**: (file unavailable or changed: {image_path})"})
+        label = ""
+        described = 0
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") == "image_url":
+                text_blocks.append({"type": "text", "text": await self._describe_image(block["image_url"]["url"], label)})
+                described += 1
             else:
-                text_blocks.append({"type": "text", "text": await self._describe_image(path, mime_type, b64_data)})
-        logger.debug("Injecting vision-model descriptions of %d viewed image(s) into the model request", len(text_blocks))
+                text_blocks.append(block)
+                label = block.get("text", "").strip() if isinstance(block, dict) else str(block)
+        logger.debug("Injecting vision-model descriptions of %d viewed image(s) into the model request", described)
         return request.override(messages=[*messages, self._create_image_context_message(text_blocks)])
 
     @staticmethod

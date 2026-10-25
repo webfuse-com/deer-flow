@@ -136,6 +136,12 @@ async def send_one(channel: TelegramChannel, bot, chat_id: int, chat_key: str, t
     reply_to = channel._last_bot_message.get(chat_key)
     if reply_to:
         kwargs["reply_to_message_id"] = reply_to
+        # Upstream #6791, ported by hand (its fix landed only in telegram.py's
+        # fenced send code): a reply target the person deleted in a private
+        # chat must not block delivery. Group replies stay strict, since
+        # dropping their target could change forum routing.
+        if chat_id > 0:
+            kwargs["allow_sending_without_reply"] = True
 
     last_exc: Exception | None = None
     for attempt in range(max_retries):
@@ -176,7 +182,9 @@ async def send_running_reply(channel: TelegramChannel, chat_id: str, reply_to_me
     """[argus patch #10] Show the initial 'received' stage emoji as soon as
     a message arrives. Subsequent stages come from the manager as
     progress_stage OutboundMessages and are handled by show_stage. If the
-    emoji send fails, fall back to a reaction on the user's message."""
+    emoji send fails, fall back to a reaction on the user's message.
+    The stage emoji is not sent as a reply, so a deleted inbound message
+    cannot block it (the case upstream #6791 fixed for its preview)."""
     if not channel._application:
         return
     ok = await show_stage(channel, int(chat_id), chat_id, "received")

@@ -90,19 +90,28 @@ def test_tool_search_no_match_empty_names():
     assert "No tools found matching" in out.update["messages"][0].content
 
 
-def test_tool_search_directly_bound_tool_does_not_claim_runtime_visibility():
-    """Build-time binding does not imply that runtime skill policy kept the schema."""
+def test_tool_search_for_a_directly_bound_tool_says_to_call_it():
+    """[argus patch #57, thinned] A bound tool is not in the deferred catalog:
+    the reply says to call it directly instead of "No tools found"."""
     catalog = DeferredToolCatalog((mcp_calc,))
     ts = build_tool_search_tool(catalog, directly_bound_names=frozenset({"calendar_list_events", "pythia_query"}))
     out = ts.invoke({"type": "tool_call", "name": "tool_search", "args": {"query": "select:calendar_list_events"}, "id": "tc4"})
     assert out.update["promoted"]["names"] == []
     msg = out.update["messages"][0]
-    assert "configured as directly bound, not deferred" in msg.content
-    assert "only if its schema is present" in msg.content
-    assert "current runtime policy does not allow it" in msg.content
+    assert "directly bound, not deferred" in msg.content
+    assert "Call them directly" in msg.content
     assert "Do NOT retry tool_search" in msg.content
-    assert "already directly available and active" not in msg.content
+    assert "policy" not in msg.content
     assert "calendar_list_events" in msg.content
+
+
+def test_tool_search_limit_error_wins_over_the_bound_reply():
+    """Upstream #6676's budget stop is reported before any no-match reply."""
+    catalog = DeferredToolCatalog((mcp_calc,))
+    ts = build_tool_search_tool(catalog, directly_bound_names=frozenset({"calendar_list_events"}))
+    out = ts.invoke({"type": "tool_call", "name": "tool_search", "args": {"query": "x" * 300}, "id": "tc5"})
+    assert out.update["promoted"]["names"] == []
+    assert out.update["messages"][0].content.startswith("Tool search stopped:")
 
 
 def _named_mcp_tool(name: str):
@@ -235,3 +244,51 @@ class TestDeferPatterns:
         # the historical spelling keeps working
         legacy = ToolSearchConfig.model_validate({"exclude": ["kb_query"]})
         assert legacy.exclude == ["kb_query"]
+
+
+class TestInspectRunStatusDeferred:
+    """[argus] Upstream #7297 binds ``inspect_run_status`` on every call; Argus
+    defers it behind tool_search on every stack through the same predicate as
+    ``tool_search.defer`` (#60), with ``always_bind`` still winning."""
+
+    @staticmethod
+    def _run_status_tool():
+        from deerflow.tools.builtins import build_inspect_run_status_tool
+
+        return build_inspect_run_status_tool(context_window=None)
+
+    def test_deferred_without_any_defer_pattern(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        status = self._run_status_tool()
+        bash = _named_builtin_tool("bash")
+        final, setup = assemble_deferred_tools([status, bash], enabled=True)
+        assert setup.deferred_names == frozenset({"inspect_run_status"})
+        # still graph-registered, so a promoted call executes
+        assert any(t.name == "inspect_run_status" for t in final)
+        assert any(t.name == "tool_search" for t in final)
+
+    def test_always_bind_keeps_it_bound(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        final, setup = assemble_deferred_tools([self._run_status_tool()], enabled=True, exclude=["inspect_run_status"])
+        assert setup.deferred_names == frozenset()
+        assert [t.name for t in final] == ["inspect_run_status"]
+
+    def test_disabled_tool_search_keeps_upstream_binding(self):
+        from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+
+        final, setup = assemble_deferred_tools([self._run_status_tool()], enabled=False)
+        assert setup.deferred_names == frozenset()
+        assert [t.name for t in final] == ["inspect_run_status"]
+
+    def test_fail_closed_guard_covers_it(self, monkeypatch):
+        import deerflow.tools.builtins.tool_search as ts
+
+        monkeypatch.setattr(ts, "build_deferred_tool_setup", lambda *a, **k: ts.DeferredToolSetup(None, frozenset(), None))
+        try:
+            ts.assemble_deferred_tools([self._run_status_tool()], enabled=True)
+        except RuntimeError as exc:
+            assert "fail-closed" in str(exc)
+        else:
+            raise AssertionError("expected fail-closed RuntimeError")

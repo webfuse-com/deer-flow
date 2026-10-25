@@ -1,10 +1,11 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from deerflow.config.reload_boundary import format_field_description
 from deerflow.config.runtime_paths import project_root, resolve_path
+from deerflow.config.sandbox_config import normalize_container_path
 from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
 
 
@@ -33,6 +34,15 @@ class SkillsConfig(BaseModel):
             field_doc="Path where skills are mounted in the sandbox container.",
         ),
     )
+
+    @field_validator("container_path")
+    @classmethod
+    def _normalize_container_path(cls, value: str) -> str:
+        # _is_skills_path() compares the configured prefix as-is, so a
+        # trailing slash would make every gated skills access fail with a
+        # confusing PermissionError; share the mounts' normalization.
+        return normalize_container_path(value)
+
     deferred_discovery: bool = Field(
         default=False,
         description=("When enabled, skill metadata is not injected into the system prompt. Instead, only skill names appear in <skill_index> and the LLM discovers details on demand via the describe_skill tool."),
@@ -56,23 +66,6 @@ class SkillsConfig(BaseModel):
     mention_only_skills: list[str] = Field(
         default_factory=list,
         description="Skills auto routing selects only on an explicit @name mention, never on the bare word.",
-    )
-    # [argus patch #145] Auto routing in unattended and allowlisted runs.
-    auto_route_unattended: bool = Field(
-        default=True,
-        description="[argus patch #145] Auto-route skills in unattended (scheduled) runs. False leaves those runs to the skills their schedule names.",
-    )
-    auto_route_guard: bool = Field(
-        default=False,
-        description=(
-            "[argus patch #145] Auto routing skips a skill named only in a negated clause (never, don't, no, ...), "
-            "skips skills whose allowed-tools are not all available in a run with a tool allowlist, and places the "
-            "routed skills after the request with wording that keeps the request's own instructions first."
-        ),
-    )
-    reread_only_after_summary: bool = Field(
-        default=False,
-        description=("[argus patch #145] The Active skills reminder asks for a re-read only for skills whose body is no longer in the conversation (summarized away); skills still in context are marked as above."),
     )
 
     def get_skills_path(self) -> Path:
