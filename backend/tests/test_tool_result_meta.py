@@ -49,12 +49,9 @@ def test_existing_meta_is_preserved():
 def test_bash_nonzero_exit_marker_is_a_recoverable_error(name, content):
     msg = ToolMessage(content=content, tool_call_id="bash-1", name=name)
     normalize_tool_message(msg)
-    meta = dict(_meta(msg))
-    # [argus patch #153] graded by the exit code (command_failed) and carries it.
-    assert meta.pop("exit_code") == int(content.rsplit(" ", 1)[-1])
-    assert meta == {
+    assert _meta(msg) == {
         "status": "error",
-        "error_type": "command_failed",
+        "error_type": "command_failed",  # [argus patch #153] graded by the exit code
         "recoverable_by_model": True,
         "recommended_next_action": "try_alternative",
         "source": "content_analysis",
@@ -457,12 +454,11 @@ def test_normalize_tool_result_stamps_tool_message():
 
 
 @pytest.mark.parametrize("content", ["output\nExit Code: 7", "Command exited with code 2"])
-def test_shell_nonzero_exit_is_public_error_with_exit_code(content: str):
+def test_shell_nonzero_exit_is_public_error(content: str):
     msg = ToolMessage(content=content, tool_call_id="tc-1", name="bash", status="success")
     result = normalize_tool_message(msg)
     assert result.status == "error"
     assert _meta(result)["status"] == "error"
-    assert _meta(result)["exit_code"] != 0
 
 
 def test_semantic_json_error_updates_public_status():

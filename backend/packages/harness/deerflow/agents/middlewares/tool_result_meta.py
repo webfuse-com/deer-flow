@@ -67,7 +67,6 @@ class ToolResultMeta:
     recoverable_by_model: bool
     recommended_next_action: RecommendedNextAction
     source: Literal["exception", "tool_return", "content_analysis", "progress_middleware"]
-    exit_code: int | None = None
 
 
 _ERROR_RULES: list[tuple[list[str], dict[str, object]]] = [
@@ -137,8 +136,8 @@ _ATTRS_BY_ERROR_TYPE: dict[str, dict[str, object]] = {str(attrs["error_type"]): 
 # read as ``internal``/stop and blocked bash for the rest of the run
 # (atlas-marko bca67986, 2026-10-20). Codes with a fixed meaning keep it; every
 # other code, a timeout (124) included, is a failed command the model can
-# change. This is the one table: ToolProgressMiddleware's #143 re-grade trusts
-# it and imports COMMAND_FAILED_ERROR_TYPE from here.
+# change. This is the one table; ToolProgressMiddleware imports
+# COMMAND_FAILED_ERROR_TYPE from here for its hint.
 COMMAND_FAILED_ERROR_TYPE = "command_failed"
 _COMMAND_FAILED_ATTRS: dict[str, object] = {
     "error_type": COMMAND_FAILED_ERROR_TYPE,
@@ -255,10 +254,7 @@ def _shell_exit_meta(marker: str) -> dict[str, object]:
     code = marker.rsplit(" ", 1)[-1]
     error_type = _SHELL_EXIT_CODE_TYPES.get(code)
     attrs = {**_ATTRS_BY_ERROR_TYPE[error_type]} if error_type else {**_COMMAND_FAILED_ATTRS}
-    # The marker's digits are command-supplied and unbounded (see bash_exit), so
-    # only a plausible code goes through int(); #143's re-grade reads exit_code.
-    exit_code = int(code) if len(code) <= 20 else -1
-    return _make_meta(status="error", source="content_analysis", exit_code=exit_code, **attrs)
+    return _make_meta(status="error", source="content_analysis", **attrs)
 
 
 def _classify_error_shell(msg: ToolMessage, content: str) -> dict[str, object] | None:
@@ -305,17 +301,14 @@ def _as_status_line(title: str) -> str | None:
     return " ".join(words) or None
 
 
-def _make_meta(*, status: str, source: str, error_type: str | None = None, recoverable_by_model: bool = True, recommended_next_action: str = "continue", exit_code: int | None = None) -> dict[str, object]:
-    meta: dict[str, object] = {
+def _make_meta(*, status: str, source: str, error_type: str | None = None, recoverable_by_model: bool = True, recommended_next_action: str = "continue") -> dict[str, object]:
+    return {
         "status": status,
         "error_type": error_type,
         "recoverable_by_model": recoverable_by_model,
         "recommended_next_action": recommended_next_action,
         "source": source,
     }
-    if exit_code is not None:
-        meta["exit_code"] = exit_code
-    return meta
 
 
 #: [argus patch #73] The status the tool itself returned, kept before

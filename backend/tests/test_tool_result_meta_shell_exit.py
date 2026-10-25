@@ -66,7 +66,6 @@ def test_the_marko_failure_is_a_failed_command_not_an_internal_error():
     assert "mrr>500?'Medium'" in MARKO_NODE_FAILURE
     meta = _meta(normalize_tool_message(_bash(MARKO_NODE_FAILURE)))
     assert meta["status"] == "error"
-    assert meta["exit_code"] == 1
     assert meta["error_type"] == "command_failed"
     assert meta["recoverable_by_model"] is True
     assert meta["recommended_next_action"] == "try_alternative"
@@ -142,11 +141,11 @@ def test_a_silent_timeout_after_failed_commands_does_not_block_bash():
 
 
 @pytest.mark.parametrize(
-    ("content", "exit_code"),
+    ("content", "error_type"),
     [
         # An earlier marker-shaped line in the output is not the command's exit.
-        ("exit=0\nrunning checks\nExit Code: 1", 1),
-        ("Exit Code: 0\nnext stage\nExit Code: 2", 2),
+        ("exit=0\nrunning checks\nExit Code: 1", "command_failed"),
+        ("Exit Code: 0\nnext stage\nExit Code: 2", "command_failed"),
         # Providers emit "Command exited with code N" only as the whole output
         # (upstream bash_exit), so the phrase after other output is just output.
         ("Exit Code: 0\nnext stage\nCommand exited with code 2", None),
@@ -154,10 +153,10 @@ def test_a_silent_timeout_after_failed_commands_does_not_block_bash():
         ("Exit Code: 1\nretry succeeded", None),
     ],
 )
-def test_only_the_trailing_exit_marker_counts(content, exit_code):
+def test_only_the_trailing_exit_marker_counts(content, error_type):
     meta = _meta(normalize_tool_message(_bash(content)))
-    assert meta.get("exit_code") == exit_code
-    assert meta["status"] == ("error" if exit_code else "success")
+    assert meta["error_type"] == error_type
+    assert meta["status"] == ("error" if error_type else "success")
 
 
 def test_bash_tool_alias_is_graded_the_same_way():
@@ -168,7 +167,6 @@ def test_bash_tool_alias_is_graded_the_same_way():
 def test_a_clean_exit_with_500_in_its_output_is_a_success():
     meta = _meta(normalize_tool_message(_bash("served 500 requests, p95 500ms")))
     assert meta["status"] == "success"
-    assert meta.get("exit_code") is None
 
 
 def test_tool_level_errors_without_an_exit_code_keep_the_keyword_rules():
@@ -177,7 +175,6 @@ def test_tool_level_errors_without_an_exit_code_keep_the_keyword_rules():
     meta = _meta(normalize_tool_message(msg))
     assert meta["status"] == "error"
     assert meta["error_type"] == "internal"
-    assert meta.get("exit_code") is None
 
 
 def test_other_tools_still_grade_500_as_internal():
