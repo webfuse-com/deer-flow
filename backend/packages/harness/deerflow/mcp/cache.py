@@ -3,9 +3,7 @@
 import asyncio
 import json
 import logging
-import random
 import threading
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +15,14 @@ from deerflow.config.file_signature import ConfigSignature as _ConfigSignature
 from deerflow.config.file_signature import get_config_signature as _get_config_signature
 from deerflow.config.shared_reset_marker import SharedResetMarker
 from deerflow.mcp.config_normalization import normalize_mcp_interceptor_paths, normalize_mcp_server_config
+from deerflow.mcp.lifecycle import (
+    InvalidMcpLifecycle,
+    _stdio_fingerprints,
+    effective_tokens,
+    lifecycle_delta,
+    parse_mcp_lifecycle,
+)
+from deerflow.mcp.tools import ServerDiscoveryResult
 
 if TYPE_CHECKING:
     from deerflow.mcp.session_pool import MCPSessionPool
@@ -39,15 +45,23 @@ class _AppliedMcpRevision:
     digest ``ensure_binding``/``reconcile_bindings`` consume. Those values
     are one-way digests, so resolved ``$VAR`` credentials never appear there.
 
-    ``effective_snapshot`` is *not* secret-safe (it is the fully resolved MCP
-    slice), so it is excluded from ``repr`` — the same contract
-    ``_mcp_config_snapshot`` documents. Never log or persist this object's
-    snapshot field.
+    ``server_snapshots`` maps every enabled server to
+    ``_server_config_snapshot(...)`` — a canonical digest of its *parsed*
+    configuration, so a metadata/routing change is distinguishable from an
+    equivalent ``type``/``transport`` respelling. It drives selective eviction;
+    it is never used as connection identity (``stdio_connections`` owns that).
+
+    ``effective_snapshot`` and ``server_snapshots`` are *not* secret-safe (they
+    are the fully resolved MCP slice), so they are excluded from ``repr`` — the
+    same contract ``_mcp_config_snapshot`` documents. Never log or persist these
+    fields.
     """
 
     effective_snapshot: str = field(repr=False)
     interceptors: str
     stdio_connections: Mapping[str, str]
+    lifecycle_tokens: Mapping[str, str]
+    server_snapshots: Mapping[str, str] = field(repr=False)
 
 
 # Reconciliation kinds produced by ``_plan_mcp_reconciliation_locked``. The
@@ -73,6 +87,7 @@ class _McpReconciliation:
     path: Path | None = None
     signature: _ConfigSignature | None = None
     retire_unlisted: bool = False
+    force_rebind: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,14 +97,34 @@ class McpReconciliationPending:
     retired_pool: "MCPSessionPool | None" = None
 
 
+@dataclass(frozen=True, slots=True)
+class _ServerToolCacheEntry:
+    """A published per-server discovery result and its config identity.
+
+    ``snapshot`` is the server's canonical config identity at publication (see
+    ``_server_config_snapshot``), ``interceptors`` records the normalized global
+    chain used to wrap the tools, and ``result`` is the exact
+    ``ServerDiscoveryResult`` published for it. All are excluded from ``repr``:
+    the snapshot may embed resolved credentials and the result carries ownership
+    handles.
+    """
+
+    snapshot: str = field(repr=False)
+    interceptors: str = field(repr=False)
+    result: ServerDiscoveryResult = field(repr=False)
+
+
 _mcp_tools_cache: list[BaseTool] | None = None
+# Per-server published discovery results, keyed by server name. Deliberately
+# separate from the flattened ``_mcp_tools_cache`` so an unchanged server's exact
+# ``BaseTool`` objects can be reused without re-running discovery. The
+# reconciliation and initialization paths populate and selectively evict it.
+_server_tool_cache: dict[str, _ServerToolCacheEntry] = {}
 _cache_initialized = False
 _init_lock = threading.RLock()  # Guards cache state transitions.
 _init_condition = threading.Condition(_init_lock)
 _initializing_generation: int | None = None
 _cache_generation = 0
-_catalog_refresh_after = float("inf")
-_catalog_refreshing = False
 
 # Cache-invalidation key for the resolved extensions config file. We track the
 # resolved path *and* a ``(mtime, size, sha256)`` content signature — via the
@@ -240,6 +275,21 @@ def _interceptors_snapshot(config) -> str:
     )
 
 
+def _server_config_snapshot(server) -> str:
+    """Canonical, comparable identity for one parsed MCP server config.
+
+    Built from ``normalize_mcp_server_config`` so an equivalent
+    ``type``/``transport`` spelling and differing JSON key order compare equal,
+    while any field that can affect the discovered tools (connection params,
+    ``description``, ``routing``, ``tools``, ``tool_name_prefix``, ...) compares
+    unequal. ``sort_keys`` normalizes nested key order.
+
+    The result may embed resolved ``$VAR`` credentials; it is only ever compared
+    for equality and must never be logged or persisted.
+    """
+    return json.dumps(normalize_mcp_server_config(server), sort_keys=True, ensure_ascii=False)
+
+
 def _mcp_revision_from_config(config) -> _AppliedMcpRevision:
     """Build the applied-reconciliation revision for a parsed config.
 
@@ -248,29 +298,15 @@ def _mcp_revision_from_config(config) -> _AppliedMcpRevision:
     server — so presentation-only fields (``description``/``routing``/``tools``/
     ``tool_name_prefix``) cannot masquerade as a connection change.
     """
-    from deerflow.mcp.client import build_server_params
-    from deerflow.mcp.session_pool import normalized_connection_fingerprint
-
-    stdio_connections: dict[str, str] = {}
-    for server_name, server in config.get_enabled_mcp_servers().items():
-        try:
-            connection = build_server_params(server_name, server)
-        except Exception:
-            # ``build_servers_config`` drops a server whose parameters cannot be
-            # built, so it is absent from discovery too. Omitting it here keeps
-            # the connection-identity baseline aligned with what discovery can
-            # actually install instead of raising into the hot staleness check.
-            logger.debug(
-                "MCP server '%s' has unusable parameters; omitting it from the connection-identity baseline",
-                server_name,
-            )
-            continue
-        if connection.get("transport", "stdio") == "stdio":
-            stdio_connections[server_name] = normalized_connection_fingerprint(connection)
+    stdio_connections = _stdio_fingerprints(config)
+    ledger = parse_mcp_lifecycle(config.model_extra or {})
+    server_snapshots = {name: _server_config_snapshot(server) for name, server in config.get_enabled_mcp_servers().items()}
     return _AppliedMcpRevision(
         effective_snapshot=_effective_mcp_config_snapshot(config),
         interceptors=_interceptors_snapshot(config),
         stdio_connections=stdio_connections,
+        lifecycle_tokens=effective_tokens(config, ledger),
+        server_snapshots=server_snapshots,
     )
 
 
@@ -351,7 +387,12 @@ def _read_stable_mcp_revision(
     config = _load_stable_mcp_config(config_path, expected_signature)
     if config is None:
         return None
-    return config, _mcp_revision_from_config(config)
+    try:
+        revision = _mcp_revision_from_config(config)
+    except InvalidMcpLifecycle:
+        logger.warning("Extensions config mcpLifecycle is present but invalid; treating the MCP cache as stale")
+        return None
+    return config, revision
 
 
 def _frozen_task_snapshot_rejects(config):
@@ -397,6 +438,65 @@ def _deployment_binding_delta(
     return active, tuple(sorted(removed))
 
 
+def _binding_matches(
+    result: ServerDiscoveryResult,
+    name: str,
+    fingerprint: str | None,
+    pool: "MCPSessionPool | None",
+) -> bool:
+    """Return whether ``result`` may be reused for ``name`` against ``pool``.
+
+    ``fingerprint`` is the server's *current* connection digest: ``None`` for
+    HTTP/SSE servers, which hold no pooled stdio binding.
+
+    For stdio, reuse requires the *exact* binding object to still be the pool's
+    current one. ``ServerBinding`` is declared ``eq=False`` precisely so this
+    check is object identity, never dataclass value equality: a cross-worker
+    delete/re-add of an identical server re-epochs the binding to a new object
+    carrying the same fingerprint, and only identity comparison rejects the
+    superseded result (the ABA case).
+
+    This deliberately calls the pool's private ``_binding_is_current`` — an
+    intentional, read-only, in-package coupling shared by the reuse check and the
+    pre-publication check so the two cannot diverge. Callers must already hold
+    ``_init_condition``; ``_binding_is_current`` then acquires the pool lock,
+    preserving the established ``_init_condition -> pool._lock`` order.
+    """
+    if fingerprint is None:  # HTTP/SSE: no pooled stdio binding may be attached.
+        return result.pool is None and result.binding is None
+
+    binding = result.binding
+    return pool is not None and result.pool is pool and binding is not None and binding.domain == "deployment" and binding.server_name == name and binding.fingerprint == fingerprint and pool._binding_is_current(binding)
+
+
+def _evict_server_tool_entries_locked(revision: _AppliedMcpRevision, pool: "MCPSessionPool") -> None:
+    """Drop per-server results a newly applied revision no longer justifies.
+
+    Caller must hold ``_init_condition``. This runs *after* the caller has
+    installed the new binding epoch (see ``_apply_mcp_reconciliation_locked``),
+    so a lifecycle-token rotation that leaves the connection fingerprint
+    untouched has already replaced the binding object and is caught by the
+    identity check below. Retained entries keep their exact identity so an
+    unchanged server's published objects are reused verbatim.
+
+    An entry survives only when both hold:
+
+    * its canonical config snapshot equals the new revision's
+      (``stdio_connections`` alone misses presentation-only changes), and
+    * ``_binding_matches`` proves the result still belongs to the pool's current
+      deployment binding (HTTP/SSE: no pooled binding at all).
+
+    Names absent from ``revision.server_snapshots`` (deleted, disabled or never
+    declared) are evicted because ``.get`` returns ``None``. The binding verdict
+    is delegated to ``_binding_matches`` so the reuse and eviction paths cannot
+    diverge.
+    """
+    snapshots = revision.server_snapshots
+    stale = [name for name, entry in _server_tool_cache.items() if snapshots.get(name) != entry.snapshot or not _binding_matches(entry.result, name, revision.stdio_connections.get(name), pool)]
+    for name in stale:
+        del _server_tool_cache[name]
+
+
 def _install_claimed_revision_locked(pool, revision: _AppliedMcpRevision, *, previous: _AppliedMcpRevision | None) -> None:
     """Install ``revision``'s deployment epochs before discovery runs.
 
@@ -412,11 +512,16 @@ def _install_claimed_revision_locked(pool, revision: _AppliedMcpRevision, *, pre
     the claim must tombstone, under the same lock that installs the epochs.
     """
     active, removed = _deployment_binding_delta(previous, revision)
+    if previous is None:
+        force_rebind: frozenset[str] = frozenset(active)
+    else:
+        force_rebind = lifecycle_delta(previous.lifecycle_tokens, revision.lifecycle_tokens, active)
     pool.reconcile_bindings(
         active,
         removed,
         domain="deployment",
         retire_unlisted=previous is None,
+        force_rebind=force_rebind,
     )
 
 
@@ -430,17 +535,24 @@ def _shared_reset_has_local_state_locked(pool) -> bool:
     is deliberately not a reason — a deployment-side reset must not retire it.
     Caller must hold ``_init_condition``.
     """
-    return _cache_initialized or _applied_mcp_revision is not None or bool(pool.retained_server_names(domain="deployment"))
+    return _cache_initialized or _applied_mcp_revision is not None or bool(_server_tool_cache) or bool(pool.retained_server_names(domain="deployment"))
 
 
 def _has_mcp_reconciliation_state() -> bool:
     """True when this process holds state a config observation could affect.
 
-    Published tools, a recorded applied revision and an in-flight discovery are
-    all reasons to keep watching the config. A process that never initialized
-    MCP pays no config-read cost (``refresh_mcp_cache_if_active`` contract).
+    Published tools, a recorded applied revision, an in-flight discovery and a
+    retained per-server entry are all reasons to keep watching the config. The
+    entry check matters because ``initialize_mcp_tools`` can null the applied
+    baseline (an unbuildable revision) without clearing retained entries; without
+    counting them, a later config change would be silently skipped. A process that
+    never initialized MCP pays no config-read cost
+    (``refresh_mcp_cache_if_active`` contract).
     """
-    return _cache_initialized or _applied_mcp_revision is not None or _initializing_generation is not None
+    from deerflow.mcp.session_pool import current_session_pool
+
+    pool = current_session_pool()
+    return _cache_initialized or _applied_mcp_revision is not None or _initializing_generation is not None or bool(_server_tool_cache) or (pool is not None and bool(pool.retained_server_names(domain="deployment")))
 
 
 def _plan_mcp_reconciliation_locked() -> _McpReconciliation | None:
@@ -459,7 +571,7 @@ def _plan_mcp_reconciliation_locked() -> _McpReconciliation | None:
     classification and application, so two readers can never apply revisions
     out of order).
     """
-    global _config_path, _config_signature
+    global _applied_mcp_revision, _config_path, _config_signature
 
     if not _has_mcp_reconciliation_state():
         return None
@@ -508,39 +620,59 @@ def _plan_mcp_reconciliation_locked() -> _McpReconciliation | None:
     candidate_config, revision = loaded
 
     applied = _applied_mcp_revision
-    if applied is not None and revision.effective_snapshot == applied.effective_snapshot:
-        logger.info("Extensions config changed but the effective MCP configuration did not; keeping cached MCP tools and sessions")
+    force_rebind = lifecycle_delta(applied.lifecycle_tokens, revision.lifecycle_tokens, revision.stdio_connections) if applied is not None else frozenset()
+    if applied is not None and revision.effective_snapshot == applied.effective_snapshot and not force_rebind:
+        logger.info("Extensions config changed but the effective MCP configuration and active lifecycle generations did not; keeping cached MCP tools and sessions")
+        # Snapshot equality implies equal stdio_connections, so no active epoch
+        # changes; but a tombstone-only history advance must still be recorded.
+        # The published tool cache is deliberately left untouched.
+        _applied_mcp_revision = revision
         _config_path, _config_signature = current_path, current_signature
         return None
 
-    if applied is not None and revision.interceptors == applied.interceptors:
-        rejection = _frozen_task_snapshot_rejects(candidate_config)
-        if rejection is not None:
-            # Installing this revision's epochs would strand the durable callers
-            # that still run against the frozen startup configuration, so keep
-            # the conservative fallback: replace the pool (where those callers
-            # rebind from the configuration they were started with) and never
-            # install the rejected epoch.
-            logger.info(
-                "MCP configuration revision is rejected by the frozen durable-task snapshot (%s); resetting instead of installing binding epochs",
-                type(rejection).__name__,
-            )
+    if applied is not None and revision.interceptors != applied.interceptors:
+        logger.info("MCP global interceptor chain changed; cache is stale")
+        return _McpReconciliation(_RECONCILE_FULL)
+
+    rejection = _frozen_task_snapshot_rejects(candidate_config)
+    if rejection is not None:
+        # Installing this revision's epochs would strand the durable callers
+        # that still run against the frozen startup configuration, so keep
+        # the conservative fallback and never install the rejected epoch.
+        logger.info(
+            "MCP configuration revision is rejected by the frozen durable-task snapshot (%s); resetting instead of installing binding epochs",
+            type(rejection).__name__,
+        )
+        return _McpReconciliation(_RECONCILE_FULL)
+
+    if applied is None:
+        if _server_tool_cache:
+            # Retained entries do not record the global interceptor chain they
+            # were built under, and there is no applied baseline to compare it
+            # against, so they are unverifiable. Fall back to the conservative
+            # full reset rather than risk serving a stale interceptor chain.
+            logger.info("MCP configuration changed with no applicable baseline but retained server entries; resetting conservatively")
             return _McpReconciliation(_RECONCILE_FULL)
+        # No trusted baseline: conservatively re-epoch every active deployment
+        # binding (same fingerprint included) and tombstone unlisted deployment
+        # state, without replacing the pool or touching personal state.
+        logger.info("MCP configuration changed without an applicable selective baseline; conservatively rebinding deployment state")
         return _McpReconciliation(
             _RECONCILE_SELECTIVE,
             revision=revision,
             path=current_path,
             signature=current_signature,
+            retire_unlisted=True,
+            force_rebind=frozenset(revision.stdio_connections),
         )
 
-    # Either there is no applied baseline to diff against, or the global
-    # interceptor chain changed. Both keep the pre-PR-C conservative behavior:
-    # replace the pool instead of guessing which sessions may be reused.
-    logger.info(
-        "MCP configuration changed without an applicable selective baseline (interceptors %s); cache is stale",
-        "changed" if applied is not None else "unknown",
+    return _McpReconciliation(
+        _RECONCILE_SELECTIVE,
+        revision=revision,
+        path=current_path,
+        signature=current_signature,
+        force_rebind=force_rebind,
     )
-    return _McpReconciliation(_RECONCILE_FULL)
 
 
 def _invalidate_published_tools_locked() -> None:
@@ -586,10 +718,18 @@ def _apply_mcp_reconciliation_locked(plan: _McpReconciliation):
             re_epoching or "none",
             sorted(removed) or "none",
         )
-        if plan.retire_unlisted:
-            pool.reconcile_bindings(active, removed, domain="deployment", retire_unlisted=True)
-        else:
-            pool.reconcile_bindings(active, removed, domain="deployment")
+        pool.reconcile_bindings(
+            active,
+            removed,
+            domain="deployment",
+            retire_unlisted=plan.retire_unlisted,
+            force_rebind=plan.force_rebind,
+        )
+
+        # Evict only after the new epoch is installed: a lifecycle-token rotation
+        # keeps the fingerprint but replaces the binding object, so evaluating
+        # reuse against the pre-transition pool would wrongly retain the entry.
+        _evict_server_tool_entries_locked(revision, pool)
 
         _applied_mcp_revision = revision
         _config_path, _config_signature = plan.path, plan.signature
@@ -622,15 +762,26 @@ def _plan_committed_mcp_reconciliation_locked(
     from deerflow.mcp.session_pool import get_session_pool
 
     pool = get_session_pool()
-    has_local_state = _cache_initialized or _applied_mcp_revision is not None or _initializing_generation is not None or bool(pool.retained_server_names(domain="deployment"))
+    has_local_state = _cache_initialized or _applied_mcp_revision is not None or _initializing_generation is not None or bool(_server_tool_cache) or bool(pool.retained_server_names(domain="deployment"))
     if not has_local_state:
+        # No visible local state, but a durable-task caller can bind between this
+        # observation and the record below (``ensure_binding`` takes only the pool
+        # lock). Install this revision's deployment epochs under the pool lock
+        # first, so an insertion in that window is re-epoched or tombstoned rather
+        # than recorded as applied without ever being fenced.
+        _install_claimed_revision_locked(pool, revision, previous=None)
         _applied_mcp_revision = revision
         _config_path, _config_signature = path, signature
         _initialized_without_config = path is None
         return None
 
     applied = _applied_mcp_revision
-    if applied is not None and revision.effective_snapshot == applied.effective_snapshot:
+    force_rebind = lifecycle_delta(applied.lifecycle_tokens, revision.lifecycle_tokens, revision.stdio_connections) if applied is not None else frozenset()
+    if applied is not None and revision.effective_snapshot == applied.effective_snapshot and not force_rebind:
+        # Equal snapshot implies equal active connections, so only the consumed
+        # token map (e.g. tombstones) can have moved; record it without touching
+        # the pool or the published cache.
+        _applied_mcp_revision = revision
         _config_path, _config_signature = path, signature
         _initialized_without_config = path is None
         return None
@@ -638,12 +789,29 @@ def _plan_committed_mcp_reconciliation_locked(
     if applied is not None and revision.interceptors != applied.interceptors:
         return _McpReconciliation(_RECONCILE_FULL)
 
+    if applied is None:
+        if _server_tool_cache:
+            # Mirrors the reader's no-baseline rule: retained entries do not
+            # record the global interceptor chain they were built under, so
+            # without a baseline they are unverifiable and force a full reset.
+            return _McpReconciliation(_RECONCILE_FULL)
+        # Conservatively re-epoch active deployment bindings and tombstone
+        # unlisted ones, personal untouched.
+        return _McpReconciliation(
+            _RECONCILE_SELECTIVE,
+            revision=revision,
+            path=path,
+            signature=signature,
+            retire_unlisted=True,
+            force_rebind=frozenset(revision.stdio_connections),
+        )
+
     return _McpReconciliation(
         _RECONCILE_SELECTIVE,
         revision=revision,
         path=path,
         signature=signature,
-        retire_unlisted=applied is None,
+        force_rebind=force_rebind,
     )
 
 
@@ -733,8 +901,8 @@ async def initialize_mcp_tools() -> list[BaseTool]:
         List of LangChain tools from all enabled MCP servers.
     """
     global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature
-    global _initializing_generation, _cache_generation, _mcp_config_snapshot, _initialized_without_config, _catalog_refresh_after
-    global _cache_reset_marker_signature, _applied_mcp_revision
+    global _initializing_generation, _cache_generation, _mcp_config_snapshot, _initialized_without_config
+    global _cache_reset_marker_signature, _applied_mcp_revision, _server_tool_cache
 
     while True:
         with _init_condition:
@@ -751,19 +919,26 @@ async def initialize_mcp_tools() -> list[BaseTool]:
 
         await asyncio.to_thread(_wait_for_initialization, waiting_generation)
 
-    from deerflow.config.extensions_config import ExtensionsConfig
-    from deerflow.mcp.session_pool import StaleMCPBindingError, get_session_pool
-    from deerflow.mcp.tools import get_mcp_tools
-
     loaded_tools = None
     loaded_snapshot = None
+    loaded_lifecycle = None
+    loaded_fingerprints: dict[str, str] = {}
+    loaded_revision = None
+    reusable_entries: dict[str, _ServerToolCacheEntry] = {}
+    pending_entries: dict[str, _ServerToolCacheEntry] = {}
+    candidate_groups: dict[str, ServerDiscoveryResult] = {}
     post_path = None
     post_sig = None
     post_snapshot = None
+    post_lifecycle = None
     loaded_reset_signature = None
     post_reset_signature = None
     init_succeeded = False
     try:
+        from deerflow.config.extensions_config import ExtensionsConfig
+        from deerflow.mcp.session_pool import StaleMCPBindingError, get_session_pool
+        from deerflow.mcp.tools import _flatten_server_tool_groups, get_mcp_tools_by_server
+
         logger.info("Initializing MCP tools...")
         # Read the exact revision we hand to discovery. Comparing pre/post file
         # snapshots alone cannot prove which revision produced the tools, because
@@ -781,6 +956,19 @@ async def initialize_mcp_tools() -> list[BaseTool]:
             )
             raise RuntimeError("Extensions config could not be loaded for MCP tool discovery") from None
         loaded_snapshot = _effective_mcp_config_snapshot(loaded_config)
+        loaded_fingerprints = _stdio_fingerprints(loaded_config)
+        try:
+            loaded_lifecycle = effective_tokens(loaded_config, parse_mcp_lifecycle(loaded_config.model_extra or {}))
+        except InvalidMcpLifecycle:
+            # An unverifiable ledger can never be published. Returning an empty
+            # result would make the lazy caller retry forever and respawn stdio
+            # servers, so retire any local state and abort discovery instead.
+            with _init_condition:
+                retired_for_invalid = _reset_mcp_tools_cache_state_and_retire_pool_locked()
+            if retired_for_invalid is not None:
+                retired_for_invalid.close_all_sync()
+            logger.warning("Extensions config mcpLifecycle is invalid; aborting MCP tool discovery")
+            raise RuntimeError("Extensions config contains an invalid mcpLifecycle; fix or remove it before using MCP tools") from None
         loaded_reset_signature = _current_cache_reset_marker_signature(_resolve_config_path())
         # Claim the exact pool this generation owns under the same lock the
         # reset path takes, so verify-generation + capture-pool is one atomic
@@ -845,15 +1033,40 @@ async def initialize_mcp_tools() -> list[BaseTool]:
                         raise rejection
                     _install_claimed_revision_locked(claimed_pool, loaded_revision, previous=previous_revision)
                     _applied_mcp_revision = loaded_revision
+                # Select the entries this exact revision may reuse. The revision
+                # and the pool are both fixed under this lock, and ``_binding_matches``
+                # proves the entry still owns the pool's current binding. An
+                # untrusted revision (``loaded_revision is None``) reuses nothing.
+                # Compare each entry's wrapper chain, not the applied baseline:
+                # a claim can observe an interceptor edit after reconciliation,
+                # and a failed claim already advanced that baseline on retry.
+                if loaded_revision is not None:
+                    for name in loaded_config.get_enabled_mcp_servers():
+                        entry = _server_tool_cache.get(name)
+                        if (
+                            entry is not None
+                            and loaded_revision.server_snapshots.get(name) == entry.snapshot
+                            and loaded_revision.interceptors == entry.interceptors
+                            and _binding_matches(entry.result, name, loaded_fingerprints.get(name), claimed_pool)
+                        ):
+                            reusable_entries[name] = entry
         finally:
             if retired_before_claim is not None:
                 retired_before_claim.close_all_sync()
 
+        enabled_names = list(loaded_config.get_enabled_mcp_servers())
+        missing_names = [name for name in enabled_names if name not in reusable_entries]
+        discovered_groups: dict[str, ServerDiscoveryResult] = {}
         try:
-            loaded_tools = await get_mcp_tools(
-                extensions_config=loaded_config,
-                session_pool=claimed_pool,
-            )
+            if missing_names:
+                # Only the missing servers are re-discovered; ``get_mcp_tools_by_server``
+                # already isolates per-server failures (a failed server is absent
+                # from the mapping, a zero-tool success is present with tools=()).
+                discovered_groups = await get_mcp_tools_by_server(
+                    extensions_config=loaded_config,
+                    server_names=missing_names,
+                    session_pool=claimed_pool,
+                )
         except StaleMCPBindingError:
             # The pool this claim owns was retired while discovery was running.
             # That is the same cache race as a generation change, so keep the
@@ -866,10 +1079,33 @@ async def initialize_mcp_tools() -> list[BaseTool]:
                 logger.info("MCP cache was reset during binding installation; discarding superseded initialization")
                 return []
             raise
+        # Local candidate: reused results plus the successful discoveries. A
+        # failed server is simply absent, so it is neither flattened nor cached.
+        candidate_groups = {name: entry.result for name, entry in reusable_entries.items()}
+        candidate_groups.update(discovered_groups)
+        pending_entries = dict(reusable_entries)
+        if loaded_revision is not None:
+            for name, result in discovered_groups.items():
+                snapshot = loaded_revision.server_snapshots.get(name)
+                if snapshot is not None:
+                    pending_entries[name] = _ServerToolCacheEntry(snapshot=snapshot, interceptors=loaded_revision.interceptors, result=result)
+        if enabled_names and not candidate_groups:
+            # No enabled server produced a successful discovery result: this is
+            # a total discovery failure, not a legitimately empty configuration
+            # (a build-invalid connection is never even attempted), so refuse to
+            # publish a false-success empty cache.
+            # Raising aborts this attempt (the ``finally`` below releases the
+            # claim) without spinning inside a single ``get_cached_mcp_tools``.
+            raise RuntimeError("MCP discovery produced no results for any enabled server")
+        loaded_tools = _flatten_server_tool_groups(enabled_names, candidate_groups)
         post_path, post_sig = _current_config_state()
         post_reset_signature = _current_cache_reset_marker_signature(post_path)
         if post_path is not None and post_sig is not None:
-            post_snapshot = _read_stable_mcp_snapshot(post_path, post_sig)
+            post_loaded = _read_stable_mcp_revision(post_path, post_sig)
+            if post_loaded is not None:
+                _post_config, post_revision = post_loaded
+                post_snapshot = post_revision.effective_snapshot
+                post_lifecycle = post_revision.lifecycle_tokens
         elif post_path is not None:
             # The path resolved but its signature could not be read. Publishing
             # here would record an unpinned cache that later checks could never
@@ -889,6 +1125,7 @@ async def initialize_mcp_tools() -> list[BaseTool]:
                 fallback_snapshot = None
             recheck_path, recheck_sig = _current_config_state()
             post_snapshot = fallback_snapshot if recheck_path is None and recheck_sig is None else None
+            post_lifecycle = {}
         init_succeeded = True
     finally:
         if not init_succeeded:
@@ -904,7 +1141,20 @@ async def initialize_mcp_tools() -> list[BaseTool]:
                 logger.info("MCP cache was reset during initialization; discarding stale result")
                 return []
 
-            publish = loaded_snapshot is not None and post_snapshot is not None and loaded_snapshot == post_snapshot and loaded_reset_signature == post_reset_signature
+            publish = loaded_snapshot is not None and post_snapshot is not None and loaded_snapshot == post_snapshot and loaded_lifecycle == post_lifecycle and loaded_reset_signature == post_reset_signature
+            if publish:
+                # Re-validate every published result -- reused or freshly
+                # discovered -- against the pool's *current* binding. Selection
+                # and publication share ``_binding_matches``, so a binding
+                # rotation racing the lock-free discovery makes the whole
+                # candidate stale: no sibling is published either.
+                stale_binding = next(
+                    (name for name, result in candidate_groups.items() if not _binding_matches(result, name, loaded_fingerprints.get(name), claimed_pool)),
+                    None,
+                )
+                if stale_binding is not None:
+                    logger.warning("MCP binding for server '%s' rotated during discovery; discarding the whole candidate", stale_binding)
+                    publish = False
             if not publish:
                 logger.warning("MCP config or shared reset generation changed during initialization; discarding stale result")
                 # Reconcile against the revision observed now instead of forcing
@@ -916,8 +1166,8 @@ async def initialize_mcp_tools() -> list[BaseTool]:
                 else:
                     retired_pool = _apply_mcp_reconciliation_locked(plan)
             else:
+                _server_tool_cache = pending_entries
                 _mcp_tools_cache = loaded_tools
-                _catalog_refresh_after = time.monotonic() + random.uniform(240, 300)
                 _cache_initialized = True
                 _config_path, _config_signature = post_path, post_sig
                 _mcp_config_snapshot = post_snapshot
@@ -963,8 +1213,6 @@ def get_cached_mcp_tools() -> list[BaseTool]:
             # Applying a plan always clears the published cache, so this return
             # cannot skip a retirement produced above.
             if _cache_initialized:
-                if time.monotonic() >= _catalog_refresh_after:
-                    _schedule_catalog_refresh_locked()
                 return _mcp_tools_cache or []
 
             if _initializing_generation is not None:
@@ -1003,8 +1251,13 @@ def get_cached_mcp_tools() -> list[BaseTool]:
                     future.result()
             else:
                 loop.run_until_complete(initialize_mcp_tools())
-        except Exception:
-            logger.exception("Failed to lazy-initialize MCP tools")
+        except Exception as exc:
+            # Never emit the raw exception message or traceback here. Config
+            # parsing resolves ``$VAR`` values before validation and discovery
+            # failures can embed request URLs, so an exception's text may carry
+            # resolved credentials. The sanitized origins (config load, invalid
+            # ledger) already log their own bounded detail.
+            logger.error("Failed to lazy-initialize MCP tools (%s)", type(exc).__name__)
             return []
 
         with _init_lock:
@@ -1055,6 +1308,7 @@ def _reset_mcp_tools_cache_state() -> None:
     global _cache_reset_marker_signature, _applied_mcp_revision
 
     _mcp_tools_cache = None
+    _server_tool_cache.clear()
     _cache_initialized = False
     _config_path = None
     _config_signature = None
@@ -1119,48 +1373,6 @@ def reset_mcp_tools_cache() -> None:
         logger.debug("Could not close MCP session pool on cache reset", exc_info=True)
 
     logger.info("MCP tools cache reset")
-
-
-def _schedule_catalog_refresh_locked() -> None:
-    """Bound schema age without blocking callers or retiring live sessions."""
-    global _catalog_refreshing
-    if _catalog_refreshing:
-        return
-    _catalog_refreshing = True
-    generation = _cache_generation
-    config_state = (_config_path, _config_signature)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        threading.Thread(target=lambda: asyncio.run(_refresh_catalog(generation, config_state)), daemon=True, name="mcp-catalog-refresh").start()
-    else:
-        loop.create_task(_refresh_catalog(generation, config_state))
-
-
-async def _refresh_catalog(generation, config_state) -> None:
-    global _mcp_tools_cache, _catalog_refresh_after, _catalog_refreshing
-    from deerflow.mcp.tools import get_mcp_tools
-    from deerflow.tools.mcp_metadata import get_mcp_source
-
-    try:
-        loaded = await get_mcp_tools()
-        current_state = _current_config_state()
-        with _init_lock:
-            if generation != _cache_generation or config_state != current_state or config_state != (_config_path, _config_signature):
-                return
-            failed = getattr(loaded, "failed_servers", frozenset())
-            retained = [tool for tool in (_mcp_tools_cache or []) if (get_mcp_source(tool) or {}).get("server_name") in failed]
-            _mcp_tools_cache = [*loaded, *retained]
-            _catalog_refresh_after = time.monotonic() + random.uniform(30, 45) if failed else time.monotonic() + random.uniform(240, 300)
-            logger.info("MCP catalog refreshed: tools=%d failed_servers=%d retained_tools=%d", len(_mcp_tools_cache), len(failed), len(retained))
-    except Exception:
-        logger.exception("MCP catalog refresh failed; retaining previous schemas")
-        with _init_lock:
-            if generation == _cache_generation:
-                _catalog_refresh_after = time.monotonic() + random.uniform(30, 45)
-    finally:
-        with _init_lock:
-            _catalog_refreshing = False
 
 
 def publish_mcp_tools_cache_reset() -> str | None:

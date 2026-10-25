@@ -1943,14 +1943,12 @@ export function InputBox({
     [],
   );
   const focusComposerAt = useCallback((offset: number) => {
-    requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (textarea) {
-        textarea.focus();
-        textarea.setSelectionRange(offset, offset);
-      } else if (inlineSkillTextRef.current)
-        focusReferenceAt(inlineSkillTextRef.current, offset);
-    });
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset);
+    } else if (inlineSkillTextRef.current)
+      focusReferenceAt(inlineSkillTextRef.current, offset);
   }, []);
   const selectMention = useCallback(
     async (selection: MentionSelection) => {
@@ -1986,9 +1984,11 @@ export function InputBox({
           setConversationReferences((previous) =>
             previous.filter((ref) => ref.threadId !== selectionId),
           );
-        textInput.setInput(next);
-        setMentionQuery(null);
-        setMentionButtonOpen(false);
+        flushSync(() => {
+          textInput.setInput(next);
+          setMentionQuery(null);
+          setMentionButtonOpen(false);
+        });
         focusComposerAt(Math.min(caret, next.length));
         return;
       }
@@ -2122,10 +2122,14 @@ export function InputBox({
         latestDraftRef.current = null;
         clearComposerDraft(storage, draftKey);
       }
-      textInput.setInput(nextText);
-      setMentionQuery(null);
-      setMentionButtonOpen(false);
-      setMentionError(null);
+      // Commit the replacement editor before restoring its selection. Deferring
+      // to the next frame can misplace typing or overwrite a later caret move.
+      flushSync(() => {
+        textInput.setInput(nextText);
+        setMentionQuery(null);
+        setMentionButtonOpen(false);
+        setMentionError(null);
+      });
       focusComposerAt(caret + inserted.length);
       if (selection.kind === "file") onReferenceFileAttached?.();
     },

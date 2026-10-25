@@ -117,7 +117,7 @@ def test_keywords_in_command_output_do_not_grade_a_failed_command(output):
         ("still building\nCommand timed out after 600 seconds.\nExit Code: 124", "command_failed"),
         ("Command exited with code 124", "command_failed"),
         ("Command exited with code 2", "command_failed"),
-        ("partial output\nexit=3", "command_failed"),
+        ("partial output\nExit Code: 3", "command_failed"),
     ],
 )
 def test_exit_codes_with_a_fixed_meaning_keep_it(content, error_type):
@@ -146,7 +146,10 @@ def test_a_silent_timeout_after_failed_commands_does_not_block_bash():
     [
         # An earlier marker-shaped line in the output is not the command's exit.
         ("exit=0\nrunning checks\nExit Code: 1", 1),
-        ("Exit Code: 0\nnext stage\nCommand exited with code 2", 2),
+        ("Exit Code: 0\nnext stage\nExit Code: 2", 2),
+        # Providers emit "Command exited with code N" only as the whole output
+        # (upstream bash_exit), so the phrase after other output is just output.
+        ("Exit Code: 0\nnext stage\nCommand exited with code 2", None),
         ("previous run: Exit Code: 3\nall good", None),
         ("Exit Code: 1\nretry succeeded", None),
     ],

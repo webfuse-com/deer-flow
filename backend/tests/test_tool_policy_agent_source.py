@@ -1,7 +1,9 @@
-"""[argus patch #53] Agent-source tool policy (tool_policy.source: "agent").
+"""[argus patch #53] The agent's tool ceiling (``deerflow.tools.agent_tool_policy``).
 
-Locks the tri-state semantics of AgentConfig.allowed_tools and the dispatch
-between the upstream skill-union policy and the agent-level ceiling:
+Upstream #6935 made skill allowed-tools compatibility metadata, so the
+agent's ``allowed_tools`` applies whenever declared and ``tool_policy.source``
+is accepted and ignored. Locks the tri-state semantics of
+AgentConfig.allowed_tools:
 
 - None (undeclared) means NO restriction — a whitelist nobody declared
   cannot restrict. This is the opposite reading of "None = no tools", so it
@@ -9,8 +11,8 @@ between the upstream skill-union policy and the agent-level ceiling:
 - [] (declared empty) means no tools.
 - [names] means exactly those, unioned with the firing schedule's
   allowed-tools (extra_allowed, argus patch #43).
-- Skill allowed-tools declarations never grant or deny under the agent
-  source; a declaration outside a restrictive ceiling is logged, not granted.
+- Skill allowed-tools declarations never grant or deny; a declaration
+  outside a restrictive ceiling is logged, not granted.
 """
 
 import logging
@@ -21,11 +23,8 @@ import pytest
 
 from deerflow.config.agents_config import AgentConfig
 from deerflow.config.tool_policy_config import ToolPolicyConfig
-from deerflow.skills.tool_policy import (
-    filter_tools_by_agent_allowed_tools,
-    filter_tools_by_skill_allowed_tools,
-)
 from deerflow.skills.types import Skill
+from deerflow.tools.agent_tool_policy import filter_tools_by_agent_allowed_tools
 
 
 @dataclass
@@ -52,14 +51,12 @@ TOOLS = [_Tool("bash"), _Tool("read_file"), _Tool("atlas_update_schedule"), _Too
 
 class TestAgentCeilingTriState:
     def test_none_means_no_restriction_even_with_declaring_skills(self):
-        """The load-bearing case: skills declare, but under the agent source
-        an undeclared agent ceiling binds EVERYTHING (the skill union would
-        have stripped atlas_update_schedule here)."""
+        """The load-bearing case: skills declare, but an undeclared agent
+        ceiling binds EVERYTHING (the old skill union would have stripped
+        atlas_update_schedule here)."""
         skills = [_make_skill("restricted", ["read_file"])]
         result = filter_tools_by_agent_allowed_tools(TOOLS, None, skills=skills)
         assert result == TOOLS
-        # contrast: the upstream skill union strips to the declaration
-        assert [t.name for t in filter_tools_by_skill_allowed_tools(TOOLS, skills)] == ["read_file"]
 
     def test_declared_empty_means_no_tools(self):
         assert filter_tools_by_agent_allowed_tools(TOOLS, []) == []
@@ -116,12 +113,24 @@ class TestSkillDeclarationsAreDocumentation:
 
 
 class TestConfigSurface:
-    def test_tool_policy_defaults_to_upstream_skills_source(self):
-        assert ToolPolicyConfig().source == "skills"
+    def test_tool_policy_source_defaults_to_unset(self):
+        assert ToolPolicyConfig().source is None
 
-    def test_tool_policy_rejects_unknown_source(self):
-        with pytest.raises(ValueError):
-            ToolPolicyConfig(source="everything")
+    @pytest.mark.parametrize("source", ["agent", "skills", "everything"])
+    def test_any_tool_policy_source_still_loads(self, source):
+        """Fleet configs set ``source: agent``; old or odd values must keep loading."""
+        assert ToolPolicyConfig(source=source).source == source
+
+    def test_ignored_source_is_logged_once(self, caplog, monkeypatch):
+        import deerflow.config.tool_policy_config as tool_policy_config
+
+        monkeypatch.setattr(tool_policy_config, "_IGNORED_SOURCES_LOGGED", set())
+        with caplog.at_level(logging.WARNING):
+            ToolPolicyConfig(source="skills")
+            ToolPolicyConfig(source="skills")
+            ToolPolicyConfig(source="agent")
+        assert caplog.text.count("tool_policy.source='skills' is ignored") == 1
+        assert "'agent'" not in caplog.text
 
     def test_agent_config_allowed_tools_defaults_to_none(self):
         cfg = AgentConfig(name="atlas")
@@ -137,9 +146,60 @@ class TestConfigSurface:
         minimal = {"sandbox": {"use": "deerflow.sandbox.local.provider:LocalSandboxProvider"}}
         cfg = AppConfig.model_validate({**minimal, "tool_policy": {"source": "agent"}})
         assert cfg.tool_policy.source == "agent"
-        assert AppConfig.model_validate(minimal).tool_policy.source == "skills"
+        assert AppConfig.model_validate({**minimal, "tool_policy": {"source": "skills"}}).tool_policy.source == "skills"
+        assert AppConfig.model_validate(minimal).tool_policy.source is None
 
 
-# Subagent inheritance of the parent agent's ceiling is covered in
-# tests/test_subagent_executor.py (TestAgentSourceToolPolicy), which owns the
-# module-mock scaffolding needed to import the real SubagentExecutor.
+def _assemble_tool_names(monkeypatch, *, source: str | None, agent_allowed: list[str] | None, schedule_allowed: list[str] | None) -> list[str]:
+    from unittest.mock import MagicMock, create_autospec
+
+    import deerflow.tools as tools_module
+    from deerflow.agents.lead_agent import agent as lead_agent_module
+    from deerflow.config.app_config import AppConfig
+    from deerflow.config.model_config import ModelConfig
+    from deerflow.config.sandbox_config import SandboxConfig
+
+    app_config = AppConfig(
+        models=[ModelConfig(name="safe-model", display_name="safe-model", description=None, use="langchain_openai:ChatOpenAI", model="safe-model", supports_thinking=False, supports_vision=False)],
+        sandbox=SandboxConfig(use="deerflow.sandbox.local:LocalSandboxProvider"),
+        tool_policy=ToolPolicyConfig(source=source),
+    )
+
+    def _named(name: str):
+        tool = MagicMock()
+        tool.name = name
+        return tool
+
+    agent_config = AgentConfig(name="scoped", allowed_tools=agent_allowed)
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda *args, **kwargs: agent_config)
+    monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [_named(tool.name) for tool in TOOLS])
+    monkeypatch.setattr(lead_agent_module, "build_middlewares", create_autospec(lead_agent_module.build_middlewares, return_value=[]))
+    monkeypatch.setattr(lead_agent_module, "apply_prompt_template", lambda **kwargs: "prompt")
+    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
+    monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
+    configurable = {"agent_name": "scoped", "model_name": "safe-model", "subagent_enabled": False}
+    if schedule_allowed is not None:
+        configurable["allowed_tools"] = schedule_allowed
+    graph = lead_agent_module.unwrap_agent_graph(lead_agent_module.make_lead_agent({"configurable": configurable}))
+    return [tool.name for tool in graph["tools"]]
+
+
+class TestLeadAssembly:
+    @pytest.mark.parametrize("source", [None, "agent", "skills"])
+    def test_agent_ceiling_applies_whatever_the_source(self, monkeypatch, source):
+        """The ceiling no longer depends on tool_policy.source (#58 retired)."""
+        assert _assemble_tool_names(monkeypatch, source=source, agent_allowed=["read_file"], schedule_allowed=None) == ["read_file"]
+
+    @pytest.mark.parametrize("source", [None, "skills"])
+    def test_schedule_allowlist_scopes_an_unrestricted_agent_whatever_the_source(self, monkeypatch, source):
+        assert _assemble_tool_names(monkeypatch, source=source, agent_allowed=None, schedule_allowed=["bash"]) == ["bash"]
+
+    def test_unrestricted_agent_without_schedule_keeps_every_tool(self, monkeypatch):
+        # update_agent is added for every custom agent and survives too.
+        assert _assemble_tool_names(monkeypatch, source="agent", agent_allowed=None, schedule_allowed=None) == [*(tool.name for tool in TOOLS), "update_agent"]
+
+
+# Subagents do not inherit this ceiling: their tools come from their own
+# subagent config and authorization (the executor's dead
+# ``_apply_skill_allowed_tools`` was removed with upstream #6935).

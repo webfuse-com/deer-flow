@@ -534,6 +534,7 @@ class TestInboundFileIngestion:
 
 
 class TestInboundFileSandboxPerms:
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-only: Windows CRT chmod cannot express the 0644 mode this test asserts")
     def test_make_inbound_file_sandbox_readable_sets_group_other_read(self, tmp_path):
         from app.channels.manager import _make_inbound_file_sandbox_readable
 
@@ -548,6 +549,7 @@ class TestInboundFileSandboxPerms:
         assert mode & stat.S_IRGRP
         assert mode & stat.S_IROTH
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-only: Windows CRT chmod cannot express the 0644 mode this test asserts")
     def test_make_inbound_file_sandbox_readable_preserves_owner_bits(self, tmp_path):
         from app.channels.manager import _make_inbound_file_sandbox_readable
 
@@ -563,6 +565,7 @@ class TestInboundFileSandboxPerms:
         assert mode == 0o644
         assert not (mode & stat.S_IWOTH)
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-only: Windows CRT chmod cannot express the 0600 mode this test asserts")
     def test_make_inbound_file_sandbox_readable_skips_symlink(self, tmp_path):
         from support.symlinks import symlink_or_skip
 
@@ -1292,9 +1295,7 @@ class TestWecomMediaUrlGate:
             finally:
                 await client.aclose()
 
-        # [argus patch #44] app.gateway.app pins httpx to WARNING at import;
-        # raise it here so upstream's redaction is tested whatever ran first.
-        with caplog.at_level(_logging.INFO), caplog.at_level(_logging.INFO, logger="httpx"):
+        with caplog.at_level(_logging.INFO):
             result = _run(go())
 
         assert result == b"ok"
@@ -1333,9 +1334,7 @@ class TestWecomMediaUrlGate:
             finally:
                 await channel._client.aclose()
 
-        # [argus patch #44] app.gateway.app pins httpx to WARNING at import;
-        # raise it here so upstream's redaction is tested whatever ran first.
-        with caplog.at_level(_logging.INFO), caplog.at_level(_logging.INFO, logger="httpx"):
+        with caplog.at_level(_logging.INFO):
             result = _run(go())
 
         assert result == b"ok"

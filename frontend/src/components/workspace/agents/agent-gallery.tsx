@@ -114,8 +114,8 @@ export function AgentGallery() {
   return (
     <div className="flex size-full flex-col">
       {/* Page header */}
-      <div className="flex items-center justify-between border-b px-6 py-4">
-        <div>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b px-6 py-4">
+        <div className="min-w-0">
           <h1 className="text-xl font-semibold">{t.agents.title}</h1>
           <p className="text-muted-foreground mt-0.5 text-sm">
             {t.agents.description}
@@ -124,7 +124,7 @@ export function AgentGallery() {
         {/* [argus patch #112] Import and New act on the gallery only. */}
         <div
           className={cn(
-            "flex items-center gap-2",
+            "flex max-w-full flex-wrap items-center gap-2",
             activeTab !== GALLERY_TAB && "hidden",
           )}
         >

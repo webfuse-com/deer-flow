@@ -3,12 +3,13 @@
 import { BotIcon, PlusSquare } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { AgentWelcome } from "@/components/workspace/agent-welcome";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
+import { BrowserTrigger } from "@/components/workspace/browser-view";
 import {
   ChatBox,
   useMarkOpenThreadRead,
@@ -31,6 +32,7 @@ import {
   MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
 } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { HumanInputCard } from "@/components/workspace/messages/human-input-card";
 import { ProjectAffiliationBadge } from "@/components/workspace/projects/project-affiliation-badge";
 import {
   SidecarProvider,
@@ -42,8 +44,10 @@ import { ThreadExtensionActions } from "@/components/workspace/thread-extension-
 import { ThreadSubagentBatches } from "@/components/workspace/thread-subagent-batches";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
+import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
+import { WorkspaceSidebarTrigger } from "@/components/workspace/workspace-sidebar-trigger";
 import { useAgent } from "@/core/agents";
 import { useAuth } from "@/core/auth/AuthProvider";
 import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
@@ -65,23 +69,31 @@ import {
   type HumanInputResponse,
 } from "@/core/messages/human-input";
 import { isHiddenFromUIMessage } from "@/core/messages/utils";
+import { modelTaskInput } from "@/core/models/control";
+import { useModels } from "@/core/models/hooks";
+import { useModelControl } from "@/core/models/use-model-control";
+import { notificationBody } from "@/core/notification/body";
 import { useNotification } from "@/core/notification/hooks";
 import { useThreadScheduledTaskEvents } from "@/core/scheduled-tasks/events";
-import { useThreadSettings } from "@/core/settings";
-import { resolveThreadContext } from "@/core/settings/store";
+import { useLocalSettings, useThreadSettings } from "@/core/settings";
+import { resolveThreadContext, selectThreadModel } from "@/core/settings/store";
+import { createThread } from "@/core/threads/api";
 import {
   useThreadMetadata,
   useThreadStream,
   useThreadTokenUsage,
 } from "@/core/threads/hooks";
-import { selectContextUsage } from "@/core/threads/token-usage";
+import {
+  selectContextUsage,
+  threadTokenUsageToTokenUsage,
+} from "@/core/threads/token-usage";
 import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import { projectIdOfThread, textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 export default function AgentChatPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { user } = useAuth();
   const canStopStreaming = hasPermission(user, PERMISSIONS.RUNS_CANCEL);
   const canCreateRuns = hasPermission(user, PERMISSIONS.RUNS_CREATE);
@@ -99,13 +111,21 @@ export default function AgentChatPage() {
   // Argus opens every new chat on the citizen's Atlas agent page, so the
   // project page's "New chat" lands here and must file the first message
   // under the project, exactly as the plain chat page does.
-  const { projectParam, ensureProjectThread, prepareSubmission } =
-    useProjectNewChat({ threadId, isNewThread });
+  const { projectParam, ensureProjectThread } = useProjectNewChat({
+    threadId,
+    isNewThread,
+  });
   // `isNewThread` gates history/token-usage fetches until the backend creates
   // the thread. `isWelcomeMode` controls only the centered welcome layout, so
   // it can flip immediately on submit without triggering eager history loads.
   const [isWelcomeMode, setIsWelcomeMode] = useState(isNewThread);
   const [settings, setSettings] = useThreadSettings(threadId);
+  const modelControl = useModelControl(
+    `${user?.id ?? "anonymous"}:${agent_name}:${threadId}`,
+    locale,
+  );
+  const prepareModelControl = modelControl.prepare;
+  const [localSettings, setLocalSettings] = useLocalSettings();
   const {
     queue,
     enqueue: enqueueMessage,
@@ -115,6 +135,7 @@ export default function AgentChatPage() {
   } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { scopeSelectionEnabled } = useKnowledgeBaseEnabled();
+  const { tokenUsageEnabled } = useModels();
   const threadTokenUsage = useThreadTokenUsage(
     isNewThread || isMock ? undefined : threadId,
     { enabled: !isMock },
@@ -141,6 +162,7 @@ export default function AgentChatPage() {
     isNewThread,
     enabled: !isMock,
   });
+  const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
   const contextUsage = selectContextUsage(threadTokenUsage.data);
 
   const { showNotification } = useNotification();
@@ -190,9 +212,14 @@ export default function AgentChatPage() {
     [agentKnowledgeEnabled, knowledgeScope, selectorVisible],
   );
 
+  useEffect(() => {
+    setIsWelcomeMode(isNewThread);
+  }, [isNewThread]);
+
   const {
     thread,
     activeRunId,
+    pendingUsageMessages,
     sendMessage,
     regenerateMessage,
     editAndRegenerateMessage,
@@ -224,18 +251,12 @@ export default function AgentChatPage() {
       // it is open: it has been read.
       markThreadRead();
       if (document.hidden || !document.hasFocus()) {
-        let body = "Conversation finished";
         const lastMessage = state.messages[state.messages.length - 1];
-        if (lastMessage) {
-          const textContent = textOfMessage(lastMessage);
-          if (textContent) {
-            body =
-              textContent.length > 200
-                ? textContent.substring(0, 200) + "..."
-                : textContent;
-          }
-        }
-        showNotification(state.title, { body });
+        showNotification(state.title, {
+          body: notificationBody(
+            lastMessage ? textOfMessage(lastMessage) : null,
+          ),
+        });
       }
     },
   });
@@ -300,10 +321,66 @@ export default function AgentChatPage() {
     threadMetadata.isLoading,
   ]);
 
+  const submissionEpochRef = useRef(0);
+  useEffect(
+    () => () => {
+      submissionEpochRef.current += 1;
+    },
+    // [argus patch #122] A new chat's project scope can change without a
+    // pathname change (the "New chat" link drops `?project=`).
+    [agent_name, threadId, user?.id, projectParam],
+  );
+
   const handleSubmit = useCallback(
     async (message: PromptInputMessage, options?: InputBoxSubmitOptions) => {
-      // Project pre-create first; rejects when the conversation changed meanwhile.
-      await prepareSubmission();
+      const submissionEpoch = submissionEpochRef.current;
+      const choice = await prepareModelControl(message.text);
+      if (submissionEpochRef.current !== submissionEpoch)
+        throw new Error("thread-submission-stale");
+      const modelInput = modelTaskInput(message.text, choice);
+      const runContext: Record<string, unknown> = { agent_name };
+      // [argus patch #122] Project pre-create; an unavailable project rejects.
+      await ensureProjectThread();
+      if (submissionEpochRef.current !== submissionEpoch)
+        throw new Error("thread-submission-stale");
+      if (
+        choice?.scope === "conversation" &&
+        !modelInput.text &&
+        message.files.length === 0 &&
+        isNewThread &&
+        !projectParam
+      ) {
+        await createThread(threadId);
+        if (submissionEpochRef.current !== submissionEpoch)
+          throw new Error("thread-submission-stale");
+      }
+      if (choice?.model_name) {
+        if (choice.scope === "task") {
+          if (settings.context.mode !== "ultra") {
+            toast.error(
+              locale.startsWith("zh")
+                ? "当前未启用子任务，请先启用 Ultra 模式。"
+                : "Subtasks are disabled. Enable Ultra mode first.",
+            );
+            throw new Error("subtasks-disabled");
+          }
+          runContext.subagent_model_name = choice.model_name;
+        } else {
+          runContext.model_name = choice.model_name;
+          runContext.model_selection_requested = choice.model_name;
+        }
+        if (choice.scope === "conversation")
+          try {
+            selectThreadModel(threadId, choice.model_name);
+          } catch (error) {
+            toast.error(
+              locale.startsWith("zh")
+                ? "无法在浏览器保存本对话的默认模型，请检查存储权限。"
+                : "Unable to save this conversation's default model. Check browser storage permissions.",
+            );
+            throw error;
+          }
+      }
       const scopedOptions = currentKnowledgeScopeSnapshot
         ? {
             ...options,
@@ -313,11 +390,52 @@ export default function AgentChatPage() {
             },
           }
         : options;
+      if (
+        choice?.scope === "turn" &&
+        !modelInput.text &&
+        message.files.length === 0
+      ) {
+        toast.info(
+          locale.startsWith("zh")
+            ? "请补充这次需要处理的任务。"
+            : "Please include the task to run with this model.",
+        );
+        throw new Error("model-task-missing");
+      }
+      if (
+        choice?.scope === "conversation" &&
+        !modelInput.text &&
+        message.files.length === 0
+      ) {
+        if (isNewThread) {
+          history.replaceState(
+            null,
+            "",
+            `/workspace/agents/${agent_name}/chats/${threadId}`,
+          );
+          setThreadId(threadId);
+          setIsNewThread(false);
+        }
+        options?.onSent?.();
+        toast.success(
+          locale.startsWith("zh")
+            ? "已设置本对话的默认模型。"
+            : "Conversation default model saved.",
+        );
+        return;
+      }
+      const executionOptions = {
+        ...scopedOptions,
+        additionalKwargs: {
+          ...scopedOptions?.additionalKwargs,
+          ...modelInput.additionalKwargs,
+        },
+      };
       const sendPromise = sendMessage(
         threadId,
-        message,
-        { agent_name },
-        scopedOptions,
+        { ...message, text: modelInput.text },
+        runContext,
+        executionOptions,
       );
       if (message.files.length > 0) {
         return sendPromise;
@@ -329,7 +447,14 @@ export default function AgentChatPage() {
       sendMessage,
       threadId,
       agent_name,
-      prepareSubmission,
+      prepareModelControl,
+      settings.context.mode,
+      locale,
+      isNewThread,
+      setThreadId,
+      setIsNewThread,
+      ensureProjectThread,
+      projectParam,
     ],
   );
 
@@ -382,6 +507,9 @@ export default function AgentChatPage() {
     [currentKnowledgeScopeSnapshot, editAndRegenerateMessage, threadId],
   );
 
+  const tokenUsageInlineMode = tokenUsageEnabled
+    ? localSettings.tokenUsage.inlineMode
+    : "off";
   const hasTodos = (thread.values.todos?.length ?? 0) > 0;
   const agentBrowserEnabled =
     agent !== null &&
@@ -428,7 +556,7 @@ export default function AgentChatPage() {
                   : "bg-background/80 z-30 shadow-xs backdrop-blur",
               )}
             >
-              <SidebarTrigger className="md:hidden" />
+              <WorkspaceSidebarTrigger className="md:hidden" />
               {/* Agent badge */}
               <div className="flex min-w-0 shrink-0 items-center gap-1.5 rounded-md border px-2 py-1">
                 <BotIcon className="text-primary h-3.5 w-3.5" />
@@ -481,8 +609,24 @@ export default function AgentChatPage() {
                     <span className="hidden sm:inline">{t.agents.newChat}</span>
                   </Button>
                 </Tooltip>
-                <ContextUsageBadge contextUsage={contextUsage} />
+                {tokenUsageEnabled ? (
+                  <TokenUsageIndicator
+                    threadId={isNewThread ? undefined : threadId}
+                    backendUsage={backendTokenUsage}
+                    contextUsage={contextUsage}
+                    enabled={tokenUsageEnabled}
+                    messages={thread.messages}
+                    pendingMessages={pendingUsageMessages}
+                    preferences={localSettings.tokenUsage}
+                    onPreferencesChange={(preferences) =>
+                      setLocalSettings("tokenUsage", preferences)
+                    }
+                  />
+                ) : (
+                  <ContextUsageBadge contextUsage={contextUsage} />
+                )}
                 <SidecarTrigger />
+                {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
                 <ExportTrigger threadId={threadId} />
                 {!isNewThread && !isMock && (
@@ -510,6 +654,7 @@ export default function AgentChatPage() {
                   hasMoreHistory={hasMoreHistory}
                   loadMoreHistory={loadMoreHistory}
                   isHistoryLoading={isHistoryLoading}
+                  tokenUsageInlineMode={tokenUsageInlineMode}
                   canRegenerate={
                     !isNewThread &&
                     !isMock &&
@@ -575,6 +720,14 @@ export default function AgentChatPage() {
                     </div>
                   )}
 
+                  {modelControl.request && (
+                    <div className="mb-3" data-testid="model-selection-card">
+                      <HumanInputCard
+                        request={modelControl.request}
+                        onSubmit={(response) => modelControl.choose(response)}
+                      />
+                    </div>
+                  )}
                   <QueuedMessages
                     queue={queue}
                     onRemove={removeQueuedMessage}
@@ -627,6 +780,7 @@ export default function AgentChatPage() {
                     disabled={
                       env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
                       isUploading ||
+                      modelControl.busy ||
                       (selectorVisible && agent === null) ||
                       (!isNewThread && isHistoryLoading)
                     }

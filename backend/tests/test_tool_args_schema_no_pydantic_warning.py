@@ -242,6 +242,7 @@ def test_task_tool_description_is_optional_but_discoverable() -> None:
     parameters = convert_to_openai_tool(task_tool)["function"]["parameters"]
 
     assert parameters["required"] == ["prompt", "subagent_type"]
+    # [argus, decision d2] no model_name: only a person picks a subagent's model.
     assert list(parameters["properties"]) == ["prompt", "subagent_type", "acceptance_criteria", "description", "context_mode"]
     assert parameters["properties"]["description"]["description"]
 

@@ -1,31 +1,34 @@
-"""[argus patch #37] Retry once when the model returns a blank FINAL turn.
+"""[argus patch #37] Retry once when the model ends a turn with filler only.
 
-local-qwen occasionally ends a run with an empty final ``AIMessage`` — no
-content and no ``tool_calls`` — typically after a long tool loop. The run still
-completes "successfully", so the user gets a blank answer (silently on the web
-UI; as ``(No response from agent)`` on channels via patch #36). Patch #36 and
-the web guard (patch #37, pagination.py) make the blank *visible*; this
-middleware attacks the root cause: detect the blank final at the model-call
-boundary and re-invoke the model once before the turn is committed, so a real
-answer is produced most of the time.
+local-qwen occasionally ends a run with a final ``AIMessage`` that carries no
+deliverable text, typically after a long tool loop. Two shapes exist:
+
+  * truly empty or whitespace-only content. Upstream's model-boundary
+    recovery (``LLMErrorHandlingMiddleware``, #5080) raises
+    ``EmptyModelResponseError`` for it, retries once per run and then returns
+    a visible fallback, so this middleware leaves that shape alone (retrying
+    it here as well sampled one blank up to four times);
+  * short non-alphanumeric filler (``.``, ``...``, ``…``), which upstream
+    counts as visible text and delivers as the answer. This middleware
+    re-invokes the model once for it, before the turn is committed, so a real
+    answer is produced most of the time. Patch #36 and the web guard
+    (pagination.py) keep a filler answer visible as a marker when the retry
+    is filler again.
 
 Scope is deliberately narrow to avoid perturbing normal runs:
-  * Only a FINAL turn is retried — an ``AIMessage`` with **no** ``tool_calls``.
-    A blank message that carries tool_calls is a normal intermediate step
-    (the content is empty because the turn's payload is the tool call) and is
-    left untouched.
-  * Retry happens **at most once** per model call. If the retry is also blank,
-    the blank is returned as-is and the downstream visible-marker guards handle
-    it — we never loop.
-  * Everything non-blank is returned unchanged; no message is rewritten here.
+  * Only a FINAL turn is retried: an ``AIMessage`` with **no** ``tool_calls``.
+  * Retry happens **at most once** per model call; it never loops.
+  * Everything else is returned unchanged; no message is rewritten here.
   * [argus patch #44] Unattended (scheduled-playbook) turns are NEVER retried.
     There, a blank final (or the ``.`` no-op sentinel the playbook prompts ask
-    for) is the *desired* outcome — the channel manager's silence branch
+    for) is the *desired* outcome: the channel manager's silence branch
     (patches #31/#32/#34) suppresses the send. Retrying it re-samples the
     model, which frequently narrates instead ("No meetings in the window...")
     and turns a compliant silent turn into hourly channel noise. The flag
-    rides run_context -> runtime.context (set in app/channels/manager.py),
-    the same signal the memory write policy uses.
+    rides run_context -> runtime.context (set in app/channels/manager.py and
+    the playbook web-chat route), the same signal the memory write policy
+    uses. :func:`is_unattended_run` is also what exempts unattended runs from
+    upstream's empty-response retry and post-tool fallback.
 
 Placed before LoopDetectionMiddleware in the lead-agent chain so a retried
 final still passes through loop detection normally.
@@ -34,42 +37,44 @@ final still passes through loop detection normally.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import override
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, override
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage
 
+from deerflow.agents.middlewares.model_response import has_visible_content
 from deerflow.utils.messages import is_blank_text
 
 logger = logging.getLogger(__name__)
 
 
-def _is_unattended(request: ModelRequest) -> bool:
-    """[argus patch #44] True when this model call belongs to an unattended
-    (scheduled-playbook) run.
+def is_unattended_run(runtime: Any) -> bool:
+    """[argus patch #44] True when *runtime* belongs to an unattended (scheduled) run.
 
-    The channel manager sets ``unattended=True`` on run_context, which rides
-    to ``runtime.context`` (same signal ``memory/write_policy.py`` reads).
-    Conservative: anything that is not a mapping with a truthy ``unattended``
-    key counts as attended, so the retry behavior of interactive turns is
-    unchanged even when a runtime/context is absent (as in unit tests).
+    The channel manager and the playbook web-chat route set ``unattended=True``
+    on the run context, which LangGraph exposes as ``runtime.context`` (the
+    same signal ``memory/write_policy.py`` reads). Conservative: anything that
+    is not a mapping with a truthy ``unattended`` key counts as attended, so
+    interactive behaviour is unchanged when a runtime or context is absent.
+    Subagent runs build a fresh context without the key.
     """
-    runtime = getattr(request, "runtime", None)
-    if runtime is None:
-        return False
-    ctx = getattr(runtime, "context", None)
-    if not isinstance(ctx, dict):
-        return False
-    return bool(ctx.get("unattended"))
+    context = getattr(runtime, "context", None)
+    return isinstance(context, Mapping) and bool(context.get("unattended"))
 
 
-def _is_blank_final(response: ModelResponse) -> bool:
-    """True when *response*'s last message is a blank FINAL assistant turn.
+def _is_unattended(request: ModelRequest) -> bool:
+    """[argus patch #44] :func:`is_unattended_run` for a model request."""
+    return is_unattended_run(getattr(request, "runtime", None))
 
-    Final = an ``AIMessage`` with no ``tool_calls``. Blank = empty /
-    whitespace / short non-alphanumeric filler (:func:`is_blank_text`).
+
+def _is_filler_final(response: ModelResponse) -> bool:
+    """True when *response*'s last message is a FINAL assistant turn of filler only.
+
+    Final = an ``AIMessage`` with no ``tool_calls``. Filler = blank by
+    :func:`is_blank_text` but visible to upstream's ``has_visible_content``
+    (``.``, ``...``); empty or whitespace-only content is upstream's to retry.
     """
     result = getattr(response, "result", None)
     if not result:
@@ -81,11 +86,11 @@ def _is_blank_final(response: ModelResponse) -> bool:
     if getattr(last, "tool_calls", None):
         # Has tool calls -> a normal intermediate turn, not a final answer.
         return False
-    return is_blank_text(getattr(last, "content", ""))
+    return is_blank_text(getattr(last, "content", "")) and has_visible_content(last)
 
 
 class EmptyFinalRetryMiddleware(AgentMiddleware):
-    """Re-invoke the model once if it returns a blank final assistant turn."""
+    """Re-invoke the model once if it returns a filler-only final assistant turn."""
 
     @override
     def wrap_model_call(
@@ -94,19 +99,15 @@ class EmptyFinalRetryMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
         response = handler(request)
-        if _is_blank_final(response):
-            if _is_unattended(request):
-                # [argus patch #44] Silence is the desired outcome on a
-                # scheduled turn; the channel manager suppresses the send.
-                logger.info("Blank final on unattended turn; not retrying.")
-                return response
-            logger.warning("Empty final model turn; retrying once (sync).")
-            retry = handler(request)
-            if not _is_blank_final(retry):
-                return retry
-            logger.warning("Retry also produced an empty final turn; surfacing blank.")
-            return retry
-        return response
+        if not _is_filler_final(response):
+            return response
+        if _is_unattended(request):
+            # [argus patch #44] Silence is the desired outcome on a
+            # scheduled turn; the channel manager suppresses the send.
+            logger.info("Filler final on unattended turn; not retrying.")
+            return response
+        logger.warning("Filler-only final model turn; retrying once (sync).")
+        return handler(request)
 
     @override
     async def awrap_model_call(
@@ -115,16 +116,12 @@ class EmptyFinalRetryMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
         response = await handler(request)
-        if _is_blank_final(response):
-            if _is_unattended(request):
-                # [argus patch #44] Silence is the desired outcome on a
-                # scheduled turn; the channel manager suppresses the send.
-                logger.info("Blank final on unattended turn; not retrying.")
-                return response
-            logger.warning("Empty final model turn; retrying once (async).")
-            retry = await handler(request)
-            if not _is_blank_final(retry):
-                return retry
-            logger.warning("Retry also produced an empty final turn; surfacing blank.")
-            return retry
-        return response
+        if not _is_filler_final(response):
+            return response
+        if _is_unattended(request):
+            # [argus patch #44] Silence is the desired outcome on a
+            # scheduled turn; the channel manager suppresses the send.
+            logger.info("Filler final on unattended turn; not retrying.")
+            return response
+        logger.warning("Filler-only final model turn; retrying once (async).")
+        return await handler(request)

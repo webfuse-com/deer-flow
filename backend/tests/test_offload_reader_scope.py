@@ -31,7 +31,7 @@ from deerflow.agents.middlewares.offload_reader_middleware import (
 from deerflow.agents.middlewares.tool_transform_meta import append_tool_transform
 from deerflow.config.tool_output_config import ToolOutputConfig
 from deerflow.sandbox.tools import READ_FILE_START_LINE_EXCEEDS, read_file_tool
-from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools
+from deerflow.tools.agent_tool_policy import filter_tools_by_agent_allowed_tools
 
 _OFFLOAD = "/mnt/user-data/outputs/.tool-results/app_function_call-3f2a-0c1d.txt"
 _EARLIER = "/mnt/user-data/outputs/.tool-results/gmail_read_thread-77aa-19be.txt"

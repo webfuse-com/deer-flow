@@ -1,5 +1,6 @@
 """Tests for AioSandbox concurrent command serialization (#1433)."""
 
+import logging
 import os
 import shlex
 import subprocess
@@ -2903,6 +2904,77 @@ class TestDownloadFile:
 class TestClose:
     """Verify AioSandbox.close() tears down the host-side HTTP client (#2872)."""
 
+    def test_close_waits_for_download_stream_cleanup(self, sandbox):
+        reading = threading.Event()
+        allow_read = threading.Event()
+        closing = threading.Event()
+        stream_closed = threading.Event()
+        close_observed_cleanup = []
+        outcomes = []
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = threading.Lock()
+                self.waited_for_reader = False
+
+            def __enter__(self):
+                if threading.current_thread().name == "download-close":
+                    if self.lock.acquire(blocking=False):
+                        closing.set()
+                        return
+                    self.waited_for_reader = True
+                    closing.set()
+                self.lock.acquire()
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        def stream():
+            try:
+                reading.set()
+                assert allow_read.wait(timeout=5)
+                yield b"data"
+            finally:
+                stream_closed.set()
+
+        def close_client():
+            close_observed_cleanup.append(stream_closed.is_set())
+
+        http_client = MagicMock(spec=["close"])
+        http_client.close.side_effect = close_client
+        sandbox._client._client_wrapper = SimpleNamespace(httpx_client=SimpleNamespace(httpx_client=http_client))
+        sandbox._client.file.download_file.return_value = stream()
+        sandbox._lock = ObservedLock()
+
+        def download():
+            try:
+                outcomes.append(sandbox.download_file("/mnt/user-data/outputs/image.png", max_bytes=4))
+            except BaseException as error:
+                outcomes.append(error)
+
+        reader = threading.Thread(target=download)
+        closer = threading.Thread(target=sandbox.close, name="download-close")
+        reader.start()
+        try:
+            assert reading.wait(timeout=5)
+            closer.start()
+            assert closing.wait(timeout=5)
+            assert sandbox._lock.waited_for_reader
+            http_client.close.assert_not_called()
+            assert not stream_closed.is_set()
+        finally:
+            allow_read.set()
+            reader.join(timeout=5)
+            if closer.ident is not None:
+                closer.join(timeout=5)
+        assert not reader.is_alive()
+        assert not closer.is_alive()
+        assert outcomes == [b"data"]
+        assert stream_closed.is_set()
+        assert close_observed_cleanup == [True]
+        http_client.close.assert_called_once_with()
+        assert sandbox._client is None
+
     def test_close_calls_real_nested_httpx_client(self, sandbox):
         """close() must close the real httpx.Client at the bottom of the chain.
 
@@ -3056,6 +3128,108 @@ class TestNoninteractiveShell:
         assert "about 120 s" in out and "background" in out and "may still be running" in out
 
 
+class TestHistoryExpansionShell:
+    """[argus patch #1, inside #104] A `!` or a long line must not reach the pane's interactive shell as typed text."""
+
+    def test_a_command_with_a_bang_runs_through_eval_from_base64(self):
+        assert _noninteractive('echo "<!DOCTYPE html>"') == "{ eval \"$(base64 -d <<'__ARGUS_B64__'\nZWNobyAiPCFET0NUWVBFIGh0bWw+Ig==\n__ARGUS_B64__\n)\"\n} </dev/null"
+
+    def test_a_command_without_a_bang_is_unchanged(self):
+        assert _noninteractive("echo plain && pwd") == "{ echo plain && pwd\n} </dev/null"
+        # The exemptions come first, with or without a bang.
+        assert _noninteractive("# hi!") == "# hi!"
+        assert _noninteractive("echo hi! \\") == "echo hi! \\"
+
+    def test_an_interactive_shell_fails_typed_and_runs_wrapped(self, tmp_path):
+        typed = 'echo "<!DOCTYPE html>"'
+        assert "<!DOCTYPE html>" not in _run_interactive(_noninteractive_plain(typed), tmp_path)
+        out = _run_interactive(_noninteractive(typed) + '\necho "rc=$?"', tmp_path)
+        assert out.splitlines() == ["<!DOCTYPE html>", "rc=0"]
+        # cd still lands in the session, and the exit status still comes back.
+        out = _run_interactive(_noninteractive(f'cd {tmp_path} && echo "here!"; (exit 3)') + '\necho "rc=$?"\npwd', tmp_path)
+        assert out.splitlines() == ["here!", "rc=3", str(tmp_path)]
+
+    def test_a_heredoc_with_a_bang_in_its_body(self, tmp_path):
+        cmd = f"cat > {tmp_path}/run.sh <<'EOF'\n#!/bin/bash\necho \"done!\"\nEOF\n"
+        wrapped = _noninteractive(cmd)
+        assert wrapped.startswith('{ eval "$(base64 -d') and "#!" not in wrapped
+        _run_interactive(wrapped, tmp_path)
+        assert (tmp_path / "run.sh").read_text() == '#!/bin/bash\necho "done!"\n'
+
+    def test_a_long_line_is_encoded_and_decodes_to_the_input(self, tmp_path):
+        import base64
+
+        cmd = 'x="' + "A" * 2_200 + '"; echo ${#x}'
+        wrapped = _noninteractive(cmd)
+        assert wrapped.startswith("{ eval") and max(len(line) for line in wrapped.splitlines()) <= 76
+        encoded = wrapped.split("'__ARGUS_B64__'\n", 1)[1].split("__ARGUS_B64__", 1)[0]
+        assert base64.b64decode(encoded).decode("utf-8") == cmd
+        assert _run_interactive(wrapped, tmp_path).strip() == "2200"
+        # The limit is in bytes: 1,000 two-byte characters are a long line too.
+        assert _noninteractive('x="' + "é" * 1_000 + '"').startswith("{ eval")
+        assert _noninteractive('x="' + "A" * 1_900 + '"') == _noninteractive_plain('x="' + "A" * 1_900 + '"')
+
+    def test_near_the_command_length_caps(self, tmp_path):
+        from deerflow.community.aio_sandbox.aio_sandbox import _PANE_COMMAND_MAX_BYTES, AioSandbox
+        from deerflow.config.sandbox_config import SandboxConfig
+
+        # Upstream's default command_max_chars fits once encoded, in short lines.
+        default_cap = SandboxConfig.model_fields["command_max_chars"].default
+        cmd = 'x="' + "A" * (default_cap - 20) + '!"; echo ${#x}'
+        assert len(cmd) < default_cap
+        wrapped = _noninteractive(cmd)
+        assert wrapped.startswith("{ eval") and len(wrapped) <= _PANE_COMMAND_MAX_BYTES
+        assert max(len(line) for line in wrapped.splitlines()) <= 76
+        assert AioSandbox._pane_refusal(wrapped) is None
+        assert _run_interactive(wrapped, tmp_path).strip() == str(default_cap - 19)
+        # Too long to encode, short lines: sent plain, as before (a `!` in a
+        # heredoc body is never expanded).
+        lines = "\n".join(f"<p>line {i}, and more!</p>" for i in range(500))
+        heredoc = f"cat > page.html <<'EOF'\n{lines}\nEOF"
+        assert _noninteractive(heredoc) == _noninteractive_plain(heredoc)
+        assert AioSandbox._pane_refusal(_noninteractive(heredoc)) is None
+        # Under the fleet's 25,000-character cap but not sendable: refused, and
+        # multibyte text counts in bytes.
+        for big in ('x="' + "A" * 24_970 + '!"', 'x="' + "é" * 6_000 + '"', "echo ok\n" * 2_100):
+            assert len(big) <= 25_000
+            assert AioSandbox._pane_refusal(_noninteractive(big)).startswith("Error: this command was not run")
+
+    def test_an_unsendable_command_fails_without_reaching_the_sandbox(self, sandbox):
+        sandbox._client.shell.exec_command = MagicMock()
+        out = sandbox.execute_command("echo ok\n" * 2_100)
+        sandbox._client.shell.exec_command.assert_not_called()
+        assert out.startswith("Error: this command was not run: it is 16,814 bytes as sent")
+        assert "write_file" in out and out.endswith("\nExit Code: 1")
+        # The scoped (subagent) path builds its command the same way.
+        sandbox._client.shell.create_session = MagicMock()
+        out = sandbox.execute_command_in_scope("alias x='" + "y" * 2_100 + "'", scope_id="sub-1")
+        sandbox._client.shell.exec_command.assert_not_called()
+        assert "it has a line of 2,110 bytes" in out and out.endswith("\nExit Code: 1")
+
+    def test_a_short_command_reaches_the_sandbox_unchanged(self, sandbox):
+        sandbox._client.shell.exec_command = MagicMock(return_value=SimpleNamespace(data=SimpleNamespace(output="ok", exit_code=0, status="completed")))
+        assert sandbox.execute_command("echo ok") == "ok"
+        assert sandbox._client.shell.exec_command.call_args.kwargs["command"] == "{ echo ok\n} </dev/null"
+
+
+def _noninteractive_plain(command):
+    return "{ " + command.rstrip() + "\n} </dev/null"
+
+
+def _run_interactive(script, home):
+    # An interactive bash reading stdin expands history like the sandbox's pane.
+    out = subprocess.run(
+        ["bash", "--norc", "--noprofile", "-i"],
+        input=script + "\n",
+        capture_output=True,
+        text=True,
+        timeout=20,
+        cwd=home,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home)},
+    )
+    return out.stdout
+
+
 def _noninteractive(command):
     from deerflow.community.aio_sandbox.aio_sandbox import AioSandbox
 
@@ -3066,3 +3240,67 @@ def _render_shell_output(*args, **kwargs):
     from deerflow.community.aio_sandbox.aio_sandbox import AioSandbox
 
     return AioSandbox._render_shell_output(*args, **kwargs)
+
+
+def _sdk_file_read_validation_error() -> Exception:
+    """The exact exception the SDK raises for a server failure envelope.
+
+    The AIO server reports read failures (e.g. ENOENT) as
+    ``{"success": false, "message": ..., "data": {}}``; the empty ``data``
+    cannot satisfy the required fields of the SDK's ``FileReadResult`` model,
+    so parsing raises a ``ValidationError`` with two "Field required" errors.
+    Building it from the real SDK models keeps the test faithful to what
+    production raises.
+    """
+    from agent_sandbox.file.client import ResponseFileReadResult
+    from pydantic import ValidationError
+
+    try:
+        ResponseFileReadResult.model_validate({"success": False, "message": "file not found", "data": {}})
+    except ValidationError as e:
+        return e
+    raise AssertionError("model_validate should fail on data: {}")
+
+
+def test_read_file_missing_file_returns_actionable_error(sandbox, caplog):
+    """A server failure envelope must not leak the SDK's pydantic
+    validation-error text to the model. The result must state the file is
+    missing/unreadable so the agent can act on it (create it, pick another
+    path) instead of retrying the same read or "fixing" a nonexistent file."""
+    sandbox._client.file.read_file.side_effect = _sdk_file_read_validation_error()
+
+    with caplog.at_level(logging.DEBUG, logger="deerflow.community.aio_sandbox.aio_sandbox"):
+        result = sandbox.read_file("/workspace/new_file.py")
+
+    assert result == "Error: file not found or unreadable: /workspace/new_file.py"
+    assert "validation errors" not in result
+
+
+def test_read_file_missing_file_does_not_log_error_noise(sandbox, caplog):
+    """Missing files are an expected outcome — ReadBeforeWriteMiddleware
+    probes every new-file write — so the validation failure must stay out of
+    the error-level gateway log."""
+    sandbox._client.file.read_file.side_effect = _sdk_file_read_validation_error()
+
+    with caplog.at_level(logging.DEBUG, logger="deerflow.community.aio_sandbox.aio_sandbox"):
+        sandbox.read_file("/workspace/new_file.py")
+
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+def test_read_file_success_returns_content(sandbox):
+    sandbox._client.file.read_file.return_value = SimpleNamespace(data=SimpleNamespace(content="hello\n", file="/workspace/a.txt"))
+    assert sandbox.read_file("/workspace/a.txt") == "hello\n"
+    sandbox._client.file.read_file.assert_called_once_with(file="/workspace/a.txt")
+
+
+def test_read_file_unexpected_error_still_logged(sandbox, caplog):
+    """Non-validation failures keep the error log and the generic error
+    string; only the server failure envelope is downgraded to debug."""
+    sandbox._client.file.read_file.side_effect = RuntimeError("connection reset")
+
+    with caplog.at_level(logging.ERROR, logger="deerflow.community.aio_sandbox.aio_sandbox"):
+        result = sandbox.read_file("/workspace/a.txt")
+
+    assert result == "Error: connection reset"
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)

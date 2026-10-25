@@ -118,7 +118,10 @@ def test_real_graph_second_select_for_a_promoted_tool_is_answered_directly():
     replies = [m.content for m in result["messages"] if isinstance(m, ToolMessage)]
     assert '"mcp_draft"' in replies[0]
     assert replies[1].startswith("Already available in this run: `mcp_draft`")
-    assert result["promoted"] == {"catalog_hash": setup.catalog_hash, "names": ["mcp_draft"]}
+    # Upstream #6977 scopes promotions to the user turn; the direct answer
+    # keeps that scope and the promotion it found.
+    assert {key: value for key, value in result["promoted"].items() if key != "turn_id"} == {"catalog_hash": setup.catalog_hash, "names": ["mcp_draft"]}
+    assert result["promoted"]["turn_id"]
 
 
 class _Args(BaseModel):

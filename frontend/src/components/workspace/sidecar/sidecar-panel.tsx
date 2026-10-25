@@ -65,6 +65,7 @@ import {
   supportsThinking as modelSupportsThinking,
 } from "@/core/models/reasoning";
 import type { Model } from "@/core/models/types";
+import { useLocalSettings } from "@/core/settings";
 import {
   buildParentConversationContext,
   buildReferenceMessageMetadata,
@@ -131,7 +132,8 @@ export function SidecarPanel({ className }: { className?: string }) {
   const canDeleteThreads = hasPermission(user, PERMISSIONS.THREADS_DELETE);
   const sidecar = useSidecar();
   const { thread: parentThread } = useParentThread();
-  const { models } = useModels();
+  const [localSettings] = useLocalSettings();
+  const { models, tokenUsageEnabled } = useModels();
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [creatingThread, setCreatingThread] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -191,6 +193,9 @@ export function SidecarPanel({ className }: { className?: string }) {
 
   const hasPendingReferences = sidecar.activeReferences.length > 0;
   const hasSidecarThread = Boolean(sidecar.sidecarThreadId);
+  const tokenUsageInlineMode = tokenUsageEnabled
+    ? localSettings.tokenUsage.inlineMode
+    : "off";
   const disabled =
     (!hasSidecarThread && !hasPendingReferences) ||
     thread.isLoading ||
@@ -567,6 +572,7 @@ export function SidecarPanel({ className }: { className?: string }) {
             hasMoreHistory={hasMoreHistory}
             loadMoreHistory={loadMoreHistory}
             isHistoryLoading={isHistoryLoading}
+            tokenUsageInlineMode={tokenUsageInlineMode}
             sidecarSurface
             initialScroll="instant"
             resizeScroll="instant"

@@ -49,6 +49,12 @@ rs.mock("@/core/agents", () => {
       isPending: false,
     }),
     useDeleteAgent: () => ({ mutateAsync: rs.fn(), isPending: false }),
+    // Upstream's Tool access selector in the settings dialog (#6630).
+    useAgentToolGroups: () => ({
+      toolGroups: [],
+      isLoading: false,
+      error: null,
+    }),
     exportAgentPackage: rs.fn(),
     checkAgentName: mocks.checkAgentName,
     AgentNameCheckError,

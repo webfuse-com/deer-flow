@@ -15,10 +15,11 @@ a #7/#8 collision between the prompt blocks and the todo middleware). This
 file is now canonical; where older documents disagree, the section notes the
 alias. Baseline facts:
 
-- Upstream base: `65a18618` (`bytedance/main`, 2026-10-10), reached by the
-  merge-based sync of 2026-10-10 (acropolis `docs/DEERFLOW-SYNC.md`; previous
-  base `fc26204d` of 2026-09-23, 537 upstream commits behind; before that
-  `3f0b6ecc` of 2026-09-11 and `3a967d4f` of 2026-08-15). The 2026-07-02
+- Upstream base: `66f00e7b8` (`bytedance/main`, 2026-10-25), reached by the
+  merge-based sync of 2026-10-25 (acropolis `docs/DEERFLOW-SYNC.md`; previous
+  base `65a18618` of 2026-10-10, 472 upstream commits behind; before that
+  `fc26204d` of 2026-09-23, `3f0b6ecc` of 2026-09-11 and `3a967d4f` of
+  2026-08-15). The 2026-07-02
   rebuild was against tag `v2.0.0` (`7e7f0410`), fork tip `2df36c99` (29
   commits, ~26 logical patches). Deployed pin: `/opt/argus/VERSIONS.md`.
 - Sync 2026-09-11 in one line: retired #63 (its upstream original is now in
@@ -51,6 +52,29 @@ alias. Baseline facts:
   Chronos fire would have 500'd), Telegram chunks are measured in UTF-16 units,
   `strip_asyncpg_only_options` lost its imports, disabled accounts are refused
   on the SSO path. Each touched section carries a "Sync 2026-10-10" bullet.
+- Sync 2026-10-25 in one line: retired #58 (upstream #6935 deleted skill tool
+  enforcement; #53 and #43 moved to the fork-owned `tools/agent_tool_policy.py`
+  and `tool_policy.source` is accepted and ignored), #124 and #132 (decision
+  d1: upstream #6998's `sandbox.prewarm`), #47 (decision d8: per-model
+  `context_window` plus a fraction trigger; `per_model` accepted and ignored)
+  and #93's MCP catalog refresh (decision d3: upstream #6734/#6795 per-server
+  discovery; the receipt half stays as #93); thinned #37 (onto upstream
+  #5080), #57, #65 (its UI half, decision d9), #89, #97 (onto #6828/#6829) and
+  #153 (onto #7271); re-expressed #66 onto #7053, #74/#75 onto #6918's chunked
+  compaction, #68/#94 onto #6804, #20 onto upstream's view_image budget, #122
+  onto #7249, #128/#150 and coalesce onto #7104's run admission; re-ported #1
+  (lost at the 2026-08-15 sync) inside #104 with a long-line guard; added #160
+  (decision d2) and #161 (decision d10), and numbered unledgered carry as
+  #162-#165. Fixed on the merge: unattended blank finals had ended as errors
+  since the 2026-09-23 sync (#44, now silent at the model boundary), upstream
+  #6791 ported into `_telegram_sender.py` (#40), a coalesced burst dropped the
+  head message's fields (`unattended`, owner, report URL, ...) and would have
+  leaked the other parts' dedupe claims, upstream's
+  always-bound `inspect_run_status` is deferred (#60). Fork CI: upstream's
+  four e2e shards, upstream's `test_browser_ci_runner.py` aimed at our
+  `e2e-tests-shard` job, and skill-review-ci's new `skill-tests` job skips
+  sync branches like `skill-review`. Each touched section carries a "Sync
+  2026-10-25" bullet.
 - Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
   `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
 
@@ -72,8 +96,8 @@ half is upstreamable, the Argus behavior lives in project config).
 
 | Patch | Name | Class | Commit(s) |
 |---|---|---|---|
-| [#93](#patch-93) | operation receipts and MCP schema refresh | generic-upstreamable | this change |
-| [#1](#patch-1) | aio_sandbox `set +H` | generic-upstreamable | 9b025200 |
+| [#93](#patch-93) | declared operation receipts (lossless MCP `isError` for operation/1 tools); ~~MCP schema refresh~~ half RETIRED 2026-10-25 (decision d3, upstream #6734/#6795) | generic-upstreamable | this change |
+| [#1](#patch-1) | the pane shell gets only commands it will run: no history expansion, no long lines, no silent drops (re-ported 2026-10-25 inside #104; the `set +H` form was lost at the 2026-08-15 sync) | generic-upstreamable | 9b025200, sync 2026-10-25 |
 | [#2](#patch-2) | sandbox command cap as `SandboxConfig.command_max_chars` | config-expressed | 12362d06 |
 | [#3](#patch-3) | ~~loop-detection read_file bucket as config field~~ RETIRED 2026-09-23 (upstream #5578) | config-expressed | 8bf18954 |
 | [#4](#patch-4) | checkpointer `AsyncPostgresSaver.aprune` | generic-upstreamable | ef280bbb |
@@ -97,34 +121,34 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#34](#patch-34) | unattended-silence: narrated-silence announcements | argus-edit | 8bf85a9c |
 | [#35](#patch-35) | landing-galaxy CPU/GPU cost cut | generic-upstreamable | ccf1b69f |
 | [#36](#patch-36) | surface `(No response from agent)` on blank final | argus-edit | 89ea4d2f |
-| [#37](#patch-37) | retry blank final turn + web display guard | argus-edit | 4a19e4fe |
+| [#37](#patch-37) | retry a filler-only final turn + web display guard (the empty-final retry retired 2026-10-25 onto upstream #5080) | argus-edit | 4a19e4fe |
 | [#38](#patch-38) | per-thread debug-sandbox link | argus-additive | 1aad692a, cd03995e, 2df36c99 (merge) |
 | [#39](#patch-39) | checkpointer pool bounds | generic-upstreamable | f37b8292 (PR #4 squash-merge) |
 | [#40](#patch-40) | Telegram send-path extraction to `_telegram_sender.py` | argus-edit (carry-negative refactor) | a8516b07 (PR #6 squash-merge) |
 | [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
 | [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
-| [#44](#patch-44) | unattended-silence: no blank-final retry, wider backstop, no token logging (back-filled) | argus-edit | 8a256f7d |
+| [#44](#patch-44) | unattended-silence: an unattended blank final ends silently (at the model boundary since 2026-10-25), wider backstop; the httpx logging pin dropped 2026-10-25 (back-filled) | argus-edit | 8a256f7d |
 | [#45](#patch-45) | delivery-report callback for scheduled playbook fires (back-filled) | argus-additive | 27a20421 |
 | [#46](#patch-46) | `tool_search.exclude` — deferral opt-out for hot MCP tools (record back-filled) | config-expressed | 9803a9e3 |
-| [#47](#patch-47) | per-lead-model summarization overrides (back-filled) | config-expressed | 8e2b51b5, ca0cfe85 |
+| [#47](#patch-47) | ~~per-lead-model summarization overrides (back-filled)~~ RETIRED 2026-10-25 (decision d8: per-model `context_window` + fraction trigger) | config-expressed | 8e2b51b5, ca0cfe85 |
 | [#48](#patch-48) | fail-closed Pythia retrieval ring (back-filled) | argus-edit | 8eec0f98 |
 | [#49](#patch-49) | omitted-item index in list-shaped tool-output previews (back-filled) | argus-edit | 7dd2ed96 |
 | [#50](#patch-50) | connector call proxy + app overlay-tools proxy (back-filled) | argus-additive | 8364d025 |
 | [#51](#patch-51) | inline connector prompts on the playbook fire endpoint (back-filled) | argus-edit | 4bae86f6 |
 | [#52](#patch-52) | scheduled fires deliver to root chats only (back-filled) | argus-edit | c10080d6 |
-| [#53](#patch-53) | agent-level tool policy (`tool_policy.source: agent`) (back-filled) | config-expressed | 457a984e |
+| [#53](#patch-53) | agent-level tool policy: an agent's `allowed_tools` is the run's ceiling whenever declared (`tool_policy.source` ignored since 2026-10-25, upstream #6935) (back-filled) | config-expressed | 457a984e |
 | [#54](#patch-54) | preserve Qwen reasoning_content across turns (PatchedChatQwen) (back-filled) | argus-additive | 77567a8f |
 | [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
 | [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
-| [#57](#patch-57) | Policy-aware guidance for directly bound tools | generic-upstreamable | this PR |
-| [#58](#patch-58) | Honor agent-source tool policy at runtime | argus-edit | this PR |
+| [#57](#patch-57) | tool_search's no-match reply says a directly bound tool is already bound (the prompt guidance retired 2026-10-25 with upstream #6935) | generic-upstreamable | this PR |
+| [#58](#patch-58) | ~~Honor agent-source tool policy at runtime~~ RETIRED 2026-10-25 (upstream #6935) | argus-edit | this PR |
 | [#59](#patch-59) | WebUI `onDisconnect: continue` | generic-upstreamable | this PR |
-| [#60](#patch-60) | `tool_search.defer` — latency-tiered deferral for builtin tools (+`always_bind` alias) | config-expressed | this PR |
+| [#60](#patch-60) | `tool_search.defer`: latency-tiered deferral for builtin tools (+`always_bind` alias; upstream's `inspect_run_status` always deferred since 2026-10-25) | config-expressed | this PR |
 | [#61](#patch-61) | WebUI and server default `max_recursion_limit` bump to 10000 | generic-upstreamable | this PR |
 | [#62](#patch-62) | Telegram voice-note inbound via overlay Deepgram STT | argus-additive | this PR |
 | [#64](#patch-64) | Config-gated subagent delegation posture | config-expressed | 09af0482 |
-| [#65](#patch-65) | Simplified shared UI + serialized Telegram stage cleanup | argus-edit | this PR |
+| [#65](#patch-65) | Sidebar navigation, running-title glyph and serialized Telegram stage cleanup (the chat UI half dropped 2026-10-25, decision d9) | argus-edit | this PR |
 | [#66](#patch-66) | Salvage partial subagent work on timeout + per-run wall-clock deadline | generic-upstreamable | this PR |
 | [#67](#patch-67) | Pending-subtask fallback for a rejoined active run (the rejoin itself retired into upstream #5536 on 2026-09-23; the backend disconnect half into upstream #5041 on 2026-09-11) | generic-upstreamable | this PR |
 | [#68](#patch-68) | Loop-detection: result-aware hard-stop gating + `no_hard_stop_tools` | argus-edit | this PR |
@@ -147,14 +171,14 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#86](#patch-86) | Digest-only config-change detection so no-op rewrites don't stall run completion | argus-edit | this PR |
 | [#87](#patch-87) | ~~Async MCP cache refresh so config changes never stall run completion~~ RETIRED 2026-10-10 (upstream MCP-only config comparison) | argus-edit | this PR |
 | [#88](#patch-88) | Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend | argus-additive | this PR |
-| [#89](#patch-89) | UI round 2: star brand mark, Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
+| [#89](#patch-89) | UI round 2: ~~star brand mark~~ (test ids dropped 2026-10-25), Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
 | [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
 | [#91](#patch-91) | Graceful run stream options: accept `stream_resumable`, drop unsupported stream modes while one remains (back-filled) | generic-upstreamable | aeb52487 |
 | [#92](#patch-92) | Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides | argus-additive | this PR |
 | [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
 | [#96](#patch-96) | ~~Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end~~ RETIRED 2026-10-10 (upstream #5671) | argus-edit | this PR |
-| [#97](#patch-97) | view_image context fits the many-image limits: images downscaled to a 1568 px long edge, only the 4 most recent re-sent; a timed-out image call retries once without images | argus-edit | this PR |
+| [#97](#patch-97) | view_image context fits the many-image limits: images downscaled to a 1568 px long edge; a timed-out image call retries once without images (the 4-most-recent cap retired 2026-10-25 into upstream #6828/#6829) | argus-edit | this PR |
 | [#98](#patch-98) | A lead-agent hard stop (loop, deadline, token budget) is replaced by one tool-free answer turn instead of a bare notice | argus-additive | this PR |
 | [#99](#patch-99) | `AioSandbox.grep` falls back to one shell `grep` when the sandbox has no `/v1/file/grep` endpoint | argus-edit | this PR |
 | [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
@@ -181,7 +205,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#121](#patch-121) | Ariadne: Langfuse tracing that fails open, names the person and stack, masks images and credentials, and honours a per-chat off switch (`ariadne_tracing`, thread menu + Telegram `/notrace`); langfuse SDK 4.15.6; toolbar action groups icon-only, `spool` icon, one-click `toolbarAction` | argus-edit | this PR |
 | [#122](#patch-122) | Project-scoped new chats on the agent chat page: `…/chats/new?project={id}` files the first message under the project and shows the project chip before it (shared `useProjectNewChat` + `ProjectAffiliationBadge`) | argus-edit | this PR |
 | [#123](#patch-123) | Title generation off the critical path: `title.timeout_seconds` caps the title model call (local fallback title on expiry) and `title.background` lets the run continue while it runs (collected at a later model step or at run end) | config-expressed | this PR |
-| [#124](#patch-124) | `sandbox.prewarm`: a working thread's sandbox is reclaimed in the background at run start under the run's lease owner; the run-end fence drains it before releasing | config-expressed | this PR |
+| [#124](#patch-124) | ~~`sandbox.prewarm`: a working thread's sandbox is reclaimed in the background at run start under the run's lease owner; the run-end fence drains it before releasing~~ RETIRED 2026-10-25 (decision d1: upstream #6998) | config-expressed | this PR |
 | [#125](#patch-125) | `prompt_cache.durable_context_volatile_at_tail`: the durable-context parts that change during a run (ledger, active skills, artifact handles, task notes) render in a second hidden data message at the tail; goal and summary stay at the head | config-expressed | this PR |
 | [#126](#patch-126) | Playbook fire `history: none`: a schedule's own IM topic (`sched:<id>`) gets a new thread per run in the same chat | argus-edit | this PR |
 | [#127](#patch-127) | `run_limits.finalize_on_stop`: at a hard stop, a batch of only finalize tools (commit, schedule, present) runs once, then the run ends; build runs get commit-and-schedule warnings | config-expressed | webfuse-com/deer-flow PR 113 |
@@ -189,7 +213,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#129](#patch-129) | "Command too long" names the length, the limit and write_file | argus-edit | webfuse-com/deer-flow PR 113 |
 | [#130](#patch-130) | Skill auto-routing ignores framework-injected hints; `skills.mention_only_skills` route only on @name or /name | argus-edit + config-expressed | webfuse-com/deer-flow PR 113 |
 | [#131](#patch-131) | `tool_search.bind_schedule_allowlist`: a playbook run binds its allow-listed tools instead of deferring them | config-expressed | webfuse-com/deer-flow PR 113 |
-| [#132](#patch-132) | `sandbox.prewarm_playbook_runs`: a playbook fire with sandbox tools prewarms on a new thread too | config-expressed | webfuse-com/deer-flow PR 113 |
+| [#132](#patch-132) | ~~`sandbox.prewarm_playbook_runs`: a playbook fire with sandbox tools prewarms on a new thread too~~ RETIRED 2026-10-25 (decision d1: upstream #6998) | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#133](#patch-133) | `artifact_delivery.auto_present`: unpresented outputs are presented instead of failing the run | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#134](#patch-134) | Subagents follow the #125 durable-context layout (rides `prompt_cache.durable_context_volatile_at_tail`) | config-expressed | webfuse-com/deer-flow PR 113 |
 | [#135](#patch-135) | DeerMem update runaway guards: `max_tokens`, `request_timeout_seconds`, `max_retries`, `max_failed_batch_attempts` | config-expressed | webfuse-com/deer-flow PR 113 |
@@ -210,6 +234,12 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#155](#patch-155) | The tool-receipt ledger renders at the end of the request for models with the cache-stable tail layout (#125/#147), so its sliding window stops making a self-hosted prefix cache re-read the conversation on every call after a subagent returns | config-expressed | this PR |
 | [#156](#patch-156) | With `read_before_write.bash_reads_mark`, a successful pure-read bash call (`cat`, `head`, `tail`, `sed -n '<range>p'`) marks each file it printed as read at its current version, so an edit after a shell inspection is not blocked | config-expressed | this PR |
 | [#157](#patch-157) | Telegram inbound file fetches (voice notes, photos, documents) use their own timeouts (connect 10 s, read 60 s, pool 10 s) and retry a network error once, never a `BadRequest`; the voice handler runs off the webhook (`block=False`); a failed voice fetch replies "couldn't fetch", not "couldn't transcribe", and logs its cause chain. | argus-edit | this PR |
+| [#160](#patch-160) | `task` has no model-visible `model_name`: only a person picks a subagent's model (decision d2, upstream #7249) | argus-edit | sync 2026-10-25 |
+| [#161](#patch-161) | Settings > Models offers only the custom OpenAI-compatible endpoint: upstream's provider presets are hidden (decision d10, upstream #6757) | argus-edit | sync 2026-10-25 |
+| [#162](#patch-162) | Client-side message queue while a run streams, and the running marker in the tab title (record back-filled 2026-10-25) | argus-edit | bb13d911, f2a855b4 |
+| [#163](#patch-163) | `browser_get_logs` tool (console and page-error ring buffers) and `cdp_url: sandbox`/`auto` (attach Playwright to the thread's AIO sandbox browser) (record back-filled 2026-10-25) | argus-edit | 61aaa464, 1d109b9b |
+| [#164](#patch-164) | `strip_asyncpg_only_options`: the asyncpg application URL drops libpq's `options` (record back-filled 2026-10-25) | generic-upstreamable | f04176f5 |
+| [#165](#patch-165) | `GET /api/mcp/system-tools` and the read-only system-tools list in the Capability Center (record back-filled 2026-10-25) | argus-edit | 5312b012 |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -218,21 +248,80 @@ carry budget ledger.
 
 ## Patch #1
 
-**Patch #1 - aio_sandbox: prepend `set +H;` to disable bash history expansion**
+**Patch #1 - The pane shell gets only commands it will run: no history expansion, no long lines, no silent drops** (re-ported 2026-10-25 inside #104)
 
-- Class: generic-upstreamable
-- Intent: Commands piping `!`-prefixed tokens (`!DOCTYPE`, heredocs with `!`)
-  through the sandbox shell abort with bash "event not found" because history
-  expansion is on. Wraps both `exec_command` call sites (initial + the
-  upstream `create_session` recovery retry) with `set +H;`. No other side
-  effects.
-- Files: `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox.py` (EDITED)
-- Tests: `backend/tests/test_aio_sandbox.py` (EDITED upstream file, +cases)
-- Delete-when: upstream disables history expansion in the sandbox shell (or
-  switches to a non-interactive shell), or the aio-sandbox provider exposes a
-  shell-flags hook.
-- Upstream status: none (clean PR candidate per FORK-REVIEW; note FORK-REVIEW
-  calls this "#2", the pre-v2 PATCHES.md numbering "#1" is used here).
+- Class: generic-upstreamable in intent; the code works around our pinned
+  sandbox image's tmux pane (`AioSandbox._noninteractive`, `_pane_refusal`,
+  `_exec_shell` in `community/aio_sandbox/aio_sandbox.py`, the same builder as
+  #104).
+- History: the original `set +H;` prefix (9b025200) sat on the old v2.0.0
+  lineage and was lost at the 2026-08-15 sync; the section stayed while the
+  code was gone. The coordinator's live test on the pinned image
+  (`localhost/argus/aio-sandbox:742062f9-poll1`, 2026-10-25) showed the bug
+  live: `echo "<!DOCTYPE html>"` and `{ echo "#!/bin/bash" > f\n} </dev/null`
+  print `bash: !...: event not found` and the call reports exit 0.
+- Measured limits of the pinned image (argus-debug-sandbox, `POST
+  /v1/shell/exec` without a session id, 2026-10-25). Method: send
+  `{ x="<n chars>"; sleep 1.2; echo ${#x}\n} </dev/null` and time the call; a
+  run takes over 1 s, a dropped command answers in about 0.4 s with
+  `status=completed`, `exit_code=0` and empty output. Bisected: the whole
+  command runs at 16,341 bytes and is dropped at 16,346 (ASCII; 9,000 two-byte
+  characters, 17,670 bytes, is dropped), consistent with tmux's 16 KiB
+  message limit; one line runs at 2,175 ASCII bytes and is dropped at 2,179
+  (`é` 2,117/2,121, `€` 2,138/2,144, `中` 2,114/2,120: bytes, not display
+  width). Constants `_PANE_COMMAND_MAX_BYTES = 16_000` and
+  `_PANE_LINE_MAX_BYTES = 2_000` (coordinator reproduced: 2,000 runs, 2,200
+  returns empty with exit 0). Each call without a session id gets a fresh
+  shell; scoped subagent sessions keep `cd`/`export`.
+- Intent: after #104's exemptions (empty, trailing backslash, parse-time
+  builtins, comment-only), a body containing `!` or a line over 2,000 bytes
+  is sent as `{ eval "$(base64 -d <<'__ARGUS_B64__'\n<base64, 76-char
+  lines>\n__ARGUS_B64__\n)"\n} </dev/null` when that fits in 16,000 bytes: an
+  `eval` string is never history-expanded, stdin stays `/dev/null`, `cd` and
+  the exit status behave as before. Otherwise the plain brace group is sent.
+  `_exec_shell` then asks `_pane_refusal(sent)`: a command over 16,000 bytes
+  as sent, or one that still has a line over 2,000 bytes (an exempt command,
+  or a long-line command too big to encode), is NOT sent; the call returns
+  `Error: this command was not run: ...` naming the size or line length and
+  pointing at write_file plus a short bash command, with `Exit Code: 1`
+  (graded `command_failed`), and the client is never called. A heredoc, not
+  `printf %s <b64> | base64 -d`: the one-line form is itself a long line and
+  silently did not run from about 1.9 KB. A `!` command too big to encode
+  (about 11.7 KB and up) but with short lines is sent plain as before: a `!`
+  in a heredoc body or single quotes is never expanded (verified live).
+- Scope: every legacy-shell path (`_exec_shell` is the only builder, used by
+  `execute_command`, `_rotate_and_retry_shell` and
+  `execute_command_in_scope`). `list_dir`'s `find` script (`shlex.quote`d
+  paths, `[ ! -e`) and #99's one-line grep (about 985 bytes) are unaffected;
+  `bash.exec` is a non-interactive subprocess and 404s on the pinned image.
+  `sandbox.command_max_chars` (#2/#129, 25,000 on the fleet) rejects first;
+  the pane guard fires between about 11.7 KB (encoded) or 16,000 bytes (plain)
+  and 25,000. The atlas-template value could drop to 16,000 later so the #129
+  message, which names the cap, fires first.
+- Files: `backend/packages/harness/deerflow/community/aio_sandbox/aio_sandbox.py`
+  (`_B64_DELIMITER`, `_PANE_COMMAND_MAX_BYTES`, `_PANE_LINE_MAX_BYTES`,
+  `_longest_line_bytes`, `_noninteractive`, `_pane_refusal`, `_exec_shell`).
+- Tests: `TestHistoryExpansionShell` in `backend/tests/test_aio_sandbox.py`
+  (exact wrapped string for `<!DOCTYPE`; a short command without `!`
+  unchanged; exemptions first; a real interactive `bash -i` fails the typed
+  form and runs the wrapped one, `cd` lands, exit status 3 comes back; a
+  heredoc with `#!` in its body writes the file; a 2,200-character line is
+  encoded, decodes to the input and runs, 1,000 two-byte characters count as
+  long and 1,900 ASCII do not; at upstream's default `command_max_chars`
+  (10,000) the encoded `!` form fits and runs; a 500-line `!` heredoc too big
+  to encode is sent plain and not refused; a 25k single line, 6,000 two-byte
+  characters and a 16.8 KB multi-line command are refused; `execute_command`
+  and `execute_command_in_scope` return the refusal with `Exit Code: 1`
+  without calling the client; a short command reaches the client as
+  `{ echo ok\n} </dev/null`). Live check of the final code on the pinned
+  image: 2,200- and 9,000-character single lines and a multi-line command
+  with a 3,000-character line all ran; before, all three silently did
+  nothing.
+- Delete-when: the pinned sandbox image runs commands with history expansion
+  off (or non-interactively) and accepts long commands and lines (re-measure
+  on every digest bump with the method above, then drop or retune the
+  constants), or upstream does so.
+- Upstream status: none (it works around our pinned image's tmux pane).
 
 ## Patch #2
 
@@ -282,6 +371,9 @@ carry budget ledger.
   for the field: atlas-template drops the key and `make atlas-update-all` has
   rolled it out. The #3 tests are replaced by one pinning that distinct
   sections hash apart and one pinning that the key loads but is ignored.
+- Sync 2026-10-25: the field is still accepted and ignored. The atlas-template
+  update prepared with this sync removes `read_file_bucket_size_lines: 40`;
+  the field can go once that has rolled out to every stack.
 
 ## Patch #4
 
@@ -428,6 +520,7 @@ carry budget ledger.
 - Upstream status: none.
 - See also: patch #40 (send-path extraction).
 - Sync 2026-09-23: upstream #5581 moved inbound downloads onto a dedicated loop-bound `_get_download_bot()`, which returned None without a Telegram loop. Webhook mode (every Atlas stack) runs PTB on the gateway loop and has none, so every inbound photo, document and voice note would have been "download unavailable". Fixed: with no Telegram loop the Application's own Bot is used (already bound to the gateway loop). Pinned by `test_receive_file_downloads_on_gateway_loop_when_webhook_has_no_tg_loop`. Upstream #5470's plain-vs-rich tests target `_upstream_send_superseded`/`_upstream_send_running_reply_superseded` (#40 fence). Found while there, NOT fixed: the live `_telegram_sender` HTML renderer turns spaced asterisks (`2 * 3 * 4`) into italics.
+- Sync 2026-10-25: `stop()` is upstream's bounded cleanup-future version (#6810/#6772). Webhook mode has no Telegram loop, so `stop()` runs upstream's own `_shutdown_telegram_resources()` on the gateway loop (its owner loop in webhook mode) within the same `TELEGRAM_SHUTDOWN_TIMEOUT_SECONDS` deadline; that replaces our bare `application.stop()/shutdown()` and also shuts the application's bot down. Our `_send_running_reply`/`_send_running_reply_safe` shims sit next to upstream's `_bootstrap_telegram`. The Telegram streaming branch records upstream #7104's `gap` event (a reused run whose replay is gone); without it a Telegram redelivery answered "(No response from agent)" instead of the admitted turn. `channels/AGENTS.md` takes upstream's rewritten bullets plus our voice (#62/#157), webhook and #40 fence clauses; upstream's sentence about the edit-in-place "Working on it..." target was dropped because it describes the fenced path. Tests: `test_webhook_start_does_not_spawn_polling_thread` (the fake application models PTB's `running`, `updater.running` and `bot.shutdown`, and asserts the bot is shut down); `test_reused_stream_with_a_replay_gap_replies_from_thread_state` parametrized over feishu and telegram.
 
 ## Patch #10
 
@@ -521,6 +614,7 @@ carry budget ledger.
 - Delete-when: upstream grows a proactive/outbound message API for channels
   (a send-without-inbound surface in `app/channels/`).
 - Upstream status: none (PR candidate per FORK-REVIEW).
+- Sync 2026-10-25: kept; the endpoint is appended after upstream's leader-lease restart decline (#6843), and `service.get_channel` still exists.
 
 ## Patch #15/#16
 
@@ -553,6 +647,7 @@ carry budget ledger.
   once already in v2.0.0; expect to re-place the branch each major sync).
 - Upstream status: none.
 - Sync 2026-10-10: an operator-disabled account (upstream `users.disabled`, migration 0039) is refused on the SSO path with a 403 (`ACCOUNT_DISABLED`), as upstream refuses it on cookie, bearer and internal-owner paths; 403 because a 401 would loop the browser through Google. Test: `test_sso_disabled_account_is_refused`.
+- Sync 2026-10-25: extended for upstream #6641's login reason: on the SSO path `frontend/src/core/auth/server.ts` returns `{ tag: "account_disabled" }` when the gateway's 403 body says `account_disabled`; any other refusal still falls through to the no-session path. Before, a disabled SSO citizen got a plain login form. Tests: `frontend/tests/unit/core/auth/server.test.ts` (new block "trusted SSO headers without a session": authenticates off the forwarded headers, a disabled SSO account gets `account_disabled`, another 403 falls back to unauthenticated; upstream's account_disabled and email-contract blocks gain a `headers()` mock).
 
 ## Patch #55
 
@@ -627,12 +722,15 @@ carry budget ledger.
   `tool_search` cannot restore it. The prompt no longer enumerates every configured
   direct tool, reducing noise and avoiding claims about policy-hidden schemas.
 - Files: `backend/packages/harness/deerflow/tools/builtins/tool_search.py` (EDITED)
-- Tests: `backend/tests/test_deferred_setup.py`,
-  `backend/tests/test_tool_search.py` (EDITED)
-- Delete-when: upstream makes direct-tool guidance derive from the post-policy
-  model request, or otherwise distinguishes configured binding from current schema
-  visibility.
+- Tests: `backend/tests/test_deferred_setup.py`
+  (`test_tool_search_for_a_directly_bound_tool_says_to_call_it`,
+  `test_tool_search_limit_error_wins_over_the_bound_reply`),
+  `backend/tests/test_tool_search.py`
+  (`TestDeferredToolsPromptSection::test_section_lists_only_deferred_names`)
+- Delete-when: upstream's tool_search no-match reply tells the model a
+  requested tool is already bound.
 - Upstream status: clean generic PR candidate.
+- Sync 2026-10-25: THINNED. Upstream #6935 deleted `SkillToolPolicyMiddleware`, so no policy hides a bound schema from one call any more and the policy premise is gone. Dropped: the `<direct-tool-guidance>` block and the `directly_bound_names` parameter of `get_deferred_tools_prompt_section` (upstream's docstring and signature restored), `apply_prompt_template(directly_bound_names=)` in `agents/lead_agent/prompt.py` and its computation in `agent.py`, the `direct-tool-guidance` entry in `input_sanitization_middleware.py` `_BLOCKED_TAG_NAMES`, and the "runtime policy does not allow it" sentence. Kept: the no-match reply for a directly bound tool, now `_no_match_reply()`, called from the `else` branch of upstream #6676's `try/except ToolSearchLimitError` (a budget stop wins): "Tool(s) 'X' are directly bound, not deferred, so tool_search cannot promote them. Call them directly with the schema in your tool list. Do NOT retry tool_search for them." The system prompt loses the guidance block: expect one prefix-cache miss per stack at rollout.
 
 ## Patch #58
 
@@ -655,6 +753,7 @@ carry budget ledger.
 - Delete-when: upstream supports an agent-level tool-policy source with the same
   tri-state and run-scoped schedule semantics.
 - Upstream status: none; the policy source is Argus-specific configuration.
+- Sync 2026-10-25: RETIRED. Upstream #6935 (0d73798be) deleted `skills/tool_policy.py` and `SkillToolPolicyMiddleware`: skill `allowed-tools` is metadata only, so no runtime skill filter remains to switch off. The `source == "skills"` guard in `build_middlewares` is gone (upstream's side of the conflict); `test_agent_tool_policy_keeps_persisted_skill_context_from_hiding_bash` and our skill-policy chain test were dropped from `test_lead_agent_model_resolution.py` (upstream's `durable_idx == activation_idx + 1` taken). The agent ceiling itself stays in #53.
 
 ## Patch #59
 
@@ -669,8 +768,6 @@ carry budget ledger.
   HTTP default stays `cancel`. Sandbox `idle_timeout` is independent.
 - Files: `frontend/src/core/threads/submit-stream-options.ts` (NEW),
   `frontend/src/core/threads/hooks.ts` (EDITED),
-  `frontend/src/AGENTS.md` (EDITED),
-  `backend/app/gateway/AGENTS.md` (EDITED),
   `backend/docs/STREAMING.md` (EDITED)
 - Tests: `frontend/tests/unit/core/threads/submit-stream-options.test.ts` (NEW),
   `frontend/tests/unit/core/api/stream-mode.test.ts` (EDITED; sanitizer must
@@ -678,6 +775,7 @@ carry budget ledger.
 - Delete-when: upstream WebUI sends `onDisconnect: continue` on every submit
   path, or Gateway defaults to continue for stream clients.
 - Upstream status: clean generic PR candidate.
+- Sync 2026-10-25: code kept. `frontend/src/AGENTS.md` is upstream's byte for byte (49,136 of 49,152 B), so its line is carried here instead: "`onDisconnect` is forwarded (WebUI sends `"continue"` via `WEB_THREAD_SUBMIT_STREAM_OPTIONS`)." `backend/app/gateway/AGENTS.md` carries no fork text either (equal to upstream); `backend/docs/STREAMING.md` keeps its paragraph.
 
 
 ## Patch #60
@@ -716,6 +814,8 @@ carry budget ledger.
 - Upstream status: clean generic PR candidate (nothing argus-specific in the
   mechanism; the argus-specific part is the `browser_*` value in stack
   config).
+- Sync 2026-10-25: kept. Upstream #6977 (decision d4, accepted without an opt-out) scopes promotions to the user turn, so a deferred builtin now needs re-promotion every user turn, like an MCP tool. Tests: `test_deferred_filter_middleware.py::TestDeferredBuiltins::test_promoted_builtin_schema_restored` moved to the turn-scoped state shape, new `::test_builtin_promotion_resets_on_the_next_user_turn`.
+- Sync 2026-10-25, `inspect_run_status` (rides this patch's mechanism, no own number): upstream #7297 (3802db339) binds `inspect_run_status` on every model call of every agent, and the atlas agent declares no `allowed_tools`, so it would cost its schema on every call. `ALWAYS_DEFERRED_BUILTINS = {"inspect_run_status"}` in `tools/builtins/tool_search.py` joins `_is_deferrable` (setup and the fail-closed guard). `always_bind`/`exclude` still wins; with `tool_search.enabled: false` upstream's binding is unchanged. The tool stays graph-registered and promotes through an explicit `tool_search` only. Files: `tools/builtins/tool_search.py`, `config.example.yaml` (one comment line). Tests: `test_deferred_setup.py::TestInspectRunStatusDeferred` (deferred without any `defer` pattern, `always_bind` keeps it bound, disabled tool_search keeps upstream's binding, the fail-closed guard covers it). Delete-when for this part: upstream defers `inspect_run_status` or lets config opt out of binding it.
 
 ## Patch #66
 
@@ -790,6 +890,7 @@ carry budget ledger.
 - Upstream status: clean PR candidate for both halves. The salvage in
   particular is a strict improvement with an in-repo precedent to cite.
 - Sync 2026-09-11: the timeout salvage is re-expressed into upstream's rewritten `execute_async` (`asyncio.wait_for` + `except TimeoutError` on the persistent isolated loop; upstream still stamps a bare `TIMED_OUT` there and salvages only on the GraphRecursionError path). Both outcomes now carry upstream's `tool_receipts=result.snapshot_tool_receipts()`. `time_capped` in `status_contract.py`, `run_deadline_middleware.py`, `run_limits_config.py`, `delegation_ledger.py` auto-merged intact. The sync `execute()`/`_execute_in_isolated_loop` timeout path is unchanged (ours never touched it).
+- Sync 2026-10-25: salvage re-expressed into upstream #7053's `asyncio.wait` timeout branch (no `TimeoutError` any more): in `run_with_timeout` the salvage runs when `execution_task not in done`, before upstream's `execution_task.cancel()` and `_supervise_background_execution`; COMPLETED + `time_capped` with partial text, else upstream's TIMED_OUT. `time_capped` is unioned with upstream #7355's `model_length_capped` (`subagents/status_contract.py`, `contracts/subagent_status_contract.json` stays v3 with five values, frontend `core/tasks/subtask-result.ts` and `types.ts` in the same order). `time_capped` joins `_GOAL_RUN_HARD_STOP_REASONS` (`runtime/runs/worker.py`): RunDeadline's start survives goal continuations, so a continuation after a wall-clock stop would hit the expired deadline at once (fleet: `run_limits.enabled: true`, 1200 s). That needs the value in `contracts/thread_goal_contract.json`, `contracts/scheduled_goal_notes_contract.json`, `app/scheduler/notification_text.py` (en-US, zh-CN), frontend `core/scheduled-tasks/goal-outcome.ts`, `components/workspace/goal-status-helpers.ts`, `goal-status.tsx`, `core/i18n/locales/{types,en-US,zh-CN}.ts` (`timeCapped`) and `tests/e2e/utils/raw-identifiers.ts`. Tests: `test_subagent_executor.py::TestCooperativeCancellation::test_timeout_salvage_runs_on_the_hard_timeout_branch` (no stream mocks; mutation-checked), `test_goal_worker.py::test_goal_worker_stands_down_after_run_hard_stop[time_capped]`.
 
 ## Patch #71
 
@@ -890,11 +991,12 @@ carry budget ledger.
 
 ## Patch #65
 
-**Patch #65 - Simplified shared workspace UI and serialized Telegram stage cleanup**
+**Patch #65 - Simplified shared workspace UI and serialized Telegram stage cleanup** (since 2026-10-25: sidebar navigation, running-title glyph and the Telegram stage lock; the chat UI half is dropped, see the Sync 2026-10-25 bullet)
 
 - Class: argus-edit (deployment-specific navigation/UI plus a generic channel
   race fix)
-- Intent: keep Atlas and Pythia's shared chat surface focused on conversation.
+- Intent (as landed; the header, token, export and context-badge parts below
+  were dropped 2026-10-25): keep Atlas and Pythia's shared chat surface focused on conversation.
   The sidebar exposes Chats plus direct new-tab links to Chronos, the
   Akropolis Handbook, and Feature Requests; Agents and Scheduled Tasks remain
   reachable by direct route and their APIs are unchanged. The chat header
@@ -910,21 +1012,25 @@ carry budget ledger.
   stays fire-and-forget, but simultaneous thinking/tool/writing tasks can no
   longer observe the same predecessor, delete it more than once, and orphan
   their own replacement.
-- Files: `frontend/src/components/workspace/` chat/sidebar/export/title,
-  `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx`,
-  `backend/app/channels/_telegram_sender.py`, plus frontend/channel docs.
+- Files (since 2026-10-25):
+  `frontend/src/components/workspace/workspace-nav-chat-list.tsx` (sidebar:
+  Chats plus Chronos, Agora, Handbook, Feature Requests; revised by #79, #89,
+  #116), `frontend/src/components/workspace/thread-title.tsx` (the brain glyph
+  of #162's running marker), `backend/app/channels/_telegram_sender.py` (stage
+  lock).
 - Tests: `frontend/tests/e2e/sidebar.spec.ts`,
-  `frontend/tests/e2e/workspace-simplification.spec.ts`, direct Agents and
-  Scheduled Tasks route coverage, `thread-title.test.ts`, and
+  `frontend/tests/e2e/argus-chat-header.spec.ts` (was
+  `workspace-simplification.spec.ts`), `thread-title.test.ts`, and
   `backend/tests/test_telegram_send.py::test_concurrent_stage_changes_are_serialized_and_final_cleans_latest`.
-- Delete-when: split the UI half into deployment-owned frontend composition
-  if DeerFlow gains supported nav/header slots. Drop the lock only if upstream
-  replaces stage emojis with an atomic per-chat progress primitive or tracks
-  and joins fire-and-forget stage tasks before final delivery.
+- Delete-when: the sidebar part moves into deployment-owned frontend
+  composition if DeerFlow gains supported nav slots. Drop the lock only if
+  upstream replaces stage emojis with an atomic per-chat progress primitive or
+  tracks and joins fire-and-forget stage tasks before final delivery.
 - Upstream status: Telegram serialization is a generic bug-fix candidate; the
   navigation/header choices are Argus-specific.
 - Sync 2026-09-23: upstream #5309's expandable generic tool details render only in the token-usage `step_debug` inline mode, which this patch's UI never reaches; `tests/e2e/tool-call-details.spec.ts` skips its three debug cases (the debug-off case still runs).
 - Sync 2026-10-10: upstream's new chat-header scheduled-tasks button is shipped; it hides itself when the chat has no tasks. The sidebar still links Chronos. Upstream's new e2e `details share the browser panel and can reopen after drag collapse` (skill-usage.spec.ts) clicks the Browser trigger this patch removes, so it is skipped with a #65 reason, like the token-usage debug test.
+- Sync 2026-10-25: UI half DROPPED (decision d9): the chat header, subtask cards, export and message steps are upstream's again. `chat-page.tsx` and the agent chat page restore `TokenUsageIndicator` (with `ContextUsageBadge` only when token usage is off), `BrowserTrigger`, `pendingUsageMessages` and `tokenUsageInlineMode`; `subtask-card.tsx` (token totals) and `export-trigger.tsx` (Export label) are upstream files again; `sidecar-panel.tsx` keeps only #67's `activeRunId`. The Browser panel frame push and the screenshot click in `message-group.tsx` and `message-list.tsx` are restored too: the unledgered fork commit 408b037d5 ("retire browser panel", 2026-08-16) had removed them, and with the Browser trigger back they are needed (`message-group.tsx` is zero diff, `message-list.tsx` keeps only #67). The "hide an empty context badge" carry (c6851f981, 2026-08-23, folded into this patch, never ledgered on its own) is dropped with `context-usage-badge.tsx` and its unit test back to upstream's gauge placeholder; the fleet runs `token_usage.enabled: true`, so the header shows the Tokens control and that badge does not render anyway. `frontend/src/AGENTS.md` is upstream's byte for byte; our context-badge, token-totals and sidebar paragraph is gone. Re-enabled or restored to upstream (zero diff): `tests/e2e/skill-usage.spec.ts` (the browser-panel case skipped since 2026-10-10), `tool-call-details.spec.ts` (three debug cases skipped since 2026-09-23), `agent-chat.spec.ts`, `browser-feature.spec.ts`, and `subtask-card.dom.test.tsx` ("1,000 Tokens"). `workspace-simplification.spec.ts` became `argus-chat-header.spec.ts`: it asserts the Argus controls (#38 "Live Desktop & Browser", #88's icon-only Internalize) next to upstream's Tokens control (with the context percentage), Browser trigger and Export. KEPT: the sidebar navigation and the running-title glyph (not in d9's list) and the Telegram stage lock (backend, untouched).
 
 ## Patch #61
 
@@ -988,6 +1094,7 @@ carry budget ledger.
 - Upstream status: none.
 - Sync 2026-09-11: re-expressed onto upstream's `wrap_model_call` design (cb24bc26 #5014 stops checkpointing base64 payloads, 3a6e681d #5306 reads active-sandbox images). `_describe_inputs` now reuses upstream's provenance-checked `_read_image_as_data_url`, so the replacement-sandbox/sha rules apply to the describe path too; the sync path sweeps stranded context and defers as before. DROPPED inside #20: the `legacy_base64` fallback for pre-#4138 checkpoints (upstream removed that read path; such images render as "file unavailable or changed"). Tests rewritten to the `ModelRequest` harness, +1 case (unreadable image -> placeholder). Carry is now additive only (103/0).
 - Sync 2026-10-10: the describe path goes through upstream's async authorization and `_describe_inputs` takes the request, so it reads blob refs and request-bound host copies like the raw-image path (otherwise it always answered "file unavailable").
+- Sync 2026-10-25: re-threaded onto upstream #6828/#6829's per-request image budget. `__init__` keeps upstream's `max_injected_images`/`max_injected_total_chars` and adds `vision_model_name`, `app_config`. `_describe_inputs(request)` now returns upstream's `_create_image_details_message(...)` (newest first, 4 images / 28 MiB, "Omitted viewed images: N", placeholders, plus #97's downscale); `_ainject_described` keeps every text block and replaces each `image_url` block with the vision model's description; `_describe_image` takes the data URL, and the description no longer repeats the file name (the bullet above it names the path). Tests: `test_describe_path_admits_and_downscales_like_the_raw_path`, new `test_describe_path_describes_only_admitted_images` (6 viewed, 4 described, "Omitted viewed images: 2.").
 
 ## Patch #21/#24
 
@@ -1034,6 +1141,7 @@ carry budget ledger.
   DeerFlow thread), or upstream adds channel thread-history hydration.
 - Upstream status: none.
 - Sync 2026-09-11 (finding): the manager half had been DEAD since the 2026-08-15 reconcile. It sat on `if thread_id is None:` inside `_handle_chat_on_thread`, a branch that cannot run because `_handle_chat` always resolves a thread first. Re-wired as `_prepend_new_topic_context()` called from `_handle_chat`'s `created` branch, so the documented behaviour (Slack replies under non-agent posts start with the thread's context) is live again; treat that as a behaviour change on the next rollout. Still no manager-level test; the `SlackChannel.fetch_thread_context` tests pass.
+- Sync 2026-10-25: re-read against upstream #6855 (`file_share` inbound) and #6742 (fail-closed `allowed_users`); no code change. `file_share` messages take the same path (eyes reaction, recorded ack, `event_ts` for this patch, cleanup on answer for #23). pythia's `channels.slack.allowed_users: []` still parses as unset (everyone allowed); only a list of blank entries (`[""]`) now denies everyone, and pythia has none.
 
 ## Patch #23
 
@@ -1084,6 +1192,7 @@ carry budget ledger.
   wanted for answer quality).
 - Upstream status: none (PR candidate).
 - Sync 2026-09-11: upstream's new `test_trace_entry_points.py::test_inbound_messages_are_handled_under_distinct_trace_scopes` publishes two inbound messages to one chat and waits for two handled units of work, which split-paste coalescing merges into one. The test now constructs the manager with `coalesce_window=0`, as `test_channels.py`, `test_channel_intake_backpressure.py`, `test_github_dispatcher.py`, `test_multi_pod_inbound_dedupe.py` and `test_github_token_plumbing.py` already do.
+- Sync 2026-10-25: re-expressed onto upstream #7104's inbound idempotency and run admission. `combine_messages` uses `dataclasses.replace(head, text=, files=)`: the old fresh `InboundMessage` dropped `connection_id`, `owner_user_id`, `workspace_id`, `unattended`, `report_url`, `agent_name`, `memory_mode`, `allowed_tools` and `dedupe_claimed` (#52's note that the coalesce path drops the unattended flag was this). Bursts run through `ChannelManager._dispatch_coalesced(combined, parts)` (`MessageCoalescer(..., pass_parts=True)`): a fresh trace and run-admission scope, worker-equivalent cancel and error handling, and `_coalesced_dedupe_keys` (head key to the other parts' keys) so every release site (`_release_inbound_dedupe_key`: busy, stale pin, generic error, stream error, cancellation) releases all parts and an admitted run keeps them all. Upstream's `cleanup_inbound_files` in the worker `finally` would delete a buffered part's staged files before the merged turn ingested them, so the worker skips cleanup for a coalesced message (the merged turn's `_handle_message` cleans every part). `stop()` no longer awaits a buffered burst inline before the grace period: `MessageCoalescer.flush_nowait()` starts bursts as tracked tasks that share upstream's `shutdown_grace_period_seconds` (default 3 s) with the workers and are cancelled with them; messages drained after admission closed are handled inline. Tests: `test_message_coalesce.py` +6 (keys kept on an admitted run, released before admission and on busy, stop cancels an in-flight burst and gives the keys back, attachments kept until ingestion, head fields kept). Upstream harnesses that equate `join_inbound()` with "handled" are pinned to `coalesce_window=0` (`TestDedupeKeySurvivesAdmittedRun._manager`, `test_channel_inbound_idempotency._manager`). Upstream PR candidate stays (next to `ChannelRunPolicy.buffer_followups_on_busy`).
 
 ## Patch #30
 
@@ -1133,6 +1242,7 @@ carry budget ledger.
   surfaces to watch: `manager._resolve_run_params`, the
   `_CONTEXT_CONFIGURABLE_KEYS` whitelist, and the two memory-write paths.
 - Upstream status: none.
+- Sync 2026-10-25: `dynamic_context_middleware.py` keeps both sides' imports (`effective_memory_mode`; upstream #7051's `insert_after_leading_system_messages`, `redact_text`) and upstream's `_pii_redaction_config` next to our `inject_memory` kwarg; the diff against upstream is only this patch's import, kwarg and call site.
 - Sync 2026-09-11: `msg.agent_name` now feeds upstream's `explicit_agent_choice` path (`_apply_explicit_agent_choice`), so a playbook's agent is SET in all three Gateway carriers and outranks the metadata override, the new `/agent` thread pin and every session layer for that fire only (the documented precedence). Router, CSRF exemption, memory-policy seams unchanged; `effective_memory_mode` still sits at the first-turn injection site, which upstream e59ee482 (#4667) now targets at the latest user message (verified).
 - Sync 2026-10-10: the playbook `msg.agent_name` override moved into upstream's shared `_resolve_message_assistant_id()`, ahead of the metadata override, so the run path and the new `/model` status reply resolve the same agent. The fire endpoint awaits the now-async channel store (`await service.store.list_entries`), without which every Chronos fire would have failed.
 
@@ -1296,11 +1406,13 @@ carry budget ledger.
   `backend/CLAUDE.md` (EDITED, note)
 - Tests: `backend/tests/test_empty_final_retry.py` (NEW: is_blank_text shapes,
   web-guard scoping, retry-once/no-loop/no-retry-on-tool-calls, sync+async)
-- Delete-when: the middleware: the lead model stops emitting blank finals
-  (model bump validated over a canary window) or upstream ships an equivalent
-  final-turn retry; its registration re-expresses via #3809 when shipped. The
-  web guard: upstream pagination guards blank finals on the read path.
+- Delete-when: the middleware: upstream treats a filler-only final (`.`,
+  `...`) as empty, or the lead models stop emitting filler finals (the
+  empty-final half retired 2026-10-25 onto upstream #5080); its registration
+  re-expresses via #3809 when shipped. The web guard: upstream pagination
+  guards blank finals on the read path.
 - Upstream status: none (wiring: subsumed-watch on #3809).
+- Sync 2026-10-25: THINNED onto upstream #5080 (model-boundary empty-response retry, in the base since 2026-09-23). `EmptyFinalRetryMiddleware` retries only a filler-only final (`is_blank_text` true but upstream's `has_visible_content` true: `.`, `...`, `…`), once, on attended runs only; truly empty or whitespace finals are left to upstream's per-run retry, so one blank is sampled at most twice (was up to four). `_is_blank_final` is now `_is_filler_final`; `is_blank_text` is unchanged (#31/#32/#36 and pagination use it), and the pagination web guard stays (unattended web-chat runs can now end blank by design, #44). An empty forced-stop synthesis never reaches upstream's retry, so #98 retries it itself. Tests: `test_empty_final_retry.py` (filler vs empty classification, filler retried once, empty left to upstream, unattended never). Stale comment left for the owner of `lead_agent/agent.py`: the #37/#98 registration comment still says the middleware retries "a blank FINAL turn (no content, no tool_calls)" and that "a blank synthesis gets that retry".
 
 ## Patch #38
 
@@ -1337,6 +1449,7 @@ carry budget ledger.
   feature if the sandbox-provider id gating is generalized.
 - Upstream status: none.
 - Sync 2026-09-11: kept. A duplicate definition of `_CONTAINER_SANDBOX_ID_RE`/`_is_container_sandbox_id` that our carry had accumulated was removed; `_is_pin_metadata_patch` dropped (upstream replaced it with `_is_organization_metadata_patch`, no references left).
+- Sync 2026-10-25: `DebugSandboxTrigger` (#38b) re-applied on both chat headers, after upstream's Browser trigger (back since #65's UI half was dropped). Test: `frontend/tests/e2e/argus-chat-header.spec.ts` asserts the "Live Desktop & Browser" control.
 
 ## Patch #39
 
@@ -1418,6 +1531,7 @@ carry budget ledger.
   but is a real (if tiny) behavior delta - out of scope for a zero-behavior
   patch.
 - Sync 2026-10-10: `chunk_html` measures chunks in UTF-16 code units (Telegram's unit): a chunk wider than the limit is split again at a proportionally smaller character limit. Upstream's `test_send_splits_an_emoji_heavy_final_reply_into_sendable_chunks` covers it.
+- Sync 2026-10-25: upstream #6791 (deleted reply targets in private chats) landed only in upstream's fenced send code, so it is ported by hand into `_telegram_sender.send_one`: `allow_sending_without_reply=True` for private chats (`chat_id > 0`) when replying to the bot's previous message; groups stay strict. The running reply needs no port: the stage emoji is sent without a reply target (its docstring says so; the reaction fallback has no such flag). The fence is untouched. `test_telegram_deleted_reply.py` (new upstream file): the three preview tests target the fenced copies (`_upstream_send_superseded`, `_upstream_send_running_reply_superseded`), plus four live-path tests (a private reply survives a deleted target, a group stays strict, the stage emoji is independent of the inbound message in both chat types); the live private test fails without the port. `channels/AGENTS.md` now warns that upstream's edit-in-place and Rich helpers in `telegram.py` are unreachable, so upstream send fixes must be ported into the sender. Sync checklist: diff upstream's `telegram.py` send paths against `_telegram_sender.py` every sync.
 
 ## Patch #41
 
@@ -1510,10 +1624,12 @@ carry budget ledger.
   `backend/app/gateway/routers/playbooks.py` (EDITED, +request field, +forward),
   `backend/app/channels/manager.py` (EDITED, +run_context),
   `backend/app/gateway/services.py` (EDITED, +whitelist key, shared with #21/#24/#30),
-  `backend/packages/harness/deerflow/skills/tool_policy.py` (EDITED, +param),
+  `backend/packages/harness/deerflow/tools/agent_tool_policy.py` (fork-owned
+  since 2026-10-25, `extra_allowed`; was `skills/tool_policy.py`),
   `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED, +read + pass)
 - Tests: `backend/tests/test_playbook_fire.py` (EDITED, +2 cases:
-  allowed_tools flow-through, default-None)
+  allowed_tools flow-through, default-None),
+  `backend/tests/test_tool_policy_agent_source.py` (schedule union)
 - Delete-when: upstream grows a per-run tool-whitelist mechanism (e.g. a
   configurable tool filter on the run request), or the schedule system is
   re-expressed with a native scheduling API that carries tool constraints.
@@ -1522,18 +1638,20 @@ carry budget ledger.
 
 ---
 - Sync 2026-09-11: kept, now next to upstream's `allowed_subagents` filter and the hard-deny `subagent_enabled` block.
+- Sync 2026-10-25: upstream #6935 deleted `skills/tool_policy.py`, so the skill-filter `extra_allowed` path (the union with skill allowed-tools described above) is gone. The schedule list now unions only with the agent's `allowed_tools` in `filter_tools_by_agent_allowed_tools` (`tools/agent_tool_policy.py`, #53) and applies whatever `tool_policy.source` says; on an unrestricted agent it is the whole tool set, as before on the fleet. Stale comments left for their owners: `manager._resolve_run_params` and `message_bus.py` still say the list is "merged with skill allowed-tools by filter_tools_by_skill_allowed_tools".
 
 ## Patch #44
 
 **Patch #44 - Unattended silence: no blank-final retry, wider narration backstop, no token logging** (record back-filled 2026-09-02; landed 2026-07-20 as 8a256f7d, fork PR #8; re-applied 2026-08-15)
 
-- Class: argus-edit (of #37 and #34) + a logging pin in the gateway bootstrap.
+- Class: argus-edit (of #37 and #34, and since 2026-10-25 of upstream's empty-response recovery) + a logging pin in the gateway bootstrap (dropped 2026-10-25).
 - Intent: three fixes from the 2026-07-18/19 hourly Telegram spam. EmptyFinalRetryMiddleware (#37) no longer retries a blank final on an unattended turn: the blank, or the `.` no-op sentinel, is the desired silent outcome and the retry re-sampled the model into narrating. The #34 narrated-silence backstop cap goes 120 to 280 chars, `calendar/schedule is clear` and `nothing ... attention` count as announcement phrasing, and a contrast/alert-marker veto (`but`, `however`, `urgent`, `moved`, `cancelled`) protects genuine content. httpx/httpcore are pinned to WARNING in the gateway bootstrap so the Telegram bot token no longer lands in the journal on every send.
-- Files: `backend/app/channels/manager.py`, `backend/app/gateway/app.py`, `backend/packages/harness/deerflow/agents/middlewares/empty_final_retry_middleware.py`.
-- Tests: `backend/tests/test_empty_final_retry.py`, `backend/tests/test_unattended_silence.py`.
-- Delete-when: upstream grows an unattended (scheduled) turn notion that suppresses blank-final retries and narration, and logs httpx at WARNING by default.
-- Upstream status: none sent; the httpx logging pin is a generic candidate.
+- Files (since 2026-10-25): `backend/app/channels/manager.py` (narration backstop), `backend/packages/harness/deerflow/agents/middlewares/empty_final_retry_middleware.py` (`is_unattended_run`), `backend/packages/harness/deerflow/agents/middlewares/llm_error_handling_middleware.py` and `terminal_response_middleware.py` (EDITED upstream files, unattended blank final). The `app/gateway/app.py` pin is gone.
+- Tests: `backend/tests/test_unattended_empty_response.py`, `backend/tests/test_empty_final_retry.py`, `backend/tests/test_unattended_silence.py`.
+- Delete-when: upstream's empty-response recovery (`LLMErrorHandlingMiddleware` plus `TerminalResponseMiddleware`) honours a scheduled or unattended run notion that ends a blank final silently, and upstream grows an unattended turn notion that suppresses narration (the `manager.py` backstop).
+- Upstream status: none sent.
 - Sync 2026-09-23: kept. Upstream now also redacts httpx request URLs to scheme + host (`UrlRedactionFilter`); the WARNING pin stays as defense in depth and log-volume control. Two upstream WeCom/WeChat redaction tests raise the `httpx` logger to INFO locally, since the pin made them order-dependent.
+- Sync 2026-10-25: RE-EXPRESSED at the model boundary; this fixes a live regression. Since the 2026-09-23 sync upstream #5080 (e89b12815) retried an unattended blank final once in `LLMErrorHandlingMiddleware`, then returned "...returned an empty response after one automatic retry..." flagged `deerflow_error_fallback`, so the run ended `error` and #128 reported it to Chronos as failed (verified: atlas-nicholas 6f150e7d, 2026-10-21); `TerminalResponseMiddleware` (a post-tool blank final becomes a visible error fallback) would have done the same once that retry was exempted. Now `is_unattended_run(runtime)` (public, in `empty_final_retry_middleware.py`) reads `runtime.context["unattended"]` (set by `manager._resolve_run_params` and the playbook web-chat route, the same signal as `write_policy.py`); `llm_error_handling_middleware._raise_for_empty_response(response, *, unattended)` returns instead of raising for a blank stop on an unattended run (no retry, no fallback, the run succeeds, the manager's silence branch suppresses the send and #45 reports `silent`), and `TerminalResponseMiddleware._apply` returns None on unattended runs. A response with no AIMessage at all still raises and retries (malformed, not a blank final). Interactive runs and subagents (their context carries no `unattended`) keep upstream's behaviour. The httpx/httpcore WARNING pin in `app/gateway/app.py` is DROPPED: upstream's `UrlRedactionFilter` is installed on the `httpx` logger and every root handler by `configure_logging` at lifespan start (before channels), upstream's `test_logging_config.py` pins the `api.telegram.org/bot<token>` case, and a live probe through a real `httpx.Client` logged `POST https://api.telegram.org/<redacted>`; the two #44 test tweaks in `test_channel_file_attachments.py` are reverted to upstream. Operators will see httpx INFO request lines (scheme and host only) in the journal again. Tests: `test_unattended_empty_response.py` (new: unattended blank stop kept without retry, sync and async; interactive keeps retry and fallback; malformed response still retried; post-tool fallback skipped only when unattended; a real `create_agent` graph ends the 6f150e7d shape silently after 2 model calls, and an interactive run with the visible error after 3).
 
 ## Patch #45
 
@@ -1546,6 +1664,7 @@ carry budget ledger.
 - Delete-when: upstream's scheduled-tasks MVP (4fc08b4f) grows a completion callback; reconcile together with #30/#43.
 - Upstream status: none sent.
 - 2026-09-25: the streaming `delivered` report had been nested under `if stream_error is not None:` (the upstream #4287 dedupe-release block), so clean streaming fires never reported. It now sits beside that block; `test_unattended_stream_reports_outcome_once` covers both outcomes.
+- Sync 2026-10-25: the report block is split from upstream #7104's dedupe-release condition (`stream_error and not _keep_dedupe_key_after`); left nested, a run that continues after a dropped request (#128) would have been reported "delivered" with the error text. Order: publish, release (upstream's rule), then report: a continuing run sends none, a stream error reports failed, else delivered unless suppressed.
 
 ## Patch #46
 
@@ -1576,6 +1695,7 @@ carry budget ledger.
 - Delete-when: upstream resolves summarization thresholds from the lead model without requiring a model profile.
 - Upstream status: none sent; generic candidate.
 - Sync 2026-09-11: kept. The explicit-null trim (6734fe90) is now identical to upstream (`trim_tokens_to_summarize` passed unconditionally), carry 0 for that line; the config doc line combines upstream's description with our "omit = 4000 / explicit null = skip" sentence.
+- Sync 2026-10-25: RETIRED (decision d8). Upstream config expresses it since #4901 (2026-09-03): `summarization.model_name: null` (each lead summarizes itself), a `fraction` trigger anchored on the run model, and `context_window` on each `models[]` entry (the factory attaches a profile from it, so our LiteLLM aliases get a usable fraction). Removed: `SummarizationOverride`, the `per_model` field, `resolved_for()` and its call in `create_summarization_middleware`, the `lead_model_name` parameter and its call-site comment in `lead_agent/agent.py` (`_create_summarization_middleware` and its call are byte-identical to upstream), and `test_summarization_per_model.py`. Kept as accepted and ignored: `_ignore_retired_per_model` (a `model_validator(mode="before")` on `SummarizationConfig`) drops a `per_model` key and logs one WARNING per process, so a config that still has it loads and behaves as "no overrides" (verified against the real atlas-template block). Delete-when for the shim: no fleet config (22 atlas stacks, pythia, pyrrhus) carries `per_model`; then drop `_ignore_retired_per_model`, `_per_model_ignored_logged` and the three `TestRetiredPerModelIsIgnored` tests. Tests: `backend/tests/test_summarization_context_window_config.py` (new, 12 tests, real `create_chat_model` and `create_summarization_middleware`: local-qwen with `context_window: 137143` fires at 96,000 and not at 95,999; a 1,000,000-window model at 700,000; each lead is its own generation candidate; the summarizer is built with thinking off; a model without `context_window` loses the fraction clause and never fires; a list trigger is ORed; the retired block loads, logs once and is ignored). Template recipe (atlas-template, Argus side): `model_name: null`, `trigger: {type: fraction, value: 0.7}`, `keep: tokens 28000`, no absolute tokens backstop (trigger clauses are ORed, so a tokens clause would fire every model at that size, 1M windows included), and `context_window` on every model (local-qwen 137143, so 0.7 is the old 96,000; the twelve `per_model` leads keep their trigger and summarizer). Roll the template change out BEFORE promoting the image: stacks still on the old config would run every lead on local-qwen at 96k until it lands. Accepted changes: leads that had no `per_model` entry (qwen3.8-27b-cerebras, cerebras-oss, any claude-* or gpt-* lead) summarize themselves at 70% of their own window, and local-qwen's `context_window` drives the web context gauge and `inspect_run_status.context_fill` (137,143 instead of the served 262k). Summarizer thinking is now decided in `summarization_middleware._summary_model_thinking_enabled` (off unless the model's reasoning contract requires thinking), pinned by `TestSummarizerThinkingStaysOff::test_summary_model_is_built_with_thinking_disabled`.
 
 ## Patch #48
 
@@ -1634,19 +1754,21 @@ carry budget ledger.
 - Delete-when: together with #30.
 - Upstream status: n/a (Argus-specific).
 - Note: the coalesce path appears to drop the unattended flag (an empty-final retry ran on an unattended merged turn despite #44); unreachable for scheduled fires after this patch, not fixed.
+- Sync 2026-10-25: the note above is fixed: a coalesced burst now keeps the head message's fields, `unattended` included (see the coalesce section).
 
 ## Patch #53
 
 **Patch #53 - Agent-level tool policy (`tool_policy.source: agent`)** (record back-filled 2026-09-02; landed 2026-08-11 as 457a984e, fork PR #18; runtime honouring followed in #58)
 
-- Class: config-expressed (default `source: skills` = byte-identical upstream behavior).
-- Intent: config-gated alternative to upstream PR #2626's skill-union enforcement. Under `source: agent`, `AgentConfig.allowed_tools` is the run's whitelist (omitted = no restriction, `[]` = no tools, list = exactly those); the firing schedule's allowed-tools (#43) still union in and become the sole whitelist on an unrestricted agent, so unattended runs stay scopable; skill allowed-tools demote to documentation and tool_search promotion hints; subagents inherit the parent ceiling via run metadata (`agent_allowed_tools`).
-- Files: `backend/packages/harness/deerflow/agents/lead_agent/agent.py`, `backend/packages/harness/deerflow/config/agents_config.py`, `backend/packages/harness/deerflow/config/app_config.py`, `backend/packages/harness/deerflow/config/tool_policy_config.py`, `backend/packages/harness/deerflow/skills/tool_policy.py`, `backend/packages/harness/deerflow/subagents/executor.py`.
-- Tests: `backend/tests/test_tool_policy_agent_source.py`, TestAgentSourceToolPolicy in `backend/tests/test_subagent_executor.py`.
+- Class: config-expressed (an agent without `allowed_tools` = upstream behavior; until 2026-10-25 the default `source: skills` was).
+- Intent (as landed; see the Sync 2026-10-25 bullet for the current shape): config-gated alternative to upstream PR #2626's skill-union enforcement. Under `source: agent`, `AgentConfig.allowed_tools` is the run's whitelist (omitted = no restriction, `[]` = no tools, list = exactly those); the firing schedule's allowed-tools (#43) still union in and become the sole whitelist on an unrestricted agent, so unattended runs stay scopable; skill allowed-tools demote to documentation and tool_search promotion hints; subagents inherit the parent ceiling via run metadata (`agent_allowed_tools`).
+- Files (since 2026-10-25): `backend/packages/harness/deerflow/agents/lead_agent/agent.py`, `backend/packages/harness/deerflow/config/agents_config.py`, `backend/packages/harness/deerflow/config/app_config.py` (field only), `backend/packages/harness/deerflow/config/tool_policy_config.py`, `backend/packages/harness/deerflow/tools/agent_tool_policy.py` (NEW, fork-owned), `config.example.yaml` (tool_policy block).
+- Tests: `backend/tests/test_tool_policy_agent_source.py`.
 - Delete-when: upstream ships an agent-level allowed-tools ceiling (watch the PR #2626 line).
 - Upstream status: none sent; generic candidate.
 - Sync 2026-09-11: kept; `parent_agent_allowed_tools` sits next to upstream's new `execution_capacity`/`acceptance_criteria`/recorder kwargs, `tool_policy` next to upstream's new `verification` field; upstream's `DeferredToolPromotionAuditMiddleware` is registered before `SkillToolPolicyMiddleware` as upstream requires.
 - Sync 2026-10-10: found while merging: the subagent half has been dead since upstream #4497 (2026-07-28) removed the only call to `_apply_skill_allowed_tools`, so under `tool_policy.source: agent` subagents do not receive the parent's tool ceiling. Kept as is (its tests call the method directly); re-wire or drop is an open decision.
+- Sync 2026-10-25: RE-EXPRESSED onto upstream #6935 (0d73798be), which deleted `skills/tool_policy.py` and `SkillToolPolicyMiddleware` (skill `allowed-tools` is metadata only; deletions accepted). The ceiling lives in the fork-owned `tools/agent_tool_policy.py` (`filter_tools_by_agent_allowed_tools` only), imported lazily in `_assemble_lead_agent` (a top-level import would pull `deerflow.tools.__init__` into `agent.py`'s import path). `tool_policy.source` is collapsed: `tool_policy_config.py` has `source: str | None = None`, any value loads, and a value other than `agent` logs one WARNING per value per process ("tool_policy.source='skills' is ignored ..."). The agent's `allowed_tools` (plus the schedule list, #43) applies whenever declared, on the default and the bootstrap assembly path, with no `source` check left; the lead reads `getattr(agent_config, "allowed_tools", None)`, so agent configs without the field still load. THINNED: the subagent half is removed (dead since upstream #4497, see the 2026-10-10 note; the open decision is closed): `SubagentExecutor._apply_skill_allowed_tools`, the `parent_agent_allowed_tools` init parameter and attribute, the `task_tool.py` kwarg and the `agent_allowed_tools` run-metadata key; the subagent ceiling is as wide as before (no agent or schedule ceiling). Not carried: `ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES` (`ask_clarification`, `view_image`, `read_file`, `tool_search`, `describe_skill`, `review_skill_package`): it only exempted tools from the skill policy, the agent ceiling never applied it (that gap is why #144 exists), and carrying it would widen every schedule allowlist; #162's `ask_clarification` line retires with it. Tests: `test_tool_policy_agent_source.py` rewritten (tri-state, schedule union, skill declarations are documentation, any `source` loads, an ignored value is logged once, lead assembly applies the ceiling with `source` None, agent or skills, the schedule list scopes an unrestricted agent whatever the source); `TestAgentSourceToolPolicy` removed from `test_subagent_executor.py` (upstream's `test_skill_tool_authority.py` covers "skill allowed-tools never narrow lead or subagent"). The documented rollback ("set `tool_policy.source: skills`") no longer exists. Stale text left for its owners: the `app_config.py` field description ("which allowed-tools declarations gate..."), the `offload_reader_middleware.py` module docstring ("under tool_policy.source: agent"), the #43 comments in `manager.py` and `message_bus.py`, and the atlas-template comment "Rollback: set source: skills" (Argus side).
 
 ## Patch #54
 
@@ -1721,6 +1843,7 @@ carry budget ledger.
   upstream's `activeRunId`, and the `activeRunId` prop threading to
   `MessageList`/sidecar.
 - Sync 2026-10-10: the `owningRunIsActive` fallback now lives in upstream's `core/tasks/subtask-render.ts` (`collectRenderedSubtasks(..., activeRunId)`), which moved subtask collection out of `message-list.tsx`.
+- Sync 2026-10-25: kept. `activeRunId` is threaded again through both chat pages (rebuilt on upstream #7249), `sidecar-panel.tsx` and `message-list.tsx` (into `collectRenderedSubtasks`); `owningRunIsActive` in `core/tasks/subtask-result.ts` is untouched.
 
 ## Patch #68
 
@@ -1786,6 +1909,7 @@ carry budget ledger.
 - Upstream status: none sent (strong PR candidate; the gate rationale cites
   Gemini CLI's loop-recovery design, which soft-recovers before killing).
 - Sync 2026-09-11: re-expressed onto upstream's `_LoopDecision` shape after e7c059d8 (#5245 hard-stop ordering), 9b32b5d8 (#5127 event persistence), 13f0a7f2 (#4863 extension observers) and 36ce7590 (#5344 per-run state). The Layer-1 downgrade is a `warn` decision with a new `downgrade: "recoverable_retry" | "exempt_tool" | None` field. Four behaviour decisions: (1) a downgraded hard stop no longer short-circuits Layer 2 (upstream requires warnings not to skip frequency accounting), so a Layer-2 hard stop can supersede it; it still escalates per call because it is never marked "already warned" (default `recoverable_retry_limit` 24 < freq hard 50, so defaults are unchanged); (2) downgrades are persisted to the run journal as `action="warn"` with `changes["downgrade"]`, added only when set so upstream's exact-equality event tests stay untouched; (3) `release_policy_parameters()` now includes `read_file_bucket_size_lines`, `no_hard_stop_tools`, `recoverable_retry_limit`; (4) upstream's `_WARNING_MSG` stays defined but Layer-1 warnings use our actionable text. Tests ported from `_get_thread_id` to `_run_scope_key` indexing.
+- Sync 2026-10-25: re-expressed onto upstream #6804 (80a71b090, save-first loop warnings). `_TOOL_LOOP_WARNING_MSG`, `_RECOVERABLE_RETRY_MSG` and `_TOOL_EXEMPT_RETRY_MSG` keep the named tools, count, outcome and action text and now end "... or stop repeating them/the call/it and wrap up now. " plus upstream's `_WRAP_UP_INSTRUCTIONS` (save first, one bounded read-before-write retry, then the final answer). Layer 2's `_TOOL_FREQ_EXEMPT_MSG` and #100's `_TOOL_FREQ_FRESH_MSG` are unchanged; #69, #82, #83 and #100 kept as merged.
 
 ## Patch #69
 
@@ -1872,9 +1996,12 @@ carry budget ledger.
   no-thinking follow-ups after deterministic tools, bounded multi-file
   inspect/patch tools, model-call warning/hard caps, post-write hash
   propagation, normalized tool-failure metadata, and a smaller lead prompt.
-- Files: lead-agent assembly/prompt, adaptive reasoning and skill-routing
-  middleware/config, run limits, read-before-write/result metadata, sandbox
-  batch tools, `config.example.yaml` and their focused tests.
+- Files: lead-agent assembly/prompt, adaptive reasoning
+  (`backend/packages/harness/deerflow/agents/middlewares/adaptive_reasoning_middleware.py`
+  and `backend/packages/harness/deerflow/config/adaptive_reasoning_config.py`,
+  NEW; test `backend/tests/test_adaptive_reasoning_middleware.py`) and
+  skill-routing middleware/config, run limits, read-before-write/result
+  metadata, sandbox batch tools, `config.example.yaml` and their focused tests.
 - Tests: fork PR #49 required checks, including backend, replay, and workspace
   batch-tool coverage.
 - Delete-when: upstream provides equivalent independently configurable controls.
@@ -1884,6 +2011,7 @@ carry budget ledger.
 - Sync 2026-09-23, guidance budget: upstream's inherited chains now sit within 16 bytes of the 98,304 hard limit (`scripts/check_agent_guidance.py`), so `backend/AGENTS.md` carries NO fork text (the #73 one-liner is removed; this section is the reference) and `agents/middlewares/AGENTS.md` keeps a single pointer line to #72-#85.
 - Sync 2026-09-23: the ReadBeforeWrite uncontended `acquire(blocking=False)` fast path now lives inside upstream's cancellation-safe `_acquire_gate_lock` (#5528 family). The cancellation tests' lock doubles model a held lock for the non-blocking try.
 - Sync 2026-10-10: the uncontended-acquire shortcut in `read_before_write_middleware.py` is retired (upstream #6511's lock covers it); the write-mark call follows upstream's `_extract_tool_message(..., tool_call_id=)`. `_sync_message_status` now keeps the tool's own status under `additional_kwargs['argus_tool_status']` (`tool_reported_status()`), and the subagent executor's direct-return failure check (upstream #6083) reads that, so a direct result whose report text starts with "Error:" is not a failed subagent. #93's receipt stamp is a helper called from both the sync stamp and upstream's async twin.
+- Sync 2026-10-25: `workspace_inspect_tool`/`workspace_patch_tool` keep their names and module path (`deerflow.sandbox.tools`), placed before upstream #7374's `_reject_elision_placeholder_content`; `workspace_patch` only does `old_str`/`new_str` replacements (like `str_replace`, which upstream did not guard), so it needs no elision guard. Upstream's `test_gateway_sandbox_shutdown.py` is adapted because this patch's post-write mark reads a newly written file a second time. The adaptive-reasoning part (off on every stack since 2026-09-09) is left in place for the decision d5 follow-up.
 
 ## Patch #74
 
@@ -1906,6 +2034,7 @@ carry budget ledger.
   its reinjection contract prevents completed-to-pending phase regression.
 - Upstream status: pending replay evidence before proposing upstream.
 - Sync 2026-09-11: kept; the ledger prompt now names the `<active_user_request>` block introduced by #75's re-expression.
+- Sync 2026-10-25: re-expressed onto upstream #6918 (246456694), chunked full-coverage compaction (`_next_summary_step`, `_asummarize_prompt`, up to 64 chunks, `_bound_summary_carry` at half the step budget, PII redaction of the source before splitting). `_EXECUTION_LEDGER_SUMMARY_PROMPT` stays the default through `kwargs.setdefault("summary_prompt", ...)` (an operator `summary_prompt` still overrides) and now applies once per chunk. The MERGE RULES are reworded for the fold: history folds oldest to newest and the existing summary may be the previous step's ledger; a slice can start or end inside a message; a carry cut by `_bound_summary_carry` is marked `[summary shortened]`, and sections or items missing at the marker were dropped for space, never evidence of pending, failed or repeated work; a heading lost in the cut is rebuilt from new evidence or written "Not retained", never "None"; decisive facts go first in each section because an oversized ledger loses its middle. On the fleet `trim_tokens_to_summarize: null` means one unbounded step, so the carry is never shortened there. Files: `summarization_middleware.py`, `summarization_config.py` (`summary_prompt` description), `backend/docs/summarization.md` (default prompt behaviour now describes the ledger), `config.example.yaml` (`summary_prompt` comment). Tests: `test_summarization_summary_text.py::test_default_prompt_requires_recursive_execution_ledger` (updated; pins the exact `_SHORTENED_SUMMARY_MARKER` text), `::test_custom_summary_prompt_remains_an_operator_override`. Delete-when unchanged in substance: upstream's default summary is a recursive execution ledger whose merge contract survives carry shortening.
 
 ## Patch #75
 
@@ -1926,6 +2055,7 @@ carry budget ledger.
 - Upstream status: pending canary replay evidence.
 - Sync 2026-09-11: re-expressed. Upstream f8f6cde2 (#5248) trims `<new_messages>` with a budget and pins that the rescued request is not history; our inline "ACTIVE USER REQUEST ... MESSAGES BEING COMPACTED" prefix ate that budget and leaked into `<new_messages>`. Now an own `<active_user_request>` block, escaped, bounded separately, emitted ahead of `<existing_summary>`/`<new_messages>`, only when there is history to compact. Upstream tests adjusted: two `CURRENT_REQUEST not in prompts[0]` assertions in `test_summarization_summary_text.py` narrowed to the `<new_messages>` section; `active_user_request` added to `_EXEMPT_BLOCK_TAGS` in `test_input_sanitization_middleware.py`.
 - Sync 2026-09-23: `_active_user_request_text` uses `is_genuine_user_message` (upstream #5416), so a Human Input Card reply counts as the active request, matching upstream's preserved-request anchor.
+- Sync 2026-10-25: re-expressed onto upstream #6918's chunked compaction. `_active_user_request_text(state["messages"])` is passed from `compact_state`/`acompact_state` into `_summarize_with`/`_asummarize_with` (new keyword `active_user_request`). New `_bound_active_user_request` PII-redacts the request (the same `redact_text` as source and carry) and bounds it once per pass to a quarter of the step budget (`_ACTIVE_USER_REQUEST_BUDGET_DIVISOR = 4`), keeping head and tail around `[request shortened]`; whole when the budget is null; omitted with a warning when not even the marker fits (compaction then runs exactly as upstream's). `_next_summary_step` subtracts the request's tokens from `available`, and `_build_summary_input_text` counts them and renders the escaped `<active_user_request>` ahead of `<existing_summary>`/`<new_messages>`, only when there is history. Split per step: carry at most 1/2, request at most 1/4, source the rest. `release_policy_parameters` gains `active_user_request_budget_fraction: 0.25`. Tests (`test_summarization_summary_text.py`): the request in every chunk prompt with the three raw sections within budget (sync and async), a 1,000-character request with a 400 budget bounded with both ends kept while compaction still covers all history, a null budget keeps it whole, an unfittable request is omitted, the escaped block order. Upstream's `test_summarization_cost_recovery.py::test_exactly_64_chunks_can_finish_with_an_extra_fallback_attempt` sizes its 64-chunk source as `budget - carry - len("Human: current")` per call (the request rides in every call); `test_extension_system_model_calls.py` is upstream's (it stubs `_asummarize_prompt`, our lambda edit is obsolete).
 
 ## Reverted patch #76
 
@@ -2028,6 +2158,7 @@ carry budget ledger.
 - Upstream status: not upstreamable as-is (the copy and the exact affordances
   are Argus policy); the separate gallery/view surfaces are upstream code so
   this is pure carry cost.
+- Sync 2026-10-25: `app/workspace/agents/new/page.tsx` stays the redirect. Upstream #6628 (dbebd18dd) edited the wizard and added `tests/unit/app/new-agent-save.dom.test.tsx`, which is removed from the merge (it tests the wizard we do not ship); new `frontend/tests/unit/app/new-agent-redirect.test.ts` covers the redirect. `tests/e2e/sidebar.spec.ts` adapts upstream's new "Agents gallery header" cases: the empty gallery has one New Agent button and New Agent opens #110's create dialog instead of navigating to `/workspace/agents/new`.
 
 ## Patch #88
 
@@ -2035,11 +2166,13 @@ carry budget ledger.
 
 - Class: argus-additive (new `core/sharing/` domain, new components and route; four small argus-edits: the shared-thread URL switch in `core/artifacts/utils.ts`, one button in each chat header, one action slot in the artifact detail toolbar and list card).
 - Intent: A citizen shares a conversation or a produced file with every colleague from inside Atlas. The header gains an "Internalize" control (lucide `Landmark`, the temple: to the Agora) that opens a dialog with a preview (message counts, text size, files, secret/PII findings as a warning, tool results off by default), then POSTs to the Agora over the same-origin path `/api/shared-threads/mine/{tid}` (proxied by the Caddy edge; the gateway never sees these calls). The Agora stores a snapshot and hands back a stable link. A colleague opening that link lands on `/workspace/shared/[stack]/[thread_id]` on THEIR OWN stack, where this page fetches the snapshot (`GET /api/shared-threads/{stack}/{tid}`) and renders it with the real `MessageList` through a synthetic `BaseStream` (`core/sharing/snapshot.ts`), read-only: no input box, no regenerate/edit/branch, no sidecar. Artifacts travel under the synthetic thread id `shared:<stack>:<tid>`; one switch in `urlOfArtifact`/`resolveArtifactURL` routes every file, image and markdown link to `/api/shared-threads/{stack}/{tid}/files/<rel>`. The per-artifact action (`variant="detail"|"card"`) shares one produced file through `/api/shared-files/mine/{tid}`. The owner's gateway stays owner-gated at the edge: nothing here reads through another citizen's stack. An expired SSO surfaces as a redirect, not a 401, so `core/sharing/api.ts` reports any redirected or non-JSON answer as `session_expired` and the UI offers a reload.
-- Files: `frontend/src/core/sharing/thread-id.ts` (NEW), `frontend/src/core/sharing/api.ts` (NEW), `frontend/src/core/sharing/snapshot.ts` (NEW), `frontend/src/core/sharing/hooks.ts` (NEW), `frontend/src/core/sharing/format.ts` (NEW), `frontend/src/components/workspace/internalize-trigger.tsx` (NEW), `frontend/src/components/workspace/internalize-dialog.tsx` (NEW), `frontend/src/components/workspace/artifacts/internalize-artifact-action.tsx` (NEW), `frontend/src/components/workspace/artifacts/internalize-file-dialog.tsx` (NEW), `frontend/src/components/workspace/shared/shared-thread-page.tsx` (NEW), `frontend/src/app/workspace/shared/[stack]/[thread_id]/layout.tsx` (NEW), `frontend/src/app/workspace/shared/[stack]/[thread_id]/page.tsx` (NEW), `frontend/src/core/artifacts/utils.ts` (EDITED, shared-thread URL switch), `frontend/src/components/workspace/artifacts/artifact-file-detail.tsx` (EDITED, +action, read-only when shared), `frontend/src/components/workspace/artifacts/artifact-file-list.tsx` (EDITED, +card action), `frontend/src/components/workspace/chats/chat-page.tsx` (EDITED, +header button), `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` (EDITED, +header button), `frontend/src/core/i18n/locales/{types,en-US,zh-CN}.ts` (EDITED, `sharing` section), `frontend/AGENTS.md` (EDITED, route + domain).
-- Tests: `frontend/tests/unit/core/sharing/{thread-id,api,snapshot}.test.ts` (NEW), `frontend/tests/unit/core/artifacts/utils.test.ts` (EDITED, shared URL switch), `frontend/tests/unit/components/workspace/internalize-trigger.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/shared/shared-thread-page.dom.test.tsx` (NEW), `frontend/tests/unit/fixtures/shared-thread-snapshot.json` (NEW), `frontend/tests/e2e/workspace-simplification.spec.ts` (EDITED, header shows Internalize).
+- Files: `frontend/src/core/sharing/thread-id.ts` (NEW), `frontend/src/core/sharing/api.ts` (NEW), `frontend/src/core/sharing/snapshot.ts` (NEW), `frontend/src/core/sharing/hooks.ts` (NEW), `frontend/src/core/sharing/format.ts` (NEW), `frontend/src/components/workspace/internalize-trigger.tsx` (NEW), `frontend/src/components/workspace/internalize-dialog.tsx` (NEW), `frontend/src/components/workspace/artifacts/internalize-artifact-action.tsx` (NEW), `frontend/src/components/workspace/artifacts/internalize-file-dialog.tsx` (NEW), `frontend/src/components/workspace/shared/shared-thread-page.tsx` (NEW), `frontend/src/app/workspace/shared/[stack]/[thread_id]/layout.tsx` (NEW), `frontend/src/app/workspace/shared/[stack]/[thread_id]/page.tsx` (NEW), `frontend/src/core/artifacts/utils.ts` (EDITED, shared-thread URL switch), `frontend/src/components/workspace/artifacts/artifact-file-detail.tsx` (EDITED, +action, read-only when shared), `frontend/src/components/workspace/artifacts/artifact-file-list.tsx` (EDITED, +card action), `frontend/src/components/workspace/chats/chat-page.tsx` (EDITED, +header button), `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` (EDITED, +header button), `frontend/src/core/i18n/locales/{types,en-US,zh-CN}.ts` (EDITED, `sharing` section).
+- Directory notes (`frontend/AGENTS.md` carried them until 2026-10-25; upstream's file now sits within bytes of its budget, so they live here): the route `/workspace/shared/[stack]/[thread_id]` is a colleague's shared conversation, rendered read-only from an Agora snapshot; the domain `core/sharing/` internalizes a thread or file through the Agora and holds the shared-thread snapshots.
+- Tests: `frontend/tests/unit/core/sharing/{thread-id,api,snapshot}.test.ts` (NEW), `frontend/tests/unit/core/artifacts/utils.test.ts` (EDITED, shared URL switch), `frontend/tests/unit/components/workspace/internalize-trigger.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/shared/shared-thread-page.dom.test.tsx` (NEW), `frontend/tests/unit/fixtures/shared-thread-snapshot.json` (NEW), `frontend/tests/e2e/argus-chat-header.spec.ts` (header shows the icon-only Internalize; was `workspace-simplification.spec.ts`).
 - Delete-when: the Agora share API (`/api/shared-threads`, `/api/shared-files`) is retired. Not upstreamable: the transport and the snapshot contract are Argus-specific.
 - Upstream status: n/a (Argus integration).
 - Sync 2026-10-10: combined with upstream's truncated/still-loading guards in `artifact-file-detail.tsx`; upstream's editing DOM test mocks `InternalizeArtifactAction`.
+- Sync 2026-10-25: kept. `core/artifacts/utils.ts` unions the imports (upstream's `extractPresentFilesFromMessage` plus our `sharing/thread-id`); upstream's new resolvers (#7356 relative message links, #6827 markdown preview images) go through `urlOfArtifact`/`resolveMarkdownArtifactURL`, so the shared-thread switch covers them. The header Internalize trigger is re-applied on both chat pages. `shared-thread-page.dom.test.tsx` wraps the page in `ArtifactDraftsProvider` (upstream #6700 mounts it in the root layout, so production is fine) and uses upstream's static `FlipDisplay` test helper (Motion's animation cancel rejects under happy-dom 21). The `frontend/AGENTS.md` route and domain mentions moved into this section (see Directory notes).
 
 ## Patch #89
 
@@ -2047,12 +2180,13 @@ carry budget ledger.
 
 - Class: argus-edit (small edits to existing upstream components and one gateway router; one new tiny component).
 - Intent: the owner's second review of the Atlas UI. (1) The collapsed sidebar mark stays "DF" and the expanded header keeps "DeerFlow" (reverted in patch #89 follow-up per owner preference); the hover swap to `SidebarTrigger` is unchanged. (2) The sidebar gains an external "Agora" item after Chronos, linking to `https://agora.acro.surfly.com/knowledge` in a new tab, same anchor shape as Chronos. (3) The artifact detail header stops fighting over its row: the title column is `min-w-0` and truncates (the file `Select` trigger is capped at `max-w-60`), the actions column and `ArtifactActions` are `shrink-0`; the artifact list card's Internalize action is icon-only (label in the tooltip and `aria-label`) so the filename keeps its room. (4) "Open in new window" and the share dialog's "Open link" show the file instead of downloading it: the gateway artifacts route now serves `text/*` types Chrome cannot render inline (`text/markdown`, `text/csv`, ...) as `text/plain; charset=utf-8` when `download` is not set, and serves active content (HTML, XHTML, SVG) inline with `Content-Security-Policy: sandbox allow-scripts` and `X-Content-Type-Options: nosniff` instead of forcing an attachment; the sandbox directive without `allow-same-origin` puts the document in an opaque origin, which is the containment the attachment stood in for (upstream's 2026 stance was "active content is always downloaded"). `download=true` keeps the real media type and the attachment. The same policy applies to `.skill` archive members. (5) The Internalize control shows its state: `ShareStateIcon` / `shareStateGlyph(shared)` in `components/workspace/share-state-icon.tsx` draws a lock (`LockIcon`, muted) while the thread or file is private and people (`UsersIcon`, `text-primary`) once it is shared with the company, replacing the temple glyph of patch #88 in both the thread header trigger and the artifact action; the accessible name and tooltip stay "Internalize" vs "Shared with colleagues", and the svg carries `data-shared`.
-- Files: `frontend/src/components/workspace/share-state-icon.tsx` (NEW, lock/people state glyphs), `frontend/src/components/workspace/workspace-header.tsx` (EDITED, star mark), `frontend/src/components/workspace/workspace-nav-chat-list.tsx` (EDITED, Agora item), `frontend/src/components/workspace/artifacts/artifact-file-detail.tsx` (EDITED, header room), `frontend/src/components/workspace/artifacts/internalize-artifact-action.tsx` (EDITED, icon-only card variant, glyph seam), `frontend/src/components/workspace/internalize-trigger.tsx` (EDITED, glyph seam), `backend/app/gateway/routers/artifacts.py` (EDITED, inline viewing policy).
-- Tests: `backend/tests/test_artifacts_router.py` (EDITED: active content inline with the sandbox CSP, `download=true` still an attachment, markdown and csv as plain text inline, css kept), `frontend/tests/unit/components/workspace/workspace-header.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/workspace-nav-chat-list.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/artifacts/internalize-artifact-action.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/share-state-icon.dom.test.tsx` (NEW).
+- Files: `frontend/src/components/workspace/share-state-icon.tsx` (NEW, lock/people state glyphs), `frontend/src/components/workspace/workspace-nav-chat-list.tsx` (EDITED, Agora item), `frontend/src/components/workspace/artifacts/artifact-file-detail.tsx` (EDITED, header room), `frontend/src/components/workspace/artifacts/internalize-artifact-action.tsx` (EDITED, icon-only card variant, glyph seam), `frontend/src/components/workspace/internalize-trigger.tsx` (EDITED, glyph seam), `backend/app/gateway/routers/artifacts.py` (EDITED, inline viewing policy).
+- Tests: `backend/tests/test_artifacts_router.py` (EDITED: active content inline with the sandbox CSP, `download=true` still an attachment, markdown and csv as plain text inline, css kept), `frontend/tests/unit/components/workspace/workspace-nav-chat-list.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/artifacts/internalize-artifact-action.dom.test.tsx` (NEW), `frontend/tests/unit/components/workspace/share-state-icon.dom.test.tsx` (NEW).
 - Delete-when: the brand mark, the Agora link and the sharing controls are Argus-specific and stay with the fork; the inline viewing policy could be offered upstream (an opt-in "sandboxed inline active content" setting) and dropped here if upstream adopts it.
 - Upstream status: n/a for the Atlas UI; the artifacts route change is upstreamable as a proposal.
 - Sync 2026-09-11: kept and merged with upstream #4864: both `FileResponse` branches now carry the SHA-256 ETag; inline active content keeps the CSP sandbox headers. Upstream's `test_get_artifact_large_active_content_skips_etag` adapted (attachment -> inline plus CSP, still no ETag); our inline test also asserts the ETag.
 - Sync 2026-09-23: upstream now forces every active type to an attachment and widened the classifier (`deerflow.utils.text_detection._is_active_content_mime_type`: any `+xml`, `text/xml`, `application/xml`, `text/xsl`, Windows `image/svg`). We adopt the classifier and keep the sandboxed-inline rendering; `text/xml` left `INLINE_TEXT_MIME_TYPES`. This closes a gap: before, `.xml` was served inline WITHOUT the CSP sandbox. Upstream's XML attachment tests assert the sandbox instead.
+- Sync 2026-10-25: THINNED. Every `data-testid="brand-mark"` is dropped (the star mark itself was reverted earlier, so only test ids were left): `components/workspace/workspace-header.tsx` is upstream's again (zero diff, with #7198's `isMobile`) and `tests/unit/components/workspace/workspace-header.dom.test.tsx` is deleted. Kept: the Agora link, artifact header room, share glyphs and the sandboxed inline route.
 
 ## Patch #81
 
@@ -2163,6 +2297,7 @@ carry budget ledger.
   sandbox audit record.
 - Upstream status: none sent (strong PR candidate; security fix with no
   behavioral change to the tool call itself).
+- Sync 2026-10-25: kept. Classification still runs on the whole raw command (`_validate_input`'s cap rejects, never truncates; then `_classify_command`; then `_write_audit` redacts and caps only the log line). New pin `test_redaction_and_log_cap_never_reach_the_verdict`: upstream's new block patterns (#7290 `bash <(curl ...)`, #7247 `. $(curl ...)`, #6689's fork-bomb shape), each after a redactable secret and past the 1,000-character log cap under a 25,000 cap, still block.
 
 ## Patch #85
 
@@ -2186,16 +2321,15 @@ carry budget ledger.
 
 - Class: argus-edit (changes the staleness predicate in the shared config-signature helper and its two call sites).
 - Intent: A run's answer finished streaming in ~12s but the turn stayed "in progress" ~60s longer (2026-09-04 incident). The MCP/extensions-config staleness check compared the full `(mtime, size, sha256)` signature tuple, so a byte-identical `git reset --hard` by the fork-sync daemon (same commit, remount, `cp -p`) bumped mtime and falsely invalidated the cache, firing a synchronous re-discovery of every MCP server inside the observing run's completion path. New `signatures_differ` compares only the sha256 digest (ignoring mtime/size) and fails soft on missing digests, so no-op rewrites no longer trigger a reload while real content edits (same-second, backward-mtime, same-length swaps) still do.
-- Files: `backend/packages/harness/deerflow/config/file_signature.py` (EDITED),
+- Files (since the MCP half retired on 2026-10-10): `backend/packages/harness/deerflow/config/file_signature.py` (EDITED),
   `backend/packages/harness/deerflow/config/app_config.py` (EDITED),
-  `backend/packages/harness/deerflow/mcp/cache.py` (EDITED),
-  `backend/packages/harness/deerflow/config/AGENTS.md` (EDITED),
-  `backend/packages/harness/deerflow/mcp/AGENTS.md` (EDITED)
-- Tests: `backend/tests/test_file_signature.py` (EDITED, +2 cases: no-op rewrite + digest-only contract), `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: forward/backward-mtime no-op rewrite not stale).
+  `backend/packages/harness/deerflow/config/AGENTS.md` (EDITED)
+- Tests: `backend/tests/test_file_signature.py` (EDITED, +2 cases: no-op rewrite + digest-only contract), `backend/tests/test_mcp_cache.py` (EDITED, +2 cases: forward/backward-mtime no-op rewrite not stale; kept as regression guards for the 2026-09-04 stall on upstream's MCP-slice comparison).
 - Delete-when: upstream makes config-change detection content-digest-based instead of mtime/signature-tuple-based.
 - Upstream status: none sent yet (PR candidate).
 - Sync 2026-09-11: kept (`_signatures_differ` in `cache._is_cache_stale` and `app_config.get_app_config`).
 - Sync 2026-10-10: MCP half retired with #87 (`mcp/cache.py` no longer calls `signatures_differ`). The `app_config` half stays: upstream still compares the whole signature tuple there; the reload check is our digest-only comparison plus upstream's new reload when the extensions instance changes.
+- Sync 2026-10-25: the digest predicate (`_signatures_differ`) is re-applied on upstream #7092's locked, re-indented `get_app_config`, in both the reload decision and the content-change branch. No MCP code remains in this patch: the two `test_mcp_cache.py` cases (`test_noop_rewrite_same_content_is_not_stale`, `test_noop_rewrite_same_content_backward_mtime_is_not_stale`) pass unchanged on upstream's MCP-slice comparison and stay as regression guards; their docstring now says "The MCP-slice comparison". `mcp/cache.py` and `mcp/AGENTS.md` left the Files line.
 
 ## Patch #87
 
@@ -2210,6 +2344,7 @@ carry budget ledger.
 - Upstream status: none sent yet (PR candidate).
 - Sync 2026-09-11: re-expressed. Upstream replaced the asyncio lock with a cross-loop `threading.Condition` plus generation counter and retires the session pool on every invalidation. Ours is now `_schedule_background_refresh_locked()` + `_refresh_mcp_tools_in_background()`, called from `get_cached_mcp_tools` under `_init_lock` only when tools are already cached AND a loop is running; the refresh retires the pool before discovery (wrappers bind the pool at build time) and closes it after the swap, honours `_cache_generation`/`_initializing_generation` (a mid-refresh reset wins), and on failure keeps the old tools while marking the cache uninitialized. `initialize_mcp_tools()` no longer has a `force` flag. Known limit: the retired pool is closed in `finally` even when the refresh fails, which drops idle sessions (wrappers recreate them on demand) rather than breaking tools.
 - Sync 2026-10-10: RETIRED. Upstream's selective MCP reconciliation compares only the MCP part of the config, so the byte-identical rewrite that caused the 2026-09-04 stall keeps cached tools and sessions without rediscovery. Cost: a real MCP config change made outside the Gateway API rediscovers synchronously in the next caller again. Re-expressing the background refresh would serve tools from a pool upstream may already have retired.
+- Sync 2026-10-25: its last trace, `cache_module._background_refresh_task = None` in the `test_mcp_cache.py` `cache_globals` fixture (an attribute no code reads), is removed; upstream's `reset_session_pool()` fixture line takes that slot.
 
 ## Patch #90
 
@@ -2250,6 +2385,7 @@ carry budget ledger.
 - Delete-when: upstream stops rejecting mixed mode lists, or the SDK stops
   sending modes the Gateway does not implement.
 - Upstream status: none sent (small PR candidate).
+- Sync 2026-10-25: `frontend/src/AGENTS.md` is upstream's byte for byte (its byte budget), so this section is the only description of the contract. Note: upstream's text there now says any unsupported mode throws before HTTP, while our `core/api/stream-mode.ts` still drops unsupported modes and forwards the rest.
 
 ## Patch #92
 
@@ -2270,24 +2406,35 @@ carry budget ledger.
 
 ## Patch #93
 
-**Declared operation receipts and periodic MCP schema discovery**
+**Patch #93 - Declared operation receipts (lossless MCP `isError` for operation/1 tools)** (until 2026-10-25 also periodic MCP schema discovery, retired by decision d3)
 
 - Class: generic-upstreamable.
 - Problem: structured `isError` details were discarded by the MCP adapter, and
   JSON operation failures or pending writes could acquire success receipts.
-  A tool catalog also remained stale until its connection config changed.
 - Changes: opt-in `operation/1` result interpretation; lossless MCP error
   interceptor for ordinary tools; two identical invalid submissions per user
-  turn before a local stop; background catalog refresh with last-good tools
-  retained for failed servers and config/generation fencing. Model-visible
-  catalog hashes include result-contract metadata. Durable task drivers keep
-  their existing separate lifecycle.
-- Tests: operation contract (including real adapters and compiled ToolNode),
-  MCP cache/interceptor tests, and frontend failed-call -> repaired-call ->
-  final-answer replay. No frontend behavior change was needed for the replay.
-- Exit: drop when upstream preserves structured errors, supports producer-bound
-  operation semantics and bounded invalid submission recovery, and refreshes
-  remote catalogs with equivalent session and snapshot safety.
+  turn before a local stop. Model-visible catalog hashes include
+  result-contract metadata. Durable task drivers keep their existing separate
+  lifecycle.
+- Files: `backend/packages/harness/deerflow/tools/operation_result.py` (NEW),
+  `backend/packages/harness/deerflow/mcp/tools.py` (EDITED),
+  `backend/packages/harness/deerflow/agents/middlewares/tool_error_handling_middleware.py`
+  (EDITED: `stamp_operation` before skill-read stamping, `repeated_invalid_call`
+  gate, `release_policy_parameters`),
+  `backend/packages/harness/deerflow/tools/builtins/tool_search.py` (EDITED,
+  1 line: the `DeferredToolCatalog.hash` "contract" key),
+  `backend/packages/harness/deerflow/mcp/AGENTS.md`,
+  `backend/packages/harness/deerflow/tools/AGENTS.md` ("Operation receipts"),
+  `backend/README.md` ("Declared operation receipts").
+- Tests: `backend/tests/test_operation_result_contract.py` (including real
+  adapters and compiled ToolNode), `backend/tests/test_mcp_custom_interceptors.py`
+  (adapted), frontend `message-group.test.ts` and `message-merge.test.ts`
+  (failed-call -> repaired-call -> final-answer replay; no frontend behavior
+  change was needed).
+- Delete-when: upstream keeps `structuredContent` on MCP `isError` results and
+  supports a producer-declared operation-result contract with a bounded
+  identical-invalid-call stop.
+- Sync 2026-10-25: split by decision d3 (adopt upstream's per-server MCP discovery: 3343522fa #6734 `get_mcp_tools_by_server`/`ServerDiscoveryResult`, eadc1e230 #6795 per-server `_server_tool_cache` with selective eviction and atomic publication, 44a896cc1 #6900 active calls survive session eviction). Catalog half DROPPED: `ToolCatalog(list)` and `failed_servers` (`tools.py`), the whole-cache swap `_refresh_catalog`, `_schedule_catalog_refresh_locked`, `_catalog_refresh_after`, `_catalog_refreshing`, the TTL hook in `get_cached_mcp_tools` and its stamp in `initialize_mcp_tools` (`cache.py`, now byte-identical to upstream), and the tests `test_catalog_refresh_replaces_schemas_and_preserves_failed_servers`, `test_catalog_refresh_discards_result_after_reset`, `test_catalog_refresh_exception_keeps_last_good_snapshot`, `test_catalog_ttl_coalesces_discovery_and_keeps_live_sessions`. No config key to keep (the intervals were hardcoded). Receipt half re-expressed per server (about 12 lines in `tools.py`): `_prepare_server_client` builds a per-server `operation_declarations` set and prepends `preserve_operation_errors(operation_declarations)` to THAT server's interceptor chain (outermost, so configured `mcpInterceptors` still see the raw `CallToolResult`); the set rides `_PreparedServerClient` and `_RawServerDiscovery.operation_declarations` (both default to an empty set, so upstream's direct constructors keep working), and `_wrap_discovered_server_tools` records each name-valid tool whose metadata declares `operation/1`. A reused `ServerDiscoveryResult` keeps its own interceptor and set, so cache reuse cannot separate a tool from its declarations; upstream's interceptor-chain fence compares config paths only. Our old discovery logging (`f"...{e}"`, `exc_info=True`, which could print a resolved-credential URL) is gone; upstream's type-name-only logging stands. Tests: `test_operation_result_contract.py::test_per_server_discovery_binds_declared_tools_to_that_servers_interceptor` (new, mutation-checked); `test_mcp_custom_interceptors.py` keeps `_get_interceptors` (strips our index 0) and adapts upstream's `test_custom_interceptor_builder_runs_once_per_enabled_server`. `mcp/AGENTS.md`'s "Catalog refresh" paragraph became a three-line "Operation errors" pointer; `backend/README.md` says catalogs follow upstream's discovery cache. Behaviour change (fleet MCP servers are all HTTP: kb-api, codesearch, atlas-mcp): a server that is down when discovery runs (gateway start, MCP config edit, `POST /api/mcp/cache/reset`, a shared reset marker) has its tools missing from the bound tools and the deferred catalog in every run on that gateway process until the next re-initialization (config change, admin reset, restart); before, the background refresh brought them back within about 5 minutes. A server that goes down after its tools were published keeps them listed and calls fail at call time until it is back. Remote schema changes without a config change need a reset, restart or config change (upstream's documented contract). Zero-carry mitigation, Argus side: call the stack's `POST /api/mcp/cache/reset` after kb-api, codesearch or atlas-mcp restarts.
 
 ## Patch #94
 
@@ -2307,9 +2454,12 @@ carry budget ledger.
   the #82 subcategory messages are unchanged.
 - Files: `backend/packages/harness/deerflow/agents/middlewares/loop_detection_middleware.py` (EDITED)
 - Tests: `backend/tests/test_loop_detection_middleware.py`
-  (`test_freq_warn_is_a_checkpoint_not_a_stop_order`)
+  (`test_freq_warn_is_a_checkpoint_not_a_stop_order`,
+  `test_freq_warning_names_the_looping_tool_and_allows_saving`,
+  `test_frequency_warning_on_a_writer_asks_to_save_without_stopping_it`)
 - Delete-when: upstream's frequency warning stops ordering a final answer, or
   upstream makes the warning text configurable.
+- Sync 2026-10-25: re-expressed onto upstream #6804 (80a71b090). `_TOOL_FREQ_WARNING_MSG` keeps our checkpoint wording and `{hard_limit}` and folds in upstream's save-first clause ("If your task asks you to save results to a file, write what you have collected so far to that file first, with a file-writing tool such as write_file; if a read-before-write check blocks the save, read the target file and retry the save once."); it orders neither a stop nor a wrap-up. Upstream's own `_TOOL_FREQ_WARNING_MSG` ("Stop calling X and wrap up now" plus `_WRAP_UP_INSTRUCTIONS`) had auto-merged BELOW the conflict and would have silently overridden ours; it is removed. `_WRAP_UP_INSTRUCTIONS` and `_WARNING_MSG` are byte-identical to upstream. Upstream's `TestWarningLetsAgentSaveResultsFirst` is reconciled: `test_freq_warning_names_the_looping_tool_and_allows_saving` asserts the checkpoint (tool, force-stop count, no "Stop calling"/"wrap up", the save clause before the force-stop), the read-before-write test checks ordering against the force-stop sentence for the frequency layer, the looping-writer test runs for the hash layer only, and new `test_frequency_warning_on_a_writer_asks_to_save_without_stopping_it` covers the frequency layer.
 
 ## Patch #95
 
@@ -2348,6 +2498,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_argus_channel_binding_store.py`.
 - Delete-when: the acropolis host tooling reads the bindings through the table or a gateway endpoint; then set `binding_store: auto` on one stack, verify the import, and drop the patch.
 - Upstream status: none (deployment-specific).
+- Sync 2026-10-25: `service.py` takes upstream's runtime-config and leader-lease imports (#6988, #6843/#6746) plus `JsonChannelStore`, which implements upstream #7104's `claim_thread_id`; #126's `store.remove` tests on the JSON store are green (`test_playbook_fire.py::TestFreshThreadPerRun`). `channels/AGENTS.md`'s store bullet now says the JSON store also serves `channels.binding_store: json` (upstream's text said memory only). `channels.leader_lease.enabled: auto` resolves off on our single gateway process.
 
 ---
 
@@ -2397,6 +2548,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_agent_store_class.py` (selection and singleton, non-store class rejected, stock defaults, editable soul + source in get and export, shared-layout agent editable through the store, 409/422/502 refusals, `update_agent` reports a refusal); existing agent router, write-drain, update_agent and storage tests unchanged.
 - Delete-when: upstream ships pluggable agent storage.
 - Upstream status: none sent (generic-upstreamable).
+- Sync 2026-10-25: the store hook is kept over upstream #6747's `FileAgentStore` check in `routers/agents.py` and `update_agent_tool.py`: our `FileAgentStore.is_legacy_only` already encodes upstream's `config.yaml` condition and SQL stores default to False, as #6747 wants; imports unioned with upstream's tool-group (#6630) and #7255 additions.
 
 ---
 
@@ -2408,8 +2560,10 @@ carry budget ledger.
 - Intent: with agent definitions stored in each stack's GitHub repository (#109), the Agents page is their editor. The settings dialog edits the description and the soul (the CodeEditor from #108, full screen), shows the store's refusal text, and links to the agent's folder on GitHub with the commit. Cards link there too. New agent is back (patch #79 had removed it because agents were only made in GitHub); it creates through the API, which commits.
 - Tests: `frontend/tests/unit/components/workspace/agents/agent-github-store.dom.test.tsx` (soul shown and saved, description sent only when changed, store refusal text shown, GitHub link with short commit only when `source` is set, New agent validates the name and creates), `frontend/tests/unit/core/agents/api.test.ts` (string and validation-list `detail` become the error message for create, update and import). Tool groups are not editable yet (no frontend list of configured groups).
 - 2026-10-11 follow-up: the settings dialog is 42rem wide (56rem from the `lg` breakpoint) instead of upstream's 32rem; `tests/e2e/agent-settings-layout.spec.ts` uses longer worker names so its wrapping check still bites.
+- Files: `frontend/src/components/workspace/agents/agent-settings-dialog.tsx`, `frontend/src/components/workspace/agents/agent-create-dialog.tsx` (NEW), `frontend/src/components/workspace/agents/agent-card.tsx`, `frontend/src/components/workspace/agents/agent-gallery.tsx`, `frontend/src/core/agents/types.ts`, i18n (commits 8a2f0a76a, 778e6625e, 24664fbc2).
 - Delete-when: upstream's agent editor covers soul and description and a store-provided source link.
 - Upstream status: none sent.
+- Sync 2026-10-25: `agent-settings-dialog.tsx` keeps our description and soul spreads next to upstream's `(knowledgeChanged || clearKnowledgeDefault)` knowledge spread (#6995). Upstream #6630's Tool access selector auto-merged in, which closes the "Tool groups are not editable yet" gap above; it calls `GET /api/agent-tool-groups`, which needs an nginx/Caddy location on the Argus side. `agent-github-store.dom.test.tsx`'s `@/core/agents` mock gains upstream's `useAgentToolGroups`.
 
 ---
 
@@ -2420,6 +2574,7 @@ carry budget ledger.
 - Class: generic-upstreamable (backend: `config/agent_storage_config.py` `subagent_store_class`, `persistence/managed_subagents/__init__.py` selection, `persistence/managed_subagents/base.py` `thinking_enabled` field + `source_info` hook, `subagents/registry.py`, `app/gateway/routers/subagents.py`; frontend: Subagents settings page; `config.example.yaml`).
 - Intent: Argus keeps each stack's subagents in its GitHub repository (`subagents/<name>.md`, one file per subagent) and edits them in Settings > Subagents, so the managed-subagent store must be replaceable the way #109 made the agent store replaceable: `agent_storage.subagent_store_class: module:Class` (one instance per path) wins over file/db. Managed definitions gain `thinking_enabled` (config.yaml custom agents have it since #92; Argus's `build` subagent uses it), passed to the runtime config, accepted on create/update and kept when an update omits it. The Subagents API reports where a managed definition is kept (`stored_in`, omitted when the store reports nothing) and answers a store's `AgentStoreError` (#109) with its status and message on create, update and delete. The page shows the thinking switch and an Open on GitHub link.
 - Tests: `backend/tests/test_subagent_store_class.py` (selection and singleton, thinking reaches the runtime config, create/update/list carry thinking and `stored_in`, omitted thinking preserved, 409/422/502 refusals on update and delete); `frontend/tests/unit/components/workspace/settings/subagent-settings-page.dom.test.tsx` (thinking switch shown and saved only when changed, GitHub link only with `stored_in`, refusal text in the toast) and `frontend/tests/unit/core/subagents/api.test.ts` additions; existing subagent router, store and registry suites unchanged.
+- Frontend files: `frontend/src/components/workspace/settings/subagent-settings-page.tsx` (thinking switch, Open on GitHub link, refusal toast), `frontend/src/core/subagents/types.ts`, i18n (commit 85b58fff8).
 - Delete-when: upstream ships pluggable managed-subagent storage and managed thinking.
 - Upstream status: none sent (generic-upstreamable).
 
@@ -2434,6 +2589,7 @@ carry budget ledger.
 - Tests: `tests/unit/core/extensions/registry.test.ts` (agents-tab accepted, unknown slot and agents-tab navigation rejected), `pages.test.ts` (only enabled agents-tab surfaces, never project tabs or pages), `tests/unit/app/agents-page.dom.test.tsx` (gallery tab then plugin tab, real `PluginSurfaces` mount in the Shadow DOM without a project, disposed on switching back; no tab strip without plugins; fallback when the plugin goes away).
 - Delete-when: upstream ships Agents-page extension slots.
 - Upstream status: none sent (generic-upstreamable).
+- Sync 2026-10-25: `agent-gallery.tsx`'s header actions keep upstream #7198's `flex max-w-full flex-wrap` plus our hide-off-gallery-tab class.
 
 ---
 
@@ -2446,6 +2602,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_channel_owner_email.py` (config parsing: lock required, email normalised, non-dict entries skipped; a message without owner gets the configured owner; a connection owner is kept; an unknown email is retried after the window); existing channel manager and service suites unchanged.
 - Delete-when: upstream channel connections can be pre-bound from config for a single-owner deployment (no `/connect` handshake), or upstream ships an equivalent owner setting.
 - Upstream status: none sent.
+- Sync 2026-10-25: the owner lookup now sits in `_dispatch_message` (upstream #6876 split it out of `_handle_message`).
 
 ---
 
@@ -2470,6 +2627,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_scheduler_backend_class.py` (no backend by default; a backend missing a part is refused; chat tools off with a backend; list, get, per-thread list, runs, events and run-now served by the backend through the real router; features report its supports, `external` and tools off); existing features, router, capability and shutdown suites unchanged (675 passed).
 - Delete-when: upstream makes the scheduled-task backend pluggable.
 - Upstream status: none sent (generic-upstreamable).
+- Sync 2026-10-25: `routers/features.py` keeps both field sets; upstream's new `group_notifications` (#6762/#6903) is reported true only on DeerFlow's own scheduler (`backend is None`), since an external scheduler has no notification groups. The frontend side is in #116.
 
 ---
 
@@ -2482,6 +2640,7 @@ carry budget ledger.
 - Tests: `tests/unit/core/features/api.test.ts` (supports parsing, missing keys supported), `tests/unit/core/scheduled-tasks/actions.test.ts` (unsupported actions hidden, pause and run kept), `tests/unit/core/threads/origin.test.ts` (sched topic is a scheduled run), `tests/unit/components/workspace/thread-scheduled-tasks-button.dom.test.tsx` (the header menu pauses, resumes and runs), `tests/unit/components/workspace/workspace-nav-chat-list.dom.test.tsx` (page link instead of Chronos); upstream scheduled-task suites unchanged.
 - Delete-when: Argus schedules run on DeerFlow's own scheduler.
 - Upstream status: not applicable.
+- Sync 2026-10-25: `scheduled-tasks/task-detail.tsx` keeps upstream's notification-group section (#6762), gated `!external` (`useScheduledTasksFeature().external`), and our `supports.limits || supports.stop_condition` gate on "Stops when" (#119, #120 share the file). `task-form-dialog.dom.test.tsx` merges the two `@/core/features/hooks` mocks into one (upstream's `groupNotifications`/`isLoading` plus our `supports`/`external`/`channels`); `afterEach` resets both.
 
 ---
 
@@ -2494,6 +2653,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_delivery_report.py` (thread id in the payload and passed by the manager; the scheduled-origin marker for playbook fires only, run id from the report URL, trigger and zone), `backend/tests/test_playbook_fire.py` (trigger and zone flow through; an unknown trigger is 422); `test_channels.py`'s #45 report stub takes the new argument.
 - Delete-when: Argus schedules run on DeerFlow's own scheduler.
 - Upstream status: not applicable (playbook fire is Argus's).
+- Sync 2026-10-25: the origin marker is added after upstream's `_human_input_message_with_channel_response(..., message_id=...)` builds the human message.
 
 ---
 
@@ -2554,9 +2714,10 @@ carry budget ledger.
 
 - Class: argus-edit (frontend: new `components/workspace/chats/use-project-new-chat.ts` (the `?project=` read, the `POST /api/threads` pre-create with `project_id`, the submission fence) and `components/workspace/projects/project-affiliation-badge.tsx`, both moved out of `chat-page.tsx`; `app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` uses them: first submit awaits the pre-create, `onPrepareThread`, `projectId` for the composer, the project chip; `chat-page.tsx` uses the same hook and shows the chip for a new project chat too).
 - Intent: the project page's "New chat" links to `/workspace/chats/new?project={id}`, and Argus routes every new chat to the citizen's Atlas agent page (`/workspace/agents/atlas/chats/new`, an nginx redirect in acropolis). The agent page had no project handling, so the chat started unfiled: no project instructions or documents, no Argus project context, not listed under the project. Now the first message creates the chat already filed under the project, exactly as on the plain chat page, and the chip shows the project from the empty chat on.
-- Tests: `frontend/tests/unit/components/workspace/chats/use-project-new-chat.dom.test.tsx` (files the first message under the project, existing chats ignore the param, an unavailable project refuses the send with a toast, a conversation switch drops the stale send).
+- Tests: `frontend/tests/unit/components/workspace/chats/use-project-new-chat.dom.test.tsx` (pre-create via `ensureProjectThread`, existing chats ignore the param, an unavailable project refuses the send with a toast, the fence moves on a conversation switch and on a project-scope change; the stale-drop itself is upstream's page code since 2026-10-25).
 - Delete-when: upstream's agent chat page handles `?project=` (then drop the agent-page half and keep only what upstream lacks).
 - Upstream status: generic-upstreamable (upstream's agent chat page has the same gap).
+- Sync 2026-10-25: re-expressed onto upstream #7249 (model controls before submit). `use-project-new-chat.ts` returns `{ projectParam, ensureProjectThread, submissionEpochRef }`; `prepareSubmission` is gone. The fence is the same `useRef` epoch with the same deps (`threadId`, `projectParam`) as upstream's inline one, so `chat-page.tsx`'s `handleSubmit` is upstream's verbatim: model choice (`prepareModelControl`, which can wait on the picker card), epoch check, project pre-create (`ensureProjectThread`), epoch check, then upstream's conversation-default `createThread` (skipped when `projectParam` is set, upstream's own condition); the only carry there is `submissionEpochRef` in the deps. The agent chat page keeps upstream's own fence (`[agent_name, threadId, user?.id]`) with `projectParam` added, awaits `ensureProjectThread()` plus an epoch check after the model-choice check, and its conversation-default `createThread` gets `&& !projectParam`. Upstream's welcome-layout effect (`setIsWelcomeMode(isNewThread)`) is back on the agent page (#162's commit had dropped it there without a reason).
 
 ## Patch #123
 
@@ -2579,6 +2740,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_sandbox_prewarm.py` (binds and is released at run end, drained when still in flight, off by config, not for a thread without a sandbox, a failed prewarm leaves the lazy path).
 - Delete-when: upstream acquires a known thread sandbox eagerly without blocking `before_agent`.
 - Upstream status: generic-upstreamable.
+- Sync 2026-10-25: RETIRED by decision d1 (Nicholas, 2026-10-25): upstream #6998 (16d36ccd2, with #7045) ships its own `sandbox.prewarm` under the same config key and context-key constant name but with different behaviour; the auto-merge had defined `prewarm` and `SANDBOX_PREWARM_CONTEXT_KEY` twice, so ours silently won and both mechanisms would have run. `sandbox/lease.py` is upstream's file verbatim (our `SANDBOX_PREWARM_CONTEXT_KEY = "_sandbox_prewarm_task"`, `_PREWARM_DRAIN_SECONDS` and `_drain_prewarm` are gone; upstream's `__deerflow_sandbox_prewarm` key, cleanup marker and `close_sandbox_prewarm_context` remain), `sandbox/middleware.py` loses `_maybe_prewarm` (upstream's `abefore_model` -> `start_sandbox_prewarm` and `aafter_agent` -> `close_sandbox_prewarm` are the only hooks; #101 is the only carry left there), `config/sandbox_config.py` has only upstream's `prewarm` next to `prewarm_max_concurrent` (default 1), and `backend/tests/test_sandbox_prewarm.py` is upstream's (add/add conflict). Fleet behaviour with `sandbox.prewarm: true` and `AioSandboxProvider`: upstream's speculative prewarm is on for async gateway runs (web, IM, Chronos) and async subagents; it fires once per run from `abefore_model`, only when the thread state has NO sandbox and the latest human message has a code fence, a path, a command line or a traceback (URLs stripped first; upload turns qualify); it never reclaims an existing thread sandbox, so a working thread again pays the 3.5-5 s reclaim on its first sandbox tool (the pre-#124 behaviour); it ignores `allowed_tools`; `prewarm_max_concurrent` (1 per provider instance per process) holds a permit until the prewarm is claimed or the run ends, and foreground acquisition never waits on it.
 
 ## Patch #125
 
@@ -2621,8 +2783,9 @@ carry budget ledger.
 - Intent: the Telegram branch of `ChannelManager._handle_streaming_chat` tracks stage emojis and `values`, then `continue`s before the `error` frame check the other channels use. A run that ended in an `error` frame therefore looked like an empty answer: a scheduled fire was reported to Chronos as `silent` (closed `ok`) and the citizen heard nothing; an interactive turn showed "(No response from agent)". atlas-ashish 2026-10-13 07:27 CEST, run dc87e6ad: the Surfly dashboard refresh hit GraphRecursionError after 58 model calls, nothing was committed or sent, Chronos run 42623 recorded ok. The Telegram branch now records the error frame. An unattended fire with no answer text sends one line naming the schedule and the cause ("reached the run's step limit" for GraphRecursionError) and reports `failed` with `<name>: <message>`, which Chronos already closes as `error` (`scheduler/src/routes/api.py::report_run_output`). Partial answer text is still delivered as before and reported `failed`. Error frames on every channel now keep their name (`RunErrorFrame`; `str()` keeps upstream's text so the thread-busy check is unchanged).
 - Files: `app/channels/manager.py`.
 - Tests: `backend/tests/test_channel_unattended_run_error.py` (failed fire notifies and reports failed, a clean empty fire stays silent, interactive Telegram error shows the error text, partial text kept and reported failed); `test_channel_stream_errors.py` unchanged and green.
-- Delete-when: upstream's Telegram streaming path consumes error frames.
+- Delete-when: upstream's Telegram streaming path consumes error frames. For the run-continues part (below): the manager re-attaches to a continuing run (`runs.join`) and delivers its answer, or upstream stops running channel turns past a dropped request.
 - Upstream status: generic-upstreamable for the error-frame half; the notice is argus (playbook fires).
+- Sync 2026-10-25: re-expressed onto upstream #7104 (085924a3d, run admission and inbound idempotency): `RunErrorFrame` subclasses upstream's `_RunFailedFrame`, so admission treats an error frame as terminal (the dedupe key is released) and our name and message survive for the notice and the Chronos report. New, following upstream #6876 (`on_disconnect: continue` for IM runs): a request that broke after the Gateway admitted the run is not reported as failed. Streaming path: `keep_dedupe_key = _keep_dedupe_key_after(...)` is decided once; `run_continues` (key kept, not an "already admitted" 409) replaces the generic error and `_unattended_failure_text` with `_run_continues_text` (`RUN_CONTINUES_MESSAGE` when interactive, a schedule-named line when unattended), appended to any partial text, and sends no Chronos report (Chronos's timeout fallback records the fire as unreported). `runs.wait` path: a `ReadTimeout`, `ReadError` or `RemoteProtocolError` gets the same notice and keeps the key instead of "An internal error occurred". Upstream's `ALREADY_ADMITTED_MESSAGE` is reworded to "This message is already being processed. Its answer will appear in this conversation." (one carried line in an upstream constant; product-neutral, so it can go upstream with coalesce, #149 and #150). Tests: `test_channels.py::TestChannelManager::test_broken_stream_reports_failed_only_before_admission` (new); `test_unattended_stream_reports_outcome_once` now fails through an error frame (a transport break after the first frame is a continuing run).
 
 ## Patch #129
 
@@ -2667,6 +2830,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_sandbox_prewarm_playbook.py` (prewarm then the tool reuses the binding and run end releases it, off by default, no sandbox tools stays lazy, interactive stays lazy, existing thread still keyed on `prewarm`).
 - Delete-when: as #124.
 - Upstream status: argus-specific (playbook allowlists are #43).
+- Sync 2026-10-25: RETIRED with #124 by decision d1. `_SANDBOX_TOOL_NAMES` and `_playbook_run_uses_sandbox` left `sandbox/middleware.py`, the `prewarm_playbook_runs` field left `config/sandbox_config.py`, and `backend/tests/test_sandbox_prewarm_playbook.py` is deleted. All 21 atlas configs still set `prewarm_playbook_runs`; `SandboxConfig` is `extra="allow"`, so it loads as an ignored extra (verified with the atlas template's sandbox section; a two-line `[argus]` comment in `sandbox_config.py` says so). Follow-up (fork PR, after the image is promoted): remove the key and the #124/#132 comments from atlas-template `config.yaml.template`. Upstream's prewarm does not look at the run's allowlist, so a path-looking prompt on a schedule without sandbox tools can start a sandbox (released at run end).
 
 ## Patch #133
 
@@ -2700,6 +2864,8 @@ carry budget ledger.
 - Tests: `backend/tests/test_deermem_runaway_guard.py` (caps passed to the client, none by default, default keeps re-feeding, skip after N failures then only new turns flow, a success resets the count).
 - Delete-when: upstream DeerMem bounds its extraction call and gives up on a poisoned batch.
 - Upstream status: generic-upstreamable.
+- Sync 2026-10-25: verified against upstream #7205 (persisted DeerMem watermark). `config.py` keeps `max_failed_batch_attempts` under upstream's new header comment; `updater.py` (auto-merged) advances a skipped batch through `_watermark_set`, which now writes through to upstream's `.metadata/watermarks.json` sidecar, so a skip survives a restart. New test `test_deermem_runaway_guard.py::test_a_skipped_batch_stays_skipped_after_a_restart` (FileMemoryStorage, a fresh updater: the poisoned batch is not fed again, only new turns).
+
 ## Patch #141
 
 **Patch #141 - Cross-tab preferences sync cannot ping-pong** (2026-10-13)
@@ -2743,6 +2909,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_offload_reader_scope.py` (off by default, the real read_file tool is added after the real agent-source filter, no grant when read_file is allowed or absent or the budget is off, scope follows `storage_subdir`, an offload of this run is read on the host from a file the real budget middleware wrote, whole and by range, sync and async, with sandbox initialization patched to fail; without a host copy the tool reads it; an earlier run's offload in the same chat, a path only mentioned by a result, are refused, hidden control messages do not end the run and a blob reference names the path; other paths (outputs, `..`, nested, skills, relative, empty, non-string) are refused before it runs, other tools pass, async path, lead-agent assembly with a schedule allowlist binds read_file and passes the scope middleware, and does neither with the switch off).
 - Delete-when: upstream lets the budget preview fall back to an inline projection, or grants a scoped reader itself, when read_file is not bound.
 - Upstream status: argus-specific (agent-source allowlists are #53/#43).
+- Sync 2026-10-25: code unchanged; `offload_reader_grant` now runs on every lead assembly (it sat inside the `source == "agent"` branch, which #53's collapse removed), the same behaviour on the fleet. The `tool_policy.source: skills` sentence above no longer applies (upstream #6935 removed the skill policy), and the module docstring of `offload_reader_middleware.py` still says "under tool_policy.source: agent".
 
 ## Patch #145
 
@@ -2765,6 +2932,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_tool_search_answer_bound.py` (off by default and the wrapper's model-visible schema equals upstream's; a select for a promoted tool is answered without a schema; a select mixing promoted and deferred tools runs the upstream search; promotions under another catalog hash do not count; directly bound tools get the short answer with the policy caveat; keyword search unchanged; a real `create_agent` graph answers the second select for a promoted tool directly and keeps the promotion state; the routing hint for auto-promoted tools no longer says to search).
 - Delete-when: upstream's tool_search and routing hints account for promotions the run already made.
 - Upstream status: generic-upstreamable.
+- Sync 2026-10-25: kept as is (decision d6 drops it in a follow-up). The wrapper still delegates to upstream's tool, which now carries #6676's `try/except ToolSearchLimitError`. With upstream #6977's turn-scoped promotions (decision d4) its direct answer writes `{"catalog_hash", "names": []}` without a `turn_id`, which `merge_promoted` folds into the current turn's scope, so it does not fight the per-turn reset. `test_tool_search_answer_bound.py::test_real_graph_second_select_for_a_promoted_tool_is_answered_directly` accepts upstream's `turn_id`. Its "policy caveat" sentence has the same dead premise as #57's.
 
 ## Patch #147
 
@@ -2789,6 +2957,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_deermem_unescape_idempotent.py` (one round undoes exactly one level; plain text and foreign entities kept; "Prefers &amp; over 'and'" and "Use &lt;br&gt; in Telegram HTML" survive the prompt round trip and two full update cycles as summary and fact; parsed summaries, facts and consolidations are plain; two full update cycles leave a summary unchanged; an already escaped summary does not grow; the next prompt shows exactly one level and still neutralises `</current_memory>`; a plain new fact duplicates its escaped stored copy). `backend/tests/test_argus_repair_deermem_escaping.py` (dry run writes nothing; apply backs up the pre-repair bytes, repairs summaries and facts to a fixed point, keeps every other field, a second run changes nothing; one failing scope is recorded and the others still run; user filter; missing root).
 - Delete-when: upstream DeerMem unescapes model output before storing, or stops escaping the update prompt's memory JSON.
 - Upstream status: generic-upstreamable (every DeerMem deployment accumulates it).
+- Sync 2026-10-25: compatible with upstream #6971/#7442 (DeerMem confidence parsing: out-of-range fact confidence dropped, unusable consolidation confidence defaulted, finite `extend_by`), which is numeric only; this patch unescapes content, category, sourceError and summaries, and both apply side by side. `test_deermem_unescape_idempotent.py` and `test_memory_update_normalization.py` green.
 
 ## Patch #149
 
@@ -2801,6 +2970,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_channel_thread_agent_metadata.py` (session agent recorded and not pinned, playbook runner recorded, `assistant_id` session normalized, lead-agent threads unchanged, `/agent use` keeps its pin, re-registered thread records it, an invalid session agent never blocks creation). `backend/tests/test_argus_backfill_channel_thread_agent.py` (row selection; the run's agent from either carrier; dry run counts and writes nothing and reports undetermined threads; apply backs up, records each thread's own agent (atlas, coder, pythia-internal), leaves undetermined ones alone, keeps `updated_at`, second run is a no-op; `--agent` limits the write; provider filter; refuses `lead_agent`; opt-in Postgres run of the JSON update under `TEST_POSTGRES_URI`).
 - Delete-when: upstream records the effective agent on channel-created threads.
 - Upstream status: generic-upstreamable (any channel with a session-level custom agent hits it).
+- Sync 2026-10-25: kept in upstream #7104's `_create_gateway_thread` (the `elif` branch writing `THREAD_AGENT_METADATA_KEY` from `_web_agent_name`), which `_create_first_thread` and `/new` both use. Deliberately not passed as `agent_name=`: that writes `channel_agent_name`, a pin. Upstream #7445 validates only the thread-create `assistant_id` field and the manager sends none, so there is no 422 path. `test_channel_thread_agent_metadata.py` green.
 
 ## Patch #150
 
@@ -2812,6 +2982,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_channel_missing_thread_heal.py` (only this thread's 404 matches; streaming run on a deleted thread heals, retries, re-records the agent (#149) and tells the person with no generic error; retries only once; a refused re-registration retries on the fresh thread and delivers there; another 404 is not healed; an unattended fire heals without a notice; the `runs.wait` path heals; another owner's thread is not healed and gets no notice on either path; the retry does not carry the deleted thread's `/agent use` pin on either path; a 404 while loading the agent pin heals before the run; `forget_thread` drops every cache; the DELETE route evicts the caches and still succeeds without a channel service).
 - Delete-when: upstream re-verifies a channel binding when a run reports its thread missing.
 - Upstream status: generic-upstreamable.
+- Sync 2026-10-25: kept on upstream #7104's structure: `_stream_healing_missing_thread` wraps the stream (with a per-frame `_note_run_confirmed`), and the `runs.wait` heal sits after upstream's admitted-conflict, busy and stale-pin branches, followed by upstream's `_note_run_confirmed` and reused-run handling. Rebinding stays by overwrite (`_create_thread` -> `_store_thread_id`, never upstream's insert-if-absent claim). The retry keeps the SAME Idempotency-Key and keyed human message id (the headers and input of `stream_kwargs`/`run_kwargs` are reused; only config and context are resolved again); verified that upstream refuses a missing thread before admission (`require_permission(owner_check, require_existing)` 404s before the handler, and `start_run` re-checks before `create_or_reject` records the key), so the keyed retry is admitted. A successful heal on the same id, and #90's fallback to a fresh thread in `_ensure_thread_registered`, now call upstream #7357's `on_thread_replaced(old)` (`_notify_channel_thread_replaced`). Tests (`test_channel_missing_thread_heal.py`): `test_the_retry_keeps_the_messages_idempotency_key_and_message_id` (stream and wait, same id and fresh thread), `test_a_healed_thread_tells_the_adapter_the_old_one_was_replaced`, `test_the_gateway_refuses_a_missing_thread_before_admission_so_the_keyed_retry_is_admitted` (real `start_run` and `RunManager`).
 
 
 ## Patch #151
@@ -2824,6 +2995,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_channel_closing_note_delivery.py` (the three Dima runs' messages with verbatim AI texts are recovered; the two atlas-ashish runs are not; short real answers, a 160+ character note, a three-line note, no substantive earlier text, a previous turn's text, a clarification are left alone; hidden control messages and list content blocks; three silent poll endings after 260 characters of narration stay silent on both paths; end to end through the streaming Telegram path with Chronos reporting the delivered text, the interactive path unchanged, and the `runs.wait` path).
 - Delete-when: upstream delivers the run's substantive output rather than its last AI message, or playbook prompts never end on a note (citizen fix DIM-F1 removes Dima's trigger, not the class).
 - Upstream status: argus-specific (unattended channel delivery is #30/#45).
+- Sync 2026-10-25: also applied to upstream #7104's reused-run result (`_admitted_turn`), so a redelivered message that joins an admitted run gets the same recovery.
 
 ## Patch #152
 
@@ -2835,6 +3007,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_channel_tool_call_markup.py` (the verbatim atlas-vipin, atlas-nicholas `function=` and atlas-quinten replies strip to nothing; Claude, plain Qwen, chat-template and Kimi forms; text around markup kept; prose mentions, fenced and indented examples, prose after an opener, a chat-template line, a brief and other JSON untouched; an unclosed opener dropped only before call-shaped content; JSON tool-call blobs only on unattended runs; the unattended and interactive decision tables; end to end: the Saturday-night poll sends nothing and reports failed, a brief with trailing markup is sent without it, an interactive chat gets the notice, the `runs.wait` path refuses too).
 - Delete-when: upstream refuses or strips unparsed tool-call text in the final answer (or the model runtime stops emitting it).
 - Upstream status: generic-upstreamable (any IM channel delivery).
+- Sync 2026-10-25: also applied to upstream #7104's reused-run result (`_admitted_turn`).
 
 ## Patch #153
 
@@ -2844,8 +3017,9 @@ carry budget ledger.
 - Intent: for a `bash` result with a non-zero exit marker (`Exit Code: N`, `Command exited with code N`, `exit=N`), `normalize_tool_message` ran the shared keyword rules over the whole output. The output is whatever the command printed, so any "500", "401", "unexpected error", "not installed" or "rate limit" in it graded the bash tool itself: `internal`, `auth` and `config` are `recoverable_by_model: false` with `stop`, and ToolProgressMiddleware blocks the tool for the rest of the run on the first one. atlas-marko 2026-10-20 06:28 CEST (run bca67986, seq 114): a node script exited 1 and echoed its own minified source, which contains `mrr>500?'Medium'`; bash was blocked at seq 115 and the model retried it 22 times (80 LLM calls instead of 22 to 39, 4.45M tokens). A non-zero exit is now graded by the code alone: 126 (not executable) `permission`, 127 (command not found) `not_found`, every other code the new `command_failed` category (`recoverable_by_model: true`, `try_alternative`), so repeated failures stay WARNED with a command hint ("Read its error output and change the command") and never block bash. A timeout (124, the sandbox's hard timeout and `timeout(1)`) is `command_failed` too: as `transient` it was not model-recoverable, so four failed commands and then a silent `timeout 30 cmd` blocked bash. Only the trailing exit marker counts (as `sandbox.tools._BASH_EXIT_MARKER_TAIL_RE`): an earlier `exit=0` or `Exit Code: 0` line in the output no longer grades a failed command as a success. This is the one exit-code table and `COMMAND_FAILED_ERROR_TYPE` is defined only here; #143's re-grade trusts it. `command_failed` joins `TOOL_RESULT_ERROR_TYPES`, so progress events record it instead of `unknown`. Results without an exit marker are unchanged: a clean exit stays a success whatever it prints, and the tool's own `Error:` replies (a sandbox that would not start, an exception) keep the keyword rules. Other tools are unchanged. The open #143 (`tool_progress.cause_aware_blocking`, webfuse-com/deer-flow PR 115) re-grades bash the same way inside ToolProgressMiddleware behind a switch; this fixes the shared classifier for every consumer, switch or not.
 - Files: `agents/middlewares/tool_result_meta.py`, `agents/middlewares/tool_progress_middleware.py` (the `command_failed` hint).
 - Tests: `backend/tests/test_tool_result_meta_shell_exit.py` (the exact seq 114 output is `command_failed`, not internal, and the next bash call runs; keywords in failed-command output never grade it; 126/127 keep their meaning and 124 is `command_failed`; four failures and a silent timeout do not block bash; only the trailing marker counts; `bash_tool`; a clean exit printing "500" is a success; a tool-level `Error:` keeps the keyword rules; `web_fetch` still grades HTTP 500 as internal; repeated failures get the command hint). `test_tool_result_meta.py`, `test_tool_progress_middleware.py`, `test_sandbox_audit_middleware.py` unchanged and green.
-- Delete-when: upstream grades shell results by exit code rather than by output keywords.
+- Delete-when (since 2026-10-25): upstream's bash-exit grading takes precedence over the `Error:`-prefix and JSON-error branches and maps 126/127 (send as a follow-up PR to #7271).
 - Upstream status: generic-upstreamable (any coding run whose failing output prints a status-like number hits it).
+- Sync 2026-10-25: THINNED onto upstream #7271 (2f0cd407f): one exit parser, upstream's `deerflow.utils.bash_exit.bash_exit_status` (before the merge both parsers coexisted and upstream's `failed_bash` branch was unreachable behind ours). Removed: `_SHELL_EXIT_CODE_RE` and the `exit=N` marker form (no producer emits it); a trailing `Command exited with code N` after other output is no longer a marker (upstream accepts it only as the whole body, the only shape providers emit). Kept as our delta: upstream's `failed_bash` branch moved FIRST (before the tool-status, `Error:`-prefix and JSON-error branches) and graded by `_shell_exit_meta(marker)`: 126 permission, 127 not_found, else `command_failed` (`COMMAND_FAILED_ERROR_TYPE`, name kept for #143) with its progress hint. Source is upstream's `content_analysis` (was `tool_return`; no consumer distinguishes). The `exit_code` meta key is still written because #143's `regrade_tool_meta` reads it (`int()` only for codes of at most 20 characters, upstream's bounded-digits concern, else -1); when #143 is dropped, the key and `ToolResultMeta.exit_code` can go too. Pre-stamped meta now gets upstream's legacy-checkpoint repair (a `content_analysis` success on a failed bash is re-graded) and still `_sync_message_status` (#73). Tests: upstream's `test_bash_nonzero_exit_marker_is_a_recoverable_error` and `..._does_not_classify_arbitrary_stdout_as_an_auth_error` reconciled to `command_failed` plus `exit_code`; ours: the `exit=9`/`exit=3` cases replaced by producer shapes, and a tail `Command exited with code 2` is pinned as output (`test_tool_result_meta.py`, `test_tool_result_meta_shell_exit.py`).
 
 
 ## Patch #154
@@ -2866,10 +3040,12 @@ carry budget ledger.
 
 - Class: config-expressed (follows `prompt_cache.durable_context_volatile_at_tail` and `volatile_tail_models`, #125/#147; no new switch).
 - Intent: `ToolReceiptMiddleware` inserts its hidden receipt ledger right after the system prompt. The ledger is a 2,000-character window over the newest receipts ("older receipts omitted"), so it changes on every model call, and every change made SGLang's radix cache recompute the whole conversation. The lead renders it only while a subagent result is in the turn (`delegation_only`); subagents render it always. atlas-nicholas thread 4447dd29 (2026-10-23, Ariadne): after a `task` returned, every lead call re-read 40-70k tokens (consecutive inputs first differ at message 2, the ledger, from 16:20 to 16:27 CEST), and the subagent's first-token time grew from 0.7 s to 6.4 s as its uncached tail grew to 60k. #125 moved the durable-context parts to the tail but not this ledger. Now a chain whose model has the tail layout inserts the ledger at the end of the request, before a trailing user message (the shared `message_utils.insert_at_tail`, which `DurableContextMiddleware` now uses too). Other models keep the head layout their cloud cache extends.
-- Files: `agents/middlewares/tool_receipt_middleware.py` (`at_tail`), `agents/middlewares/message_utils.py` (`insert_at_tail`), `agents/middlewares/durable_context_middleware.py` (uses it), `agents/middlewares/tool_error_handling_middleware.py` (`receipts_at_tail`; the subagent builder reads its own model's layout), `agents/lead_agent/agent.py` (`build_middlewares` asks for the tail for a tail-layout model), `agents/middlewares/AGENTS.md`.
+- Files: `agents/middlewares/tool_receipt_middleware.py` (`at_tail`), `agents/middlewares/message_utils.py` (`insert_at_tail`), `agents/middlewares/durable_context_middleware.py` (uses it), `agents/middlewares/tool_error_handling_middleware.py` (`receipts_at_tail`; the subagent builder reads its own model's layout), `agents/lead_agent/agent.py` (`build_middlewares` asks for the tail for a tail-layout model).
+- Guidance (carried in `agents/middlewares/AGENTS.md` entry 15 until 2026-10-25, cut there for the chain byte budget): the ledger is inserted after the leading system messages, or, when the chain's model has the cache-stable tail layout (`prompt_cache.durable_context_volatile_at_tail` + `volatile_tail_models`), at the end of the request before a trailing user message, because its sliding window changes on every call.
 - Tests: `backend/tests/test_tool_receipt_ledger_tail.py` (default stays after the system prompt; tail goes after the newest tool result; a trailing user request stays last; with 30 then 31 receipts the prompt before the ledger is identical while the ledger slid; the head layout changes the prefix, the behaviour removed; the subagent builder follows its model's layout and `build_middlewares` passes `receipts_at_tail` only for a tail-layout model). `test_tool_receipt_middleware.py`, `test_durable_context_volatile_tail.py`, `test_prompt_cache_per_model.py` unchanged and green.
 - Delete-when: upstream keeps run-volatile context out of the prompt prefix (with #125).
 - Upstream status: generic-upstreamable (same reasoning as #125).
+- Sync 2026-10-25: code unchanged (`receipts_at_tail` is still set only inside `_build_runtime_middlewares`; upstream #7355's `ModelLengthFinishReasonMiddleware` has only `after_model`, so it does not touch the ledger layout). `agents/middlewares/AGENTS.md` is upstream's text plus one pointer line ("Argus carry: PATCHES.md #68-#156 ..."); this patch's sentence moved into the Guidance line above.
 
 
 ## Patch #156
@@ -2878,10 +3054,12 @@ carry budget ledger.
 
 - Class: config-expressed (`read_before_write.bash_reads_mark`, default false keeps upstream's read_file-only rule).
 - Intent: the read-before-write gate (#3857) accepts only a `read_file` mark, so an agent that inspected a file with `sed -n '203,230p'` and then wrote a `str_replace` was blocked ("you have not read its current version"), and the whole edit call was thrown away. atlas-nicholas thread 4447dd29 (2026-10-23 15:55 CEST): a 97 s model call (6,265 reasoning tokens, a three-part edit to a 1,891-line connector), then three ranged read_file calls and the same edit again. With the switch, a successful bash call that only prints files stamps `deerflow_read_marks` for each file it printed, hashed under the same per-path gate locks (taken in sorted order) the way a ranged read_file stamps the full-file hash. Only `cat`, `head`, `tail` and `sed -n '<ADDR[,ADDR]>p'` count (`sandbox.command_classify.files_shown_by_inspection`); every other stage must grade `inspection` under #81, except a plain `echo`/`printf` separator without substitution or redirection; relative paths resolve only after an absolute `cd` in the same command; at most eight files. `grep` shows matching lines, not the file, and does not count. A failed call stamps nothing, a later change still blocks, and `classify_bash_command` itself is unchanged.
-- Files: `sandbox/command_classify.py` (`files_shown_by_inspection`), `agents/middlewares/read_before_write_middleware.py`, `config/read_before_write_config.py`, `agents/middlewares/AGENTS.md`.
+- Files: `sandbox/command_classify.py` (`files_shown_by_inspection`), `agents/middlewares/read_before_write_middleware.py`, `config/read_before_write_config.py`.
+- Guidance (carried in `agents/middlewares/AGENTS.md` entry 13 until 2026-10-25, cut there for the chain byte budget): with `read_before_write.bash_reads_mark` (default off) a successful pure-read `bash` call (`cat`, `head`, `tail`, `sed -n '<range>p'` on absolute paths or after an absolute `cd`; plain `echo` separators allowed; `sandbox.command_classify.files_shown_by_inspection`) stamps `deerflow_read_marks` (a list of `{path, hash}`) under the same per-path locks, taken in sorted order; the gate reads both mark keys.
 - Tests: `backend/tests/test_read_before_write_bash_reads.py` (the thread's own command verbatim; sed ranges incl. regex addresses and `$`; cat/head/tail; cd chains; grep, wc, sed substitutions, `-e`, `-i`, redirection, substitution, execution and unknown directories excluded; the cap; an edit after a sed range passes; off by default; a later change blocks; failed calls stamp nothing; a missing file is skipped; the async path). `test_command_classify.py` and the three `test_read_before_write_*` suites unchanged and green.
 - Delete-when: upstream's gate accepts shell reads, or agents stop inspecting with shell commands before editing.
 - Upstream status: generic-upstreamable (any agent that inspects with the shell hits the block).
+- Sync 2026-10-25: code unchanged and its tests pass; this patch's sentence left `agents/middlewares/AGENTS.md` (upstream's text plus one pointer line, for the chain byte budget) and moved into the Guidance line above.
 
 ## Patch #157
 
@@ -2894,9 +3072,105 @@ carry budget ledger.
 - Delete-when: upstream fetches inbound Telegram files with download-sized timeouts and a retry, and runs slow inbound handlers off the webhook.
 - Upstream status: generic-upstreamable for the timeouts and retry (any webhook or polling stack fetching a large file hits PTB's 5 s default); the voice parts follow #62.
 
+## Patch #160
+
+**Patch #160 - Only a person picks a subagent's model: `task` has no model-visible `model_name`** (2026-10-25)
+
+- Class: argus-edit (`tools/builtins/task_tool.py`).
+- Intent: upstream #7249 (0baa99ca9) gave `task` a model-visible `model_name` argument, so the lead model could choose the child model itself. Decision d2 (Nicholas, 2026-10-25): only a person picks a subagent's model. The parameter and its docstring entry are removed from `task_tool`, and the child model comes from the run context only: the person's web UI selection (`subagent_model_name`, authorized by `authorize_selected_model`), else the subagent's configured or inherited model. The per-thread UI controls keep working through the context. Side effect: upstream's `bind_selected_task_model` (`models/selection.py`, called in `agent.py`) finds no `model_name` field and leaves the tool unchanged, so the model is not told which child model the person chose.
+- Files: `backend/packages/harness/deerflow/tools/builtins/task_tool.py`.
+- Tests: `backend/tests/test_lead_agent_model_resolution.py::test_bound_task_schema_has_no_model_name` (with and without a UI selection), `backend/tests/test_task_tool_core_logic.py::test_task_tool_takes_no_model_choice_from_the_model` (new) plus upstream's three model-choice tests re-expressed with `runtime.context["subagent_model_name"]`, `backend/tests/test_tool_args_schema_no_pydantic_warning.py::test_task_tool_description_is_optional_but_discoverable` (no `model_name` property), `backend/tests/test_model_selection.py::test_selected_model_stays_out_of_the_task_schema_and_the_shared_tool` (replaces upstream's schema test).
+- Delete-when: Nicholas reverses d2, or upstream gates the model's child-model choice on a person's selection.
+- Upstream status: none (product decision; an upstream switch for model-chosen child models would replace it).
+
+## Patch #161
+
+**Patch #161 - Settings > Models hides upstream's provider presets** (2026-10-25)
+
+- Class: argus-edit (frontend only).
+- Intent: upstream #6757 (e98179a9d) turned Settings > Models into a provider picker with presets (OpenAI, Anthropic, DeepSeek, Qwen, Kimi, Zhipu, MiniMax, ...): an admin pastes one API key and the model is live in every selector without a restart. Every Atlas owner is an admin of their gateway, so a preset is a one-click direct provider route outside LiteLLM and its spend tracking. Decision d10 (Nicholas, 2026-10-25): the editor offers only the custom OpenAI-compatible endpoint (point it at LiteLLM), as before #6757, and a new model starts on it. A model already saved on a preset keeps its provider in the list so it stays editable. The backend API is unchanged (a UI gate only); upstream's admin Users page (#6641) stays visible.
+- Files: `frontend/src/core/models/provider-presets.ts` (NEW: `MODEL_PROVIDER_PRESETS_VISIBLE = false`, `offeredModelProviders`, `draftOnOfferedProvider`), `frontend/src/components/workspace/settings/model-settings-page.tsx` (EDITED: the editor gets the offered providers; a new draft starts on the first one).
+- Tests: `frontend/tests/unit/components/workspace/settings/model-provider-presets.dom.test.tsx` (NEW: gate closed, helpers, Add model offers and saves only the custom endpoint, a preset model stays editable), `frontend/tests/unit/components/workspace/settings/model-settings-page.dom.test.tsx` (upstream's, EDITED: mocks the gate open so its preset cases still run).
+- Delete-when: Argus decides owners may add direct provider routes, or upstream gates presets behind a config flag we can set off.
+- Upstream status: none (an upstream config flag for presets would replace this).
+
+## Patch #162
+
+**Patch #162 - A message sent while a run streams is queued; the tab title shows a running run** (record back-filled 2026-10-25; landed 2026-08-19 as bb13d911b, the title glyph revised by f2a855b43 under #65)
+
+- Class: argus-edit (frontend, plus one backend default).
+- Intent: upstream's chat input refuses a message while a run streams ("please wait"). Here a non-empty submit during streaming is queued (`useThreadQueue`, shown by `QueuedMessages` above the input) and sent with `sendMessage` when the run ends (`processQueueNext`); an empty submit still stops the run. Only what the queue can carry is queued: inline references, explicit conversation references and staged project attachments are resolved by `submitThreadMessage`, which a queued send bypasses, so with any of those the "please wait" stands; conversation quotes ride along as hidden metadata. The tab title reads "<brain glyph> [Running] <title>" while the thread's run is loading (`formatThreadDocumentTitle`; #65 chose the glyph). The same commit turned follow-up suggestions off by default (`SuggestionsConfig.enabled` default false) and added `ask_clarification` to the skill policy's always-available builtins; that line retired 2026-10-25 with `skills/tool_policy.py` (upstream #6935, see #53).
+- Files: `frontend/src/components/workspace/chats/queued-messages.tsx` (NEW), `frontend/src/core/threads/use-thread-queue.ts` (NEW), `frontend/src/components/workspace/input-box.tsx` (`onQueue`), `frontend/src/components/workspace/input-box-helpers.ts` (`getInputSubmitAction`: stop only when the box is empty), `frontend/src/components/workspace/chats/chat-page.tsx` and `frontend/src/app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` (queue state, `processQueueNext`, `onQueue`), `frontend/src/components/workspace/thread-title.tsx` (`formatThreadDocumentTitle`), `backend/packages/harness/deerflow/config/suggestions_config.py` (default).
+- Tests: `frontend/tests/unit/components/workspace/input-box-helpers.test.ts` ("keeps non-empty streaming submits as messages so they can be queued"), `frontend/tests/unit/components/workspace/thread-title.test.ts` (the running title). The queue itself has no unit test.
+- Delete-when: upstream queues (or steers) a message sent while a run streams and marks a running run in the document title; the suggestions default can go once every stack config sets `suggestions.enabled` itself.
+- Upstream status: none sent (generic-upstreamable UI feature).
+- Sync 2026-10-25: re-applied on upstream #7249's chat page and agent chat page, unchanged in behaviour. A dequeued message is sent with `sendMessage` directly, so it skips upstream's new model-choice resolution ("use X for this turn") as well as the knowledge-scope snapshot and the project pre-create (#122), as it skipped the latter two before. The welcome-layout effect this commit had dropped from the agent page is back (see #122).
+
+## Patch #163
+
+**Patch #163 - `browser_get_logs`, and `cdp_url: sandbox` attaches to the thread's sandbox browser** (record back-filled 2026-10-25; landed 2026-08-16 as 61aaa4644 and 1d109b9ba)
+
+- Class: argus-edit (`community/browser_automation/`, `app/gateway/routers/browser.py`).
+- Intent: (a) `browser_get_logs(severity="error"|"warning"|"all", limit=20, clear=False)` returns the browser session's recent console messages and uncaught page errors, so an agent testing a page it built can see its JavaScript errors; the session keeps ring buffers (200 console messages, 100 page errors) bound on every page it opens (`_bind_page_events`, `get_logs`). (b) `cdp_url: sandbox` (or `auto`) in the browser tool config attaches Playwright to the thread's own AIO sandbox browser: `_resolve_cdp_url` looks the thread's sandbox up through the sandbox provider (acquiring one when the thread has none) and uses its URL, and those two values also set `allow_unguarded_cdp`. The tools, `navigate_and_capture` and the live browser stream route resolve it the same way; any other value is used as before.
+- Files: `backend/packages/harness/deerflow/community/browser_automation/tools.py` (`browser_get_logs_tool`, `_resolve_cdp_url`), `backend/packages/harness/deerflow/community/browser_automation/__init__.py` (export), `backend/packages/harness/deerflow/community/browser_automation/session.py` (log buffers), `backend/app/gateway/routers/browser.py` (stream route).
+- Tests: none. Argus lists the tool in acropolis `docker/deerflow-backend/overlay-tools.json` and the Agora tool docs.
+- Delete-when: upstream ships a browser console-log tool and a sandbox-browser CDP mode.
+- Upstream status: none sent (generic-upstreamable; upstream has neither).
+- Sync 2026-10-25: kept beside upstream #6913/#6731's atomic no-overwrite screenshot publish (`_publish_screenshot_no_overwrite`).
+
+## Patch #164
+
+**Patch #164 - The asyncpg application URL drops libpq's `options`** (record back-filled 2026-10-25; landed 2026-08-27 as f04176f55)
+
+- Class: generic-upstreamable.
+- Intent: each Argus stack's Postgres DSN carries `options=-csearch_path=deerflow_<slug>` (libpq) so the psycopg checkpointer lands in the stack's schema. The same DSN feeds the application ORM engine, and asyncpg rejects `options` as an unexpected keyword argument. `strip_asyncpg_only_options(url)` drops the `options` pairs and keeps every other pair exactly as written (no `parse_qsl`/`urlencode`, which would turn a literal `+` into a space); `DatabaseConfig.app_sqlalchemy_url` applies it to the postgres URL. The schema reaches asyncpg through `server_settings` instead.
+- Files: `backend/packages/harness/deerflow/persistence/postgres_schema.py` (`strip_asyncpg_only_options`), `backend/packages/harness/deerflow/config/database_config.py` (`app_sqlalchemy_url`).
+- Tests: `backend/tests/test_postgres_schema_helper.py` (2 cases), `backend/tests/test_persistence_scaffold.py::TestDatabaseConfig::test_app_sqlalchemy_url_postgres_strips_libpq_options`.
+- Delete-when: upstream's `app_sqlalchemy_url` (or its engine factory) strips libpq-only query options for asyncpg. Upstream #6917 fixes the opposite direction (it strips `+asyncpg` for psycopg) and does not cover this.
+- Upstream status: none sent (small PR candidate).
+- Sync 2026-10-10: the merge had lost its imports; rebuilt without `parse_qsl` (see the header's 2026-10-10 line).
+
+## Patch #165
+
+**Patch #165 - The configured built-in tools are listed read-only** (record back-filled 2026-10-25; landed 2026-08-16 as 5312b0123)
+
+- Class: argus-edit (one endpoint in an upstream router, a fork-owned component, small frontend edits).
+- Intent: the web UI lists MCP servers but not the tools configured under `config.yaml` `tools:` (bash, file, browser, the Argus overlay tools). `GET /api/mcp/system-tools` returns each configured tool's name, group and the first paragraph of its description (resolved from its provider, else "Tool provider: <use>"), and the frontend shows them read-only. It began on Settings > Tools; since the 2026-09-23 sync (upstream #5468 deleted that page) it renders under the Capability Center's plugin gallery (`SystemToolsSection`).
+- Files: `backend/app/gateway/routers/mcp.py` (`SystemToolResponse`, `SystemToolsResponse`, `get_system_tools`), `frontend/src/core/mcp/{api,hooks,types}.ts` (`useSystemTools`), `frontend/src/components/workspace/capabilities/system-tools-list.tsx` (NEW), `frontend/src/components/workspace/capabilities/plugin-gallery.tsx` (renders it), `frontend/src/core/i18n/locales/{types,en-US,zh-CN}.ts` (`settings.tools.systemToolsTitle`, `systemToolsDescription`).
+- Tests: none of its own; `frontend/tests/unit/components/workspace/capabilities/mcp-plugin-manager.dom.test.tsx` mocks `useSystemTools` and the two strings.
+- Delete-when: the Capability Center lists configured built-in tools itself, or Argus no longer wants the list.
+- Upstream status: none sent.
+- Sync 2026-10-25: the router's import conflict is resolved as a union with upstream #7207 (`get_config` plus `forget_unconfigured_mcp_oauth_tokens`).
+
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
+
+**Dropped at the 2026-10-25 upstream sync (base `65a18618` -> `66f00e7b8`):**
+
+- **#58 runtime honouring of the agent-source policy**: upstream #6935 deleted
+  skill tool enforcement (`skills/tool_policy.py`, `SkillToolPolicyMiddleware`),
+  so there is no skill filter left to switch off. #53's ceiling and #43's
+  schedule list live on in the fork-owned `tools/agent_tool_policy.py`.
+- **#124 sandbox prewarm (reclaim a known sandbox)**: decision d1, upstream
+  #6998's `sandbox.prewarm` (speculative acquire for a thread without a
+  sandbox) replaces it under the same key.
+- **#132 prewarm for playbook fires**: decision d1, with #124;
+  `sandbox.prewarm_playbook_runs` loads as an ignored extra until
+  atlas-template drops it.
+- **#93's MCP catalog half** (periodic schema refresh, last-good retention of
+  failed servers): decision d3, upstream #6734/#6795 per-server discovery. The
+  receipt half stays as #93.
+- **#47 per-lead-model summarization overrides**: decision d8, upstream config
+  (`summarization.model_name: null`, a fraction trigger, per-model
+  `context_window`); `per_model` is accepted and ignored with a warning.
+- Thinned in the merge (sections kept): #37's empty-final retry (upstream
+  #5080), #44's httpx pin (upstream `UrlRedactionFilter`), #53's subagent half
+  and the `tool_policy.source` switch, #57's prompt guidance (upstream #6935),
+  #65's chat UI half (decision d9) with the unledgered empty context-badge hide
+  (c6851f981) and the unledgered browser-panel removal (408b037d5), #89's
+  brand-mark test ids, #97's 4-most-recent cap and reducer edit (upstream
+  #6828/#6829), #153's exit parser (upstream #7271).
 
 **Dropped at the 2026-10-10 upstream sync (base `fc26204d` -> `65a18618`):**
 
@@ -2913,7 +3187,7 @@ carry budget ledger.
 - **#67 frontend rejoin hook** (`active-run-rejoin.ts`): upstream #5536. The
   `owningRunIsActive` fallback stays under #67.
 - **Settings > Tools page** (`tool-settings-page.tsx`, fork commit 5312b012,
-  never had its own number): upstream #5468 moved tool management into the
+  numbered #165 at the 2026-10-25 sync): upstream #5468 moved tool management into the
   Capability Center and deleted the page. The read-only system-tools list now
   renders under the plugin gallery from the fork-owned
   `capabilities/system-tools-list.tsx`; `/api/mcp/system-tools` and
@@ -3047,13 +3321,14 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 
 **Patch #97 - view_image: fit the many-image limits** (2026-09-28, tightened 2026-09-30)
 
-- Class: argus-edit (`view_image_middleware.py`, two helpers and three call-site lines; `merge_viewed_images` in `thread_state.py`); generic-upstreamable.
+- Class: argus-edit (`view_image_middleware.py`, two helpers and three call-site lines; until 2026-10-25 also `merge_viewed_images` in `thread_state.py`); generic-upstreamable.
 - Intent: `ViewImageMiddleware` re-sends every image the thread has ever viewed on each `view_image` call, and Anthropic rejects a request carrying more than 20 images when any is over 2000 px on a side (Bedrock 2000, Vertex 2576). A visual-review thread crossed 20 and then failed with a 400 on every later view (atlas-nicholas thread 0e223809, 22 viewed images, seven 1600x2036..2239 screenshots and a 1600x3648 infographic). Now each injected image is downscaled so its long edge is at most 2000 px (opaque results as JPEG q85, because resampling defeats PNG compression; transparent ones stay PNG), and the description line gives the original size. Only the 20 most recent viewed images are re-sent, with a line saying how many earlier ones were left out. The reducer moves a re-viewed image to the end, so dict order is view recency. Size and SHA-256 checks still run on the original bytes, before the downscale. The patch #20 describe path gets the same cap and downscale. Replayed on the failing thread's images through LiteLLM: unpatched 400, patched accepted, payload 8.3 MB to 4.4 MB. **Tightened 2026-09-30** to 4 images at a 1568 px long edge (Anthropic's recommended edge): atlas-nicholas thread 60e3181f re-sent 24 screenshots (35 MP, ~37k vision tokens) on local-qwen, whose SGLang image preprocessing (PIL backend, CPU) outlived the 600 s request timeout on every call, and since injection follows the last `view_image` turn every new user message re-sent them and timed out the same way. A model call that carried image context and timed out (`APITimeoutError`, `ReadTimeout`, ... anywhere in the cause chain) is now retried once without the images and with a text note saying why, so an oversized image context degrades to text instead of repeating the timeout; any other error, or a timeout on a call without images, propagates unchanged.
 - Pillow is transitive (markitdown[all] via pdfplumber and python-pptx). If it disappears, images pass through unchanged and `TestManyImageLimits` fails.
 - Tests: `TestManyImageLimits` (downscale and label, unchanged under the limit, JPEG vs transparent PNG, most-recent cap, re-view order, describe path) and `TestTimeoutRetryWithoutImages` (sync, async with a wrapped cause, non-timeout, no images) in `backend/tests/test_view_image_middleware.py`.
-- Delete-when: upstream caps or resizes view_image context (watch upstream #5799/#5824, which touch the same reader).
+- Delete-when (since 2026-10-25): upstream downscales injected images to a long-edge limit and retries a timed-out image-carrying call without the images.
 - Upstream status: candidate for an upstream PR.
 - Sync 2026-10-10: re-applied on upstream's blob-backed view_image (#6160/#6159), host-path binding (#5824) and sandbox authorization (#5799); the timeout retry without images is wired into the sync and async paths after the authorization check. Not redundant: upstream changed where image bytes live, not how many are sent or at what size.
+- Sync 2026-10-25: THINNED onto upstream #6828/#6829 (8ca2910b3, 4fc0d8fb3: a per-request budget of the 4 newest images within 28 MiB and a recency reducer). Dropped: our `_MAX_CONTEXT_IMAGES`, `_recent_viewed_images()`, the "N earlier viewed image(s) not re-sent" line, the `merge_viewed_images` edit in `thread_state.py` (upstream's identical reducer taken; that file now carries only #101), and the tests `test_only_the_most_recent_images_are_resent`, `test_reviewing_an_image_moves_it_to_the_recent_end` and `TestMergeViewedImages.test_revisited_path_becomes_most_recent` (upstream's `test_updated_key_moves_to_end` covers it). Kept: the 1568 px long-edge downscale (`_fit_image_edge`, JPEG q85 opaque, PNG transparent; works on Pillow 13.0.0), applied inside upstream's admission loop after the size and digest checks with the label appended to upstream's bullet (upstream's byte budget still counts the original size, which is conservative), and the timeout retry without images (`_is_timeout`, `_without_images_after_timeout`), unchanged.
 
 ## Patch #98
 
@@ -3065,6 +3340,7 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `backend/tests/test_forced_stop_synthesis.py` (real `create_agent` graphs, incl. the `ThreadState` reducer; fallback on raise and on blank; no `run_id`; stoppers skip the synthesis; todo guard), `backend/tests/test_lead_agent_model_resolution.py` (placement before the stoppers, kill switch)
 - Delete-when: upstream's hard stops make a synthesis call of their own.
 - Upstream status: candidate (the promise in upstream's own notice text is the bug).
+- Sync 2026-10-25: #37 now retries only filler finals and leaves empty ones to upstream #5080's model-boundary retry, which an empty synthesis never reaches (this middleware replaces it with the notice first). So `ForcedStopSynthesisMiddleware` retries an empty synthesis once itself (`_needs_retry`: no visible text, attended run, in the sync and async wrap); a filler synthesis still gets #37's retry, and unattended runs get neither, as before. User-visible behaviour is unchanged. Tests: `test_forced_stop_synthesis.py` (+ filler synthesis retried once, unattended blank synthesis not retried, empty synthesis retried once here).
 
 ## Patch #99
 
@@ -3093,6 +3369,7 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Tests: `test_replacement_*` and `test_parallel_reacquires_in_one_step_reduce_to_one_value` (a real `BinaryOperatorAggregate` channel, plus `test_parallel_overwrites_in_one_step_still_raise_upstream` pinning why) in `backend/tests/test_thread_state_reducers.py`; `test_wrap_tool_call_replaces_a_repaired_checkpoint_sandbox` and `test_network_prompt_preserves_repaired_checkpoint_replacement` in `backend/tests/test_sandbox_middleware.py`.
 - Delete-when: upstream stops using `Overwrite` for tool-call sandbox writes, or LangGraph accepts identical `Overwrite` values in one super-step.
 - Upstream status: candidate for an upstream PR (the bug is upstream's; the fix is self-contained).
+- Sync 2026-10-25: unchanged; with #97's reducer edit and #124/#132 gone, this patch is the only fork carry left in `thread_state.py` (`merge_sandbox`/`replaces`) and in `sandbox/middleware.py` (`replaces` in `_attach_sandbox_update`).
 
 ## Patch #102
 
@@ -3127,4 +3404,5 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Delete-when: the pinned sandbox image honours `no_change_timeout` and runs shell commands without a terminal stdin (bump the digest in acropolis VERSIONS.md, re-check, then drop the wrapper and the guidance).
 - Upstream status: none (the wrapper works around our pinned image; upstream's own fix is the newer image).
 - Sync 2026-10-10: commands that run `shopt`, `alias` or `enable` are sent unwrapped: bash parses a brace group whole, so an `extglob` pattern or an alias defined earlier in the same command would no longer parse (upstream's new tests caught it). Upstream keeps terminal stdin only for its Lark broker shim, which Argus does not run. Tests: `test_parse_time_builtins_are_sent_as_is`; upstream's stdin and warm-pool tests expect the wrapped command.
+- Sync 2026-10-25: kept, and `_noninteractive` now also hosts #1 (history expansion and the long-line guard: base64 `eval` heredoc for a body with `!` or a line over 2,000 bytes, and `_pane_refusal` in `_exec_shell` for what the pane would drop); see #1 for the measured limits. Upstream #6782 only makes `bash_tool` pass `bash_command_timeout` explicitly; AIO already got the same 600 s through the provider default (`aio_sandbox_provider.py` `_default_command_timeout`), so it still sends `hard_timeout` 600 / `no_change_timeout` 605, which the pinned image ignores, and the "about 120 s" guidance stays true.
 

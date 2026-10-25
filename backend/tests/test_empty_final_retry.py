@@ -4,7 +4,10 @@
   homed in the harness (was ``app.channels.manager._is_blank_text``).
 * ``app.gateway.pagination.mark_blank_final_ai_messages`` — the web-side
   display guard.
-* ``EmptyFinalRetryMiddleware`` — re-invoke the model once on a blank final.
+* ``EmptyFinalRetryMiddleware`` — re-invoke the model once on a filler-only
+  final (``.``, ``...``). Truly empty finals are upstream's model-boundary
+  retry (``LLMErrorHandlingMiddleware``, #5080); see
+  ``test_unattended_empty_response.py`` for how the two compose.
 """
 
 from __future__ import annotations
@@ -18,8 +21,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from app.gateway.pagination import mark_blank_final_ai_messages
 from deerflow.agents.middlewares.empty_final_retry_middleware import (
     EmptyFinalRetryMiddleware,
-    _is_blank_final,
+    _is_filler_final,
     _is_unattended,
+    is_unattended_run,
 )
 from deerflow.utils.messages import NO_RESPONSE_MARKER, is_blank_text
 
@@ -77,24 +81,30 @@ def _response(messages):
     return SimpleNamespace(result=messages)
 
 
-class TestIsBlankFinal:
-    def test_blank_final_ai(self):
-        assert _is_blank_final(_response([AIMessage(content="")])) is True
-        assert _is_blank_final(_response([AIMessage(content="\n\n")])) is True
+class TestIsFillerFinal:
+    @pytest.mark.parametrize("content", [".", "...", "-", "…", [{"type": "text", "text": " . "}]])
+    def test_filler_final_ai(self, content):
+        assert _is_filler_final(_response([AIMessage(content=content)])) is True
+
+    @pytest.mark.parametrize("content", ["", "\n\n", "   ", []])
+    def test_empty_final_is_upstreams_to_retry(self, content):
+        # Upstream's model-boundary retry owns these (#5080); retrying here too
+        # sampled one blank up to four times.
+        assert _is_filler_final(_response([AIMessage(content=content)])) is False
 
     def test_real_final_ai(self):
-        assert _is_blank_final(_response([AIMessage(content="answer")])) is False
+        assert _is_filler_final(_response([AIMessage(content="answer")])) is False
 
-    def test_blank_but_has_tool_calls_is_not_final(self):
+    def test_filler_but_has_tool_calls_is_not_final(self):
         # A blank message carrying tool_calls is a normal intermediate turn.
-        msg = AIMessage(content="", tool_calls=[{"name": "bash", "id": "c1", "args": {}}])
-        assert _is_blank_final(_response([msg])) is False
+        msg = AIMessage(content=".", tool_calls=[{"name": "bash", "id": "c1", "args": {}}])
+        assert _is_filler_final(_response([msg])) is False
 
     def test_non_ai_last_message(self):
-        assert _is_blank_final(_response([HumanMessage(content="")])) is False
+        assert _is_filler_final(_response([HumanMessage(content=".")])) is False
 
     def test_empty_result(self):
-        assert _is_blank_final(_response([])) is False
+        assert _is_filler_final(_response([])) is False
 
 
 def _request(unattended=False, runtime="default"):
@@ -133,6 +143,11 @@ class TestIsUnattended:
         req = SimpleNamespace(runtime=SimpleNamespace(context={"unattended": False}))
         assert _is_unattended(req) is False
 
+    def test_runtime_helper_is_the_same_signal(self):
+        assert is_unattended_run(SimpleNamespace(context={"unattended": True})) is True
+        assert is_unattended_run(SimpleNamespace(context={})) is False
+        assert is_unattended_run(None) is False
+
 
 class TestEmptyFinalRetryMiddleware:
     def _req(self):
@@ -140,7 +155,7 @@ class TestEmptyFinalRetryMiddleware:
 
     def test_sync_retries_once_and_returns_nonblank(self):
         mw = EmptyFinalRetryMiddleware()
-        blank = _response([AIMessage(content="")])
+        blank = _response([AIMessage(content=".")])
         good = _response([AIMessage(content="real answer")])
         handler = MagicMock(side_effect=[blank, good])
         out = mw.wrap_model_call(self._req(), handler)
@@ -157,12 +172,21 @@ class TestEmptyFinalRetryMiddleware:
 
     def test_sync_retry_also_blank_returns_blank_no_loop(self):
         mw = EmptyFinalRetryMiddleware()
-        blank1 = _response([AIMessage(content="")])
-        blank2 = _response([AIMessage(content="   ")])
+        blank1 = _response([AIMessage(content="...")])
+        blank2 = _response([AIMessage(content=".")])
         handler = MagicMock(side_effect=[blank1, blank2])
         out = mw.wrap_model_call(self._req(), handler)
         assert handler.call_count == 2  # exactly one retry, never loops
         assert out is blank2
+
+    @pytest.mark.parametrize("content", ["", "\n\n"])
+    def test_sync_empty_final_is_left_to_upstream(self, content):
+        mw = EmptyFinalRetryMiddleware()
+        empty = _response([AIMessage(content=content)])
+        handler = MagicMock(side_effect=[empty])
+        out = mw.wrap_model_call(self._req(), handler)
+        assert handler.call_count == 1
+        assert out is empty
 
     def test_sync_no_retry_on_tool_call_turn(self):
         mw = EmptyFinalRetryMiddleware()
@@ -175,7 +199,7 @@ class TestEmptyFinalRetryMiddleware:
     @pytest.mark.asyncio
     async def test_async_retries_once_and_returns_nonblank(self):
         mw = EmptyFinalRetryMiddleware()
-        blank = _response([AIMessage(content="\n")])
+        blank = _response([AIMessage(content="…")])
         good = _response([AIMessage(content="real")])
         handler = AsyncMock(side_effect=[blank, good])
         out = await mw.awrap_model_call(self._req(), handler)
@@ -231,7 +255,7 @@ class TestUnattendedNeverRetries:
         # Regression guard for the flag plumbing: an explicit attended request
         # must keep the original retry-once behavior.
         mw = EmptyFinalRetryMiddleware()
-        blank = _response([AIMessage(content="")])
+        blank = _response([AIMessage(content=".")])
         good = _response([AIMessage(content="real")])
         handler = AsyncMock(side_effect=[blank, good])
         out = await mw.awrap_model_call(_request(unattended=False), handler)

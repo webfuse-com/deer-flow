@@ -11,6 +11,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -122,9 +123,8 @@ def _has_non_empty_token(value: object) -> bool:
 # (``load_codex_cli_credential``, ``_extract_claude_code_credential`` + ``is_expired``), which
 # stays the source of truth; keep the two in lockstep when the loader changes. The mirror is
 # deliberate: importing the loader could consume the one-shot
-# CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR handoff. Strictness differs on purpose in one
-# place -- doctor rejects a whitespace-only token that the runtime's truthiness check would
-# accept before failing at the provider.
+# CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR handoff. Both sides treat a whitespace-only token
+# as absent in every layout, so doctor accepts exactly the files the loader accepts.
 def _codex_auth_file_has_access_token(path: Path) -> bool:
     data = _load_json_object(path)
     if data is None:
@@ -589,7 +589,10 @@ def check_web_tool(config_path: Path, *, tool_name: str, label: str) -> CheckRes
             )
 
         free_providers = {
-            "web_search": {"ddg_search": "DuckDuckGo (no key needed)"},
+            "web_search": {
+                "ddg_search": "DuckDuckGo (no key needed)",
+                "youcom": "You.com (works with no key; YDC_API_KEY enables the full Search API)",
+            },
             "web_fetch": {"jina_ai": "Jina AI Reader (no key needed)", "crawl4ai": "Crawl4AI (self-hosted, no key needed)"},
             "image_search": {"deerflow.community.image_search.tools": "DuckDuckGo Images (no key needed)"},
         }
@@ -867,6 +870,10 @@ def check_env_file(project_root: Path) -> CheckResult:
 
 
 def main() -> int:
+    # Keep reporting usable on terminals and pipes with legacy encodings.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+
     project_root = Path(__file__).resolve().parents[1]
 
     # Load .env early so key checks work
@@ -973,4 +980,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Parsed here rather than inside main(): the unit tests call main() in-process
+    # under pytest, whose argv must not reach argparse.
+    parser = argparse.ArgumentParser(
+        prog="python scripts/doctor.py",
+        description=("DeerFlow Health Check (make doctor): checks system requirements, configuration, LLM provider, and optional components, then prints an actionable report."),
+    )
+    parser.parse_args()
     sys.exit(main())

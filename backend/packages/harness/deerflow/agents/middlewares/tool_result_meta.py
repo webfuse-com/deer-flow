@@ -19,6 +19,8 @@ from typing import Literal, get_args
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from deerflow.utils.bash_exit import BASH_TOOL_NAMES, bash_exit_status
+
 TOOL_META_KEY = "deerflow_tool_meta"
 PROGRESS_GUARD_ERROR_TYPE = "blocked_by_progress_guard"
 
@@ -128,23 +130,24 @@ _PAGE_CONTENT_TOOL_NAMES: frozenset[str] = frozenset({"web_fetch"})
 # never drift from the recoverable/next-action contract of its own category.
 _ATTRS_BY_ERROR_TYPE: dict[str, dict[str, object]] = {str(attrs["error_type"]): attrs for _keywords, attrs in _ERROR_RULES}
 
-# [argus patch #153] A shell command that exited non-zero is graded by its exit
-# code. Its output is whatever the command printed (source code, logs, an HTTP
-# body), so keywords in it say nothing about the bash tool: a node script that
-# echoed ``mrr>500?'Medium'`` read as ``internal``/stop and blocked bash for the
-# rest of the run (atlas-marko bca67986, 2026-10-20). Codes with a fixed meaning
-# keep it; every other code, a timeout (124) included, is a failed command the
-# model can change. This is the one table: ToolProgressMiddleware's #143
-# re-grade trusts it and imports COMMAND_FAILED_ERROR_TYPE from here.
+# [argus patch #153] A shell command that exited non-zero (upstream's
+# ``bash_exit_status`` marker) is graded by its exit code. Its output is whatever
+# the command printed (source code, logs, an HTTP body), so keywords in it say
+# nothing about the bash tool: a node script that echoed ``mrr>500?'Medium'``
+# read as ``internal``/stop and blocked bash for the rest of the run
+# (atlas-marko bca67986, 2026-10-20). Codes with a fixed meaning keep it; every
+# other code, a timeout (124) included, is a failed command the model can
+# change. This is the one table: ToolProgressMiddleware's #143 re-grade trusts
+# it and imports COMMAND_FAILED_ERROR_TYPE from here.
 COMMAND_FAILED_ERROR_TYPE = "command_failed"
 _COMMAND_FAILED_ATTRS: dict[str, object] = {
     "error_type": COMMAND_FAILED_ERROR_TYPE,
     "recoverable_by_model": True,
     "recommended_next_action": "try_alternative",
 }
-_SHELL_EXIT_CODE_TYPES: dict[int, str] = {
-    126: "permission",  # found but not executable
-    127: "not_found",  # command not found
+_SHELL_EXIT_CODE_TYPES: dict[str, str] = {
+    "126": "permission",  # found but not executable
+    "127": "not_found",  # command not found
 }
 TOOL_RESULT_ERROR_TYPES = frozenset(_ATTRS_BY_ERROR_TYPE) | {"unknown", PROGRESS_GUARD_ERROR_TYPE, COMMAND_FAILED_ERROR_TYPE}
 
@@ -184,14 +187,6 @@ _STATUS_TITLE_FILLER: frozenset[str] = frozenset({"http", "error", "page", "the"
 _NUMERIC_KW_RE: dict[str, re.Pattern[str]] = {kw: re.compile(rf"\b{kw}\b") for rule_keywords, _ in _ERROR_RULES for kw in rule_keywords if kw.isdigit()}
 
 _SEMANTIC_ZERO_ERROR_STRINGS: frozenset[str] = frozenset({"none", "null", "false", "no", "ok", "success", "n/a", ""})
-
-# [argus patch #153] Only the trailing marker is the command's exit: providers
-# append it at the very end (sandbox.tools._BASH_EXIT_MARKER_TAIL_RE), and an
-# earlier marker-shaped line ("exit=0", a log's "Exit Code: 0") is output.
-_SHELL_EXIT_CODE_RE = re.compile(
-    r"(?:^|\n)(?:Exit Code:|Command exited with code|exit=)\s*(-?\d+)\s*$",
-    re.IGNORECASE,
-)
 
 # [argus patch #83] Tool-invocation error wrapper regex matching LangChain/LangGraph
 # wrapper format: "Error (invoking|executing) tool '<name>' with kwargs {...} with error:\n<error>\n Please fix..."
@@ -255,10 +250,15 @@ def _classify_error_text(text: str) -> dict[str, object]:
     return {**_UNKNOWN_ERROR}
 
 
-def _classify_shell_exit(exit_code: int) -> dict[str, object]:
-    """[argus patch #153] Category attributes for a non-zero shell exit code."""
-    error_type = _SHELL_EXIT_CODE_TYPES.get(exit_code)
-    return {**_ATTRS_BY_ERROR_TYPE[error_type]} if error_type else {**_COMMAND_FAILED_ATTRS}
+def _shell_exit_meta(marker: str) -> dict[str, object]:
+    """[argus patch #153] Meta for a failed bash call, from its exit marker alone."""
+    code = marker.rsplit(" ", 1)[-1]
+    error_type = _SHELL_EXIT_CODE_TYPES.get(code)
+    attrs = {**_ATTRS_BY_ERROR_TYPE[error_type]} if error_type else {**_COMMAND_FAILED_ATTRS}
+    # The marker's digits are command-supplied and unbounded (see bash_exit), so
+    # only a plausible code goes through int(); #143's re-grade reads exit_code.
+    exit_code = int(code) if len(code) <= 20 else -1
+    return _make_meta(status="error", source="content_analysis", exit_code=exit_code, **attrs)
 
 
 def _classify_error_shell(msg: ToolMessage, content: str) -> dict[str, object] | None:
@@ -362,10 +362,16 @@ _SUBAGENT_FAILURE_STATUSES = frozenset({"failed", "cancelled", "timed_out", "pol
 
 
 def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
-    """Attach deerflow_tool_meta to a ToolMessage if not already present."""
+    """Attach tool status, correcting legacy bash analysis that missed an exit."""
+    content = msg.content if isinstance(msg.content, str) else ""
+    bash_status = bash_exit_status(content) if msg.name in BASH_TOOL_NAMES else None
+    failed_bash = bash_status is not None and bash_status[0] == "error"
     existing = (msg.additional_kwargs or {}).get(TOOL_META_KEY)
     if existing is not None:
-        return _sync_message_status(msg, existing) if isinstance(existing, dict) else msg
+        # Explicit producer stamps remain authoritative. Older checkpoints can
+        # contain generic analysis success for a provider-reported failed exit.
+        if not (failed_bash and isinstance(existing, dict) and existing.get("source") == "content_analysis" and existing.get("status") == "success"):
+            return _sync_message_status(msg, existing) if isinstance(existing, dict) else msg
 
     kwargs = msg.additional_kwargs or {}
     subagent_status = kwargs.get("subagent_status")
@@ -380,7 +386,6 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
         msg.additional_kwargs = updated_kwargs
         return msg
 
-    content = msg.content if isinstance(msg.content, str) else ""
     # Pre-compute once; reused by the partial-success marker check below to avoid calling
     # content.lower() once per _PARTIAL_MARKERS entry inside the generator.
     content_lower = content.lower()
@@ -390,13 +395,15 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     # and exit early above — they never reach this branch.)
     # Try JSON extraction first so classification uses only the "error" field value, not
     # keywords that appear incidentally in other JSON fields (e.g. "query").
-    shell_exit = _SHELL_EXIT_CODE_RE.search(content) if msg.name in {"bash", "bash_tool"} else None
-    exit_code = int(shell_exit.group(1)) if shell_exit else None
-
-    if exit_code not in (None, 0):
-        # [argus patch #153] by exit code, never by the command's own output.
-        attrs = _classify_shell_exit(exit_code)
-        meta = _make_meta(status="error", source="tool_return", exit_code=exit_code, **attrs)
+    if failed_bash:
+        # A nonzero shell exit does not raise a Python exception. Keep it
+        # recoverable: grep/diff and diagnostic probes can legitimately use 1.
+        # Do not derive auth/stop categories from arbitrary stdout numbers.
+        # [argus patch #153] Checked first, so the exit marker also wins over an
+        # "Error:" prefix or a JSON error in the output ("Error: upstream returned
+        # 500 ...\nExit Code: 1" is a failed command, not an internal error), and
+        # graded by the code: 126 permission, 127 not_found, else command_failed.
+        meta = _shell_exit_meta(bash_status[1])
     elif msg.status == "error" and not content.startswith(_ERROR_PREFIX):
         # [argus patch #83] If content is wrapped in a tool-wrapper error format, classify ONLY
         # the trailing error text to avoid misclassifying on echoed kwargs content.
@@ -422,8 +429,13 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
         attrs = _classify_error_text(content[len(_ERROR_PREFIX) :])
         meta = _make_meta(status="error", source="tool_return", **attrs)
     elif (json_error := _extract_json_error_text(content)) is not None:
-        attrs = _classify_error_text(json_error)
-        meta = _make_meta(status="error", source="tool_return", **attrs)
+        if msg.name == "read_file":
+            # Native reads return document text, not a tool error envelope.
+            # Explicit failures above still take precedence over file content.
+            meta = _make_meta(status="success", source="content_analysis")
+        else:
+            attrs = _classify_error_text(json_error)
+            meta = _make_meta(status="error", source="tool_return", **attrs)
     elif (shell_attrs := _classify_error_shell(msg, content)) is not None:
         meta = _make_meta(status="error", source="content_analysis", **shell_attrs)
     elif any(m in content_lower for m in _PARTIAL_MARKERS):

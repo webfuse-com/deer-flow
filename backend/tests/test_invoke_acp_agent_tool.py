@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import os
 import sys
 import time
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from deerflow.config.acp_config import ACPAgentConfig
+from deerflow.config.app_config import AppConfig
 from deerflow.config.extensions_config import ExtensionsConfig, McpServerConfig, reset_extensions_config, set_extensions_config
 from deerflow.tools.builtins.invoke_acp_agent_tool import (
     _agent_path,
@@ -23,6 +25,16 @@ from deerflow.tools.builtins.invoke_acp_agent_tool import (
     build_invoke_acp_agent_tool,
 )
 from deerflow.tools.tools import get_available_tools
+
+
+class _LiveAgentProcess:
+    """Process double for an agent that stays alive for the whole ACP exchange."""
+
+    stderr = None
+    returncode = None
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
 
 
 def test_build_mcp_servers_filters_disabled_and_maps_transports():
@@ -258,7 +270,7 @@ async def test_invoke_acp_agent_uses_fixed_acp_workspace(monkeypatch, tmp_path):
             captured["spawn"] = {"cmd": cmd, "args": list(args), "cwd": cwd}
 
         async def __aenter__(self):
-            return DummyConn(), object()
+            return DummyConn(), _LiveAgentProcess()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -383,7 +395,7 @@ async def test_invoke_acp_agent_uses_per_thread_workspace_when_thread_id_in_conf
             captured["cwd"] = cwd
 
         async def __aenter__(self):
-            return DummyConn(), object()
+            return DummyConn(), _LiveAgentProcess()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -434,7 +446,7 @@ async def test_invoke_acp_agent_uses_per_thread_workspace_when_thread_id_in_conf
 
 @pytest.mark.anyio
 async def test_invoke_acp_agent_passes_env_to_spawn(monkeypatch, tmp_path):
-    """env map in ACPAgentConfig is passed to spawn_agent_process; $VAR values are resolved."""
+    """env map in ACPAgentConfig reaches spawn_agent_process exactly as AppConfig resolved it."""
     from deerflow.config import paths as paths_module
 
     monkeypatch.setattr(paths_module, "get_paths", lambda: paths_module.Paths(base_dir=tmp_path))
@@ -442,7 +454,8 @@ async def test_invoke_acp_agent_passes_env_to_spawn(monkeypatch, tmp_path):
         "deerflow.config.extensions_config.ExtensionsConfig.from_file",
         classmethod(lambda cls: ExtensionsConfig(mcp_servers={}, skills={})),
     )
-    monkeypatch.setenv("TEST_OPENAI_KEY", "sk-from-env")
+    # A resolved secret that itself starts with $ must not be resolved again.
+    monkeypatch.setenv("TEST_OPENAI_KEY", "$2b$12$from-env")
 
     captured: dict[str, object] = {}
 
@@ -475,7 +488,7 @@ async def test_invoke_acp_agent_passes_env_to_spawn(monkeypatch, tmp_path):
             captured["env"] = env
 
         async def __aenter__(self):
-            return DummyConn(), object()
+            return DummyConn(), _LiveAgentProcess()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -511,7 +524,7 @@ async def test_invoke_acp_agent_passes_env_to_spawn(monkeypatch, tmp_path):
             "codex": ACPAgentConfig(
                 command="codex-acp",
                 description="Codex CLI",
-                env={"OPENAI_API_KEY": "$TEST_OPENAI_KEY", "FOO": "bar"},
+                env=AppConfig.resolve_env_variables({"OPENAI_API_KEY": "$TEST_OPENAI_KEY", "FOO": "bar"}),
             )
         }
     )
@@ -522,7 +535,7 @@ async def test_invoke_acp_agent_passes_env_to_spawn(monkeypatch, tmp_path):
         sys.modules.pop("acp", None)
         sys.modules.pop("acp.schema", None)
 
-    assert captured["env"] == {"OPENAI_API_KEY": "sk-from-env", "FOO": "bar"}
+    assert captured["env"] == {"OPENAI_API_KEY": "$2b$12$from-env", "FOO": "bar"}
 
 
 @pytest.mark.anyio
@@ -568,7 +581,7 @@ async def test_invoke_acp_agent_skips_invalid_mcp_servers(monkeypatch, tmp_path,
             captured["spawn"] = {"cmd": cmd, "args": list(args), "env": env, "cwd": cwd}
 
         async def __aenter__(self):
-            return DummyConn(), object()
+            return DummyConn(), _LiveAgentProcess()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -655,7 +668,7 @@ async def test_invoke_acp_agent_passes_none_env_when_not_configured(monkeypatch,
             captured["env"] = env
 
         async def __aenter__(self):
-            return DummyConn(), object()
+            return DummyConn(), _LiveAgentProcess()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -768,7 +781,7 @@ def test_get_available_tools_sync_invoke_acp_agent_preserves_thread_workspace(mo
             captured["cwd"] = cwd
 
         async def __aenter__(self):
-            return DummyConn(), object()
+            return DummyConn(), _LiveAgentProcess()
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
@@ -1001,6 +1014,118 @@ async def test_invoke_acp_agent_preserves_sdk_timeout_errors(acp_subprocess_tool
     assert acp_subprocess_tool.captured["proc"].returncode is not None
 
 
+_STDERR_ACP_AGENT_SCRIPT = """\
+import asyncio
+import os
+import sys
+import time
+
+import acp
+from acp.schema import InitializeResponse, NewSessionResponse, PromptResponse
+
+# argv: <phase to stop in, or ""> <stderr bytes to write per phase> <"exit" or "hang">
+
+
+class _TestAgent:
+    def on_connect(self, conn):
+        self._conn = conn
+
+    def _enter_phase(self, phase):
+        line = f"{phase}: " + "x" * 200 + "\\n"
+        for _ in range(int(sys.argv[2]) // len(line) + 1):
+            sys.stderr.write(line)
+        if phase == sys.argv[1] and sys.argv[3] == "exit":
+            sys.stderr.write(f"fatal: cannot {phase} without credentials\\n")
+            sys.stderr.flush()
+            os._exit(3)
+        if phase == sys.argv[1]:
+            sys.stderr.write(f"stalled: waiting for {phase} login\\n")
+            sys.stderr.flush()
+            time.sleep(3600)
+        sys.stderr.flush()
+
+    async def initialize(self, protocol_version, client_capabilities=None, client_info=None, **kwargs):
+        self._enter_phase("initialize")
+        return InitializeResponse(protocol_version=protocol_version)
+
+    async def new_session(self, cwd, additional_directories=None, mcp_servers=None, **kwargs):
+        self._enter_phase("new_session")
+        return NewSessionResponse(session_id="test-session")
+
+    async def prompt(self, session_id, prompt, **kwargs):
+        self._enter_phase("prompt")
+        await self._conn.session_update(session_id=session_id, update=acp.update_agent_message_text("done"))
+        return PromptResponse(stop_reason="end_turn")
+
+
+asyncio.run(acp.run_agent(_TestAgent()))
+"""
+
+
+@pytest.fixture
+def acp_stderr_tool(monkeypatch, tmp_path):
+    from deerflow.config import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "get_paths", lambda: paths_module.Paths(base_dir=tmp_path))
+    monkeypatch.setattr(
+        "deerflow.config.extensions_config.ExtensionsConfig.from_file",
+        classmethod(lambda cls: ExtensionsConfig(mcp_servers={}, skills={})),
+    )
+    script_path = tmp_path / "stderr_acp_agent.py"
+    script_path.write_text(_STDERR_ACP_AGENT_SCRIPT, encoding="utf-8")
+
+    def build_tool(stop_phase="", stderr_bytes=0, stop="exit", timeout_seconds=60):
+        return build_invoke_acp_agent_tool(
+            {
+                "test": ACPAgentConfig(
+                    command=sys.executable,
+                    args=[str(script_path), stop_phase, str(stderr_bytes), stop],
+                    description="Test ACP agent",
+                    timeout_seconds=timeout_seconds,
+                )
+            }
+        )
+
+    return build_tool
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("phase", ["initialize", "new_session", "prompt"])
+async def test_invoke_acp_agent_reports_an_agent_that_exits_mid_invocation(acp_stderr_tool, caplog, phase):
+    # More stderr than the retained tail, so the fatal line (written last) is
+    # only logged if the tail keeps the end of the stream rather than its start.
+    tool = acp_stderr_tool(stop_phase=phase, stderr_bytes=40 * 1024)
+    start = time.monotonic()
+    with caplog.at_level(logging.ERROR, logger="deerflow.tools.builtins.invoke_acp_agent_tool"):
+        # The tool's own 60s budget must not be what ends the call.
+        result = await asyncio.wait_for(tool.coroutine(agent="test", prompt="do work"), timeout=30)
+    assert time.monotonic() - start < 15
+    assert result.startswith("Error: ACP agent 'test' exited with code 3 before completing the ACP invocation.")
+    assert "timeout_seconds" not in result
+    # The agent's diagnostics reach the operator log, not the model.
+    assert f"fatal: cannot {phase} without credentials" in caplog.text
+    assert "credentials" not in result
+
+
+@pytest.mark.anyio
+async def test_invoke_acp_agent_logs_the_stderr_of_a_stalled_agent(acp_stderr_tool, caplog):
+    tool = acp_stderr_tool(stop_phase="prompt", stderr_bytes=40 * 1024, stop="hang", timeout_seconds=3)
+    with caplog.at_level(logging.ERROR, logger="deerflow.tools.builtins.invoke_acp_agent_tool"):
+        result = await asyncio.wait_for(tool.coroutine(agent="test", prompt="do work"), timeout=30)
+    assert "timed out after 3 seconds" in result
+    # The last line the agent wrote before stalling is the one an operator needs.
+    assert "stalled: waiting for prompt login" in caplog.text
+    assert "login" not in result
+
+
+@pytest.mark.anyio
+async def test_invoke_acp_agent_drains_verbose_stderr(acp_stderr_tool):
+    # Far beyond what an unread stderr pipe absorbs before the agent's writes block.
+    tool = acp_stderr_tool(stderr_bytes=1024 * 1024, timeout_seconds=20)
+    result = await asyncio.wait_for(tool.coroutine(agent="test", prompt="do work"), timeout=40)
+    assert result == "done"
+
+
 def _write_launcher_shim(directory: Path, name: str, command: str) -> Path:
     """Write an executable launcher shim for ``name`` under ``directory``."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -1060,6 +1185,53 @@ async def test_invoke_acp_agent_spawns_the_path_resolved_command(monkeypatch, tm
 
 
 @pytest.mark.anyio
+async def test_invoke_acp_agent_spawns_an_absolute_command_without_an_extension(monkeypatch, tmp_path):
+    """An absolute command has to reach its ``PATHEXT`` shim before the spawn.
+
+    npm installs ``mcode``, ``mcode.cmd``, and ``mcode.ps1`` side by side; a
+    configured absolute path without the extension would spawn the shell
+    script and fail with ``WinError 193``. The resolver has to pick the
+    ``.cmd`` shim the same way it does for a bare name.
+    """
+    import acp as acp_module
+
+    from deerflow.config import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "get_paths", lambda: paths_module.Paths(base_dir=tmp_path))
+    monkeypatch.setattr(
+        "deerflow.config.extensions_config.ExtensionsConfig.from_file",
+        classmethod(lambda cls: ExtensionsConfig(mcp_servers={}, skills={})),
+    )
+    script_path = tmp_path / "test_acp_agent.py"
+    script_path.write_text(_ACP_AGENT_SCRIPT, encoding="utf-8")
+    phase_path = tmp_path / "phase.txt"
+
+    shim_name = "deerflow-acp-probe"
+    shim = _write_launcher_shim(tmp_path / "npm", shim_name, f'"{sys.executable}" "{script_path}" "" 0 "{phase_path}"')
+    if sys.platform == "win32":
+        # npm also drops an extensionless shell script next to the .cmd shim.
+        (shim.parent / shim_name).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+    real_spawn_agent_process = acp_module.spawn_agent_process
+
+    @contextlib.asynccontextmanager
+    async def _spying_spawn_agent_process(client, cmd, *args, env=None, cwd=None):
+        captured["cmd"] = cmd
+        async with real_spawn_agent_process(client, cmd, *args, env=env, cwd=cwd) as (conn, proc):
+            yield conn, proc
+
+    monkeypatch.setattr(acp_module, "spawn_agent_process", _spying_spawn_agent_process)
+
+    configured = str(shim.parent / shim_name)
+    tool = build_invoke_acp_agent_tool({"probe": ACPAgentConfig(command=configured, description="Probe", timeout_seconds=30)})
+    result = await asyncio.wait_for(tool.coroutine(agent="probe", prompt="do work"), timeout=20)
+
+    assert Path(captured["cmd"]) == shim
+    assert result == "(no response)"
+
+
+@pytest.mark.anyio
 async def test_invoke_acp_agent_reports_guidance_for_an_unresolvable_command(monkeypatch, tmp_path):
     """A command PATH cannot resolve still reports the configured name.
 
@@ -1090,8 +1262,8 @@ def test_agent_path_reads_the_configured_override_case_insensitively():
     assert _agent_path({"Path": "/agent-bin"}) == "/agent-bin"
 
 
-def test_resolve_agent_command_only_resolves_bare_names(monkeypatch, tmp_path):
-    """A configured path is left to the spawn, which runs in the ACP workspace."""
+def test_resolve_agent_command_leaves_relative_paths_to_the_spawn(monkeypatch, tmp_path):
+    """A relative configured path is left to the spawn, which runs in the ACP workspace."""
     resolved_dir = tmp_path / "resolved"
     monkeypatch.setattr(
         "deerflow.tools.builtins.invoke_acp_agent_tool.shutil.which",
@@ -1101,6 +1273,90 @@ def test_resolve_agent_command_only_resolves_bare_names(monkeypatch, tmp_path):
     assert _resolve_agent_command("npx") == str(resolved_dir / "npx")
     assert _resolve_agent_command("bin/agent") == "bin/agent"
     assert _resolve_agent_command("./bin/agent") == "./bin/agent"
+
+
+def test_resolve_agent_command_resolves_absolute_paths_through_the_lookup(monkeypatch, tmp_path):
+    """An absolute command keeps its directory but still goes through the lookup."""
+    seen: list[tuple[str, str | None]] = []
+
+    def _which(command, path=None):
+        seen.append((command, path))
+        return command + ".CMD"
+
+    monkeypatch.setattr("deerflow.tools.builtins.invoke_acp_agent_tool.shutil.which", _which)
+
+    absolute = str(tmp_path / "npm" / "mcode")
+    assert _resolve_agent_command(absolute, str(tmp_path / "agent-bin")) == absolute + ".CMD"
+    assert seen == [(absolute, str(tmp_path / "agent-bin"))]
+
+
+def test_resolve_agent_command_keeps_an_absolute_lookup_result_as_returned(monkeypatch, tmp_path):
+    """An already-absolute lookup result must not be lexically rewritten.
+
+    ``os.path.abspath`` collapses a ``..`` that the kernel resolves after a
+    symlink, which changes the file the spawn runs; the anchoring exists for
+    relative ``PATH`` results only.
+    """
+    literal = str(tmp_path / "current" / ".." / "shared" / "agent")
+    monkeypatch.setattr(
+        "deerflow.tools.builtins.invoke_acp_agent_tool.shutil.which",
+        lambda command, path=None: command,
+    )
+
+    assert _resolve_agent_command(literal) == literal
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PATHEXT sibling resolution is Windows-only")
+def test_resolve_agent_command_resolves_a_windows_path_without_an_extension(tmp_path):
+    """npm's extensionless sh script and its ``.cmd`` shim sit side by side.
+
+    ``asyncio.create_subprocess_exec`` does not probe ``PATHEXT``, so spawning
+    the configured path runs the shell script and fails with ``WinError 193``;
+    the lookup has to pick the ``.cmd`` shim instead.
+    """
+    npm_bin = tmp_path / "npm"
+    npm_bin.mkdir()
+    extensionless = npm_bin / "mcode"
+    extensionless.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (npm_bin / "mcode.cmd").write_text("@echo off\r\necho ran\r\n", encoding="ascii")
+
+    resolved = _resolve_agent_command(str(extensionless))
+
+    assert Path(resolved) == npm_bin / "mcode.CMD"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX has no PATHEXT indirection to resolve")
+def test_resolve_agent_command_keeps_an_absolute_posix_command(tmp_path):
+    """On POSIX the absolute command itself is the executable; resolution keeps it."""
+    tool = tmp_path / "bin" / "mcode"
+    tool.parent.mkdir()
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+
+    assert _resolve_agent_command(str(tool)) == str(tool)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink-plus-parent-segment resolution is POSIX-specific")
+def test_resolve_agent_command_keeps_a_posix_symlink_that_precedes_a_parent_segment(tmp_path):
+    """An absolute command is returned as configured, not lexically rewritten.
+
+    With ``current -> releases/v1``, ``current/../shared/agent`` resolves to
+    ``releases/shared/agent`` for the kernel, while a lexical ``abspath``
+    would collapse it to the nonexistent ``shared/agent`` beside the symlink
+    or to a different file that happens to live there.
+    """
+    release = tmp_path / "releases" / "v1"
+    release.mkdir(parents=True)
+    tool = tmp_path / "releases" / "shared" / "agent"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    current = tmp_path / "current"
+    current.symlink_to(release, target_is_directory=True)
+
+    configured = str(current / ".." / "shared" / "agent")
+
+    assert _resolve_agent_command(configured) == configured
 
 
 def test_resolve_agent_command_hands_the_effective_path_to_the_lookup(monkeypatch, tmp_path):

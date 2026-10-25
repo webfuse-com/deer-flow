@@ -157,3 +157,57 @@ def test_uncertain_execution_state_cannot_claim_applied():
     result = ToolErrorHandlingMiddleware().wrap_tool_call(request(), lambda _: ToolMessage(content=json.dumps(receipt("applied", "unknown", "check_status")), tool_call_id="new"))
     assert result.status == "error"
     assert json.loads(result.content)["execution_state"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_per_server_discovery_binds_declared_tools_to_that_servers_interceptor(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from langchain_core.tools import StructuredTool
+
+    from deerflow.config.extensions_config import ExtensionsConfig
+    from deerflow.mcp.tools import get_mcp_tools_by_server
+
+    def tool(name, metadata=None):
+        async def call():
+            return name
+
+        return StructuredTool.from_function(coroutine=call, name=name, description=name, metadata=metadata)
+
+    contract = {"_meta": {CONTRACT_KEY: CONTRACT_VERSION}}
+    catalogs = {"ops": [tool("ops_fix_record", contract), tool("ops_search")], "other": [tool("other_fix_record")]}
+    clients = {}
+
+    class FakeClient:
+        def __init__(self, connections, **kwargs):
+            (name,) = connections
+            clients[name] = self
+            self.callbacks = None
+            self.tool_interceptors = kwargs.get("tool_interceptors") or []
+
+        async def get_tools(self, *, server_name=None):
+            return catalogs[server_name]
+
+    monkeypatch.setattr("langchain_mcp_adapters.client.MultiServerMCPClient", FakeClient)
+    monkeypatch.setattr("deerflow.mcp.tools.get_initial_oauth_headers", AsyncMock(return_value={}))
+    monkeypatch.setattr("deerflow.mcp.tools.build_mcp_tool_interceptors", lambda *a, **k: [])
+    config = ExtensionsConfig.model_validate({"mcpServers": {name: {"enabled": True, "type": "http", "url": f"https://{name}.example/mcp"} for name in catalogs}})
+
+    groups = await get_mcp_tools_by_server(config)
+
+    assert set(groups) == {"ops", "other"}
+    payload = receipt()
+    wire = CallToolResult(isError=True, structuredContent=payload, content=[TextContent(type="text", text=json.dumps(payload))])
+
+    async def handler(_):
+        return wire
+
+    def call(server, name):
+        return SimpleNamespace(server_name=server, name=name, runtime=SimpleNamespace(tool_call_id="call-1"))
+
+    ops, other = clients["ops"].tool_interceptors[0], clients["other"].tool_interceptors[0]
+    preserved = await ops(call("ops", "fix_record"), handler)
+    assert isinstance(preserved, ToolMessage)
+    assert preserved.artifact["structured_content"] == payload
+    assert await ops(call("ops", "search"), handler) is wire
+    assert await other(call("other", "fix_record"), handler) is wire

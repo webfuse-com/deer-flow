@@ -78,7 +78,6 @@ from deerflow.runtime.checkpoint_mode import (
     inject_checkpoint_mode,
 )
 from deerflow.scheduler.runtime import SCHEDULER_CAPABILITY_CONTEXT_KEY, is_scheduler_capability
-from deerflow.skills.tool_policy import filter_tools_by_agent_allowed_tools
 from deerflow.skills.types import Skill
 from deerflow.subagents.capacity import configured_subagent_max_running
 from deerflow.tracing import build_tracing_callbacks
@@ -342,16 +341,19 @@ def _authorize_model_name(
 def _create_summarization_middleware(
     *,
     app_config: AppConfig | None = None,
-    lead_model_name: str | None = None,
     run_model_name: str | None = None,
     skip_memory_flush: bool = False,
     extensions=None,
 ) -> DeerFlowSummarizationMiddleware | None:
-    """Create and configure the summarization middleware from config."""
-    model_name = lead_model_name or run_model_name
+    """Create and configure the summarization middleware from config.
+
+    ``run_model_name`` is the resolved run model; it is the source of truth for
+    ``model_name: null`` summarization and the explicit-summary-model fallback, so a
+    custom agent's model is used instead of ``config.models[0]``.
+    """
     return create_summarization_middleware(
         app_config=app_config,
-        run_model_name=model_name,
+        run_model_name=run_model_name,
         skip_memory_flush=skip_memory_flush,
         extensions=extensions,
     )
@@ -638,34 +640,13 @@ def build_middlewares(
         )
     )
 
-    # Observe the final tool_search Command after every inner policy/result
+    # Observe the final tool_search Command after every inner result
     # transformer has run. Tool wrappers are first-in-list outermost, so this
-    # must be registered before SkillToolPolicyMiddleware.
+    # must be registered before the deferred filter below.
     if deferred_setup is not None and deferred_setup.deferred_names:
         from deerflow.agents.middlewares.tool_promotion_audit_middleware import DeferredToolPromotionAuditMiddleware
 
         middlewares.append(DeferredToolPromotionAuditMiddleware(deferred_setup.deferred_names, deferred_setup.catalog_hash))
-
-    # Enabled skills are only discoverable metadata. Under the upstream
-    # ``skills`` source, a loaded or slash-activated skill applies its
-    # allowed-tools policy dynamically. [argus patch #53/#58] Under the Argus
-    # ``agent`` source, skill declarations are documentation only; the
-    # agent/schedule ceiling was already applied before tool assembly.
-    if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "skills":
-        from deerflow.agents.middlewares.skill_tool_policy_middleware import SkillToolPolicyMiddleware
-
-        middlewares.append(
-            SkillToolPolicyMiddleware(
-                available_skills=available_skills,
-                app_config=resolved_app_config,
-                user_id=user_id,
-                slash_source_owner_token=slash_source_owner_token,
-                # Persisted skill_context entries are re-authorized against the
-                # skill:activate decision before their allowed-tools apply (the
-                # policy may have changed since the entry was stamped).
-                skill_authorization=skill_authorization,
-            )
-        )
 
     # Capture completed task delegations and loaded skill files before
     # summarization can compact them, then inject durable context channels
@@ -696,13 +677,9 @@ def build_middlewares(
     )
 
     # Add summarization middleware if enabled
-    # [argus] Pass the resolved lead model so summarization.per_model can scale
-    # the trigger to this model's context window and pick a summarizer that can
-    # actually read it.
     summarization_middleware = _create_summarization_middleware(
         app_config=resolved_app_config,
         run_model_name=model_name,
-        lead_model_name=model_name,
         skip_memory_flush=not memory_enabled,
         extensions=resolved_extensions,
     )
@@ -823,8 +800,8 @@ def build_middlewares(
 
     # Hide deferred tool schemas from model binding until tool_search promotes them.
     # The lead deferred set + catalog hash come from the full build-time MCP
-    # catalog; SkillToolPolicyMiddleware separately filters model visibility,
-    # tool_search results, and execution for the active skill at runtime.
+    # catalog. Skill `allowed-tools` is compatibility metadata only; agent
+    # assembly/execution authorization owns the permission ceiling.
     if deferred_setup is not None and deferred_setup.deferred_names:
         from deerflow.agents.middlewares.deferred_tool_filter_middleware import DeferredToolFilterMiddleware
 
@@ -853,18 +830,17 @@ def build_middlewares(
         effective_max_subagents_per_run = max_total_subagents
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents, max_total=max_total_subagents))
 
-    # [argus patch #37] EmptyFinalRetryMiddleware — re-invoke the model once if it
-    # returns a blank FINAL turn (no content, no tool_calls). local-qwen does this
-    # after long tool loops, silently blanking the answer. Registered before
-    # LoopDetection so a retried final still flows through loop/safety after_model
-    # accounting; its wrap_model_call retries only a genuine empty final (a blank
-    # turn carrying tool_calls is a normal intermediate step and is left alone).
-    # [argus patch #98] ForcedStopSynthesisMiddleware — a loop/deadline/token hard
+    # [argus patch #37] EmptyFinalRetryMiddleware: re-invoke the model once if it
+    # returns a filler-only FINAL turn (".", "...", no tool_calls). Truly empty
+    # finals are upstream's model-boundary retry (#5080), which skips unattended
+    # runs (#44). Registered before LoopDetection so a retried final still flows
+    # through loop/safety after_model accounting.
+    # [argus patch #98] ForcedStopSynthesisMiddleware: a loop/deadline/token hard
     # stop strips the turn's tool calls and appends a notice, which left users
     # with the notice alone. Registered before the stoppers so reverse-order
     # after_model dispatch runs it after them: it removes the stamped stub and
-    # jumps back to the model once with no tools bound. Its wrap_model_call is
-    # outer to EmptyFinalRetryMiddleware, so a blank synthesis gets that retry.
+    # jumps back to the model once with no tools bound. An empty synthesis never
+    # reaches upstream's retry, so the middleware retries it once itself.
     if resolved_app_config.forced_stop_synthesis.enabled:
         from deerflow.agents.middlewares.forced_stop_synthesis_middleware import ForcedStopSynthesisMiddleware
 
@@ -1097,7 +1073,9 @@ def _complete_assembly(
     from deerflow.extensions import get_agent_build_extensions
 
     resolved_extensions = get_agent_build_extensions()
-    if not resolved_extensions.has_agent_assembly_observers:
+    from deerflow.runtime.assembly_evidence import capture_requested
+
+    if not resolved_extensions.has_agent_assembly_observers and not capture_requested():
         return LeadAgentAssembly(graph=graph, descriptor=None, effective_model=effective_model)
 
     from deerflow.agents.assembly_descriptor import build_assembly_descriptor
@@ -1131,6 +1109,7 @@ def _complete_assembly(
 def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> LeadAgentAssembly:
     # Lazy import to avoid circular dependency
     from deerflow.tools import get_available_tools
+    from deerflow.tools.agent_tool_policy import filter_tools_by_agent_allowed_tools
     from deerflow.tools.builtins import setup_agent, update_agent
     from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section
     from deerflow.tools.conversation import CONVERSATION_READER_CONTEXT_KEY
@@ -1172,8 +1151,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
     # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
     # Forwarded from InboundMessage -> run_context -> runtime context. Merged
-    # into the agent ceiling by filter_tools_by_agent_allowed_tools (source:
-    # agent) or by the skill-policy middleware (source: skills).
+    # into the agent ceiling by filter_tools_by_agent_allowed_tools (#53).
     schedule_allowed = cfg.get("allowed_tools")
     extra_allowed: set[str] | None = set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
 
@@ -1249,7 +1227,17 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
 
     # Phase 3: enforce model:use authorization. On deny, fall back to the first
     # allowed model (graceful) rather than crashing the run (RFC §9).
-    model_name = _authorize_model_name(model_name, context=cfg, app_config=resolved_app_config)
+    explicit_selection = cfg.get("model_selection_requested")
+    if explicit_selection is not None:
+        from deerflow.models.selection import authorize_selected_model
+
+        if not isinstance(explicit_selection, str) or explicit_selection != requested_model_name:
+            raise ValueError("An explicit model selection must carry the same model_name.")
+        if explicit_selection != model_name:
+            raise ValueError("The explicitly selected model is not configured.")
+        authorize_selected_model(model_name, context=cfg, app_config=resolved_app_config)
+    else:
+        model_name = _authorize_model_name(model_name, context=cfg, app_config=resolved_app_config)
 
     model_config = resolved_app_config.get_model_config(model_name)
 
@@ -1298,9 +1286,6 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
             "is_plan_mode": is_plan_mode,
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
-            # [argus patch #53] Subagents inherit the agent-level tool ceiling
-            # the same way they inherit tool_groups (read in task_tool.py).
-            "agent_allowed_tools": getattr(agent_config, "allowed_tools", None) if agent_config else None,
             "mcp_plugins": getattr(agent_config, "mcp_plugins", None),
             "available_skills": sorted(available_skills) if available_skills is not None else None,
             "allowed_subagents": list(allowed_subagents) if allowed_subagents is not None else None,
@@ -1348,14 +1333,14 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         )
         chat_model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False)
         raw_tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config, chat_model=chat_model) + [setup_agent]
-        configured_tools = raw_tools
-        if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "agent":
-            configured_tools = filter_tools_by_agent_allowed_tools(
-                configured_tools,
-                None,
-                skills=bootstrap_skills,
-                extra_allowed=extra_allowed,
-            )
+        # [argus patch #53] The bootstrap agent has no AgentConfig ceiling;
+        # only a schedule's allowed-tools (#43) can narrow it.
+        configured_tools = filter_tools_by_agent_allowed_tools(
+            raw_tools,
+            None,
+            skills=bootstrap_skills,
+            extra_allowed=extra_allowed,
+        )
         configured_tools = [tool for tool in configured_tools if tool.name not in interaction_policy.disabled_tool_names]
         authorization_candidates = [*configured_tools]
         if skill_setup.describe_skill_tool:
@@ -1520,17 +1505,25 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         app_config=resolved_app_config,
         chat_model=chat_model,
     )
+    selected_child_model = cfg.get("subagent_model_name")
+    if selected_child_model is not None:
+        from deerflow.models.selection import authorize_selected_model, bind_selected_task_model
+
+        if not subagent_enabled or not isinstance(selected_child_model, str):
+            raise ValueError("A child model selection requires enabled subagents and a configured model name.")
+        authorize_selected_model(selected_child_model, context=cfg, app_config=resolved_app_config)
+        raw_tools = bind_selected_task_model(raw_tools, selected_child_model)
     configured_tools = raw_tools + extra_tools
-    offload_reader_scope = None
-    if getattr(getattr(resolved_app_config, "tool_policy", None), "source", "skills") == "agent":
-        allowlisted_tools = filter_tools_by_agent_allowed_tools(
-            configured_tools,
-            agent_config.allowed_tools if agent_config else None,
-            skills=enabled_skills,
-            extra_allowed=extra_allowed,
-        )
-        # [argus patch #144] tool_output.read_offloads_in_allowlisted_runs
-        configured_tools, offload_reader_scope = offload_reader_grant(configured_tools, allowlisted_tools, resolved_app_config)
+    # [argus patch #53] The agent's allowed_tools ceiling plus a schedule's
+    # allowed-tools (#43), applied whenever either is declared.
+    allowlisted_tools = filter_tools_by_agent_allowed_tools(
+        configured_tools,
+        getattr(agent_config, "allowed_tools", None) if agent_config else None,
+        skills=enabled_skills,
+        extra_allowed=extra_allowed,
+    )
+    # [argus patch #144] tool_output.read_offloads_in_allowlisted_runs
+    configured_tools, offload_reader_scope = offload_reader_grant(configured_tools, allowlisted_tools, resolved_app_config)
     configured_tools = [tool for tool in configured_tools if tool.name not in interaction_policy.disabled_tool_names]
     authorization_candidates = [*configured_tools]
     if skill_setup.describe_skill_tool:
@@ -1558,7 +1551,6 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         answer_bound_directly=answer_bound_directly,
     )
     final_tools.extend(late_tools)
-    directly_bound_names = frozenset(t.name for t in final_tools if t.name not in setup.deferred_names)
     mcp_routing_middleware = build_mcp_routing_middleware(
         final_tools,
         setup,
@@ -1605,7 +1597,6 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         available_skills=available_skills,
         app_config=resolved_app_config,
         deferred_names=setup.deferred_names,
-        directly_bound_names=directly_bound_names,
         mcp_routing_hints_section=mcp_routing_hints_section,
         user_id=resolved_user_id,
         skill_names=skill_setup.skill_names or None,

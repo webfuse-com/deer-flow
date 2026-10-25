@@ -110,6 +110,7 @@ export function useScheduledTasksFeature() {
     available: feature.available,
     running: feature.running,
     toolEnabled: feature.toolEnabled,
+    groupNotifications: feature.groupNotifications,
     minIntervalSeconds: feature.minIntervalSeconds,
     supports: feature.supports ?? ALL_SCHEDULED_TASK_FEATURES,
     external: feature.external === true,

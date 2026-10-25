@@ -513,6 +513,23 @@ LLM_PROVIDERS: list[LLMProvider] = [
         },
     ),
     LLMProvider(
+        name="api_route",
+        display_name="API Route",
+        description="OpenAI-compatible gateway (models depend on your API key)",
+        use="langchain_openai:ChatOpenAI",
+        models=["gpt-6.1-sol"],
+        default_model="gpt-6.1-sol",
+        env_var="API_ROUTE_API_KEY",
+        package="langchain-openai",
+        extra_config={
+            "base_url": "https://global.api-route.com/v1",
+            "request_timeout": 600.0,
+            "max_retries": 2,
+            "max_tokens": 8192,
+            "temperature": 0.7,
+        },
+    ),
+    LLMProvider(
         name="vllm",
         display_name="vLLM",
         description="Self-hosted OpenAI-compatible serving",
@@ -697,6 +714,17 @@ SEARCH_PROVIDERS: list[SearchProvider] = [
         description="Recent news search (not general web search), API key required",
         use="deerflow.community.webz.tools:web_search_tool",
         env_var="WEBZ_API_KEY",
+        extra_config={"max_results": 5},
+    ),
+    SearchProvider(
+        name="youcom",
+        display_name="You.com",
+        description="Own index with extracted page snippets, free tier needs no key",
+        use="deerflow.community.youcom.tools:web_search_tool",
+        # No env_var: the provider falls back to You.com's keyless endpoint, so the
+        # wizard should not demand a key. Operators who have one set YDC_API_KEY in
+        # .env (or api_key in config.yaml) and the provider switches endpoints.
+        env_var=None,
         extra_config={"max_results": 5},
     ),
 ]

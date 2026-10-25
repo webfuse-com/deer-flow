@@ -9,6 +9,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.runtime import Runtime
 
+from deerflow.agents.middlewares.empty_final_retry_middleware import is_unattended_run
 from deerflow.agents.middlewares.model_response import append_visible_text, has_tool_call_intent, has_visible_content
 
 _FALLBACK_CONTENT = "The model completed the tool run but returned no final response. Please try again or use a different model."
@@ -48,6 +49,10 @@ class TerminalResponseMiddleware(AgentMiddleware[AgentState]):
         if has_visible_content(last) or has_tool_call_intent(last):
             return None
         if not _tool_result_in_current_turn(messages):
+            return None
+        if is_unattended_run(runtime):
+            # [argus patch #44] An unattended run that has nothing to say ends
+            # silently; the blank final is not an error there.
             return None
 
         additional_kwargs = dict(last.additional_kwargs or {})

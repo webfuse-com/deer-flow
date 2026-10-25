@@ -1,6 +1,8 @@
 """Configuration for conversation summarization."""
 
+import logging
 import math
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
@@ -13,6 +15,10 @@ DEFAULT_SKILL_FILE_READ_TOOL_NAMES: tuple[str, ...] = ("read_file", "read", "vie
 #: summarization middleware's fraction-keep degradation fallback so the two
 #: cannot drift apart.
 DEFAULT_KEEP: tuple[ContextSizeType, int] = ("messages", 20)
+
+logger = logging.getLogger(__name__)
+# [argus] patch #47 retired: warn about a leftover per_model block once per process.
+_per_model_ignored_logged = False
 
 
 class ContextSize(BaseModel):
@@ -54,40 +60,6 @@ class ContextSize(BaseModel):
         return (self.type, self.value)
 
 
-class SummarizationOverride(BaseModel):
-    """[argus] patch #47: per-lead-model summarization overrides.
-
-    The summarization block is global, but both the right trigger and the right
-    summarizer depend on the LEAD model's context window:
-
-    - A single absolute ``tokens`` trigger tuned for a 131k model fires at ~9%
-      of a 1M-context model's window, discarding most of the context the
-      operator is paying for.
-    - A 131k-context summarizer cannot read a 1M-context thread it is asked to
-      compress, so the compression itself is lossy in a way nobody sees.
-
-    Only fields set here override the global block; the rest are inherited, so
-    an override can adjust just the trigger.
-    """
-
-    model_name: str | None = Field(
-        default=None,
-        description="Summarizer model for this lead model (None = inherit the global setting)",
-    )
-    trigger: ContextSize | list[ContextSize] | None = Field(
-        default=None,
-        description="Trigger threshold(s) for this lead model (None = inherit the global setting)",
-    )
-    keep: ContextSize | None = Field(
-        default=None,
-        description="Retention policy for this lead model (None = inherit the global setting)",
-    )
-    trim_tokens_to_summarize: int | None = Field(
-        default=None,
-        description="Trim budget for this lead model (None = inherit the global setting)",
-    )
-
-
 class SummarizationConfig(BaseModel):
     """Configuration for automatic conversation summarization."""
 
@@ -101,13 +73,6 @@ class SummarizationConfig(BaseModel):
         "actually executes with (the lead run's model, a subagent's own model, or a thread's "
         "custom-agent model), not config.models[0]. When set, that model generates and the run's "
         "own model is used as a fallback if the configured summary provider fails.",
-    )
-    per_model: dict[str, SummarizationOverride] = Field(
-        default_factory=dict,
-        description="[argus] Per-lead-model overrides, keyed by the lead model's config name "
-        "(e.g. 'glm-nw'). An absent key uses the global settings, so this is fully "
-        "back-compatible. Use it to scale the trigger to each model's context window and "
-        "to summarize a large-context thread with a large-context model.",
     )
     trigger: ContextSize | list[ContextSize] | None = Field(
         default=None,
@@ -126,7 +91,7 @@ class SummarizationConfig(BaseModel):
     trim_tokens_to_summarize: int | None = Field(
         default=4000,
         ge=1,
-        description="Maximum tokens to keep when preparing messages for summarization. Pass null to skip trimming.",
+        description="Raw-text budget per summary step. Generated carry uses at most half, reserving the rest for source; a pass has at most 64 chunks. Pass null for one unbounded step.",
     )
 
     @field_validator("trim_tokens_to_summarize", mode="before")
@@ -143,29 +108,24 @@ class SummarizationConfig(BaseModel):
         description="Tool names treated as skill-file reads when capturing loaded skills into the durable skill_context channel.",
     )
 
-    def resolved_for(self, lead_model_name: str | None) -> "SummarizationConfig":
-        """[argus] patch #47: apply this lead model's ``per_model`` override.
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_retired_per_model(cls, data: object) -> object:
+        """[argus] Accept and ignore the retired patch #47 ``per_model`` block.
 
-        Returns ``self`` unchanged when there is no applicable override, so the
-        common path allocates nothing and behaves exactly as before the patch.
-        Never mutates the receiver.
+        Fleet configs still carry it and roll out only after the image that
+        retires it, so it must keep loading; it now behaves exactly like "no
+        overrides". Per-model sizing is upstream config instead: ``model_name:
+        null`` plus a ``fraction`` trigger resolved against each model's
+        ``context_window``.
         """
-        if not lead_model_name:
-            return self
-        override = self.per_model.get(lead_model_name)
-        if override is None:
-            return self
-        # Take the field VALUES, not model_dump(): dumping converts the nested
-        # ContextSize models into plain dicts, and model_copy would then inject
-        # dicts where the middleware factory calls `.to_tuple()` on them —
-        # AttributeError at graph-build time. Pinned by
-        # test_override_applies_summarizer_and_trigger.
-        patch = {name: value for name in ("model_name", "trigger", "keep", "trim_tokens_to_summarize") if (value := getattr(override, name)) is not None}
-        if not patch:
-            return self
-        # per_model is dropped from the resolved view: it has already been
-        # applied, and carrying it would invite a second, recursive resolution.
-        return self.model_copy(update={**patch, "per_model": {}})
+        global _per_model_ignored_logged
+        if not isinstance(data, Mapping) or "per_model" not in data:
+            return data
+        if not _per_model_ignored_logged:
+            _per_model_ignored_logged = True
+            logger.warning("summarization.per_model is no longer supported and is ignored. Size compaction per model with summarization.model_name: null, a fraction trigger and context_window on each model entry.")
+        return {key: value for key, value in data.items() if key != "per_model"}
 
 
 # Global configuration instance

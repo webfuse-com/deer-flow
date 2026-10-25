@@ -123,3 +123,24 @@ def test_a_success_resets_the_count():
     assert updater.update_memory(msgs2, thread_id="t", agent_name="x", user_id="u") is False
     assert updater.update_memory(msgs2, thread_id="t", agent_name="x", user_id="u") is True
     assert "reply-b" in llm.feeds[-1]
+
+
+def test_a_skipped_batch_stays_skipped_after_a_restart(tmp_path):
+    """The skip advances upstream's persisted watermark (#7205 sidecar), so a
+    restarted gateway does not feed the poisoned batch to the memory model again."""
+    from deerflow.agents.memory.backends.deermem.deermem.core.storage import FileMemoryStorage
+
+    config = DeerMemConfig(max_failed_batch_attempts=2, storage_path=str(tmp_path), retrieval_adapter="")
+    first = _turns("huge")
+    failing = _ScriptedLLM(_Response("not json"), _Response("not json"))
+    updater = MemoryUpdater(config, FileMemoryStorage(config), failing)
+    assert updater.update_memory(first, thread_id="t", agent_name="a", user_id="u") is False
+    assert updater.update_memory(first, thread_id="t", agent_name="a", user_id="u") is False
+
+    # a fresh updater (new process): only the in-process cache is gone
+    fresh = _ScriptedLLM(_Response(_EMPTY))
+    restarted = MemoryUpdater(config, FileMemoryStorage(config), fresh)
+    assert restarted.update_memory(first, thread_id="t", agent_name="a", user_id="u") is True
+    assert fresh.feeds == []
+    assert restarted.update_memory(first + _turns("next"), thread_id="t", agent_name="a", user_id="u") is True
+    assert "huge" not in fresh.feeds[-1] and "next" in fresh.feeds[-1]

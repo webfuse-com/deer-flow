@@ -5,17 +5,27 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ChatProviders } from "@/components/workspace/chats/chat-providers";
 import { SharedThreadPage } from "@/components/workspace/shared/shared-thread-page";
+import { ArtifactDraftsProvider } from "@/core/artifacts/draft-context";
 import { AuthProvider } from "@/core/auth/AuthProvider";
 import { I18nContext } from "@/core/i18n/context";
 import { enUS } from "@/core/i18n/locales/en-US";
 
 import fixture from "../../../fixtures/shared-thread-snapshot.json";
+import { FlipDisplay as StaticFlipDisplay } from "../../../helpers/flip-display";
 
 rs.mock("next/navigation", () => ({
   useRouter: () => ({ push: rs.fn(), replace: rs.fn(), refresh: rs.fn() }),
   usePathname: () => "/workspace/shared/atlas-nicholas/aa5151dc",
   useParams: () => ({}),
   useSearchParams: () => new URLSearchParams(),
+}));
+
+// Motion's animation lifecycle rejects on unmount under happy-dom 21; the
+// transcript is what is under test (upstream's static FlipDisplay helper).
+rs.mock("@/components/workspace/flip-display", () => ({
+  FlipDisplay: (props: Parameters<typeof StaticFlipDisplay>[0]) => (
+    <StaticFlipDisplay {...props} />
+  ),
 }));
 
 rs.mock("@/core/static-mode", () => ({
@@ -44,16 +54,19 @@ function renderPage() {
       value={{ locale: "en-US", setLocale: () => undefined, t: enUS }}
     >
       <AuthProvider initialUser={null}>
-        <QueryClientProvider client={client}>
-          <SidebarProvider defaultOpen={false}>
-            <ChatProviders>
-              <SharedThreadPage
-                stack="atlas-nicholas"
-                threadId="aa5151dc-0000-4000-8000-000000000001"
-              />
-            </ChatProviders>
-          </SidebarProvider>
-        </QueryClientProvider>
+        {/* The root layout mounts ArtifactDraftsProvider (upstream #6700). */}
+        <ArtifactDraftsProvider>
+          <QueryClientProvider client={client}>
+            <SidebarProvider defaultOpen={false}>
+              <ChatProviders>
+                <SharedThreadPage
+                  stack="atlas-nicholas"
+                  threadId="aa5151dc-0000-4000-8000-000000000001"
+                />
+              </ChatProviders>
+            </SidebarProvider>
+          </QueryClientProvider>
+        </ArtifactDraftsProvider>
       </AuthProvider>
     </I18nContext.Provider>,
   );
