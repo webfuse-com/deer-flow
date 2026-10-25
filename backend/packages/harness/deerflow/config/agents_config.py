@@ -20,6 +20,7 @@ from deerflow.knowledge_scope import KnowledgeScope
 from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
+_planner_pipeline_ignored_logged = False
 
 SOUL_FILENAME = "SOUL.md"
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
@@ -260,10 +261,21 @@ class AgentConfig(BaseModel):
     # - "none": NO retrieval (explicit form of the same thing).
     # - "external"/"internal": attach with that ring (a server-side CEILING in
     #   kb-api, never an escalation). personal/hierarchical are reserved.
-    pythia_ring: str | None = None  # [argus] When True, the lead-agent factory attaches ArgusTodoMiddleware    # (planner-aligned prompt) instead of the upstream TodoMiddleware. Set this
-    # on any agent that uses the planner/critic skill pipeline (qwen-local-coder,
-    # glm-planner, etc).
+    pythia_ring: str | None = None
+    # [argus] Accepted and ignored since 2026-10-25: decision d5 dropped the
+    # planner-aligned ArgusTodoMiddleware this selected (patches #7/#18, #41).
+    # glm-planner on pythia, pyrrhus and projects/_template still sets it;
+    # drop the field and the validator once no agent config does.
     uses_planner_pipeline: bool = False
+
+    @field_validator("uses_planner_pipeline")
+    @classmethod
+    def _ignore_retired_planner_pipeline(cls, value: bool) -> bool:
+        global _planner_pipeline_ignored_logged
+        if value and not _planner_pipeline_ignored_logged:
+            _planner_pipeline_ignored_logged = True
+            logger.warning("Agent config uses_planner_pipeline is ignored: the planner-aligned todo middleware was removed, plan mode uses the upstream TodoMiddleware")
+        return value
 
 
 # Fields explicitly managed by agent-update surfaces. Anything else declared

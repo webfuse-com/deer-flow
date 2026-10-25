@@ -2297,22 +2297,6 @@ skills:
   # [argus patch #130] delegate skills route only on an explicit @name mention
   # mention_only_skills: [claude, gpt, opencode, myrmidon]
 
-# Use the normal reasoning model for user turns, research, and errors, but a
-# no-thinking variant after successful deterministic tools. Disabled by default.
-adaptive_reasoning:
-  enabled: false
-  routine_tools:
-    - read_file
-    - workspace_inspect
-    - write_file
-    - str_replace
-    - workspace_patch
-    - grep
-    - glob
-    - ls
-    - bash
-    - write_todos
-
 # ============================================================================
 # SkillScan Configuration
 # ============================================================================

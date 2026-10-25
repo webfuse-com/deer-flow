@@ -60,7 +60,7 @@ from deerflow.authz.principal import build_principal_from_context
 from deerflow.authz.provider import AuthzDecision, AuthzRequest
 from deerflow.authz.runtime import resolve_authorization_provider
 from deerflow.authz.tool_filter import apply_tool_authorization
-from deerflow.config.agents_config import AgentConfig, load_agent_config, validate_agent_name
+from deerflow.config.agents_config import load_agent_config, validate_agent_name
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.memory_config import should_use_memory_tools
 from deerflow.config.subagents_config import (
@@ -358,33 +358,17 @@ def _create_summarization_middleware(
     )
 
 
-def _create_todo_list_middleware(is_plan_mode: bool, agent_name: str | None = "", agent_config: AgentConfig | None = None) -> TodoMiddleware | None:
+def _create_todo_list_middleware(is_plan_mode: bool) -> TodoMiddleware | None:
     """Create and configure the TodoList middleware.
 
     Args:
         is_plan_mode: Whether to enable plan mode with TodoList middleware.
-        agent_name: Custom-agent name from the runtime context (informational).
-        agent_config: Custom-agent config. [argus] When ``uses_planner_pipeline``
-            is True, returns ``ArgusTodoMiddleware`` whose system prompt and tool
-            description defer planning judgment to the planner SKILL.md.
-            Otherwise returns the upstream ``TodoMiddleware``.
 
     Returns:
-        TodoMiddleware (or subclass) instance if plan mode is enabled, None otherwise.
+        TodoMiddleware instance if plan mode is enabled, None otherwise.
     """
     if not is_plan_mode:
         return None
-
-    # [argus] Agents with uses_planner_pipeline=True have a mandatory planner
-    # skill that decides when to plan and what the steps are. The upstream
-    # system prompt below tells the agent NOT to use write_todos for "simple
-    # tasks", which contradicts the planner's "always plan" mandate.
-    # ArgusTodoMiddleware replaces only the prompt; behavior (reminders, exit
-    # prevention) inherits unchanged.
-    if agent_config is not None and getattr(agent_config, "uses_planner_pipeline", False):
-        from deerflow.agents.middlewares.argus_todo_middleware import ArgusTodoMiddleware
-
-        return ArgusTodoMiddleware()
 
     # Custom prompts matching DeerFlow's style
     system_prompt = """
@@ -517,7 +501,6 @@ def build_middlewares(
     skill_authorization=None,
     extensions=None,
     subagent_execution_capacity: int | None = None,
-    adaptive_reasoning_model=None,
 ):
     """Build the lead-agent middleware chain based on runtime configuration.
 
@@ -589,16 +572,6 @@ def build_middlewares(
     if authorization_provider is not None and deferred_setup is not None:
         runtime_middleware_kwargs["deferred_setup"] = deferred_setup
     middlewares = build_lead_runtime_middlewares(**runtime_middleware_kwargs)
-
-    if adaptive_reasoning_model is not None:
-        from deerflow.agents.middlewares.adaptive_reasoning_middleware import AdaptiveReasoningMiddleware
-
-        middlewares.append(
-            AdaptiveReasoningMiddleware(
-                adaptive_reasoning_model,
-                routine_tools=resolved_app_config.adaptive_reasoning.routine_tools,
-            )
-        )
 
     # Always inject current date (and optionally memory) as <system-reminder> into the
     # first HumanMessage to keep the system prompt fully static for prefix-cache reuse.
@@ -683,21 +656,10 @@ def build_middlewares(
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
-    # Add TodoList middleware if plan mode is enabled. [argus] An agent whose
-    # config sets uses_planner_pipeline=True is routed onto ArgusTodoMiddleware
-    # (planner-aligned prompt); other agents stay on the upstream TodoMiddleware.
+    # Add TodoList middleware if plan mode is enabled
     cfg = _get_runtime_config(config)
     is_plan_mode = cfg.get("is_plan_mode", False)
-    # [argus] Load the agent's config once here; reused by the planner-pipeline
-    # routing and the Pythia retrieval ring below. Best-effort — absence must
-    # not block the middleware build.
-    _agent_config = None
-    if agent_name:
-        try:
-            _agent_config = load_agent_config(agent_name)
-        except Exception:  # noqa: BLE001
-            _agent_config = None
-    todo_list_middleware = _create_todo_list_middleware(is_plan_mode, agent_name=agent_name, agent_config=_agent_config)
+    todo_list_middleware = _create_todo_list_middleware(is_plan_mode)
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 
@@ -764,6 +726,13 @@ def build_middlewares(
     # value ("0"/"false"/"no") disables retrieval stack-wide even for agents that
     # opt in. Leaving it unset no longer enables anything. The ring is a CEILING
     # enforced server-side in kb-api, never an escalation.
+    # Best-effort: an unreadable agent config must not block the middleware build.
+    _agent_config = None
+    if agent_name:
+        try:
+            _agent_config = load_agent_config(agent_name)
+        except Exception:  # noqa: BLE001
+            _agent_config = None
     _agent_ring = getattr(_agent_config, "pythia_ring", None)
     _flag_raw = (os.environ.get("PYTHIA_ROUTER_INJECT") or os.environ.get("PYTHIA_RETRIEVAL_ENABLED") or "").strip().lower()
     _stack_disabled = _flag_raw in ("0", "false", "no", "off")
@@ -1549,11 +1518,6 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         top_k=resolved_app_config.tool_search.auto_promote_top_k,
     )
     mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=setup.deferred_names)
-    # [argus patch #73] Adaptive reasoning: a no-thinking twin of the lead model
-    # for routine follow-ups after deterministic tools.
-    adaptive_config = getattr(resolved_app_config, "adaptive_reasoning", None)
-    adaptive_enabled = bool(adaptive_config is not None and adaptive_config.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True))
-    routine_model = create_chat_model(name=model_name, thinking_enabled=False, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides) if adaptive_enabled else None
     middlewares = build_middlewares(
         config,
         model_name=model_name,
@@ -1567,7 +1531,6 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         authorization_provider=_authz_provider,
         skill_authorization=skill_authorization,
         subagent_execution_capacity=subagent_execution_capacity,
-        adaptive_reasoning_model=routine_model,
     )
     middlewares, declared_authorized = narrow_declared_tools(
         middlewares,

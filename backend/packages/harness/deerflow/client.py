@@ -383,7 +383,6 @@ class DeerFlowClient:
             cfg.get("subagent_enabled"),
             cfg.get("max_concurrent_subagents"),
             cfg.get("max_total_subagents"),
-            cfg.get("adaptive_reasoning", True),
             self._agent_name,
             memory_enabled,
             frozenset(mcp_plugins) if mcp_plugins is not None else None,
@@ -515,10 +514,6 @@ class DeerFlowClient:
         )
         mcp_routing_hints_section = get_mcp_routing_hints_prompt_section(authorized_tools, deferred_names=deferred_setup.deferred_names)
 
-        lead_model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=self._app_config, attach_tracing=False)
-        routine_model = (
-            create_chat_model(name=model_name, thinking_enabled=False, app_config=self._app_config, attach_tracing=False) if self._app_config.adaptive_reasoning.enabled and thinking_enabled and cfg.get("adaptive_reasoning", True) else None
-        )
         middlewares, declared_authorized = narrow_declared_tools(
             build_middlewares(
                 config,
@@ -533,7 +528,6 @@ class DeerFlowClient:
                 user_id=effective_user_id,
                 authorization_provider=_authz_provider,
                 skill_authorization=skill_authorization,
-                adaptive_reasoning_model=routine_model,
                 subagent_execution_capacity=subagent_execution_capacity,
             ),
             outcome=layer_one,
@@ -553,7 +547,7 @@ class DeerFlowClient:
             # callbacks at the graph invocation root so a single embedded run
             # produces one trace with correct session_id / user_id propagation.
             # Attaching them again on the model would emit duplicate spans.
-            "model": lead_model,
+            "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled, attach_tracing=False),
             "tools": final_tools,
             "middleware": bound_middlewares,
             "system_prompt": apply_prompt_template(

@@ -173,7 +173,7 @@ def test_lead_chain_uses_the_resolved_model(monkeypatch):
     app_config = _app_config(durable_context_volatile_at_tail=True)
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
 
     def build(model_name):
         return _durable(
@@ -194,6 +194,6 @@ def test_lead_chain_default_config_is_upstream(monkeypatch):
     app_config = _app_config()
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
     durable = _durable(lead_agent_module.build_middlewares({"configurable": {"is_plan_mode": False, "subagent_enabled": False}}, model_name="local-qwen", app_config=app_config))
     assert (durable._volatile_at_tail, durable._contract_always) == (False, False)

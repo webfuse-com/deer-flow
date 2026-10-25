@@ -1972,7 +1972,6 @@ class TestEnsureAgent:
             False,
             None,
             None,
-            True,  # [argus] adaptive_reasoning
             None,
             True,
             None,

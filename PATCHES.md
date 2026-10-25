@@ -75,7 +75,8 @@ alias. Baseline facts:
   `e2e-tests-shard` job, and skill-review-ci's new `skill-tests` job skips
   sync branches like `skill-review`. Each touched section carries a "Sync
   2026-10-25" bullet. Follow-up commits on the sync branch dropped #143-#146
-  (decision d6).
+  (decision d6) and #4, #5, #7/#18, #41, #42, #54 and #73's adaptive
+  reasoning (decision d5).
 - Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
   `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
 
@@ -101,10 +102,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#1](#patch-1) | the pane shell gets only commands it will run: no history expansion, no long lines, no silent drops (re-ported 2026-10-25 inside #104; the `set +H` form was lost at the 2026-08-15 sync) | generic-upstreamable | 9b025200, sync 2026-10-25 |
 | [#2](#patch-2) | sandbox command cap as `SandboxConfig.command_max_chars` | config-expressed | 12362d06 |
 | [#3](#patch-3) | ~~loop-detection read_file bucket as config field~~ RETIRED 2026-09-23 (upstream #5578) | config-expressed | 8bf18954 |
-| [#4](#patch-4) | checkpointer `AsyncPostgresSaver.aprune` | generic-upstreamable | ef280bbb |
-| [#5](#patch-5) | per-event-loop httpx client for ChatOpenAI | generic-upstreamable | 86dcc0b2 |
 | [#6](#patch-6) | lead-agent prompt residual blocks | argus-edit | 2262cd29 |
-| [#7/#18](#patch-718) | ArgusTodoMiddleware + `uses_planner_pipeline` | argus-additive | dd5f7bfa |
 | [#9-chain](#patch-9-chain) | Telegram streaming chain (stage-emoji + HTML + webhook + welcome) | argus-edit | eb379ae8, 152a3d5e |
 | [#10](#patch-10) | Telegram channel-aware artifact presenter | argus-edit | eb379ae8 (file), 762b61eb (re-wire) |
 | [#11](#patch-11) | PythiaRetrievalMiddleware (company-KB retrieval) | argus-additive | fe44c5ba |
@@ -126,8 +124,6 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#38](#patch-38) | per-thread debug-sandbox link | argus-additive | 1aad692a, cd03995e, 2df36c99 (merge) |
 | [#39](#patch-39) | checkpointer pool bounds | generic-upstreamable | f37b8292 (PR #4 squash-merge) |
 | [#40](#patch-40) | Telegram send-path extraction to `_telegram_sender.py` | argus-edit (carry-negative refactor) | a8516b07 (PR #6 squash-merge) |
-| [#41](#patch-41) | coerce stringified write_todos arg (planner pipeline) | argus-additive | this PR |
-| [#42](#patch-42) | subtask card false-"failed" on transient SSE loading gaps | argus-edit | 68a7fd37 |
 | [#43](#patch-43) | per-run allowed-tools from schedule frontmatter | argus-additive | this PR |
 | [#44](#patch-44) | unattended-silence: an unattended blank final ends silently (at the model boundary since 2026-10-25), wider backstop; the httpx logging pin dropped 2026-10-25 (back-filled) | argus-edit | 8a256f7d |
 | [#45](#patch-45) | delivery-report callback for scheduled playbook fires (back-filled) | argus-additive | 27a20421 |
@@ -139,7 +135,6 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#51](#patch-51) | inline connector prompts on the playbook fire endpoint (back-filled) | argus-edit | 4bae86f6 |
 | [#52](#patch-52) | scheduled fires deliver to root chats only (back-filled) | argus-edit | c10080d6 |
 | [#53](#patch-53) | agent-level tool policy: an agent's `allowed_tools` is the run's ceiling whenever declared (`tool_policy.source` ignored since 2026-10-25, upstream #6935) (back-filled) | config-expressed | 457a984e |
-| [#54](#patch-54) | preserve Qwen reasoning_content across turns (PatchedChatQwen) (back-filled) | argus-additive | 77567a8f |
 | [#55](#patch-55) | SSO owner gate on single-citizen stacks | argus-edit | this PR |
 | [#56](#patch-56) | Artifact "open in new window" button opens in new tab without download | generic-upstreamable | this PR |
 | [#57](#patch-57) | tool_search's no-match reply says a directly bound tool is already bound (the prompt guidance retired 2026-10-25 with upstream #6935) | generic-upstreamable | this PR |
@@ -157,7 +152,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#70](#patch-70) | surface missing durable run-event storage (back-filled) | generic-upstreamable | 477d652a |
 | [#71](#patch-71) | dynamic subagent-type listing in the `task` tool description (was the first #65) | generic-upstreamable | 7a7a3a64, d760d406 |
 | [#72](#patch-72) | Atomic edit batching + soft execution-phase budgets | config-expressed | this PR |
-| [#73](#patch-73) | Agent execution and context efficiency controls | config-expressed | 71b4e515 |
+| [#73](#patch-73) | Agent execution and context efficiency controls (adaptive reasoning dropped 2026-10-25, decision d5) | config-expressed | 71b4e515 |
 | [#74](#patch-74) | Recursive completion-ledger compaction handoff | argus-edit | this PR |
 | [#75](#patch-75) | Preserve active user request in compaction input | argus-edit | this PR |
 | [#76](#reverted-patch-76) | reduce multi-file work-cycle churn (REVERTED 2026-08-31) | argus-edit | d29c414d, fb89651a |
@@ -372,46 +367,6 @@ carry budget ledger.
   update prepared with this sync removes `read_file_bucket_size_lines: 40`;
   the field can go once that has rolled out to every stack.
 
-## Patch #4
-
-**Patch #4 - checkpointer: add `AsyncPostgresSaver.aprune`**
-
-- Class: generic-upstreamable
-- Intent: `langgraph-checkpoint-postgres` ships `adelete_thread` but no
-  `aprune`, so checkpoint history grows unbounded with no in-process prune.
-  Adds a monkeypatched `aprune` (keep-latest + delete-all strategies),
-  self-activating from `_ensure_postgres_imports()`, idempotent, and a no-op
-  if upstream ever ships a native `aprune` (it checks before installing).
-  This is what `make prune-threads` on the host relies on.
-- Files: `backend/packages/harness/deerflow/runtime/checkpointer/_postgres_aprune.py` (NEW),
-  `backend/packages/harness/deerflow/runtime/checkpointer/async_provider.py` (EDITED, +6 import hook)
-- Tests: `backend/tests/test_postgres_aprune.py` (NEW)
-- Delete-when: upstream ships native `aprune` in `langgraph-checkpoint-postgres`
-  >= some release AND the base image consumes that version; confirm the patch
-  reports itself a no-op, then drop the file + import.
-- Upstream status: none (belongs in `langgraph-checkpoint-postgres`, not
-  deer-flow; file it there).
-
-## Patch #5
-
-**Patch #5 - models/factory: per-event-loop httpx client for ChatOpenAI**
-
-- Class: generic-upstreamable (workaround for an upstream-of-upstream bug)
-- Intent: langchain-openai caches the async httpx client in a process-global
-  lru_cache; LangGraph's loop-per-task model then reuses a client from a
-  torn-down loop and streams die with "RuntimeError: Event loop is closed" at
-  cleanup. Injects an explicit `http_async_client` keyed on `id(loop)` via a
-  `WeakValueDictionary`, only for ChatOpenAI subclasses and only when the
-  caller didn't pass one. Load-bearing but fragile: re-run its test after
-  every dependency bump.
-- Files: `backend/packages/harness/deerflow/models/factory.py` (EDITED, ~60 lines)
-- Tests: `backend/tests/test_model_factory.py` (EDITED, +cases)
-- Delete-when: `langchain-ai/langchain#35783` is fixed in a released
-  langchain-openai that the image consumes, OR DeerFlow stops sharing httpx
-  clients across loops.
-- Upstream status: issue (langchain-ai/langchain#35783, still open 2026-06);
-  subsumed-watch on that issue.
-
 ## Patch #6
 
 **Patch #6 - lead_agent/prompt: residual `<file_editing>` + `<debugging_when_stuck>` blocks**
@@ -424,7 +379,7 @@ carry budget ledger.
   the str_replace-over-write_file pillar because upstream now states it
   natively in `<critical_reminders>` (upstream #3195); only the residuals are
   carried. Pre-v2 this was two patches (#6 + #7); the todo-middleware commit
-  now claims #7, so the merged prompt patch is #6 alone.
+  claimed #7 (dropped 2026-10-25), so the merged prompt patch is #6 alone.
 - Files: `backend/packages/harness/deerflow/agents/lead_agent/prompt.py` (EDITED; the most upstream-churned file we touch)
 - Tests: `backend/tests/test_lead_agent_prompt.py` (EDITED, +cases)
 - Delete-when: never cleanly (Qwen-specific tuning); re-express via a SOUL /
@@ -435,30 +390,6 @@ carry budget ledger.
   precedent).
 - Sync 2026-09-11: upstream re-expanded `<clarification_system>` (ea9b7014, "no sibling tool calls"); kept our one-paragraph form plus one sentence carrying that rule ("Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped"). The other residual blocks auto-merged.
 - Sync 2026-09-23: upstream moved clarification guidance into `agents/interaction_policy.py` (`RunInteractionPolicy`: interactive vs scheduled vs webhook runs). The prompt template now renders `{interaction_thinking_guidance}`, `{clarification_system}` and `{clarification_reminder}`; our one-paragraph `<clarification_system>` and the two compact "ask only when material" lines are the policy's INTERACTIVE strings, and the autonomous variants are upstream's, so scheduled and webhook runs gain the "assume, record, or BLOCK" guidance. `test_interaction_policy.py` and `test_lead_agent_prompt.py` assert our wording.
-
-## Patch #7/#18
-
-**Patch #7/#18 - ArgusTodoMiddleware + `AgentConfig.uses_planner_pipeline`**
-
-- Class: argus-additive
-- Intent: A planner-aligned `TodoMiddleware` subclass whose prompt defers
-  planning judgment to the planner SKILL.md instead of upstream's "do not plan
-  simple tasks". Routed by a new `uses_planner_pipeline` flag on `AgentConfig`
-  (replaces the old `agent_name == "qwen-local-coder"` match) so glm-planner
-  and any planner/critic-pipeline agent gets it; `build_middlewares` loads the
-  agent config by name (best-effort) to read the flag. Alias note: the pre-v2
-  PATCHES.md numbered the todo middleware #8; the carried commit says
-  "#7 + #18" and that is canonical now.
-- Files: `backend/packages/harness/deerflow/agents/middlewares/argus_todo_middleware.py` (NEW),
-  `backend/packages/harness/deerflow/agents/lead_agent/agent.py` (EDITED, wiring),
-  `backend/packages/harness/deerflow/config/agents_config.py` (EDITED, flag)
-- Tests: `backend/tests/test_argus_todo_middleware.py` (NEW),
-  `backend/tests/test_lead_agent_model_resolution.py` (EDITED, factory stubs)
-- Delete-when: upstream's TodoMiddleware gains planner-alignment, or upstream
-  #3809 (pluggable middleware builder) lands in a shipped tag with a
-  `middlewares` config key accepted; then the class becomes a local plugin and
-  the `agent.py` wiring drops.
-- Upstream status: subsumed-watch (upstream #3809).
 
 ## Patch #9-chain
 
@@ -1530,76 +1461,6 @@ carry budget ledger.
 - Sync 2026-10-10: `chunk_html` measures chunks in UTF-16 code units (Telegram's unit): a chunk wider than the limit is split again at a proportionally smaller character limit. Upstream's `test_send_splits_an_emoji_heavy_final_reply_into_sendable_chunks` covers it.
 - Sync 2026-10-25: upstream #6791 (deleted reply targets in private chats) landed only in upstream's fenced send code, so it is ported by hand into `_telegram_sender.send_one`: `allow_sending_without_reply=True` for private chats (`chat_id > 0`) when replying to the bot's previous message; groups stay strict. The running reply needs no port: the stage emoji is sent without a reply target (its docstring says so; the reaction fallback has no such flag). The fence is untouched. `test_telegram_deleted_reply.py` (new upstream file): the three preview tests target the fenced copies (`_upstream_send_superseded`, `_upstream_send_running_reply_superseded`), plus four live-path tests (a private reply survives a deleted target, a group stays strict, the stage emoji is independent of the inbound message in both chat types); the live private test fails without the port. `channels/AGENTS.md` now warns that upstream's edit-in-place and Rich helpers in `telegram.py` are unreachable, so upstream send fixes must be ported into the sender. Sync checklist: diff upstream's `telegram.py` send paths against `_telegram_sender.py` every sync.
 
-## Patch #41
-
-**Patch #41 - coerce a stringified `write_todos` arg in the planner pipeline**
-
-- Class: argus-additive (edits only the argus-owned
-  `argus_todo_middleware.py`; zero upstream-file carry)
-- Intent: glm-nw sometimes double-encodes the `write_todos` tool argument -
-  `args.todos` arrives as the JSON STRING of a valid list instead of a native
-  array. Pydantic rejects it (`todos: list[Todo]`), the agent gets an error
-  ToolMessage, and `state.todos[]` never hydrates; caught by the weekly eval
-  2026-07-02 (pythia/planning on glm-planner: "write_todos was called but its
-  'todos' arg is str, expected list"). `ArgusTodoMiddleware.after_model` now
-  parses a string arg in place (only when it json-parses to a list) BEFORE
-  tool validation, so the trajectory records the normalized call and eval
-  graders stay strict. Unparseable strings keep the normal validation-error
-  path. The sibling flake (plan.json written but write_todos never called) is
-  NOT patched - it is model behavior the weekly eval baseline tracks.
-- Files: `backend/packages/harness/deerflow/agents/middlewares/argus_todo_middleware.py`
-  (argus-owned file; also refreshed its stale "qwen-local-coder" selection
-  note to the #18 `uses_planner_pipeline` gate)
-- Tests: `backend/tests/test_argus_todo_middleware.py` (+3: coercion,
-  unparseable-left-alone, native-list/other-tools untouched)
-- Delete-when: glm-nw (or a replacement planner model) reliably emits native
-  arrays, or upstream langchain's todo tool grows arg coercion.
-- Upstream status: none (candidate: the coercion is generic enough for
-  upstream langchain's TodoListMiddleware).
-
----
-
-## Patch #42
-
-**Patch #42 - subtask card false-"failed" on transient SSE loading gaps**
-
-- Class: bugfix (frontend-only; edits upstream `subtask-result.ts`,
-  `message-list.tsx`, and unit tests)
-- Intent: `derivePendingSubtaskStatus` returned `"failed"` whenever
-  `isCurrentTurnLoading` was false and no ToolMessage had arrived yet.
-  During long-running background subagent tasks (900s timeout), the SSE
-  stream can briefly show `isLoading=false` (connection pause, reconnection,
-  checkpoint flush). The `"failed"` status sticks because
-  `useUpdateSubtask`'s terminal-guard prevents `"in_progress"` from
-  overwriting a terminal status. When the ToolMessage eventually arrives,
-  `parseSubtaskResult` does set the correct status, but in some SSE
-  delivery paths the tool result is delayed or grouped differently, so the
-  false "failed" persists in the UI. The fix adds an `isLastGroup`
-  parameter: when the subagent group is still the last group in the
-  thread, the function returns `"in_progress"` instead of `"failed"`
-  (the turn may still be in progress with a transient loading=false).
-  Only when the run has moved past this group (not the last group) does
-  it return `"failed"`, preserving the "stale task from a prior turn"
-  detection.
-- Files: `frontend/src/core/tasks/subtask-result.ts` (added
-  `isLastGroup` param + JSDoc),
-  `frontend/src/components/workspace/messages/message-list.tsx` (pass
-  `isLastGroup` from the group index),
-  `frontend/tests/unit/core/tasks/subtask-result.test.ts` (updated
-  existing test to pass `false`, added test for `true` case)
-- Tests: `frontend/tests/unit/core/tasks/subtask-result.test.ts` (+1:
-  "stays in_progress for the last group even when loading is briefly false";
-  updated: "does not revive an earlier unfinished task" now passes
-  `isLastGroup=false`)
-- Delete-when: upstream's `BaseStream.isLoading` reliably stays `true`
-  during active background tool execution, or when the task_tool moves
-  to a push-based result delivery that doesn't rely on polling + SSE.
-- Upstream status: none (candidate: the race is inherent to the
-  polling-based task_tool design; upstream may have a different fix
-  approach).
-
----
-
 ## Patch #43
 
 **Patch #43 - per-run allowed-tools from schedule frontmatter**
@@ -1766,17 +1627,6 @@ carry budget ledger.
 - Sync 2026-09-11: kept; `parent_agent_allowed_tools` sits next to upstream's new `execution_capacity`/`acceptance_criteria`/recorder kwargs, `tool_policy` next to upstream's new `verification` field; upstream's `DeferredToolPromotionAuditMiddleware` is registered before `SkillToolPolicyMiddleware` as upstream requires.
 - Sync 2026-10-10: found while merging: the subagent half has been dead since upstream #4497 (2026-07-28) removed the only call to `_apply_skill_allowed_tools`, so under `tool_policy.source: agent` subagents do not receive the parent's tool ceiling. Kept as is (its tests call the method directly); re-wire or drop is an open decision.
 - Sync 2026-10-25: RE-EXPRESSED onto upstream #6935 (0d73798be), which deleted `skills/tool_policy.py` and `SkillToolPolicyMiddleware` (skill `allowed-tools` is metadata only; deletions accepted). The ceiling lives in the fork-owned `tools/agent_tool_policy.py` (`filter_tools_by_agent_allowed_tools` only), imported lazily in `_assemble_lead_agent` (a top-level import would pull `deerflow.tools.__init__` into `agent.py`'s import path). `tool_policy.source` is collapsed: `tool_policy_config.py` has `source: str | None = None`, any value loads, and a value other than `agent` logs one WARNING per value per process ("tool_policy.source='skills' is ignored ..."). The agent's `allowed_tools` (plus the schedule list, #43) applies whenever declared, on the default and the bootstrap assembly path, with no `source` check left; the lead reads `getattr(agent_config, "allowed_tools", None)`, so agent configs without the field still load. THINNED: the subagent half is removed (dead since upstream #4497, see the 2026-10-10 note; the open decision is closed): `SubagentExecutor._apply_skill_allowed_tools`, the `parent_agent_allowed_tools` init parameter and attribute, the `task_tool.py` kwarg and the `agent_allowed_tools` run-metadata key; the subagent ceiling is as wide as before (no agent or schedule ceiling). Not carried: `ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES` (`ask_clarification`, `view_image`, `read_file`, `tool_search`, `describe_skill`, `review_skill_package`): it only exempted tools from the skill policy, the agent ceiling never applied it (that gap is why #144 existed; #144 was dropped 2026-10-25, decision d6), and carrying it would widen every schedule allowlist; #162's `ask_clarification` line retires with it. Tests: `test_tool_policy_agent_source.py` rewritten (tri-state, schedule union, skill declarations are documentation, any `source` loads, an ignored value is logged once, lead assembly applies the ceiling with `source` None, agent or skills, the schedule list scopes an unrestricted agent whatever the source); `TestAgentSourceToolPolicy` removed from `test_subagent_executor.py` (upstream's `test_skill_tool_authority.py` covers "skill allowed-tools never narrow lead or subagent"). The documented rollback ("set `tool_policy.source: skills`") no longer exists. Stale text left for its owners: the `app_config.py` field description ("which allowed-tools declarations gate..."), the #43 comments in `manager.py` and `message_bus.py`, and the atlas-template comment "Rollback: set source: skills" (Argus side).
-
-## Patch #54
-
-**Patch #54 - Preserve Qwen `reasoning_content` across turns (PatchedChatQwen)** (record back-filled 2026-09-02; landed 2026-08-12 as 77567a8f)
-
-- Class: argus-additive (new model class; opt-in via `use: deerflow.models.patched_qwen:PatchedChatQwen`).
-- Intent: stock `langchain_openai` drops `reasoning_content` both ways (never extracted from responses, never re-injected on outbound serialisation), so Qwen's `preserve_thinking` template flag was a no-op for DeerFlow. PatchedChatQwen extracts `reasoning_content` on the stream (per delta) and non-stream paths into `additional_kwargs`, and re-injects it on outbound assistant messages only when the request carries `chat_template_kwargs.preserve_thinking: true`; otherwise the payload is byte-identical to stock.
-- Files: `backend/packages/harness/deerflow/models/patched_qwen.py` (new).
-- Tests: `backend/tests/test_patched_qwen.py` (red-checked against stock ChatOpenAI).
-- Delete-when: `langchain_openai` round-trips `reasoning_content` natively.
-- Upstream status: none sent; the langchain side is the real target.
 
 ## Patch #67
 
@@ -1987,16 +1837,13 @@ carry budget ledger.
 **Patch #73 - Agent execution and context efficiency controls**
 
 - Class: config-expressed (generic controls with conservative defaults; Atlas
-  opts into the routing, reasoning, and run-budget behavior in project config).
+  opts into the routing and run-budget behavior in project config).
 - Intent: reduce model round trips and prompt overhead without weakening task
-  completion. Adds deterministic high-confidence skill auto-routing, adaptive
-  no-thinking follow-ups after deterministic tools, bounded multi-file
+  completion. Adds deterministic high-confidence skill auto-routing (the
+  adaptive no-thinking follow-ups were dropped 2026-10-25), bounded multi-file
   inspect/patch tools, model-call warning/hard caps, post-write hash
   propagation, normalized tool-failure metadata, and a smaller lead prompt.
-- Files: lead-agent assembly/prompt, adaptive reasoning
-  (`backend/packages/harness/deerflow/agents/middlewares/adaptive_reasoning_middleware.py`
-  and `backend/packages/harness/deerflow/config/adaptive_reasoning_config.py`,
-  NEW; test `backend/tests/test_adaptive_reasoning_middleware.py`) and
+- Files: lead-agent assembly/prompt,
   skill-routing middleware/config, run limits, read-before-write/result
   metadata, sandbox batch tools, `config.example.yaml` and their focused tests.
 - Tests: fork PR #49 required checks, including backend, replay, and workspace
@@ -2009,6 +1856,7 @@ carry budget ledger.
 - Sync 2026-09-23: the ReadBeforeWrite uncontended `acquire(blocking=False)` fast path now lives inside upstream's cancellation-safe `_acquire_gate_lock` (#5528 family). The cancellation tests' lock doubles model a held lock for the non-blocking try.
 - Sync 2026-10-10: the uncontended-acquire shortcut in `read_before_write_middleware.py` is retired (upstream #6511's lock covers it); the write-mark call follows upstream's `_extract_tool_message(..., tool_call_id=)`. `_sync_message_status` now keeps the tool's own status under `additional_kwargs['argus_tool_status']` (`tool_reported_status()`), and the subagent executor's direct-return failure check (upstream #6083) reads that, so a direct result whose report text starts with "Error:" is not a failed subagent. #93's receipt stamp is a helper called from both the sync stamp and upstream's async twin.
 - Sync 2026-10-25: `workspace_inspect_tool`/`workspace_patch_tool` keep their names and module path (`deerflow.sandbox.tools`), placed before upstream #7374's `_reject_elision_placeholder_content`; `workspace_patch` only does `old_str`/`new_str` replacements (like `str_replace`, which upstream did not guard), so it needs no elision guard. Upstream's `test_gateway_sandbox_shutdown.py` is adapted because this patch's post-write mark reads a newly written file a second time. The adaptive-reasoning part (off on every stack since 2026-09-09) is left in place for the decision d5 follow-up.
+- Follow-up 2026-10-25 (decision d5): adaptive reasoning DROPPED. Removed `adaptive_reasoning_middleware.py`, `config/adaptive_reasoning_config.py` and `test_adaptive_reasoning_middleware.py`; `build_middlewares(adaptive_reasoning_model=)`, the routine-model build in `_assemble_lead_agent`, and in `client.py` the cache-key entry and the hoisted `lead_model`/`routine_model` (the embedded client's model line is upstream's again; `test_client.py` key tuple restored); the `AppConfig.adaptive_reasoning` field, the `config.example.yaml` block and the README clause. A stack config's top-level `adaptive_reasoning:` block still loads (AppConfig allows extra keys) and is ignored: Atlas stacks set `enabled: false`; pyrrhus and `projects/_template` set `enabled: true`, so pyrrhus loses its no-thinking follow-ups. Pinned by `test_retired_patch_config_keys.py`. The `exit_code` meta key this patch added went with #143 (decision d6).
 
 ## Patch #74
 
@@ -3131,6 +2979,27 @@ carry budget ledger.
   unchanged.
 - **#146 `tool_search.answer_bound_directly`**: decision d6, set on 0 of 22
   stacks. #57's no-match reply for a directly bound tool stays.
+- **#4 `AsyncPostgresSaver.aprune`** (`runtime/checkpointer/_postgres_aprune.py`
+  and its import hook in `async_provider.py`): decision d5, nothing called it
+  (`make prune-threads` is SQL in acropolis `scripts/prune-threads.sh`). The
+  langgraph PR draft in acropolis `docs/upstream-drafts/` can still go on its
+  own.
+- **#5 per-event-loop httpx client**: decision d5, ledger only. The code was
+  lost at the 2026-08-15 sync (`models/factory.py` equals upstream) and no
+  "Event loop is closed" was logged since; re-port only if it returns.
+- **#7/#18 ArgusTodoMiddleware and #41 stringified `write_todos` coercion**:
+  decision d5, the planner skill they deferred to left the fleet on
+  2026-08-19. Plan mode uses upstream's `TodoMiddleware` for every agent;
+  `AgentConfig.uses_planner_pipeline` is accepted and ignored (one WARNING per
+  process) because glm-planner on pythia, pyrrhus and `projects/_template`
+  sets it.
+- **#42 subtask `isLastGroup`**: ledger only, it never landed (#67 superseded
+  it).
+- **#54 PatchedChatQwen** (`models/patched_qwen.py`): decision d5, no stack
+  configures it. Upstream's `PatchedChatMiMo` is the pattern if
+  `preserve_thinking` on local-qwen comes back.
+- **#73's adaptive reasoning** (`adaptive_reasoning`): decision d5; the rest of
+  #73 stays (see its section).
 - Thinned in the merge (sections kept): #37's empty-final retry (upstream
   #5080), #44's httpx pin (upstream `UrlRedactionFilter`), #53's subagent half
   and the `tool_policy.source` switch, #57's prompt guidance (upstream #6935),

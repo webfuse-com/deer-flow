@@ -131,7 +131,7 @@ def test_lead_and_subagent_chains_follow_the_durable_context_layout(monkeypatch)
     seen = []
     monkeypatch.setattr(lead_agent_module, "build_lead_runtime_middlewares", lambda **kwargs: seen.append(kwargs) or [])
     monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda **kwargs: None)
-    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode, **kwargs: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
     run = {"configurable": {"is_plan_mode": False, "subagent_enabled": False}}
     for app_config, model_name in ((on, "local-qwen"), (on, "claude-opus-5.5"), (off, "local-qwen")):
         lead_agent_module.build_middlewares(run, model_name=model_name, app_config=app_config)

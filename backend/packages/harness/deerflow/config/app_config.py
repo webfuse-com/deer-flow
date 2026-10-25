@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationInfo, 
 
 from deerflow.config._boolean_guards import reject_boolean
 from deerflow.config.acp_config import ACPAgentConfig, load_acp_config_from_dict
-from deerflow.config.adaptive_reasoning_config import AdaptiveReasoningConfig
 from deerflow.config.agent_storage_config import AgentStorageConfig
 from deerflow.config.agents_api_config import AgentsApiConfig, load_agents_api_config_from_dict
 from deerflow.config.artifact_delivery_config import ArtifactDeliveryConfig
@@ -361,7 +360,6 @@ class AppConfig(BaseModel):
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig, description="Loop detection middleware configuration")
     tool_progress: ToolProgressConfig = Field(default_factory=ToolProgressConfig, description="Tool progress state machine middleware configuration")
     run_limits: RunLimitsConfig = Field(default_factory=RunLimitsConfig, description="Per-run wall-clock deadline configuration")
-    adaptive_reasoning: AdaptiveReasoningConfig = Field(default_factory=AdaptiveReasoningConfig, description="Adaptive per-turn thinking-mode configuration")
     verification: VerificationConfig = Field(default_factory=VerificationConfig, description="Subagent result verification (receipts, checklist, judge)")
     read_before_write: ReadBeforeWriteConfig = Field(default_factory=ReadBeforeWriteConfig, description="Read-before-write file gate middleware configuration")
     projects: ProjectsConfig = Field(default_factory=ProjectsConfig, description="User projects configuration (instructions injection, shelf index, trash retention)")
