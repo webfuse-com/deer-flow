@@ -2010,6 +2010,7 @@ carry budget ledger.
 - Delete-when: upstream adopts unified shell command classification and efficiency tracking for shell inspection.
 - Upstream status: none sent yet.
 - Sync 2026-09-11: kept; state keyed by upstream's `(thread_id, run_id)` scope key; the dead `_bash_subcategory` helper (superseded by `_bash_classify` since #83, no references) was dropped.
+- 2026-10-26 (decision d7, fleet rollout in waves): each efficiency hint is recorded as `middleware:tool_progress` with action `efficiency_hint` (`hint`, `streak` or `total_tool_calls`, `threshold`, `tool_name`, and `bash_inspections_in_streak`, which says whether a read-streak hint needed this patch to fire). The hints are injected into the model input and stored nowhere else, so without the event the rollout could not be judged. Counts only, no tool content (`test_efficiency_hints_are_recorded_with_the_bash_share_of_the_streak`).
 
 ## Patch #83
 

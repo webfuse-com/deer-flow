@@ -136,6 +136,9 @@ class RunEfficiencyState:
 
     total_tool_calls: int = 0
     read_only_streak: int = 0
+    # [argus patch #82] How much of the current streak came from bash
+    # inspections, so a recorded hint says whether it needed #82 to fire.
+    bash_inspections_in_streak: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,6 +514,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         tool_name: str,
         runtime: Runtime,
         tool_args: object = None,
+        hook: Literal["wrap_tool_call", "awrap_tool_call"] = "wrap_tool_call",
     ) -> None:
         """Queue soft phase hints when exploration or total-call budgets grow large."""
         if self._read_only_streak_threshold == 0 and self._total_tool_call_threshold == 0:
@@ -541,6 +545,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
 
         key = self._pending_key(runtime)
         hints: list[str] = []
+        recorded: list[dict[str, object]] = []
         with self._lock:
             # Ensure this thread participates in the same bounded LRU lifecycle as
             # quality tracking, including runs whose first calls are exempt tools.
@@ -550,13 +555,25 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
 
             if successful and (tool_name in self._read_only_tools or is_bash_inspection):
                 state.read_only_streak += 1
+                if is_bash_inspection:
+                    state.bash_inspections_in_streak += 1
                 if self._read_only_streak_threshold and state.read_only_streak % self._read_only_streak_threshold == 0:
                     hints.append(
                         f"[EFFICIENCY HINT] You have made {state.read_only_streak} read/search calls since the last successful file write. "
                         "Freeze the current findings, batch any final targeted reads, and move into implementation unless a concrete blocker remains."
                     )
+                    recorded.append(
+                        {
+                            "hint": "read_only_streak",
+                            "tool_name": tool_name,
+                            "streak": state.read_only_streak,
+                            "bash_inspections_in_streak": state.bash_inspections_in_streak,
+                            "threshold": self._read_only_streak_threshold,
+                        }
+                    )
             elif successful and tool_name in self._write_tools:
                 state.read_only_streak = 0
+                state.bash_inspections_in_streak = 0
 
             threshold = self._total_tool_call_threshold
             if threshold and state.total_tool_calls >= threshold:
@@ -565,9 +582,53 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                     hints.append(
                         f"[EFFICIENCY HINT] This run has used {state.total_tool_calls} tool calls. Name the current phase, freeze completed findings, batch same-file edits, and complete the next verifiable milestone before widening scope."
                     )
+                    recorded.append(
+                        {
+                            "hint": "total_tool_calls",
+                            "tool_name": tool_name,
+                            "total_tool_calls": state.total_tool_calls,
+                            "threshold": threshold,
+                        }
+                    )
 
         for hint in hints:
             self._queue_assessment(runtime, hint)
+        for changes in recorded:
+            self._record_efficiency_hint(runtime=runtime, hook=hook, changes=changes)
+
+    def _record_efficiency_hint(
+        self,
+        *,
+        runtime: Runtime,
+        hook: Literal["wrap_tool_call", "awrap_tool_call"],
+        changes: dict[str, object],
+    ) -> None:
+        """[argus patch #82] Persist one efficiency hint (counts only, no tool content).
+
+        The hints are injected into the model input and stored nowhere else, so
+        without this event a fleet rollout of bash_inspection_counts_as_read
+        could not be judged.
+        """
+        recorder, is_subagent, agent_id = resolve_audit_recorder(
+            getattr(runtime, "context", None),
+            recorder_key=TOOL_PROGRESS_RECORDER_CONTEXT_KEY,
+        )
+        if recorder is None:
+            return
+        try:
+            recorder.record_middleware(
+                tag=MIDDLEWARE_TOOL_PROGRESS_TAG,
+                name=type(self).__name__,
+                hook=hook,
+                action="efficiency_hint",
+                changes={"is_subagent": is_subagent, "agent_id": agent_id, **changes},
+            )
+        except Exception:  # noqa: BLE001
+            # Observability must never alter the progress guard or agent run.
+            logger.warning(
+                "Failed to record middleware:tool_progress efficiency hint",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # State machine
@@ -813,12 +874,12 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                     block_reason,
                 )
                 result = self._make_blocked_message(request, tool_name, block_reason)
-                self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
+                self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args, hook="awrap_tool_call")
                 return result
         result = await handler(request)
         if tool_name not in self._exempt_tools:
             result = self._update_state_from_result(result, tool_name, runtime, str(request.tool_call.get("id") or ""), hook="awrap_tool_call")
-        self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args)
+        self._record_run_efficiency(result, tool_name, runtime, tool_args=tool_args, hook="awrap_tool_call")
         return result
 
     # ------------------------------------------------------------------
