@@ -1295,7 +1295,9 @@ class TestWecomMediaUrlGate:
             finally:
                 await client.aclose()
 
-        with caplog.at_level(_logging.INFO):
+        # [argus] langfuse (patch #121) sets the httpx logger to WARNING when it
+        # is imported, so pin httpx itself to INFO, not only the root logger.
+        with caplog.at_level(_logging.INFO), caplog.at_level(_logging.INFO, logger="httpx"):
             result = _run(go())
 
         assert result == b"ok"
@@ -1334,7 +1336,9 @@ class TestWecomMediaUrlGate:
             finally:
                 await channel._client.aclose()
 
-        with caplog.at_level(_logging.INFO):
+        # [argus] langfuse (patch #121) sets the httpx logger to WARNING when it
+        # is imported, so pin httpx itself to INFO, not only the root logger.
+        with caplog.at_level(_logging.INFO), caplog.at_level(_logging.INFO, logger="httpx"):
             result = _run(go())
 
         assert result == b"ok"

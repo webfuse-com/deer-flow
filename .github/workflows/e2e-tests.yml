@@ -91,7 +91,7 @@ jobs:
         working-directory: frontend
         run: npx playwright install chromium --with-deps
 
-      - name: Run E2E tests (shard ${{ matrix.shard }} of 3)
+      - name: Run E2E tests (shard ${{ matrix.shard }} of 4)
         working-directory: frontend
         run: >-
           pnpm exec playwright test

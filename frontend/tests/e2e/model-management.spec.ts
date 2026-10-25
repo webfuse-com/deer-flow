@@ -67,6 +67,9 @@ test("administrator adds, tests, edits and disables a shared model", async ({
   });
   await page.goto(`/workspace/chats/${MOCK_THREAD_ID}?settings=models`);
   await page.getByRole("button", { name: "Add model", exact: true }).click();
+  // [argus patch #161] Provider presets are hidden, so a new model starts on
+  // the custom OpenAI-compatible endpoint, which needs a base URL.
+  await page.getByLabel("Base URL").fill("http://argus-litellm:4000/v1");
   await page.getByLabel("Model ID").fill("demo");
   await page.getByLabel("API Key", { exact: true }).fill("demo-key");
   await page.getByText("Advanced settings", { exact: true }).click();
