@@ -1289,6 +1289,42 @@ def test_read_only_streak_bash_inspection() -> None:
     assert "3 read/search calls since the last successful file write" in hints6[0]
 
 
+def test_efficiency_hints_are_recorded_with_the_bash_share_of_the_streak() -> None:
+    """[argus patch #82] The injected hints are stored nowhere else, so each is recorded.
+
+    bash_inspections_in_streak says whether a read-streak hint needed #82 to
+    fire; a write resets it with the streak. No tool content is recorded.
+    """
+    journal = MagicMock()
+    mw = _make_mw(read_only_streak_threshold=3, bash_inspection_counts_as_read=True, total_tool_call_threshold=7, total_tool_call_reminder_interval=10)
+    rt = _make_runtime()
+    rt.context["__run_journal"] = journal
+    secret = "SENSITIVE_TOOL_RESULT_MUST_NOT_BE_PERSISTED"
+
+    def call(tool_name: str, command: str | None = None) -> None:
+        args = {"command": command} if command else None
+        req = _make_tool_request(tool_name, runtime=rt, args=args)
+        msg = _make_tool_message(f"output {secret}", tool_name=tool_name)
+        mw.wrap_tool_call(req, lambda _req, m=msg: m)
+
+    call("read_file")
+    call("bash", "cat a.txt")
+    call("bash", "grep -n foo b.py")
+    call("write_file")
+    call("read_file")
+    call("grep")
+    call("read_file")
+
+    hints = [c.kwargs for c in journal.record_middleware.call_args_list if c.kwargs["action"] == "efficiency_hint"]
+    assert [h["changes"]["hint"] for h in hints] == ["read_only_streak", "read_only_streak", "total_tool_calls"]
+    first, second, total = (h["changes"] for h in hints)
+    assert (first["streak"], first["bash_inspections_in_streak"], first["threshold"], first["tool_name"]) == (3, 2, 3, "bash")
+    assert (second["streak"], second["bash_inspections_in_streak"]) == (3, 0)
+    assert (total["total_tool_calls"], total["threshold"]) == (7, 7)
+    assert all(h["tag"] == "tool_progress" and h["hook"] == "wrap_tool_call" for h in hints)
+    assert secret not in repr(journal.record_middleware.call_args_list)
+
+
 def test_successful_write_resets_read_only_streak() -> None:
     mw = _make_mw(read_only_streak_threshold=3)
     rt = _make_runtime()
