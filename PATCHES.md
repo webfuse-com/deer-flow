@@ -230,6 +230,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#163](#patch-163) | `browser_get_logs` tool (console and page-error ring buffers) and `cdp_url: sandbox`/`auto` (attach Playwright to the thread's AIO sandbox browser) (record back-filled 2026-10-25) | argus-edit | 61aaa464, 1d109b9b |
 | [#164](#patch-164) | `strip_asyncpg_only_options`: the asyncpg application URL drops libpq's `options` (record back-filled 2026-10-25) | generic-upstreamable | f04176f5 |
 | [#165](#patch-165) | `GET /api/mcp/system-tools` and the read-only system-tools list in the Capability Center (record back-filled 2026-10-25) | argus-edit | 5312b012 |
+| [#166](#patch-166) | `read_file` of a saved tool result (`/mnt/user-data/outputs/.tool-results/<name>`) is served from the thread's host outputs directory when the provider mounts thread data, so reading one back does not start a sandbox container | generic-upstreamable | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2843,6 +2844,17 @@ carry budget ledger.
 - Delete-when: the Capability Center lists configured built-in tools itself, or Argus no longer wants the list.
 - Upstream status: none sent.
 - Sync 2026-10-25: the router's import conflict is resolved as a union with upstream #7207 (`get_config` plus `forget_unconfigured_mcp_oauth_tokens`).
+
+## Patch #166
+
+**Patch #166 - A saved tool result is read where the gateway wrote it, without starting a sandbox** (2026-10-26)
+
+- Class: generic-upstreamable (`sandbox/tools.py` only).
+- Intent: atlas-nicholas 2026-10-26 09:12 CET, "What is the status for today?" took 17.7 s. The calendar (14.3K chars) and Asana (18.6K) results were over `tool_output.externalize_min_chars`, so ToolOutputBudgetMiddleware wrote them to the thread's host outputs directory and the model read them back. The thread had no sandbox yet, so the first `read_file` started one: 3.4 s to read a file the gateway had written 2 s earlier. With a mounting provider (`uses_thread_data_mounts`) that host file is the one the sandbox shows at `/mnt/user-data/outputs/<storage_subdir>/`, so `read_file` of exactly that form is now served from the host and the async entry skips the lazy acquire. Gateway logs 2026-10-23..26: 242 sandbox starts landed inside a run's tool step (median wait 4.5 s, p90 12.5 s), 74 of them on a read-back of a saved result. The sandbox can write to that directory, so the outputs directory, the results directory and the file are opened one at a time relative to each other with `O_NOFOLLOW` (FIFOs with `O_NONBLOCK`) and only a regular file is read; any other outcome (non-mounting provider, missing file, link, FIFO, other spelling of the path) reads through the sandbox exactly as before. The `sandbox:execute` authorization still runs. A ranged read mirrors `LocalSandbox.read_file` (line endings as stored, lines end at `\n`, ranged lines joined with `\n`).
+- Files: `backend/packages/harness/deerflow/sandbox/tools.py` (`_tool_results_subdir`, `_saved_tool_result_name`, `_open_saved_tool_result`, `_read_saved_tool_result`; `_read_file_from_sandbox` and `_read_file_tool_async` use them).
+- Tests: `backend/tests/test_read_saved_tool_result_host.py` (sync and async reads acquire no sandbox; ranged reads equal `LocalSandbox.read_file`; start past EOF keeps the tool contract; other paths and a configured `storage_subdir`; a non-mounting provider, a missing file, a symlinked file, a symlinked results directory and a FIFO fall back to the sandbox; a denied `sandbox:execute` still errors on both entries).
+- Delete-when: upstream reads saved tool results without a sandbox, or ToolOutputBudgetMiddleware stops saving results to the thread outputs directory.
+- Upstream status: none sent; generic for any deployment with a mounting provider (local container AIO, local sandbox).
 
 ---
 

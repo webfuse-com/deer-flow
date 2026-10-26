@@ -7,6 +7,7 @@ import os
 import posixpath
 import re
 import shlex
+import stat
 import string
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import ExitStack, asynccontextmanager, contextmanager
@@ -25,7 +26,7 @@ from deerflow.authz.sandbox_authz import (
 )
 from deerflow.config import get_app_config
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
-from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH, WRITE_ELISION_PLACEHOLDER_TEMPLATE
+from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH, TOOL_RESULTS_DIRNAME, WRITE_ELISION_PLACEHOLDER_TEMPLATE
 from deerflow.runtime.secret_context import read_active_secrets
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.env_policy import is_blocked_env_name
@@ -54,7 +55,7 @@ from deerflow.sandbox.read_file_contract import (
     READ_FILE_TRUNCATION_PREFIX,
 )
 from deerflow.sandbox.sandbox import Sandbox
-from deerflow.sandbox.sandbox_provider import SandboxProvider, get_sandbox_provider
+from deerflow.sandbox.sandbox_provider import SandboxProvider, get_initialized_sandbox_provider, get_sandbox_provider
 from deerflow.sandbox.search import GrepMatch
 from deerflow.sandbox.security import LOCAL_HOST_BASH_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.tools.types import Runtime
@@ -3215,6 +3216,111 @@ async def _grep_tool_async(
 grep_tool.coroutine = _grep_tool_async
 
 
+def _tool_results_subdir() -> str:
+    config = safe_app_config()
+    subdir = getattr(getattr(config, "tool_output", None), "storage_subdir", None)
+    return subdir if isinstance(subdir, str) and subdir else TOOL_RESULTS_DIRNAME
+
+
+def _saved_tool_result_name(path: object) -> str | None:
+    """[argus patch #166] File name when ``path`` names a saved tool result.
+
+    Only the exact form ToolOutputBudgetMiddleware hands the model qualifies:
+    ``/mnt/user-data/outputs/<storage_subdir>/<name>`` with a single plain name.
+    Any other spelling goes through the sandbox as before.
+    """
+    if not isinstance(path, str) or "\x00" in path:
+        return None
+    prefix = f"{VIRTUAL_PATH_PREFIX}/outputs/{_tool_results_subdir()}/"
+    if not path.startswith(prefix):
+        return None
+    name = path[len(prefix) :]
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        return None
+    return name
+
+
+def _open_saved_tool_result(runtime: Runtime | None, path: str) -> int | None:
+    """[argus patch #166] Open a saved tool result where the gateway wrote it.
+
+    ToolOutputBudgetMiddleware writes saved results into the thread's host
+    outputs directory, which a mounting provider shows inside the sandbox at
+    ``/mnt/user-data/outputs``. Reading the host copy returns the same bytes
+    without starting a container for a thread that has none yet. The sandbox
+    can write to that directory, so each component is opened relative to its
+    parent without following links, and only a regular file is accepted.
+    Returns an open descriptor, or None so the caller reads through the
+    sandbox exactly as before (a non-mounting provider, a missing file, a
+    link or any other surprise).
+    """
+    name = _saved_tool_result_name(path)
+    if name is None or os.name != "posix" or os.open not in os.supports_dir_fd:
+        return None
+    thread_data = get_thread_data(runtime)
+    outputs_path = thread_data.get("outputs_path") if thread_data else None
+    if not outputs_path:
+        return None
+    try:
+        provider = get_initialized_sandbox_provider() or get_sandbox_provider()
+    except Exception:
+        logger.debug("No sandbox provider for a host read of %s", path, exc_info=True)
+        return None
+    if not getattr(provider, "uses_thread_data_mounts", False):
+        return None
+    no_follow = os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        outputs_fd = os.open(outputs_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            subdir_fd = os.open(_tool_results_subdir(), os.O_RDONLY | os.O_DIRECTORY | no_follow, dir_fd=outputs_fd)
+        finally:
+            os.close(outputs_fd)
+        try:
+            # O_NONBLOCK keeps a planted FIFO from blocking the open.
+            fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | no_follow, dir_fd=subdir_fd)
+        finally:
+            os.close(subdir_fd)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return None
+        os.set_blocking(fd, True)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _read_saved_tool_result(
+    runtime: Runtime | None,
+    path: str,
+    *,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str | None:
+    """[argus patch #166] Host read of a saved tool result, or None to use the sandbox.
+
+    Mirrors ``LocalSandbox.read_file``: line endings as stored, lines end only
+    at ``\\n``, and a ranged read joins the selected lines with ``\\n``.
+    """
+    fd = _open_saved_tool_result(runtime, path)
+    if fd is None:
+        return None
+    with os.fdopen(fd, encoding="utf-8", newline="\n") as f:
+        if start_line is None and end_line is None:
+            return f.read()
+        start = max(start_line or 1, 1)
+        selected: list[str] = []
+        for line_number, line in enumerate(f, start=1):
+            if line_number < start:
+                continue
+            if end_line is not None and line_number > end_line:
+                break
+            selected.append(line.rstrip("\r\n"))
+        return "\n".join(selected)
+
+
 def _read_file_from_sandbox(
     runtime: Runtime | None,
     path: str,
@@ -3223,6 +3329,12 @@ def _read_file_from_sandbox(
     end_line: int | None = None,
 ) -> str:
     """Read through the sandbox while preserving provider-owned mount paths."""
+    if runtime is not None and _saved_tool_result_name(path) is not None:
+        # Same sandbox:execute policy as the sandbox read it replaces.
+        with sandbox_authorization_scope(runtime):
+            content = _read_saved_tool_result(runtime, path, start_line=start_line, end_line=end_line)
+        if content is not None:
+            return content
     sandbox = ensure_sandbox_initialized(runtime)
     ensure_thread_directories_exist(runtime)
     if is_local_sandbox(runtime):
@@ -3330,6 +3442,17 @@ async def _read_file_tool_async(
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> str:
+    if _saved_tool_result_name(path) is not None:
+        # [argus patch #166] A saved tool result the host can serve needs no
+        # sandbox, so skip the lazy acquire that would start one.
+        try:
+            async with sandbox_authorization_scope_async(runtime):
+                fd = await run_sync_lifecycle_operation(_open_saved_tool_result, runtime, path)
+                if fd is not None:
+                    os.close(fd)
+                    return await run_sync_lifecycle_operation(read_file_tool.func, runtime, path, description, start_line, end_line)
+        except SandboxError as e:
+            return f"Error: {e}"
     return await _run_sync_tool_after_async_sandbox_init(read_file_tool.func, runtime, path, description, start_line, end_line)
 
 
