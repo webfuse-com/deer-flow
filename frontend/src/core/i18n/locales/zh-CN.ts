@@ -1521,6 +1521,18 @@ export const zhCN: Translations = {
     pinChat: "置顶对话",
     unpinChat: "取消置顶",
     pinChatFailed: "更新对话置顶状态失败",
+    listFilters: {
+      label: "显示",
+      all: "全部",
+      mine: "我的",
+      scheduled: "定时",
+      channels: "Telegram",
+      project: "项目中",
+      pinned: "已置顶",
+      builders: "构建器",
+      artifacts: "产出文件",
+      empty: "没有符合此筛选的对话",
+    },
   },
 
   // Thread origin and unread markers

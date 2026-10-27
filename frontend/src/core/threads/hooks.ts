@@ -44,6 +44,7 @@ import {
   searchThreadsByArchive,
   type ThreadMetadataPatch,
 } from "./api";
+import { threadMatchesListFilter, type ThreadListFilter } from "./list-filter";
 import {
   dedupeMessagesByIdentity,
   insertByTrustedSeq,
@@ -1761,9 +1762,14 @@ export function upsertThreadInInfiniteCache(
 ) {
   // Run-created snapshots do not carry archive metadata. Let the server
   // decide membership instead of injecting a running chat into both views.
-  const hasArchiveFilter = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-    typeof (queryKey[2] as InfiniteThreadsParams | undefined)?.archived ===
-    "boolean";
+  // [argus patch #169] Likewise for a list filtered by a Chats page chip.
+  const hasArchiveFilter = ({ queryKey }: { queryKey: readonly unknown[] }) => {
+    const params = queryKey[2] as InfiniteThreadsParams | undefined;
+    return (
+      typeof params?.archived === "boolean" ||
+      (params?.listFilter !== undefined && params.listFilter !== "all")
+    );
+  };
   void queryClient.invalidateQueries({
     queryKey: INFINITE_THREADS_QUERY_KEY_PREFIX,
     predicate: hasArchiveFilter,
@@ -3406,7 +3412,11 @@ export const INFINITE_THREADS_QUERY_KEY_PREFIX = [
 type InfiniteThreadsParams = Omit<
   NonNullable<Parameters<ThreadsClient["search"]>[0]>,
   "limit" | "offset"
-> & { archived?: boolean };
+> & {
+  archived?: boolean;
+  /** [argus patch #169] Chats page chip, applied to every fetched row. */
+  listFilter?: ThreadListFilter;
+};
 
 type InfiniteThreadsSearchClient = {
   threads: {
@@ -3435,31 +3445,49 @@ export async function fetchInfiniteThreadsPage(
   pageParam: number,
   pageSize: number = INFINITE_THREADS_PAGE_SIZE,
 ): Promise<InfiniteThreadsPage> {
+  const { listFilter, ...searchParams } = params;
   const threads: AgentThread[] = [];
   let offset = pageParam;
   let hasMore = true;
 
   while (threads.length < pageSize) {
-    const currentLimit = pageSize - threads.length;
+    // [argus patch #169] A chip can hide most rows, so it asks for full
+    // pages and stops consuming rows once the visible page is full.
+    const currentLimit =
+      listFilter === undefined ? pageSize - threads.length : pageSize;
     const response =
-      params.archived === undefined
+      searchParams.archived === undefined
         ? ((await apiClient.threads.search<AgentThreadState>({
-            ...params,
+            ...searchParams,
             limit: currentLimit,
             offset,
           })) as AgentThread[])
         : await searchThreadsByArchive({
-            ...params,
-            archived: params.archived,
-            metadata: params.metadata ?? undefined,
+            ...searchParams,
+            archived: searchParams.archived,
+            metadata: searchParams.metadata ?? undefined,
             limit: currentLimit,
             offset,
           });
 
-    threads.push(...filterThreadSearchResults(response, params));
-    offset += response.length;
+    const shown = new Set(filterThreadSearchResults(response, searchParams));
+    let consumed = 0;
+    for (const thread of response) {
+      if (threads.length >= pageSize) {
+        break;
+      }
+      consumed += 1;
+      if (
+        shown.has(thread) &&
+        (listFilter === undefined ||
+          threadMatchesListFilter(thread, listFilter))
+      ) {
+        threads.push(thread);
+      }
+    }
+    offset += consumed;
 
-    if (response.length < currentLimit) {
+    if (consumed === response.length && response.length < currentLimit) {
       hasMore = false;
       break;
     }

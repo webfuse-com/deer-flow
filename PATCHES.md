@@ -231,6 +231,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#164](#patch-164) | `strip_asyncpg_only_options`: the asyncpg application URL drops libpq's `options` (record back-filled 2026-10-25) | generic-upstreamable | f04176f5 |
 | [#165](#patch-165) | `GET /api/mcp/system-tools` and the read-only system-tools list in the Capability Center (record back-filled 2026-10-25) | argus-edit | 5312b012 |
 | [#166](#patch-166) | `read_file` of a saved tool result (`/mnt/user-data/outputs/.tool-results/<name>`) is served from the thread's host outputs directory when the provider mounts thread data, so reading one back does not start a sandbox container | generic-upstreamable | this PR |
+| [#169](#patch-169) | Filter chips on the Chats page (All, Mine, Scheduled, Telegram, In a project, Pinned, Builders, Artifacts); origin chips filter in the infinite-list page loop, flag chips through the search API's exact-match metadata filter | generic-upstreamable (origin and pin chips) + argus (Aeacus, legacy `:sched:` chat ids, Builders/Artifacts flags) | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2856,6 +2857,20 @@ carry budget ledger.
 - Tests: `backend/tests/test_read_saved_tool_result_host.py` (sync and async reads acquire no sandbox; ranged reads equal `LocalSandbox.read_file`; start past EOF keeps the tool contract; other paths and a configured `storage_subdir`; a non-mounting provider, a missing file, a symlinked file, a symlinked results directory and a FIFO fall back to the sandbox; a denied `sandbox:execute` still errors on both entries).
 - Delete-when: upstream reads saved tool results without a sandbox, or ToolOutputBudgetMiddleware stops saving results to the thread outputs directory.
 - Upstream status: none sent; generic for any deployment with a mounting provider (local container AIO, local sandbox).
+
+---
+
+## Patch #169
+
+**Patch #169 - Filter chips on the Chats page** (2026-10-27)
+
+- Class: generic-upstreamable for the chip row, the page-loop filter and the origin, project and pin chips (they read only DeerFlow's own `deerflow_origin`, `channel_source`, `scheduled_task_id`, `deerflow_project_id` and `deerflow_pinned`); argus for three rules in `list-filter.ts`: an `aeacus` tag counts as Scheduled, a Telegram `chat_id` containing `:sched:` (schedule chats from before the `sched:<id>` topic of #116) counts as Scheduled, and the Builders/Artifacts chips read `argus_builder` / `argus_artifact`, which the Argus extension sets (acropolis `services/argus-deerflow-extension`, `observers/chat_marks.py`).
+- Intent: Nicholas 2026-10-27, the chat list "is now lingered with different chats" (Telegram, schedules, projects, builders, artifacts) and he wants to "quickly filter through my important threads" without a large fork. On atlas-nicholas 272 of 517 chats updated in the 60 days to 10-27 were started by a schedule, Telegram or Aeacus; fleet-wide 1,225 of 2,255 (54%).
+- Behavior: one `ToggleGroup` under the search box. Mine = no origin and not Scheduled; Scheduled = origin `schedule` (which #116 already gives `sched:` topics), legacy `:sched:` chat ids, or `aeacus`; Telegram = origin `im_channel` and not Scheduled; In a project = `deerflow_project_id`; Pinned/Builders/Artifacts = the boolean flag, sent to `POST /api/threads/search` as `metadata: {<flag>: true}` (exact match, no backend change). The chip lives in `InfiniteThreadsParams.listFilter`, which `fetchInfiniteThreadsPage` strips from the request and applies to every row next to the sidecar filter; with a chip it asks for full pages and stops consuming rows once the visible page is full, so `hiddenCount` and the next offset stay exact. `upsertThreadInInfiniteCache` leaves a chip-filtered list to the server, as it does for archive-filtered lists. `?show=<chip>` wins over the browser's saved chip (`deerflow.chats-filter` in localStorage, read through `useSyncExternalStore` so server render waits instead of loading All first); All clears the parameter. Search, the Active/Archived tabs and infinite scroll compose with every chip. No counts on the chips (they would need every page). Default view stays All (Nicholas, 10-27).
+- Files: `frontend/src/core/threads/list-filter.ts` (new), `frontend/src/core/threads/hooks.ts` (`InfiniteThreadsParams.listFilter`, `fetchInfiniteThreadsPage`, `upsertThreadInInfiniteCache`), `frontend/src/app/workspace/chats/page.tsx`, en/zh `chats.listFilters` strings and their type.
+- Tests: `frontend/tests/unit/core/threads/list-filter.test.ts` (each chip against the metadata shapes atlas-nicholas carried on 10-27; only flag chips go to the server), `infinite.test.ts` (a chip keeps fetching until the page is full and never reaches the API; a full page stops at the row that filled it; a chip-filtered cache is not prepended to), `frontend/tests/e2e/argus-chat-filters.spec.ts` (chips filter the list, Builders sends the server filter, the address carries the chip, the last chip comes back on a plain visit, All clears it).
+- Delete-when: upstream ships list filters on the Chats page; the Aeacus, legacy `:sched:` and Builders/Artifacts rules then move to an extension slot if upstream offers one.
+- Upstream status: none sent; candidate for the first upstream batch (decision d11, 2026-10-25) without the argus rules.
 
 ---
 
