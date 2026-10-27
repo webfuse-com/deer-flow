@@ -222,6 +222,39 @@ test("validates optional mention providers independently for each installed modu
   }
 });
 
+// [argus patch #167]
+test("validates optional command providers independently for each installed module", async () => {
+  const assets = {
+    ...entry,
+    transport: "assets-v1" as const,
+    entry: `/api/plugins/${entry.namespace}/assets/${"b".repeat(64)}/index.mjs`,
+  };
+  const provider = { id: "apps", label: "Apps", items: async () => [] };
+  for (const commandProviders of [
+    null,
+    [provider, provider],
+    [{ ...provider, items: null }],
+    [{ ...provider, id: "../bad" }],
+    [{ ...provider, label: " " }],
+    [{ ...provider, icon: 7 }],
+    Array(9).fill(provider),
+  ]) {
+    const importer = rs
+      .fn()
+      .mockResolvedValueOnce({ default: { ...extension, commandProviders } })
+      .mockResolvedValueOnce({
+        default: { ...extension, commandProviders: [provider] },
+      });
+    const loaded = await loadFrontendExtensions(
+      [assets, assets],
+      rs.fn(),
+      importer,
+    );
+    expect(loaded[0]?.error).toBeTruthy();
+    expect(loaded[1]?.extension?.commandProviders).toEqual([provider]);
+  }
+});
+
 for (const field of ["mentionProviders", "surfaces"] as const) {
   for (const [name, id] of [
     ["omitted", undefined],

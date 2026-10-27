@@ -1,6 +1,8 @@
 import {
+  AppWindowIcon,
   BellIcon,
   BookmarkIcon,
+  BriefcaseIcon,
   DownloadIcon,
   FileJsonIcon,
   FileTextIcon,
@@ -17,8 +19,10 @@ import type { FrontendContribution, FrontendExtension } from "./contracts";
 
 export function extensionIcon(name?: string): LucideIcon {
   const icons: Record<string, LucideIcon> = {
+    "app-window": AppWindowIcon, // [argus patch #167] palette groups
     bell: BellIcon,
     bookmark: BookmarkIcon,
+    briefcase: BriefcaseIcon, // [argus patch #167]
     download: DownloadIcon,
     "file-json": FileJsonIcon,
     "file-text": FileTextIcon,
@@ -108,6 +112,31 @@ export async function loadFrontendExtensions(
               typeof provider.search !== "function"
             )
               throw new Error("Invalid mention provider");
+            seen.add(provider.id);
+          }
+        }
+        // [argus patch #167] Command-palette groups.
+        if (loadedModule.commandProviders !== undefined) {
+          const seen = new Set<string>();
+          if (
+            !Array.isArray(loadedModule.commandProviders) ||
+            loadedModule.commandProviders.length > 8
+          )
+            throw new Error("Invalid command providers");
+          for (const provider of loadedModule.commandProviders) {
+            if (
+              !provider ||
+              typeof provider.id !== "string" ||
+              !/^[a-z][a-z0-9-]{0,63}$/.test(provider.id) ||
+              seen.has(provider.id) ||
+              typeof provider.label !== "string" ||
+              !provider.label.trim() ||
+              provider.label.length > 120 ||
+              (provider.icon !== undefined &&
+                typeof provider.icon !== "string") ||
+              typeof provider.items !== "function"
+            )
+              throw new Error("Invalid command provider");
             seen.add(provider.id);
           }
         }

@@ -231,6 +231,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#164](#patch-164) | `strip_asyncpg_only_options`: the asyncpg application URL drops libpq's `options` (record back-filled 2026-10-25) | generic-upstreamable | f04176f5 |
 | [#165](#patch-165) | `GET /api/mcp/system-tools` and the read-only system-tools list in the Capability Center (record back-filled 2026-10-25) | argus-edit | 5312b012 |
 | [#166](#patch-166) | `read_file` of a saved tool result (`/mnt/user-data/outputs/.tool-results/<name>`) is served from the thread's host outputs directory when the provider mounts thread data, so reading one back does not start a sandbox container | generic-upstreamable | this PR |
+| [#167](#patch-167) | The command palette lists the stack's projects and groups that browser extensions contribute (`commandProviders`), and an Apps entry in the sidebar opens it and shows its shortcut | generic-upstreamable (hook) + argus (sidebar entry) | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2856,6 +2857,20 @@ carry budget ledger.
 - Tests: `backend/tests/test_read_saved_tool_result_host.py` (sync and async reads acquire no sandbox; ranged reads equal `LocalSandbox.read_file`; start past EOF keeps the tool contract; other paths and a configured `storage_subdir`; a non-mounting provider, a missing file, a symlinked file, a symlinked results directory and a FIFO fall back to the sandbox; a denied `sandbox:execute` still errors on both entries).
 - Delete-when: upstream reads saved tool results without a sandbox, or ToolOutputBudgetMiddleware stops saving results to the thread outputs directory.
 - Upstream status: none sent; generic for any deployment with a mounting provider (local container AIO, local sandbox).
+
+---
+
+## Patch #167
+
+**Patch #167 - The command palette finds apps, projects and company tools, and the sidebar opens it** (2026-10-27)
+
+- Class: generic-upstreamable for the `commandProviders` extension slot and the Projects group; argus for the sidebar entry's place in `workspace-nav-chat-list.tsx`.
+- Intent: Nicholas 2026-10-27, "it is sometimes hard for me to find the right app": Ctrl/Cmd+K offered three fixed actions and nothing on screen said it existed. The palette now lists the stack's active projects (matched on name and the Argus slug in `presentation.argus_slug`, so "sem" finds Semantic Selectors) and any groups a browser extension contributes; Atlas's extension contributes Agora apps and company tools. An "Apps" entry after Agents opens the same dialog and shows the shortcut (icon only, with a tooltip, in the collapsed rail). The extension hook follows the upstream rule in AGENTS.md: a generic slot plus an extension, no business data in core.
+- Contract: `FrontendExtension.commandProviders` (at most 8, `{id, label, icon?, items(context)}`), validated in `registry.ts` like `mentionProviders`. `core/extensions/commands.ts` loads them when the palette opens (cached 5 minutes): one 3 s deadline per provider, a failing provider drops only its group, at most 300 entries each, and an entry's `href` must be an `https:` URL without credentials (opened in a new tab with `noopener`) or a `/workspace/` path (router push). cmdk values carry the label (unique per palette) and `keywords` the extra terms, so an opaque id never matches a search.
+- Files: `frontend/src/components/workspace/command-palette.tsx`, `command-palette-store.ts` (shared open state, `useMetaKeyLabel`), `workspace-nav-chat-list.tsx`, `frontend/src/core/extensions/{contracts,registry,commands}.ts`, en/zh locale strings.
+- Tests: `frontend/tests/unit/core/extensions/commands.test.ts` (href rules, invalid/duplicate/unsafe entries dropped, failing and disabled providers, cancellation), `registry.test.ts` (provider validation), `workspace-nav-chat-list.dom.test.tsx` (the Apps entry opens the palette and shows the shortcut).
+- Delete-when: upstream ships a palette extension point; the sidebar entry stays argus.
+- Upstream status: none sent.
 
 ---
 

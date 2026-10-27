@@ -107,6 +107,29 @@ export type MentionProvider = {
   ) => Promise<readonly { id: string; label: string; description?: string }[]>;
 };
 
+/** [argus patch #167] One command-palette entry. `href` is an absolute
+ * https: URL (opened in a new tab) or a `/workspace/` path. */
+export type CommandEntry = {
+  id: string;
+  label: string;
+  description?: string;
+  /** Extra search terms (slug, alternative names); never shown. */
+  keywords?: readonly string[];
+  href: string;
+};
+export type CommandContext = Pick<
+  SurfaceContext,
+  "namespace" | "locale" | "settings" | "signal" | "callBackend"
+>;
+/** [argus patch #167] A group of command-palette entries, loaded when the
+ * palette opens and filtered in the browser. */
+export type CommandProvider = {
+  id: string;
+  label: string;
+  icon?: string;
+  items: (context: CommandContext) => Promise<readonly CommandEntry[]>;
+};
+
 /** Browser package API v1. Modules are installed by trusted deployment operators. */
 export interface FrontendExtension {
   apiVersion: 1;
@@ -114,6 +137,7 @@ export interface FrontendExtension {
   icon?: string;
   surfaces?: PluginSurface[];
   mentionProviders?: MentionProvider[];
+  commandProviders?: CommandProvider[];
   conversationActions?: (
     t: Translations,
     locale?: string,
