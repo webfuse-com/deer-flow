@@ -231,6 +231,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#164](#patch-164) | `strip_asyncpg_only_options`: the asyncpg application URL drops libpq's `options` (record back-filled 2026-10-25) | generic-upstreamable | f04176f5 |
 | [#165](#patch-165) | `GET /api/mcp/system-tools` and the read-only system-tools list in the Capability Center (record back-filled 2026-10-25) | argus-edit | 5312b012 |
 | [#166](#patch-166) | `read_file` of a saved tool result (`/mnt/user-data/outputs/.tool-results/<name>`) is served from the thread's host outputs directory when the provider mounts thread data, so reading one back does not start a sandbox container | generic-upstreamable | this PR |
+| [#168](#patch-168) | Chat header: Export and Artifacts are icon-only, and the Browser trigger appears only once the agent has browsed in the thread | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2856,6 +2857,19 @@ carry budget ledger.
 - Tests: `backend/tests/test_read_saved_tool_result_host.py` (sync and async reads acquire no sandbox; ranged reads equal `LocalSandbox.read_file`; start past EOF keeps the tool contract; other paths and a configured `storage_subdir`; a non-mounting provider, a missing file, a symlinked file, a symlinked results directory and a FIFO fall back to the sandbox; a denied `sandbox:execute` still errors on both entries).
 - Delete-when: upstream reads saved tool results without a sandbox, or ToolOutputBudgetMiddleware stops saving results to the thread outputs directory.
 - Upstream status: none sent; generic for any deployment with a mounting provider (local container AIO, local sandbox).
+
+---
+
+## Patch #168
+
+**Patch #168 - A quieter chat header: icon-only Export and Artifacts, Browser only after the agent browsed** (2026-10-27)
+
+- Class: argus-edit.
+- Intent: Nicholas 2026-10-27, after the 2026-10-25 sync took upstream's chat header (decision d9 dropped #65's header half): "I now have the 'Open Browser Panel' and again text next to icons in the top (export, artifacts) - we should clean that up. The browser panel doesn't do anything I believe." Export and Artifacts go back to icon-only (their tooltips and aria-labels name them). The Browser trigger renders only when the browser view holds a frame, i.e. after an agent browser tool returned a screenshot in this thread, so it reopens that panel; the panel still opens by itself on a new frame. The manual live browser behind an empty panel never worked on Argus: every `/api/threads/{id}/browser/stream` WebSocket in the week to 2026-10-27 got 403, all on atlas-nicholas (7 of 7). Re-enable the empty-panel trigger if that stream is fixed.
+- Files: `frontend/src/components/workspace/browser-view/browser-trigger.tsx`, `export-trigger.tsx`, `artifacts/artifact-trigger.tsx`.
+- Tests: `frontend/tests/e2e/browser-feature.spec.ts` (shown after an agent frame, hidden before, hidden when disabled), `agent-chat.spec.ts` (the agent's frame opens the panel; the trigger closes and reopens it), `argus-chat-header.spec.ts` (no browser trigger without a frame; Export has no visible text).
+- Delete-when: Argus wants upstream's header back, or the live browser stream works on Argus (then restore only the trigger).
+- Upstream status: none (deployment choice).
 
 ---
 

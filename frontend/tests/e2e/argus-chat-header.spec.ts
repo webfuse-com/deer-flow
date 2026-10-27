@@ -3,7 +3,8 @@ import { expect, test } from "@playwright/test";
 import { mockLangGraphAPI, MOCK_THREAD_ID } from "./utils/mock-api";
 
 // Argus header controls (patch #38 debug sandbox, patch #88 Internalize) sit
-// next to upstream's token, browser and export controls.
+// next to upstream's token and export controls. Patch #168: Export is
+// icon-only and the browser trigger waits for an agent browser frame.
 test("chat header shows the Argus controls next to upstream's", async ({
   page,
 }) => {
@@ -80,7 +81,7 @@ test("chat header shows the Argus controls next to upstream's", async ({
   const tokensButton = header.getByRole("button", { name: /Tokens/ });
   await expect(tokensButton).toBeVisible({ timeout: 15_000 });
   await expect(tokensButton).toContainText("25%");
-  await expect(page.getByTestId("browser-trigger")).toBeVisible();
+  await expect(page.getByTestId("browser-trigger")).toHaveCount(0);
   await expect(
     header.getByRole("button", { name: "Live Desktop & Browser" }),
   ).toBeVisible();
@@ -96,6 +97,7 @@ test("chat header shows the Argus controls next to upstream's", async ({
 
   const exportButton = header.getByRole("button", { name: "Export" });
   await expect(exportButton).toBeVisible();
+  await expect(exportButton).toHaveText("");
   await exportButton.click();
   await expect(page.getByText("Export as Markdown")).toBeVisible();
 });

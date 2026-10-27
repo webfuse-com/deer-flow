@@ -21,6 +21,7 @@ export const ArtifactTrigger = () => {
       <Button
         aria-label={t.common.showArtifacts}
         className="text-muted-foreground hover:text-foreground"
+        size="icon"
         variant="ghost"
         data-testid="artifact-trigger"
         onClick={() => {
@@ -28,8 +29,8 @@ export const ArtifactTrigger = () => {
           setArtifactsOpen(true);
         }}
       >
+        {/* [argus patch #168] icon only; the tooltip names it */}
         <FilesIcon />
-        <span className="hidden sm:inline">{t.common.artifacts}</span>
       </Button>
     </Tooltip>
   );
