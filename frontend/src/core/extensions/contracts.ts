@@ -127,6 +127,8 @@ export type CommandProvider = {
   id: string;
   label: string;
   icon?: string;
+  /** Before the host's Projects group ("start") or after it (default). */
+  position?: "start" | "end";
   items: (context: CommandContext) => Promise<readonly CommandEntry[]>;
 };
 

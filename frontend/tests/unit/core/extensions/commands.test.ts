@@ -82,6 +82,7 @@ describe("extension commands", () => {
         key: "argus/apps",
         label: "Apps",
         icon: "app-window",
+        position: "end",
         items: [
           {
             id: "a",

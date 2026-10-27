@@ -134,6 +134,9 @@ export async function loadFrontendExtensions(
               provider.label.length > 120 ||
               (provider.icon !== undefined &&
                 typeof provider.icon !== "string") ||
+              (provider.position !== undefined &&
+                provider.position !== "start" &&
+                provider.position !== "end") ||
               typeof provider.items !== "function"
             )
               throw new Error("Invalid command provider");

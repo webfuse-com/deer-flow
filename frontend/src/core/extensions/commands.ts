@@ -42,6 +42,7 @@ export type CommandGroup = {
   key: string;
   label: string;
   icon?: string;
+  position: "start" | "end";
   items: CommandGroupItem[];
 };
 
@@ -131,6 +132,7 @@ export async function loadExtensionCommands(
           key: `${contribution.namespace}/${provider.id}`,
           label: provider.label,
           ...(provider.icon ? { icon: provider.icon } : {}),
+          position: provider.position === "start" ? "start" : "end",
           items: validEntries(candidates),
         };
         return { group, failed: false };

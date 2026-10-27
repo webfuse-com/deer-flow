@@ -6,12 +6,13 @@ import {
   KeyboardIcon,
   MessageSquarePlusIcon,
   SettingsIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import {
-  CommandDialog,
+  Command,
   CommandEmpty,
   CommandGroup,
   CommandInput,
@@ -37,6 +38,7 @@ import { useI18n } from "@/core/i18n/hooks";
 import { useProjects } from "@/core/projects";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
 
+import { rankCommandGroups } from "./command-palette-search";
 import {
   setCommandPaletteOpen,
   useCommandPaletteOpen,
@@ -44,16 +46,21 @@ import {
 } from "./command-palette-store";
 import { useSettingsDialog } from "./settings";
 
-/** [argus patch #167] cmdk selects by value, so values must be unique; they
- * also take part in matching, so they carry the label, not an opaque id. */
-function uniqueValues() {
-  const seen = new Map<string, number>();
-  return (value: string) => {
-    const count = (seen.get(value) ?? 0) + 1;
-    seen.set(value, count);
-    return count === 1 ? value : `${value} ${count}`;
-  };
-}
+// [argus patch #167] CommandDialog's styling, composed here because the
+// palette turns cmdk's own filter off (command-palette-search.ts ranks).
+const COMMAND_CLASSES =
+  "[&_[cmdk-group-heading]]:text-muted-foreground **:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5";
+
+type PaletteItem = {
+  key: string;
+  label: string;
+  description?: string;
+  keywords?: readonly string[];
+  icon: LucideIcon;
+  shortcut?: ReactNode;
+  run: () => void;
+};
+type PaletteGroup = { key: string; heading: string; items: PaletteItem[] };
 
 export function CommandPalette() {
   const { t, locale } = useI18n();
@@ -100,7 +107,11 @@ export function CommandPalette() {
 
   const shortcuts = useMemo(
     () => [
-      { key: "k", meta: true, action: () => setCommandPaletteOpen((o) => !o) },
+      {
+        key: "k",
+        meta: true,
+        action: () => setCommandPaletteOpen((o) => !o),
+      },
       { key: "n", meta: true, shift: true, action: handleNewChat },
       { key: ",", meta: true, action: handleOpenSettings },
       { key: "/", meta: true, action: handleShowShortcuts },
@@ -112,94 +123,112 @@ export function CommandPalette() {
 
   const metaKey = useMetaKeyLabel();
   const shiftKey = metaKey === "⌘" ? "⇧" : "Shift+";
-  const valueOf = uniqueValues();
 
+  // Default order: extension groups placed at the start (Atlas: Apps), the
+  // stack's projects, the other extension groups, then the fixed actions.
+  const groups = useMemo<PaletteGroup[]>(() => {
+    const extensionGroups = (position: "start" | "end") =>
+      (commands.data?.groups ?? [])
+        .filter((group) => group.position === position)
+        .map((group) => {
+          const icon = extensionIcon(group.icon);
+          return {
+            key: group.key,
+            heading: group.label,
+            items: group.items.map((item) => ({
+              key: `${group.key}:${item.id}`,
+              label: item.label,
+              description: item.description,
+              keywords: item.keywords,
+              icon,
+              run: () => handleOpenHref(item),
+            })),
+          };
+        });
+    return [
+      ...extensionGroups("start"),
+      {
+        key: "projects",
+        heading: t.shortcuts.projects,
+        items: (projects ?? []).map((project) => {
+          const slug = project.presentation?.argus_slug;
+          return {
+            key: `project:${project.id}`,
+            label: project.name,
+            keywords: typeof slug === "string" ? [slug] : [],
+            icon: FolderIcon,
+            run: () =>
+              handleOpenHref({
+                kind: "internal",
+                href: `/workspace/projects/${encodeURIComponent(project.id)}`,
+              }),
+          };
+        }),
+      },
+      ...extensionGroups("end"),
+      {
+        key: "actions",
+        heading: t.shortcuts.actions,
+        items: [
+          {
+            key: "action:new-chat",
+            label: t.sidebar.newChat,
+            icon: MessageSquarePlusIcon,
+            shortcut: `${metaKey}${shiftKey}N`,
+            run: handleNewChat,
+          },
+          {
+            key: "action:settings",
+            label: t.common.settings,
+            icon: SettingsIcon,
+            shortcut: `${metaKey},`,
+            run: handleOpenSettings,
+          },
+          {
+            key: "action:shortcuts",
+            label: t.shortcuts.keyboardShortcuts,
+            icon: KeyboardIcon,
+            shortcut: `${metaKey}/`,
+            run: handleShowShortcuts,
+          },
+        ],
+      },
+    ];
+  }, [
+    commands.data,
+    projects,
+    t,
+    metaKey,
+    shiftKey,
+    handleOpenHref,
+    handleNewChat,
+    handleOpenSettings,
+    handleShowShortcuts,
+  ]);
   return (
     <>
-      <CommandDialog open={open} onOpenChange={setCommandPaletteOpen}>
-        <CommandInput placeholder={t.shortcuts.searchActions} />
-        <CommandList>
-          <CommandEmpty>{t.shortcuts.noResults}</CommandEmpty>
-          <CommandGroup heading={t.shortcuts.actions}>
-            <CommandItem onSelect={handleNewChat}>
-              <MessageSquarePlusIcon className="mr-2 h-4 w-4" />
-              {t.sidebar.newChat}
-              <CommandShortcut>
-                {metaKey}
-                {shiftKey}N
-              </CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={handleOpenSettings}>
-              <SettingsIcon className="mr-2 h-4 w-4" />
-              {t.common.settings}
-              <CommandShortcut>{metaKey},</CommandShortcut>
-            </CommandItem>
-            <CommandItem onSelect={handleShowShortcuts}>
-              <KeyboardIcon className="mr-2 h-4 w-4" />
-              {t.shortcuts.keyboardShortcuts}
-              <CommandShortcut>{metaKey}/</CommandShortcut>
-            </CommandItem>
-          </CommandGroup>
-          {!!projects?.length && (
-            <CommandGroup heading={t.shortcuts.projects}>
-              {projects.map((project) => {
-                const slug = project.presentation?.argus_slug;
-                return (
-                  <CommandItem
-                    key={project.id}
-                    value={valueOf(project.name)}
-                    keywords={typeof slug === "string" ? [slug] : []}
-                    onSelect={() =>
-                      handleOpenHref({
-                        kind: "internal",
-                        href: `/workspace/projects/${encodeURIComponent(project.id)}`,
-                      })
-                    }
-                  >
-                    <FolderIcon className="mr-2 h-4 w-4" />
-                    <span className="truncate">{project.name}</span>
-                  </CommandItem>
-                );
-              })}
-            </CommandGroup>
-          )}
-          {commands.data?.groups.map((group) => {
-            const Icon = extensionIcon(group.icon);
-            return (
-              <CommandGroup key={group.key} heading={group.label}>
-                {group.items.map((item) => (
-                  <CommandItem
-                    key={item.id}
-                    value={valueOf(
-                      [item.label, item.description].filter(Boolean).join(" "),
-                    )}
-                    keywords={[...(item.keywords ?? [])]}
-                    onSelect={() => handleOpenHref(item)}
-                  >
-                    <Icon className="mr-2 h-4 w-4" />
-                    <span className="truncate">{item.label}</span>
-                    {item.description && (
-                      <span className="text-muted-foreground ml-auto max-w-[45%] truncate pl-3 text-xs">
-                        {item.description}
-                      </span>
-                    )}
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            );
-          })}
-          {open && commands.isFetching && !commands.data && (
-            <p className="text-muted-foreground px-4 py-2 text-xs">
-              {t.shortcuts.loadingCommands}
-            </p>
-          )}
-          {(commands.data?.failed ?? commands.isError) && (
-            <p className="text-muted-foreground px-4 py-2 text-xs">
-              {t.shortcuts.commandsUnavailable}
-            </p>
-          )}
-        </CommandList>
-      </CommandDialog>
+      <Dialog open={open} onOpenChange={setCommandPaletteOpen}>
+        <DialogContent className="overflow-hidden p-0">
+          <DialogTitle className="sr-only">
+            {t.shortcuts.openCommandPalette}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            {t.shortcuts.searchActions}
+          </DialogDescription>
+          <PaletteSearch
+            groups={groups}
+            placeholder={t.shortcuts.searchActions}
+            empty={t.shortcuts.noResults}
+            notice={
+              open && commands.isFetching && !commands.data
+                ? t.shortcuts.loadingCommands
+                : (commands.data?.failed ?? commands.isError)
+                  ? t.shortcuts.commandsUnavailable
+                  : undefined
+            }
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="sm:max-w-md">
@@ -231,5 +260,58 @@ export function CommandPalette() {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/** Mounted with the dialog, so every open starts from an empty search. */
+function PaletteSearch({
+  groups,
+  placeholder,
+  empty,
+  notice,
+}: {
+  groups: PaletteGroup[];
+  placeholder: string;
+  empty: string;
+  notice?: string;
+}) {
+  const [search, setSearch] = useState("");
+  const ranked = useMemo(
+    () => rankCommandGroups(groups, search),
+    [groups, search],
+  );
+  return (
+    <Command shouldFilter={false} className={COMMAND_CLASSES}>
+      <CommandInput
+        placeholder={placeholder}
+        value={search}
+        onValueChange={setSearch}
+      />
+      <CommandList>
+        <CommandEmpty>{empty}</CommandEmpty>
+        {ranked.map((group) => (
+          <CommandGroup key={group.key} heading={group.heading}>
+            {group.items.map((item) => (
+              <CommandItem key={item.key} value={item.key} onSelect={item.run}>
+                <item.icon className="mr-2 h-4 w-4" />
+                <span className="truncate">{item.label}</span>
+                {item.shortcut ? (
+                  <CommandShortcut>{item.shortcut}</CommandShortcut>
+                ) : (
+                  item.description && (
+                    <span className="text-muted-foreground ml-auto max-w-[45%] truncate pl-3 text-xs">
+                      {item.description}
+                    </span>
+                  )
+                )}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        ))}
+        {notice && (
+          <p className="text-muted-foreground px-4 py-2 text-xs">{notice}</p>
+        )}
+      </CommandList>
+    </Command>
   );
 }

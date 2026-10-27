@@ -52,6 +52,7 @@ rs.mock("@/core/extensions/hooks", () => ({
             {
               id: "apps",
               label: "Apps",
+              position: "start",
               items: async () => [
                 {
                   id: "app:atlas-nicholas/semantic-selectors",
@@ -65,6 +66,19 @@ rs.mock("@/core/extensions/hooks", () => ({
                   label: "Deploy Calendar",
                   description: "deploy-calendar · Tony",
                   href: "https://apps-tony.acro.surfly.com/deploy-calendar/",
+                },
+              ],
+            },
+            {
+              id: "tools",
+              label: "Company tools",
+              items: async () => [
+                {
+                  id: "link:drata",
+                  label: "Drata",
+                  description: "Compliance and audits",
+                  keywords: ["compliance", "soc2"],
+                  href: "https://app.drata.com/",
                 },
               ],
             },
@@ -138,5 +152,40 @@ describe("CommandPalette (DOM)", () => {
     act(() => setCommandPaletteOpen(true));
     fireEvent.click(await screen.findByText("Semantic Selectors"));
     expect(push).toHaveBeenCalledWith("/workspace/projects/p1");
+  });
+
+  it("lists Apps before Projects, tools after them, actions last", async () => {
+    renderPalette();
+    act(() => setCommandPaletteOpen(true));
+    await screen.findByText("Drata");
+    const headings = Array.from(
+      document.querySelectorAll("[cmdk-group-heading]"),
+    ).map((heading) => heading.textContent);
+    expect(headings).toEqual([
+      "Apps",
+      enUS.shortcuts.projects,
+      "Company tools",
+      enUS.shortcuts.actions,
+    ]);
+  });
+
+  it("puts an exact tool match first and selects it", async () => {
+    renderPalette();
+    act(() => setCommandPaletteOpen(true));
+    await screen.findByText("Drata");
+    fireEvent.change(
+      screen.getByPlaceholderText(enUS.shortcuts.searchActions),
+      {
+        target: { value: "drata" },
+      },
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Deploy Calendar")).toBeNull(),
+    );
+    const options = screen.getAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual([
+      "DrataCompliance and audits",
+    ]);
+    expect(options[0]!.getAttribute("aria-selected")).toBe("true");
   });
 });

@@ -237,6 +237,7 @@ test("validates optional command providers independently for each installed modu
     [{ ...provider, id: "../bad" }],
     [{ ...provider, label: " " }],
     [{ ...provider, icon: 7 }],
+    [{ ...provider, position: "middle" }],
     Array(9).fill(provider),
   ]) {
     const importer = rs
