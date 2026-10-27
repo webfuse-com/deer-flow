@@ -7,7 +7,6 @@ import { toast } from "sonner";
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import { BrowserTrigger } from "@/components/workspace/browser-view";
-import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
 import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { GoalStatus } from "@/components/workspace/goal-status";
@@ -35,7 +34,6 @@ import { ThreadScheduledTasksButton } from "@/components/workspace/thread-schedu
 import { ThreadSubagentBatches } from "@/components/workspace/thread-subagent-batches";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
-import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { Welcome } from "@/components/workspace/welcome";
 import { WorkspaceSidebarTrigger } from "@/components/workspace/workspace-sidebar-trigger";
@@ -73,12 +71,8 @@ import {
   useBranchThread,
   useThreadMetadata,
   useThreadStream,
-  useThreadTokenUsage,
 } from "@/core/threads/hooks";
-import {
-  selectContextUsage,
-  threadTokenUsageToTokenUsage,
-} from "@/core/threads/token-usage";
+import {} from "@/core/threads/token-usage";
 import { useThreadQueue } from "@/core/threads/use-thread-queue";
 import { projectIdOfThread, textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
@@ -117,7 +111,7 @@ export default function ChatPage() {
   const prepareModelControl = modelControl.prepare;
   const [modelChoiceSummary, setModelChoiceSummary] = useState("");
   useEffect(() => setModelChoiceSummary(""), [threadId, user?.id]);
-  const [localSettings, setLocalSettings] = useLocalSettings();
+  const [localSettings] = useLocalSettings();
   const {
     queue,
     enqueue: enqueueMessage,
@@ -127,10 +121,6 @@ export default function ChatPage() {
   } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
-  const threadTokenUsage = useThreadTokenUsage(
-    isNewThread || isMock ? undefined : threadId,
-    { enabled: !isMock },
-  );
   const threadMetadata = useThreadMetadata(threadId, {
     enabled: !isNewThread && !isMock,
     isMock,
@@ -147,8 +137,6 @@ export default function ChatPage() {
     enabled: !isMock,
   });
   const branchThread = useBranchThread();
-  const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
-  const contextUsage = selectContextUsage(threadTokenUsage.data);
   const mountedRef = useRef(false);
   useSpecificChatMode();
 
@@ -204,7 +192,6 @@ export default function ChatPage() {
   const {
     thread,
     activeRunId,
-    pendingUsageMessages,
     sendMessage,
     regenerateMessage,
     editAndRegenerateMessage,
@@ -600,22 +587,7 @@ export default function ChatPage() {
                 {!isNewThread && !isMock && (
                   <ThreadScheduledTasksButton threadId={threadId} />
                 )}
-                {tokenUsageEnabled ? (
-                  <TokenUsageIndicator
-                    threadId={isNewThread ? undefined : threadId}
-                    backendUsage={backendTokenUsage}
-                    contextUsage={contextUsage}
-                    enabled={tokenUsageEnabled}
-                    messages={thread.messages}
-                    pendingMessages={pendingUsageMessages}
-                    preferences={localSettings.tokenUsage}
-                    onPreferencesChange={(preferences) =>
-                      setLocalSettings("tokenUsage", preferences)
-                    }
-                  />
-                ) : (
-                  <ContextUsageBadge contextUsage={contextUsage} />
-                )}
+                {/* [argus patch #168] no token or context pill in the header */}
                 <SidecarTrigger />
                 {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
