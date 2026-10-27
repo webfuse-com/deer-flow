@@ -32,7 +32,40 @@ const skills = [
   },
 ];
 
-function messages(includeSkills = true) {
+// [argus patch #168] The browser trigger shows only once the agent has
+// browsed, so the panel-sharing test adds one browser frame.
+const browsedMessages = [
+  {
+    type: "ai",
+    id: "browse",
+    content: "",
+    run_id: RUN_ID,
+    tool_calls: [
+      {
+        id: "browse-call",
+        name: "browser_navigate",
+        args: { url: "https://example.com" },
+      },
+    ],
+  },
+  {
+    type: "tool",
+    id: "browsed",
+    content: "Opened https://example.com",
+    name: "browser_navigate",
+    tool_call_id: "browse-call",
+    run_id: RUN_ID,
+    additional_kwargs: {
+      browser_view: {
+        screenshot: "/mnt/user-data/outputs/browser.png",
+        url: "https://example.com",
+        title: "Example Domain",
+      },
+    },
+  },
+];
+
+function messages(includeSkills = true, browsed = false) {
   return [
     {
       type: "human",
@@ -69,6 +102,7 @@ function messages(includeSkills = true) {
       run_id: RUN_ID,
       additional_kwargs: includeSkills ? { skill_usage: skills[1] } : {},
     },
+    ...(browsed ? browsedMessages : []),
     {
       type: "ai",
       id: "final",
@@ -79,7 +113,7 @@ function messages(includeSkills = true) {
   ];
 }
 
-async function setup(page: Page, includeSkills = true) {
+async function setup(page: Page, includeSkills = true, browsed = false) {
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   await page
     .context()
@@ -91,7 +125,7 @@ async function setup(page: Page, includeSkills = true) {
       {
         thread_id: THREAD_ID,
         title: "技能使用记录",
-        messages: messages(includeSkills),
+        messages: messages(includeSkills, browsed),
       },
     ],
   });
@@ -244,7 +278,7 @@ test("details share the browser panel and can reopen after drag collapse", async
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await setup(page);
+  await setup(page, true, true);
   const trigger = page.getByRole("button", { name: "使用的技能", exact: true });
   const openDetail = async () => {
     await trigger.click();
