@@ -1312,6 +1312,19 @@ export interface Translations {
     pinChat: string;
     unpinChat: string;
     pinChatFailed: string;
+    /** [argus patch #169] Chats page filter chips. */
+    listFilters: {
+      label: string;
+      all: string;
+      mine: string;
+      scheduled: string;
+      channels: string;
+      project: string;
+      pinned: string;
+      builders: string;
+      artifacts: string;
+      empty: string;
+    };
   };
 
   // Thread origin and unread markers (sidebar and chats list)

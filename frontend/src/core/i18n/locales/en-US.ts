@@ -1622,6 +1622,18 @@ export const enUS: Translations = {
     pinChat: "Pin chat",
     unpinChat: "Unpin chat",
     pinChatFailed: "Failed to update pinned chat",
+    listFilters: {
+      label: "Show",
+      all: "All",
+      mine: "Mine",
+      scheduled: "Scheduled",
+      channels: "Telegram",
+      project: "In a project",
+      pinned: "Pinned",
+      builders: "Builders",
+      artifacts: "Artifacts",
+      empty: "No chats match this filter",
+    },
   },
 
   // Thread origin and unread markers
