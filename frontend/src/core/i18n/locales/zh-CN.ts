@@ -629,6 +629,7 @@ export const zhCN: Translations = {
     recentChats: "最近的对话",
     demoChats: "演示对话",
     agents: "智能体",
+    apps: "应用", // [argus patch #167]
     scheduledTasks: "定时任务",
     agentsDisabledTooltip: "功能未启用",
   },
@@ -1825,9 +1826,13 @@ export const zhCN: Translations = {
 
   // Shortcuts
   shortcuts: {
-    searchActions: "搜索操作...",
+    // [argus patch #167]
+    searchActions: "搜索应用、项目和操作...",
     noResults: "未找到结果。",
     actions: "操作",
+    projects: "项目",
+    loadingCommands: "正在加载应用...",
+    commandsUnavailable: "部分应用无法加载，请重新打开重试。",
     keyboardShortcuts: "键盘快捷键",
     keyboardShortcutsDescription: "使用键盘快捷键更快地操作 DeerFlow。",
     openCommandPalette: "打开命令面板",

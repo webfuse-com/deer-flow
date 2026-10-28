@@ -498,6 +498,7 @@ export interface Translations {
     chats: string;
     demoChats: string;
     agents: string;
+    apps: string; // [argus patch #167]
     scheduledTasks: string;
     agentsDisabledTooltip: string;
     channels: string;
@@ -1611,6 +1612,10 @@ export interface Translations {
     searchActions: string;
     noResults: string;
     actions: string;
+    // [argus patch #167]
+    projects: string;
+    loadingCommands: string;
+    commandsUnavailable: string;
     keyboardShortcuts: string;
     keyboardShortcutsDescription: string;
     openCommandPalette: string;
