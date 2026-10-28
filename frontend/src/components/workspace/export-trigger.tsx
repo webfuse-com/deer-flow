@@ -73,10 +73,11 @@ export function ExportTrigger({ threadId }: { threadId: string }) {
             aria-label={t.common.export}
             disabled={exporting || thread.isLoading}
             className="text-muted-foreground hover:text-foreground"
+            size="icon"
             variant="ghost"
           >
+            {/* [argus patch #168] icon only; the tooltip names it */}
             <Download />
-            <span className="hidden sm:inline">{t.common.export}</span>
           </Button>
         </DropdownMenuTrigger>
       </Tooltip>

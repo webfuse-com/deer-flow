@@ -3,7 +3,9 @@ import { expect, test } from "@playwright/test";
 import { mockLangGraphAPI, MOCK_THREAD_ID } from "./utils/mock-api";
 
 // Argus header controls (patch #38 debug sandbox, patch #88 Internalize) sit
-// next to upstream's token, browser and export controls.
+// next to upstream's export control. Patch #168: Export is icon-only, there is
+// no token or context pill, and the browser trigger waits for an agent
+// browser frame.
 test("chat header shows the Argus controls next to upstream's", async ({
   page,
 }) => {
@@ -77,10 +79,12 @@ test("chat header shows the Argus controls next to upstream's", async ({
   await page.goto(`/workspace/chats/${MOCK_THREAD_ID}`);
 
   const header = page.locator("header");
-  const tokensButton = header.getByRole("button", { name: /Tokens/ });
-  await expect(tokensButton).toBeVisible({ timeout: 15_000 });
-  await expect(tokensButton).toContainText("25%");
-  await expect(page.getByTestId("browser-trigger")).toBeVisible();
+  const exportButton = header.getByRole("button", { name: "Export" });
+  await expect(exportButton).toBeVisible({ timeout: 15_000 });
+  await expect(header.getByRole("button", { name: /Tokens/ })).toHaveCount(0);
+  await expect(header.getByRole("status", { name: /Context/ })).toHaveCount(0);
+  await expect(header).not.toContainText("25%");
+  await expect(page.getByTestId("browser-trigger")).toHaveCount(0);
   await expect(
     header.getByRole("button", { name: "Live Desktop & Browser" }),
   ).toBeVisible();
@@ -94,8 +98,7 @@ test("chat header shows the Argus controls next to upstream's", async ({
   await expect(internalizeButton).toBeVisible();
   await expect(internalizeButton).toHaveText("");
 
-  const exportButton = header.getByRole("button", { name: "Export" });
-  await expect(exportButton).toBeVisible();
+  await expect(exportButton).toHaveText("");
   await exportButton.click();
   await expect(page.getByText("Export as Markdown")).toBeVisible();
 });

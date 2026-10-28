@@ -232,6 +232,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#165](#patch-165) | `GET /api/mcp/system-tools` and the read-only system-tools list in the Capability Center (record back-filled 2026-10-25) | argus-edit | 5312b012 |
 | [#166](#patch-166) | `read_file` of a saved tool result (`/mnt/user-data/outputs/.tool-results/<name>`) is served from the thread's host outputs directory when the provider mounts thread data, so reading one back does not start a sandbox container | generic-upstreamable | this PR |
 | [#167](#patch-167) | The command palette lists the stack's projects and groups that browser extensions contribute (`commandProviders`), and an Apps entry in the sidebar opens it and shows its shortcut | generic-upstreamable (hook) + argus (sidebar entry) | this PR |
+| [#168](#patch-168) | Chat header: no token or context pill, Export and Artifacts are icon-only, and the Browser trigger appears only once the agent has browsed in the thread | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -2871,6 +2872,19 @@ carry budget ledger.
 - Tests: `command-palette-search.test.ts` (real names: "drata" returns only Drata, slug and owner matches, no keyword substrings), `command-palette.dom.test.tsx` (group order, exact match first and selected, links), `frontend/tests/unit/core/extensions/commands.test.ts` (href rules, invalid/duplicate/unsafe entries dropped, failing and disabled providers, cancellation), `registry.test.ts` (provider validation), `workspace-nav-chat-list.dom.test.tsx` (the Apps entry opens the palette and shows the shortcut).
 - Delete-when: upstream ships a palette extension point; the sidebar entry stays argus.
 - Upstream status: none sent.
+
+---
+
+## Patch #168
+
+**Patch #168 - A quieter chat header: no token pill, icon-only Export and Artifacts, Browser only after the agent browsed** (2026-10-27)
+
+- Class: argus-edit.
+- Intent: Nicholas 2026-10-27, after the 2026-10-25 sync took upstream's chat header (decision d9 dropped #65's header half): "I now have the 'Open Browser Panel' and again text next to icons in the top (export, artifacts) - we should clean that up. The browser panel doesn't do anything I believe." Export and Artifacts go back to icon-only (their tooltips and aria-labels name them). The Browser trigger renders only when the browser view holds a frame, i.e. after an agent browser tool returned a screenshot in this thread, so it reopens that panel; the panel still opens by itself on a new frame. The manual live browser behind an empty panel never worked on Argus: every `/api/threads/{id}/browser/stream` WebSocket in the week to 2026-10-27 got 403, all on atlas-nicholas (7 of 7). Re-enable the empty-panel trigger if that stream is fixed. Later the same day: "Also in the top I see the 'tokens pill' lets remove that, we don't need that." Both chat pages drop the header's TokenUsageIndicator and its ContextUsageBadge fallback, and with them the per-thread `/token-usage` read that fed only that pill. `token_usage.enabled` stays on in config: it also enables TokenUsageMiddleware and the token budget, so turning it off would lose telemetry. Per-message token display (`tokenUsageInlineMode`, a local setting) is unchanged.
+- Files: `frontend/src/components/workspace/browser-view/browser-trigger.tsx`, `export-trigger.tsx`, `artifacts/artifact-trigger.tsx`, `chats/chat-page.tsx` and `app/workspace/agents/[agent_name]/chats/[thread_id]/page.tsx` (pill and its query removed).
+- Tests: `frontend/tests/e2e/browser-feature.spec.ts` (shown after an agent frame, hidden before, hidden when disabled), `agent-chat.spec.ts` (the agent's frame opens the panel; the trigger closes and reopens it), `argus-chat-header.spec.ts` (no token or context pill, no browser trigger without a frame; Export has no visible text), `skill-usage.spec.ts` (the panel-sharing test gets one agent browser frame so the trigger exists).
+- Delete-when: Argus wants upstream's header back, or the live browser stream works on Argus (then restore only the trigger).
+- Upstream status: none (deployment choice).
 
 ---
 
