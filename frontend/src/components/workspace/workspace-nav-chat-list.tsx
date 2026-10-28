@@ -7,6 +7,7 @@ import {
   CalendarClock,
   Clock3Icon,
   LandmarkIcon,
+  LayoutGridIcon,
   LightbulbIcon,
   MessagesSquare,
 } from "lucide-react";
@@ -31,8 +32,14 @@ import {
 } from "@/core/features/hooks";
 import { useI18n } from "@/core/i18n/hooks";
 
+import {
+  setCommandPaletteOpen,
+  useMetaKeyLabel,
+} from "./command-palette-store";
+
 export function WorkspaceNavChatList() {
   const { t } = useI18n();
+  const metaKey = useMetaKeyLabel();
   const pathname = usePathname();
   const { enabled: agentsEnabled } = useAgentsApiEnabled();
   const { enabled: capabilityCenterEnabled } = useCapabilityCenterEnabled();
@@ -92,6 +99,21 @@ export function WorkspaceNavChatList() {
               </TooltipContent>
             </Tooltip>
           )}
+        </SidebarMenuItem>
+        {/* [argus patch #167] Opens the command palette: apps, projects and
+            company tools, and shows its shortcut so people learn it. */}
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            className="text-muted-foreground"
+            tooltip={`${t.sidebar.apps} (${metaKey}K)`}
+            onClick={() => setCommandPaletteOpen(true)}
+          >
+            <LayoutGridIcon />
+            <span>{t.sidebar.apps}</span>
+            <kbd className="bg-muted ml-auto rounded px-1.5 font-mono text-[10px] group-data-[collapsible=icon]:hidden">
+              {metaKey}K
+            </kbd>
+          </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>
           {externalScheduler ? (

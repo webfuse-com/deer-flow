@@ -671,6 +671,7 @@ export const enUS: Translations = {
     recentChats: "Recent chats",
     demoChats: "Demo chats",
     agents: "Agents",
+    apps: "Apps", // [argus patch #167]
     scheduledTasks: "Scheduled tasks",
     agentsDisabledTooltip: "Feature not enabled",
   },
@@ -1929,9 +1930,13 @@ export const enUS: Translations = {
 
   // Shortcuts
   shortcuts: {
-    searchActions: "Search actions...",
+    // [argus patch #167]
+    searchActions: "Search apps, projects and actions...",
     noResults: "No results found.",
     actions: "Actions",
+    projects: "Projects",
+    loadingCommands: "Loading apps...",
+    commandsUnavailable: "Some apps could not be loaded. Reopen to retry.",
     keyboardShortcuts: "Keyboard Shortcuts",
     keyboardShortcutsDescription:
       "Navigate DeerFlow faster with keyboard shortcuts.",

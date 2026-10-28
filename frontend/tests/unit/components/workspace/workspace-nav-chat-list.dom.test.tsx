@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { SidebarProvider } from "@/components/ui/sidebar";
+import {
+  setCommandPaletteOpen,
+  useCommandPaletteOpen,
+} from "@/components/workspace/command-palette-store";
 import { WorkspaceNavChatList } from "@/components/workspace/workspace-nav-chat-list";
 import { I18nContext } from "@/core/i18n/context";
 import { enUS } from "@/core/i18n/locales/en-US";
@@ -45,6 +49,7 @@ function renderNav() {
 
 afterEach(() => {
   cleanup();
+  setCommandPaletteOpen(false);
   capabilityCenter.enabled = true;
   capabilityCenter.externalScheduler = false;
 });
@@ -86,5 +91,20 @@ describe("WorkspaceNavChatList (DOM)", () => {
     const page = screen.getByRole("link", { name: /Scheduled tasks/ });
     expect(page.getAttribute("href")).toBe("/workspace/scheduled-tasks");
     expect(screen.queryByRole("link", { name: /Chronos/ })).toBeNull();
+  });
+
+  it("opens the command palette from the Apps entry and shows its shortcut (argus patch #167)", () => {
+    let paletteOpen = false;
+    function PaletteProbe() {
+      paletteOpen = useCommandPaletteOpen();
+      return null;
+    }
+    render(<PaletteProbe />);
+    renderNav();
+    const apps = screen.getByRole("button", { name: /Apps/ });
+    expect(apps.textContent).toContain("K");
+    expect(paletteOpen).toBe(false);
+    fireEvent.click(apps);
+    expect(paletteOpen).toBe(true);
   });
 });
