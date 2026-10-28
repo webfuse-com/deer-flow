@@ -1418,6 +1418,42 @@ class LocalContainerBackend(SandboxBackend):
             return True
         return inspection is None or self._persisted_sandbox_mode(inspection, info.sandbox_id) != "open"
 
+    def _absent_sandbox_may_hold_restricted_resources(self, sandbox_id: str) -> bool:
+        """[argus] patch #170: #142's question for a sandbox that is already gone.
+
+        ``complete_absent_teardown`` runs only after the sandbox container is
+        confirmed absent, so the labels #142 reads no longer exist. A
+        restricted-mode process keeps the strict upstream cleanup. An open-mode
+        process never creates a sidecar or networks and its create path never
+        consults them, so only a sidecar left by an earlier restricted-mode
+        process needs the strict teardown, and a read-only listing of its fixed
+        name finds one. Without this, a per-stack engine proxy that admits only
+        the stack's own sandbox names refused the ``deer-flow-netproxy-*``
+        stop, quarantine retirement aborted, and every new sandbox for that
+        thread failed. A listing that fails keeps the cleanup.
+        """
+        if self._network_mode != "open":
+            return True
+        proxy_name, _ = self._resource_names(sandbox_id)
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={proxy_name}", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return True
+        if result.returncode != 0:
+            return True
+        # ``--filter name=`` is a substring match; only the exact name counts.
+        if any(name.strip().lstrip("/") == proxy_name for name in (result.stdout or "").splitlines()):
+            return True
+        logger.info("Retiring open-mode sandbox %s without restricted cleanup: no network proxy %s is listed", sandbox_id, proxy_name)
+        return False
+
     def _forget_unknown_cleanup_port(self, sandbox_id: str, port: int) -> None:
         """Remove a released reservation; caller holds the cleanup ledger lock."""
         pending = self._unknown_cleanup_ports.get(sandbox_id)
@@ -1433,12 +1469,13 @@ class LocalContainerBackend(SandboxBackend):
         only after confirming absence under both teardown fences, before it
         retires quarantine records. Metadata inspection stays read-only.
         """
-        if self._runtime == "docker":
+        if self._runtime == "docker" and self._absent_sandbox_may_hold_restricted_resources(sandbox_id):
             # A timeout can remove the main container before its deterministic
             # sidecar/networks are cleaned. Retry even after a process restart,
             # where the local reservation ledger is empty. Unknown cleanup
             # failures must retain quarantine instead of stranding new creation
-            # behind the existing-resource mismatch guard.
+            # behind the existing-resource mismatch guard. [argus] patch #170:
+            # an open-mode process skips it when no sidecar is listed.
             self._cleanup_restricted_resources(sandbox_id, stop_sandbox=False, strict=True)
         with self._pending_cleanup_ports_lock:
             ports = {port for owner_id, port in self._pending_cleanup_ports.values() if owner_id == sandbox_id}
