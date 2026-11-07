@@ -30,7 +30,7 @@ from langgraph_sdk.errors import ConflictError, NotFoundError
 
 from app.channels import buzz_run_policy as _buzz_run_policy  # noqa: F401
 from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
-from app.channels._delivery_outcome import delivery_error
+from app.channels._delivery_outcome import delivery_error, mirror_outbounds
 from app.channels._delivery_report import report_delivery
 from app.channels._final_reply import TOOL_CALL_MARKUP_ERROR, recover_unattended_reply, reply_without_tool_call_markup
 from app.channels.capabilities import CHANNEL_CAPABILITIES
@@ -4251,6 +4251,10 @@ class ChannelManager:
         )
         logger.info("[Manager] publishing outbound message to bus: channel=%s, chat_id=%s", msg.channel_name, msg.chat_id)
         await self.bus.publish_outbound(outbound)
+        # [argus patch #173] ``channel: notify`` resolved to Slack and Telegram:
+        # the final text also goes to the Telegram root chat.
+        for mirror in mirror_outbounds(msg, thread_id, response_text):
+            await self.bus.publish_outbound(mirror)
         # [argus patch #172] A send the channel refused (Slack records why on
         # the outbound; _on_outbound swallowed the error) is not a delivery.
         if (send_error := delivery_error(outbound)) is not None:

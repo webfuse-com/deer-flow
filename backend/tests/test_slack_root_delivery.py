@@ -379,7 +379,7 @@ async def test_fire_slack_publishes_into_the_owners_dm(playbook_dir):
     service = fake_service({"slack": fake_slack(READY)})
     resp = await fire(service, {"channel": "slack", "topic_id": f"sched:{SCHEDULE_ID}", "report_url": REPORT_URL, "trigger": "scheduled"})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"accepted": True, "schedule_id": SCHEDULE_ID, "channel": "slack", "agent": "atlas", "memory": "read-only", "chats": 1}
+    assert resp.json() == {"accepted": True, "schedule_id": SCHEDULE_ID, "channel": "slack", "agent": "atlas", "memory": "read-only", "chats": 1, "resolution": None, "mirror": []}
     msg = service.bus.publish_inbound.await_args.args[0]
     assert (msg.channel_name, msg.chat_id, msg.user_id) == ("slack", DM, OWNER)
     assert msg.topic_id == f"sched:{SCHEDULE_ID}" and msg.thread_ts is None
