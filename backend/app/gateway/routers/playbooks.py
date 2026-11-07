@@ -65,6 +65,10 @@ class PlaybookFireRequest(BaseModel):
     """
 
     schedule_id: str | None = None
+    # [argus patch #172] ``slack`` on the relay transport delivers into the
+    # owner's DM, which the Slack router names (``argus.owner``): each run's
+    # answer is a new top-level message there, and a reply under it continues
+    # that run's thread.
     channel: str = "telegram"
     agent: str | None = None
     # `thread: own` reconciles to a synthetic topic_id "sched:<id>"; `shared`
@@ -191,18 +195,21 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
     service = get_channel_service()
     if service is None:
         raise HTTPException(status_code=503, detail="Channel service is not running")
-    if service.get_channel(channel) is None:
+    running = service.get_channel(channel)
+    if running is None:
         raise HTTPException(status_code=404, detail=f"Channel {channel} is not running")
 
-    # [argus patch #52] Root chat mappings only. list_entries returns every
-    # stored row, INCLUDING per-topic thread mappings (channel:chat:topic —
-    # e.g. the hook:<connector>:<prompt> threads that connector intents
-    # create, patch #51). Iterating those double-fired every scheduled
-    # playbook once any topic thread existed: N identical InboundMessages
-    # for one chat, coalesced into an N-fold prompt, and the silent-turn
-    # suppression lost — the citizen saw hourly "(No response from agent)".
-    # Root rows are unique per chat by key construction.
-    chats = [entry for entry in await service.store.list_entries(channel) if not entry.get("topic_id")]
+    route_metadata: dict = {}
+    if channel == "slack" and getattr(running, "uses_relay_transport", False) is True:
+        # [argus patch #172] Slack bindings are topic rows only (every Slack
+        # message is threaded), so the root-row lookup below finds nothing.
+        # The router names the owner's DM; the answer posts there as a new
+        # top-level message that roots the run's thread.
+        owner = await _slack_owner_dm(running)
+        chats = [{"chat_id": owner.dm, "user_id": owner.user_id or owner.dm}]
+        route_metadata = {"tier": "dm", "user_id": owner.user_id}
+    else:
+        chats = await _root_chats(service, channel)
     if not chats:
         # The citizen must have messaged the bot once so a thread mapping exists.
         raise HTTPException(
@@ -241,6 +248,7 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
                 "schedule_id": schedule_id,
                 **({"trigger": body.trigger} if body.trigger else {}),
                 **({"timezone": body.timezone} if body.timezone else {}),
+                **route_metadata,
             },
         )
         await service.bus.publish_inbound(msg)
@@ -264,6 +272,39 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
         memory=memory_mode,
         chats=delivered,
     )
+
+
+async def _root_chats(service, channel: str) -> list[dict]:
+    """[argus patch #52] Root chat mappings only.
+
+    list_entries returns every stored row, INCLUDING per-topic thread mappings
+    (channel:chat:topic, e.g. the hook:<connector>:<prompt> threads that
+    connector intents create, patch #51). Iterating those double-fired every
+    scheduled playbook once any topic thread existed: N identical
+    InboundMessages for one chat, coalesced into an N-fold prompt, and the
+    silent-turn suppression lost (the citizen saw hourly "(No response from
+    agent)"). Root rows are unique per chat by key construction.
+    """
+    return [entry for entry in await service.store.list_entries(channel) if not entry.get("topic_id")]
+
+
+async def _slack_owner_dm(slack):
+    """[argus patch #172] The stack owner's Slack DM from the router's ``argus.owner``.
+
+    Raises a 409 the caller can log when Slack is not enabled for the stack or
+    the owner has no resolvable DM, and a 503 when the router did not answer.
+    """
+    from app.channels.slack import SLACK_ROUTER_UNREACHABLE
+
+    owner, error = await slack.owner_conversation()
+    if owner is None:
+        status = 503 if error.startswith(SLACK_ROUTER_UNREACHABLE) else 409
+        raise HTTPException(status_code=status, detail=f"no Slack DM for this stack's owner: argus.owner failed ({error})")
+    if not owner.enabled:
+        raise HTTPException(status_code=409, detail="no Slack DM for this stack's owner: Slack is not enabled for this stack")
+    if not owner.dm:
+        raise HTTPException(status_code=409, detail="no Slack DM for this stack's owner: the router has no DM for the owner")
+    return owner
 
 
 # ---------------------------------------------------------------------------

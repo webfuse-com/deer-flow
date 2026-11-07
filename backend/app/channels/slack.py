@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 from markdown_to_mrkdwn import SlackMarkdownConverter
 
+from app.channels._delivery_outcome import DELIVERY_ERROR_KEY
 from app.channels.allowed_users import parse_allowed_users, parse_string_or_int_user_id
 from app.channels.base import Channel, ChannelStopTimeout
 from app.channels.commands import is_known_channel_command
@@ -48,8 +49,50 @@ SLACK_TRANSPORT_RELAY = "relay"
 SLACK_RELAY_TIERS = frozenset({"dm", "public", "private"})
 # A bot's display name in hydrated thread context is capped at this length.
 _SLACK_BOT_LABEL_MAX_CHARS = 80
+# [argus patch #172] The router's synthetic method naming the stack's owner,
+# their DM with the app and where they want notifications.
+SLACK_ARGUS_OWNER_METHOD = "argus.owner"
+# A fire waits at most this long for it; slack_sdk's own timeout is 30 s.
+_SLACK_ARGUS_OWNER_TIMEOUT_SECONDS = 10.0
+# Prefix of an owner_conversation() error that means no answer at all.
+SLACK_ROUTER_UNREACHABLE = "router_unreachable"
+# The notification channels argus.owner may name.
+_SLACK_OWNER_CHANNELS = ("slack", "telegram")
+# A real Slack message ts. Synthetic topics (sched:<id>, hook:..., notify:...)
+# never match, so they are not Slack threads to hydrate.
+_SLACK_TS_RE = re.compile(r"\d+\.\d+")
 
 _slack_md_converter = SlackMarkdownConverter()
+
+
+@dataclass(frozen=True)
+class SlackOwner:
+    """[argus patch #172] The router's ``argus.owner`` answer for this stack.
+
+    ``enabled``: Slack is enabled for the stack. ``user_id``/``dm``: the
+    owner's Slack user and their DM with the app (empty when unresolved).
+    ``channels``: where the owner wants notifications, in order (the router
+    applies the stack's preference; read by ``channel: notify``, #173).
+    """
+
+    enabled: bool
+    user_id: str
+    dm: str
+    channels: tuple[str, ...] = ()
+
+
+def _slack_error_code(exc: BaseException) -> str:
+    """[argus patch #172] Slack's (or the router's) error code for a refused call, else the exception type."""
+    response = getattr(exc, "response", None)
+    getter = getattr(response, "get", None)
+    code = getter("error") if callable(getter) else None
+    return code if isinstance(code, str) and code else type(exc).__name__
+
+
+def _response_value(response: Any, key: str) -> Any:
+    """A field of a Web API answer (a ``SlackResponse`` or a plain dict)."""
+    getter = getattr(response, "get", None)
+    return getter(key) if callable(getter) else None
 
 
 @dataclass(frozen=True)
@@ -299,6 +342,41 @@ class SlackChannel(Channel):
         """[argus patch #171] Whether events arrive through :meth:`relay_event`."""
         return self._relay
 
+    async def owner_conversation(self) -> tuple[SlackOwner | None, str]:
+        """[argus patch #172] Ask the router for this stack's owner: ``(owner, error)``.
+
+        One call of the router's synthetic ``argus.owner`` through the relay
+        WebClient. The router answers it even when Slack is not enabled for
+        the stack; no Slack scope, email or directory method reaches the
+        gateway. ``error`` is the router's error code for a refusal, or
+        starts with :data:`SLACK_ROUTER_UNREACHABLE` when there was no answer.
+        """
+        if not self._relay or self._web_client is None:
+            return None, "slack is not running on the relay transport"
+        try:
+            resp = await asyncio.wait_for(asyncio.to_thread(self._web_client.api_call, SLACK_ARGUS_OWNER_METHOD), timeout=_SLACK_ARGUS_OWNER_TIMEOUT_SECONDS)
+        except TimeoutError:
+            return None, f"{SLACK_ROUTER_UNREACHABLE}: no answer in {_SLACK_ARGUS_OWNER_TIMEOUT_SECONDS:g} s"
+        except Exception as exc:
+            code = _slack_error_code(exc)
+            if code == type(exc).__name__:
+                # No error code: the request itself failed (connection, HTTP, JSON).
+                return None, f"{SLACK_ROUTER_UNREACHABLE}: {code}"
+            return None, code
+        if _response_value(resp, "ok") is not True:
+            return None, "malformed argus.owner answer"
+        channels = _response_value(resp, "channels")
+        listed = channels if isinstance(channels, list | tuple) else ()
+        return (
+            SlackOwner(
+                enabled=_response_value(resp, "enabled") is True,
+                user_id=str(_response_value(resp, "user_id") or ""),
+                dm=str(_response_value(resp, "dm") or ""),
+                channels=tuple(dict.fromkeys(c for c in listed if c in _SLACK_OWNER_CHANNELS)),
+            ),
+            "",
+        )
+
     async def relay_event(self, envelope: dict, argus: dict) -> bool:
         """[argus patch #171] Handle one Events API envelope the Slack router delivered.
 
@@ -407,6 +485,8 @@ class SlackChannel(Channel):
     async def send(self, msg: OutboundMessage, *, _max_retries: int = 3) -> None:
         web_client = await self._get_web_client_for_message(msg)
         if not web_client:
+            # [argus patch #172] Nothing was posted; the delivery report must say so.
+            msg.metadata[DELIVERY_ERROR_KEY] = "no Slack web client"
             return
 
         kwargs: dict[str, Any] = {
@@ -415,9 +495,18 @@ class SlackChannel(Channel):
         }
         if msg.thread_ts:
             kwargs["thread_ts"] = msg.thread_ts
+        # [argus patch #172] Every Slack event carries a thread_ts, so on the
+        # relay transport an outbound without one answers a synthetic inbound
+        # (a playbook fire, a notify, their error replies). It posts as a new
+        # top-level message in the owner's DM (the only place the router
+        # allows one) and that message roots the run's thread.
+        root_post = self._relay and not msg.thread_ts
+        posted: dict[str, str] = {}
 
         async def post_message() -> None:
-            await asyncio.to_thread(web_client.chat_postMessage, **kwargs)
+            resp = await asyncio.to_thread(web_client.chat_postMessage, **kwargs)
+            if root_post:
+                posted["ts"] = str(_response_value(resp, "ts") or "")
             # Add a completion reaction to the thread root
             if msg.thread_ts:
                 await asyncio.to_thread(
@@ -437,7 +526,10 @@ class SlackChannel(Channel):
                 max_retries=_max_retries,
                 log_prefix="[Slack]",
             )
-        except Exception:
+        except Exception as exc:
+            # [argus patch #172] _on_outbound swallows this; the manager reads
+            # the reason back and reports the turn failed, not delivered.
+            msg.metadata[DELIVERY_ERROR_KEY] = _slack_error_code(exc)
             # Add failure reaction on error
             if msg.thread_ts:
                 try:
@@ -451,6 +543,29 @@ class SlackChannel(Channel):
                 except Exception:
                     pass
             raise
+        if posted.get("ts"):
+            # [argus patch #172] Outside the retried post, so a store error can
+            # never post twice. Set thread_ts only now, after the reaction and
+            # ack block, so Atlas's own root gets no check mark and the files
+            # _on_outbound sends next land in the root's thread.
+            await self._bind_root_post(msg, posted["ts"])
+            msg.thread_ts = posted["ts"]
+
+    async def _bind_root_post(self, msg: OutboundMessage, root_ts: str) -> None:
+        """[argus patch #172] Bind ``(slack, DM, root_ts)`` to the run's thread.
+
+        A reply under the root arrives with ``thread_ts = root_ts`` (its topic),
+        so it continues the run's DeerFlow thread instead of starting a new
+        one. The same alias Feishu's ``_remember_thread_mapping`` writes for
+        its cards. Best effort: logged, never raised, never retried.
+        """
+        store = self.config.get("channel_store")
+        if store is None or not msg.thread_id:
+            return
+        try:
+            await store.set_thread_id(self.name, msg.chat_id, msg.thread_id, topic_id=root_ts, user_id=str(msg.metadata.get("user_id") or ""))
+        except Exception:
+            logger.exception("[Slack] could not bind root message %s in %s to thread %s", root_ts, msg.chat_id, msg.thread_id)
 
     async def send_file(self, msg: OutboundMessage, attachment: ResolvedAttachment) -> bool:
         web_client = await self._get_web_client_for_message(msg)
@@ -487,8 +602,13 @@ class SlackChannel(Channel):
         without groups:history). Excludes `exclude_ts` (the current reply) and
         the bot's own "Working on it..." acks. Bot posts are kept (the minutes
         are a bot post and ARE the context), each labelled by its own name
-        ([argus patch #171]: Pythia, an Atlas persona, any other bot)."""
+        ([argus patch #171]: Pythia, an Atlas persona, any other bot).
+
+        [argus patch #172] A synthetic topic (``sched:<id>``, ``hook:...``) is
+        no Slack thread: "" without a call."""
         if not self._web_client or not chat_id or not thread_ts:
+            return ""
+        if not _SLACK_TS_RE.fullmatch(thread_ts):
             return ""
         try:
             resp = await asyncio.to_thread(self._web_client.conversations_replies, channel=chat_id, ts=thread_ts, limit=limit)
