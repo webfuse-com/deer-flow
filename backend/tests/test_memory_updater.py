@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 import threading
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +24,11 @@ from deerflow.agents.memory.backends.deermem.deermem.core.updater import (
 )
 from deerflow.agents.memory.manager import LangfuseMemoryCallbacks
 from deerflow.trace_context import get_current_trace_id, request_trace_context
+
+# Facts meant to be "recently confirmed" must stay recent: deermem eviction
+# decays a confirmation against the real clock (90-day half-life), so a fixed
+# date rots. These fixtures used 2026-08-12 and went red on 2026-11-07.
+_RECENT = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _make_memory(facts: list[dict[str, object]] | None = None) -> dict[str, object]:
@@ -278,7 +284,7 @@ def test_automatic_update_uses_hybrid_capacity_policy() -> None:
                     "content": f"high {index}",
                     "category": "preference",
                     "confidence": 0.99,
-                    "createdAt": "2026-08-12T00:00:00Z",
+                    "createdAt": _RECENT,
                 }
                 for index in range(8)
             ],
@@ -295,7 +301,7 @@ def test_automatic_update_uses_hybrid_capacity_policy() -> None:
                 "category": "preference",
                 "confidence": 0.7,
                 "createdAt": "2025-01-01T00:00:00Z",
-                "lastConfirmedAt": "2026-08-12T00:00:00Z",
+                "lastConfirmedAt": _RECENT,
             },
         ]
     )
