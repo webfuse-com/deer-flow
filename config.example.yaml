@@ -3291,6 +3291,20 @@ run_ownership:
 #     bot_token: $SLACK_BOT_TOKEN     # xoxb-...
 #     app_token: $SLACK_APP_TOKEN     # xapp-... (Socket Mode)
 #     allowed_users: []               # Slack user IDs, e.g. U123456; empty or blank allows all; a single ID is one entry; non-empty lists with no valid ID fail closed
+#     # [argus patch #171] Relay transport: a router holds the Slack app and its
+#     # Socket Mode connection, POSTs each event for this gateway to
+#     # /api/channels/slack/relay (internal token) and serves the Web API at
+#     # relay_url. bot_token/app_token are not used; allowed_users does not apply
+#     # to relayed events (the router authorizes senders), and owner_email is
+#     # honoured without it.
+#     # transport: relay
+#     # relay_url: http://slack-router:8080/api/
+#     # relay_token: $SLACK_ROUTER_API_KEY   # this gateway's router key, sent as the bot token
+#     # tier_agents:                    # agent per relayed tier; a missing tier keeps the channel default
+#     #   dm: atlas
+#     #   public: atlas-public
+#     #   private: atlas
+#     # owner_email: owner@example.com
 #
 #   telegram:
 #     enabled: false

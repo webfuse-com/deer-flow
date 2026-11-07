@@ -25,6 +25,11 @@ from deerflow.utils.file_io import await_drained
 logger = logging.getLogger(__name__)
 
 
+def _is_slack_relay(name: str, channel_config: Mapping[str, Any]) -> bool:
+    """[argus patch #171] ``channels.slack.transport: relay``: a router holds the Slack app."""
+    return name == "slack" and str(channel_config.get("transport") or "").strip().lower() == "relay"
+
+
 def channel_owner_emails_from_config(config: dict[str, Any]) -> dict[str, str]:
     """[argus patch #113] ``channels.<name>.owner_email`` per channel.
 
@@ -32,6 +37,8 @@ def channel_owner_emails_from_config(config: dict[str, Any]) -> dict[str, str]:
     runs as, so that channel's chats are owned by that user and show in their
     web UI. Honoured only for a channel locked to named senders
     (``allowed_users``): without the lock anyone could write as the owner.
+    [argus patch #171] A Slack channel on the relay transport counts as
+    locked: the router admits only senders it has authorized for this stack.
     """
     emails: dict[str, str] = {}
     for name, channel_config in config.items():
@@ -40,7 +47,7 @@ def channel_owner_emails_from_config(config: dict[str, Any]) -> dict[str, str]:
         email = channel_config.get("owner_email")
         if not isinstance(email, str) or "@" not in email:
             continue
-        if not channel_config.get("allowed_users"):
+        if not channel_config.get("allowed_users") and not _is_slack_relay(name, channel_config):
             logger.warning("channels.%s.owner_email ignored: the channel has no allowed_users lock", name)
             continue
         emails[name] = email.strip().lower()
@@ -78,6 +85,9 @@ _CHANNEL_CREDENTIAL_KEYS: dict[str, list[str]] = {
     "wecom": ["bot_id", "bot_secret"],
     "wechat": ["bot_token"],
 }
+# [argus patch #171] A Slack channel on the relay transport holds no Slack
+# token: its credentials are the router's URL and this gateway's router key.
+_SLACK_RELAY_CREDENTIAL_KEYS: list[str] = ["relay_url", "relay_token"]
 
 # Providers the leader lease never arbitrates: GitHub receives webhooks pushed
 # to whichever instance the load balancer picks and opens no platform
@@ -93,7 +103,7 @@ _CHANNELS_GATEWAY_URL_ENV = "DEER_FLOW_CHANNELS_GATEWAY_URL"
 
 
 def _channel_has_credentials(name: str, channel_config: dict[str, Any]) -> bool:
-    cred_keys = _CHANNEL_CREDENTIAL_KEYS.get(name, [])
+    cred_keys = _SLACK_RELAY_CREDENTIAL_KEYS if _is_slack_relay(name, channel_config) else _CHANNEL_CREDENTIAL_KEYS.get(name, [])
     return any(not isinstance(channel_config.get(key), bool) and channel_config.get(key) is not None and str(channel_config[key]).strip() for key in cred_keys)
 
 

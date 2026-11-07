@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -124,3 +125,49 @@ async def notify_channel(name: str, body: ChannelNotifyRequest, request: Request
     await service.bus.publish_inbound(msg)
     logger.info("[Channels] notify accepted for %s chat_id=%s", name, body.chat_id)
     return ChannelNotifyResponse(accepted=True, channel=name, chat_id=body.chat_id)
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #171] Slack relay: a router that holds the Slack app delivers
+# each event for this stack here instead of a Socket Mode connection.
+# ---------------------------------------------------------------------------
+
+
+class SlackRelayRequest(BaseModel):
+    # A Slack Events API envelope (the Socket Mode payload): team_id + event.
+    envelope: dict[str, Any]
+    # The router's verdict: tier (dm|public|private), trigger_user, persona, action.
+    argus: dict[str, Any]
+
+
+class SlackRelayResponse(BaseModel):
+    accepted: bool
+
+
+@router.post("/slack/relay", response_model=SlackRelayResponse)
+async def relay_slack_event(body: SlackRelayRequest, request: Request) -> SlackRelayResponse:
+    """Hand one router-delivered Slack event to the Slack channel.
+
+    The event takes the path of a Socket Mode event (``SlackChannel.relay_event``).
+    Guarded by the internal service token exactly like ``notify``: the
+    router has authorized the sender, so the adapter skips ``allowed_users``,
+    and with ``owner_email`` the turn runs as the owner. 404 unless the Slack
+    channel is running on the relay transport.
+    """
+    from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, is_valid_internal_auth_token
+
+    if not is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):
+        raise HTTPException(status_code=403, detail="Internal token required")
+
+    from app.channels.service import get_channel_service
+
+    service = get_channel_service()
+    if service is None:
+        raise HTTPException(status_code=503, detail="Channel service is not running")
+    channel = service.get_channel("slack")
+    if channel is None or not channel.is_running or getattr(channel, "uses_relay_transport", False) is not True:
+        raise HTTPException(status_code=404, detail="Channel slack is not running on the relay transport")
+
+    accepted = await channel.relay_event(body.envelope, body.argus)
+    logger.info("[Channels] slack relay tier=%s action=%s accepted=%s", body.argus.get("tier"), body.argus.get("action") or "message", accepted)
+    return SlackRelayResponse(accepted=accepted)

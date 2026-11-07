@@ -10939,7 +10939,8 @@ class TestSlackThreadContext:
     def test_formats_bot_and_user_messages(self):
         ch, _ = self._channel(
             [
-                {"ts": "1.0", "bot_id": "B1", "text": "Minutes: speaker 2 said hi"},
+                # Pythia's own posts carry its app's bot_profile name.
+                {"ts": "1.0", "bot_id": "B1", "bot_profile": {"id": "B1", "name": "Pythia"}, "text": "Minutes: speaker 2 said hi"},
                 {"ts": "2.0", "user": "U9", "text": "assign Nicholas to speaker 2"},
             ]
         )
@@ -10947,6 +10948,31 @@ class TestSlackThreadContext:
         assert "Pythia: Minutes: speaker 2 said hi" in out
         assert "<@U9>: assign Nicholas to speaker 2" in out
         assert out.startswith("[thread context")
+
+    def test_bot_messages_are_labelled_by_their_own_name(self):
+        """[argus patch #171] username, then bot_profile.name, then "a bot"; never a hard-coded "Pythia"."""
+        ch, _ = self._channel(
+            [
+                {"ts": "1.0", "bot_id": "B2", "username": "Atlas for Nicholas", "bot_profile": {"name": "Atlas"}, "text": "persona post"},
+                {"ts": "2.0", "bot_id": "B2", "bot_profile": {"name": "Atlas"}, "text": "app post"},
+                {"ts": "3.0", "bot_id": "B3", "text": "anonymous bot post"},
+                {"ts": "4.0", "bot_id": "B4", "username": "  Build\n  bot  ", "bot_profile": "not-a-dict", "text": "odd shapes"},
+                {"ts": "5.0", "bot_id": "B5", "username": "   ", "bot_profile": {"name": ""}, "text": "blank names"},
+            ]
+        )
+        out = _run(ch.fetch_thread_context("C1", "1.0"))
+        assert "Atlas for Nicholas: persona post" in out
+        assert "Atlas: app post" in out
+        assert "a bot: anonymous bot post" in out
+        assert "Build bot: odd shapes" in out
+        assert "a bot: blank names" in out
+        assert "Pythia" not in out
+
+    def test_bot_label_is_capped(self):
+        ch, _ = self._channel([{"ts": "1.0", "bot_id": "B1", "username": "x" * 500, "text": "long name"}])
+        out = _run(ch.fetch_thread_context("C1", "1.0"))
+        assert f"{'x' * 80}: long name" in out
+        assert "x" * 81 not in out
 
     def test_excludes_current_reply_and_acks(self):
         ch, _ = self._channel(
