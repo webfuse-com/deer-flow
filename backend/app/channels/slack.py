@@ -27,6 +27,7 @@ from app.channels.message_bus import (
     OutboundMessage,
     ResolvedAttachment,
 )
+from deerflow.agents import tier_policy
 from deerflow.uploads.manager import is_upload_staging_file, normalize_filename
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,13 @@ def _relay_base_url(value: Any) -> str | None:
 
 
 def _parse_tier_agents(value: Any) -> dict[str, str]:
-    """[argus patch #171] ``tier_agents: {dm|public|private: <agent>}``."""
+    """[argus patch #171] ``tier_agents: {dm|public|private: <agent>}``.
+
+    [argus patch #174] Only ``dm`` may fall back to the channel default when
+    unset. A restricted tier (``public``, ``private``) needs its entry as the
+    stack's opt-in and then runs the image-held tier policy's agent, whatever
+    the entry names; unset means the tier is refused.
+    """
     if not isinstance(value, dict):
         return {}
     agents: dict[str, str] = {}
@@ -389,6 +396,13 @@ class SlackChannel(Channel):
         and ``persona``. The router has already authorized the sender, so
         ``allowed_users`` does not apply.
 
+        [argus patch #174] A restricted tier (public, later private) runs the
+        agent its image-held tier policy names, never ``tier_agents`` and
+        never the channel default, and is refused when the policy is missing
+        or invalid, ``tier_agents`` has no entry for it, or the agent is not
+        on this stack. The tier rides ``metadata.argus_tier``, which the
+        manager and run admission turn into the policy's ceiling.
+
         ``action: stop`` is refused: the channel manager has no path to cancel
         a run a channel started (Slack waits on ``runs.wait`` with
         ``on_disconnect: continue``).
@@ -423,18 +437,63 @@ class SlackChannel(Channel):
         if event.get("type") not in ("message", "app_mention"):
             return False
 
-        metadata: dict[str, Any] = {"tier": tier}
+        agent_name = self._tier_agents.get(tier)
+        if tier_policy.is_restricted_tier(tier):
+            # [argus patch #174] Fail closed: no policy, no opt-in or no agent
+            # means no run, never the owner's full default agent.
+            agent_name, refusal = await asyncio.to_thread(self._restricted_tier_agent, tier)
+            if agent_name is None:
+                logger.warning("[Slack] relay event refused: %s", refusal)
+                return False
+
+        metadata: dict[str, Any] = {"tier": tier, tier_policy.ARGUS_TIER_KEY: tier}
         for key in ("trigger_user", "persona"):
             value = argus.get(key)
             if isinstance(value, str) and value:
                 metadata[key] = value
         delivery = _RelayDelivery(
             metadata=metadata,
-            agent_name=self._tier_agents.get(tier),
+            agent_name=agent_name,
             commands_allowed=tier == "dm",
         )
         team_id = envelope.get("team_id") or envelope.get("team") or event.get("team")
         return await asyncio.to_thread(self._handle_message_event, event, team_id=team_id, relay=delivery)
+
+    def _restricted_tier_agent(self, tier: str) -> tuple[str | None, str]:
+        """[argus patch #174] ``(agent, "")`` for a restricted tier this gateway can run, else ``(None, why)``."""
+        if tier not in self._tier_agents:
+            return None, f"tier_agents.{tier} is not set; a restricted tier never falls back to the channel default"
+        policy = tier_policy.policy_for(tier)
+        if policy is None:
+            return None, f"no valid {tier} tier policy in this image ({tier_policy.TIER_POLICY_PATH.name})"
+        if self._tier_agents[tier] != policy.agent:
+            logger.info("[Slack] tier_agents.%s=%s ignored: the tier policy runs %s", tier, self._tier_agents[tier], policy.agent)
+        if not tier_policy.tier_agent_present(policy.agent):
+            return None, f"the {tier} tier's agent {policy.agent!r} is not on this stack"
+        return policy.agent, ""
+
+    async def relay_capabilities(self) -> dict[str, Any]:
+        """[argus patch #174] The router's capability probe: the tiers this gateway accepts and its policy.
+
+        ``tiers`` lists ``dm`` plus each restricted tier ``relay_event`` would
+        accept right now. ``policy`` is null without a valid policy file.
+        """
+        tiers = ["dm"]
+        for tier in ("public", "private"):
+            agent_name, _ = await asyncio.to_thread(self._restricted_tier_agent, tier)
+            if agent_name is not None:
+                tiers.append(tier)
+        policies = tier_policy.load_tier_policies()
+        policy: dict[str, Any] | None = None
+        if policies is not None:
+            public = policies.tiers.get("public")
+            policy = {
+                "version": policies.version,
+                "sha256": policies.sha256,
+                "public_agent": public.agent if public is not None else None,
+                "agent_present": public is not None and await asyncio.to_thread(tier_policy.tier_agent_present, public.agent),
+            }
+        return {"tiers": tiers, "policy": policy}
 
     def _connect_socket_mode(self, socket_client: Any) -> None:
         """Connect one start attempt's Socket Mode client if it is still current.

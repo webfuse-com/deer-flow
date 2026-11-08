@@ -59,6 +59,7 @@ from app.gateway.github import run_policy as _github_run_policy  # noqa: F401
 from app.gateway.internal_auth import create_internal_auth_headers
 from app.gateway.path_utils import resolve_outputs_confined_path
 from deerflow.agents.human_input import read_human_input_response
+from deerflow.agents.tier_policy import ARGUS_TIER_KEY, apply_tier_policy, policy_for
 from deerflow.config.agents_config import list_custom_agents, load_agent_config
 from deerflow.config.paths import make_safe_user_id
 from deerflow.runtime import END_SENTINEL, StreamBridge
@@ -2552,6 +2553,16 @@ class ChannelManager:
         # and unioned into the agent ceiling by filter_tools_by_agent_allowed_tools.
         if msg.allowed_tools:
             run_context["allowed_tools"] = list(msg.allowed_tools)
+
+        # [argus patch #174] A relayed Slack event's tier rides the run context.
+        # A restricted tier's policy is the LAST write to every carrier, so the
+        # channel's session.context (config.yaml, merged above) cannot override
+        # it. Gateway admission applies it again and binds it to the thread.
+        tier = (msg.metadata or {}).get(ARGUS_TIER_KEY)
+        if isinstance(tier, str) and tier:
+            run_context[ARGUS_TIER_KEY] = tier
+            if (tier_policy := policy_for(tier)) is not None:
+                apply_tier_policy(run_config, tier_policy, context=run_context)
 
         return assistant_id, run_config, run_context
 

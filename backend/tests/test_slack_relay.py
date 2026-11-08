@@ -104,6 +104,22 @@ def argus(tier="dm", **overrides) -> dict:
     return block
 
 
+@pytest.fixture()
+def public_tier_policy(tmp_path, monkeypatch):
+    """[argus patch #174] A restricted tier needs the image's tier policy and its agent."""
+    import json
+
+    from deerflow.agents import tier_policy
+
+    path = tmp_path / "argus-tier-policy.json"
+    path.write_text(json.dumps({"version": 1, "tiers": {"public": {"agent": "atlas-slack-public", "tools": []}}}))
+    monkeypatch.setattr(tier_policy, "TIER_POLICY_PATH", path)
+    monkeypatch.setattr(tier_policy, "tier_agent_present", lambda name, *, user_id=None: True)
+    tier_policy.reset_tier_policy_cache()
+    yield
+    tier_policy.reset_tier_policy_cache()
+
+
 async def started(config=None) -> tuple[SlackChannel, MessageBus]:
     bus = MessageBus()
     channel = SlackChannel(bus=bus, config=config or relay_config())
@@ -229,18 +245,21 @@ async def test_relay_event_publishes_inbound_with_tier_metadata_and_tier_agent()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("tier", "agent"), [("public", "atlas-public"), ("private", None)])
-async def test_relay_event_picks_the_agent_per_tier(tier, agent):
+async def test_relay_event_picks_the_agent_per_tier(public_tier_policy):
     channel, bus = await started()
     try:
         event = {"type": "app_mention", "channel": "C1", "user": "U-staff", "text": "<@UATLAS> summarise this thread", "ts": "2.0", "thread_ts": "1.0"}
-        assert await channel.relay_event(envelope(event), argus(tier, trigger_user="U-staff")) is True
+        assert await channel.relay_event(envelope(event), argus("public", trigger_user="U-staff")) is True
         inbound = await asyncio.wait_for(bus.get_inbound(), 2)
+        # [argus patch #174] private has no tier policy here: refused, never the channel default.
+        assert await channel.relay_event(envelope(dict(event, ts="3.0")), argus("private", trigger_user="U-staff")) is False
     finally:
         await channel.stop()
-    # A tier missing from tier_agents keeps the channel default (no per-message override).
-    assert inbound.agent_name == agent
-    assert inbound.metadata["tier"] == tier
+    # [argus patch #174] A restricted tier runs the tier policy's agent;
+    # tier_agents.public ("atlas-public") is only the stack's opt-in.
+    assert inbound.agent_name == "atlas-slack-public"
+    assert inbound.metadata["tier"] == "public"
+    assert inbound.metadata["argus_tier"] == "public"
     assert inbound.metadata["trigger_user"] == "U-staff"
     assert inbound.text == "summarise this thread"  # the bot mention from the router's auth.test is stripped
     assert inbound.topic_id == "1.0"
@@ -262,7 +281,7 @@ async def test_relay_skips_allowed_users_but_socket_events_still_honour_it():
 
 
 @pytest.mark.asyncio
-async def test_commands_count_only_in_the_dm_tier():
+async def test_commands_count_only_in_the_dm_tier(public_tier_policy):
     channel, bus = await started()
     try:
         assert await channel.relay_event(envelope(dm_event(text="/help", ts="5.0")), argus("dm")) is True
