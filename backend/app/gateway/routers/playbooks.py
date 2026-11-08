@@ -32,7 +32,7 @@ import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, NamedTuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Request
@@ -57,6 +57,9 @@ _DEFAULT_AGENT = "atlas"
 # gate caps the machine-data frame at 32KB; pinned prompt text on top of that
 # should never come near this. A larger body is a bug, not a use case.
 _MAX_PROMPT_TEXT_CHARS = 64 * 1024
+# [argus patch #173] "Wherever this person wants notifications", resolved at
+# fire time from the Slack router's answer.
+_NOTIFY_CHANNEL = "notify"
 
 
 class PlaybookFireRequest(BaseModel):
@@ -65,6 +68,11 @@ class PlaybookFireRequest(BaseModel):
     """
 
     schedule_id: str | None = None
+    # [argus patch #172] ``slack`` on the relay transport delivers into the
+    # owner's DM, which the Slack router names (``argus.owner``): each run's
+    # answer is a new top-level message there, and a reply under it continues
+    # that run's thread. [argus patch #173] ``notify`` asks the router where
+    # the person wants notifications and delivers there (see _resolve_notify).
     channel: str = "telegram"
     agent: str | None = None
     # `thread: own` reconciles to a synthetic topic_id "sched:<id>"; `shared`
@@ -111,10 +119,15 @@ class PlaybookFireRequest(BaseModel):
 class PlaybookFireResponse(BaseModel):
     accepted: bool
     schedule_id: str
+    # [argus patch #173] The channel the run was published on: for ``notify``
+    # the resolved one, with how it was resolved and where the final answer
+    # is mirrored.
     channel: str
     agent: str
     memory: str
     chats: int
+    resolution: str | None = None
+    mirror: list[str] = Field(default_factory=list)
 
 
 def _expand_dates(prompt: str) -> str:
@@ -191,18 +204,28 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
     service = get_channel_service()
     if service is None:
         raise HTTPException(status_code=503, detail="Channel service is not running")
-    if service.get_channel(channel) is None:
+    notify = await _resolve_notify(service) if channel == _NOTIFY_CHANNEL else None
+    if notify is not None:
+        channel = notify.channel
+    running = service.get_channel(channel)
+    if running is None:
         raise HTTPException(status_code=404, detail=f"Channel {channel} is not running")
 
-    # [argus patch #52] Root chat mappings only. list_entries returns every
-    # stored row, INCLUDING per-topic thread mappings (channel:chat:topic —
-    # e.g. the hook:<connector>:<prompt> threads that connector intents
-    # create, patch #51). Iterating those double-fired every scheduled
-    # playbook once any topic thread existed: N identical InboundMessages
-    # for one chat, coalesced into an N-fold prompt, and the silent-turn
-    # suppression lost — the citizen saw hourly "(No response from agent)".
-    # Root rows are unique per chat by key construction.
-    chats = [entry for entry in await service.store.list_entries(channel) if not entry.get("topic_id")]
+    route_metadata: dict = {}
+    if channel == "slack" and getattr(running, "uses_relay_transport", False) is True:
+        # [argus patch #172] Slack bindings are topic rows only (every Slack
+        # message is threaded), so the root-row lookup below finds nothing.
+        # The router names the owner's DM; the answer posts there as a new
+        # top-level message that roots the run's thread.
+        owner = await _slack_owner_dm(running, notify.owner if notify else None)
+        chats = [{"chat_id": owner.dm, "user_id": owner.user_id or owner.dm}]
+        route_metadata = {"tier": "dm", "user_id": owner.user_id}
+        if notify is not None and notify.mirror_chat_ids:
+            from app.channels._delivery_outcome import MIRROR_KEY
+
+            route_metadata[MIRROR_KEY] = {"channel": "telegram", "chat_ids": notify.mirror_chat_ids}
+    else:
+        chats = await _root_chats(service, channel)
     if not chats:
         # The citizen must have messaged the bot once so a thread mapping exists.
         raise HTTPException(
@@ -241,13 +264,15 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
                 "schedule_id": schedule_id,
                 **({"trigger": body.trigger} if body.trigger else {}),
                 **({"timezone": body.timezone} if body.timezone else {}),
+                **route_metadata,
             },
         )
         await service.bus.publish_inbound(msg)
         delivered += 1
 
+    mirror = ["telegram"] if notify is not None and notify.mirror_chat_ids else []
     logger.info(
-        "[Playbooks] fired %s on %s for %d chat(s) (agent=%s memory=%s topic_id=%s allowed_tools=%s)",
+        "[Playbooks] fired %s on %s for %d chat(s) (agent=%s memory=%s topic_id=%s allowed_tools=%s resolution=%s mirror=%s)",
         schedule_id,
         channel,
         delivered,
@@ -255,6 +280,8 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
         memory_mode,
         body.topic_id,
         body.allowed_tools,
+        notify.resolution if notify else None,
+        mirror,
     )
     return PlaybookFireResponse(
         accepted=True,
@@ -263,7 +290,94 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
         agent=agent,
         memory=memory_mode,
         chats=delivered,
+        resolution=notify.resolution if notify else None,
+        mirror=mirror,
     )
+
+
+async def _root_chats(service, channel: str) -> list[dict]:
+    """[argus patch #52] Root chat mappings only.
+
+    list_entries returns every stored row, INCLUDING per-topic thread mappings
+    (channel:chat:topic, e.g. the hook:<connector>:<prompt> threads that
+    connector intents create, patch #51). Iterating those double-fired every
+    scheduled playbook once any topic thread existed: N identical
+    InboundMessages for one chat, coalesced into an N-fold prompt, and the
+    silent-turn suppression lost (the citizen saw hourly "(No response from
+    agent)"). Root rows are unique per chat by key construction.
+    """
+    return [entry for entry in await service.store.list_entries(channel) if not entry.get("topic_id")]
+
+
+async def _slack_owner_dm(slack, owner: Any = None):
+    """[argus patch #172] The stack owner's Slack DM from the router's ``argus.owner``.
+
+    Raises a 409 the caller can log when Slack is not enabled for the stack or
+    the owner has no resolvable DM, and a 503 when the router did not answer.
+    ``owner``: an answer the caller already has (#173), so the router is
+    asked once per fire.
+    """
+    from app.channels.slack import SLACK_ROUTER_UNREACHABLE
+
+    error = ""
+    if owner is None:
+        owner, error = await slack.owner_conversation()
+    if owner is None:
+        status = 503 if error.startswith(SLACK_ROUTER_UNREACHABLE) else 409
+        raise HTTPException(status_code=status, detail=f"no Slack DM for this stack's owner: argus.owner failed ({error})")
+    if not owner.enabled:
+        raise HTTPException(status_code=409, detail="no Slack DM for this stack's owner: Slack is not enabled for this stack")
+    if not owner.dm:
+        raise HTTPException(status_code=409, detail="no Slack DM for this stack's owner: the router has no DM for the owner")
+    return owner
+
+
+class _NotifyPlan(NamedTuple):
+    """[argus patch #173] Where a ``channel: notify`` fire goes."""
+
+    channel: str
+    owner: Any
+    mirror_chat_ids: list[str]
+    resolution: str
+
+
+async def _resolve_notify(service) -> _NotifyPlan:
+    """[argus patch #173] Resolve ``channel: notify`` from the person's preference, at fire time.
+
+    The Slack router holds the preference and turns it into an ordered
+    channel list (``argus.owner``'s ``channels``); this only executes it:
+
+    - ``["slack"]``: deliver like ``channel: slack`` (#172).
+    - ``["telegram"]``: today's Telegram path.
+    - ``["slack", "telegram"]``: deliver on Slack and mirror the final answer
+      text to the Telegram root chats; none (or no Telegram channel) is not
+      an error for the mirror.
+
+    The router unreachable, refusing, or not configured here (Slack not on the
+    relay transport) falls back to Telegram. Telegram as the channel with no
+    Telegram channel running is a 409 with the reason.
+    """
+    slack = service.get_channel("slack")
+    owner = None
+    if slack is not None and getattr(slack, "uses_relay_transport", False) is True:
+        owner, error = await slack.owner_conversation()
+        if owner is None:
+            channels, resolution = ("telegram",), f"argus.owner failed ({error}); fell back to telegram"
+        elif not owner.channels:
+            channels, resolution = ("telegram",), "argus.owner named no channel; fell back to telegram"
+        else:
+            channels, resolution = owner.channels, f"argus.owner: {', '.join(owner.channels)}"
+    else:
+        channels, resolution = ("telegram",), "slack is not running on the relay transport; telegram"
+    telegram_running = service.get_channel("telegram") is not None
+    if channels[0] == "telegram":
+        if not telegram_running:
+            raise HTTPException(status_code=409, detail=f"channel notify resolved to telegram ({resolution}), but no telegram channel is running on this stack")
+        return _NotifyPlan("telegram", None, [], resolution)
+    mirror_chat_ids: list[str] = []
+    if "telegram" in channels[1:] and telegram_running:
+        mirror_chat_ids = [str(entry["chat_id"]) for entry in await _root_chats(service, "telegram") if entry.get("chat_id")]
+    return _NotifyPlan(channels[0], owner, mirror_chat_ids, resolution)
 
 
 # ---------------------------------------------------------------------------
