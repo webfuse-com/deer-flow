@@ -52,6 +52,7 @@ from deerflow.agents.middlewares.tool_output_budget_middleware import TOOL_OUTPU
 from deerflow.agents.middlewares.tool_receipt import TOOL_RECEIPT_KEY, TOOL_RECEIPT_LEDGER_KEY
 from deerflow.agents.middlewares.tool_transform_meta import TOOL_TRANSFORMS_KEY
 from deerflow.agents.middlewares.view_image_middleware import _IMAGE_CONTEXT_MESSAGE_MARKER_KEY
+from deerflow.agents.tier_policy import ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY, TierPolicyUnavailable, admit_run_tier
 from deerflow.config.agents_config import load_agent_config
 from deerflow.config.app_config import get_app_config
 from deerflow.config.database_config import resolve_checkpoint_graph_cache_max
@@ -970,7 +971,10 @@ _SERVER_OWNED_RUNTIME_CONTEXT_KEYS: frozenset[str] = (
 # (``ChannelManager._apply_channel_policy`` and ``app.gateway.github.run_policy``),
 # which reach the Gateway over the internally-authenticated request channel, so
 # they are internal-only as well — see :data:`_INTERNAL_ONLY_CONTEXT_KEYS`.
-_CONTEXT_RUNTIME_ONLY_KEYS: frozenset[str] = frozenset({"github_token", "disable_clarification", "channel_name"})
+# [argus patch #174] ``argus_tier`` names a restricted run tier (run admission
+# also reads it from thread metadata) and ``argus_tier_vars`` carries the
+# relay's prompt variables; only the channel manager may set either.
+_CONTEXT_RUNTIME_ONLY_KEYS: frozenset[str] = frozenset({"github_token", "disable_clarification", "channel_name", ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY})
 
 # Public run-only controls are accepted through body.context, not body.config.
 _MODEL_SELECTION_CONTEXT_KEYS = frozenset({"subagent_model_name", "model_selection_requested"})
@@ -2304,6 +2308,16 @@ async def start_run(
             # ``body.config`` is free-form and copied verbatim by
             # ``build_run_config``; scrub internal-only keys smuggled there.
             strip_internal_context_keys(config)
+        # [argus patch #174] Run tier: the strictest of the run's context and the
+        # thread's server-owned metadata. A tiered run gets the image-held
+        # policy as the LAST write to both config sections (session.context
+        # from config.yaml was merged before and cannot override it) and stamps
+        # its thread, so a later run there from any caller is restricted too.
+        try:
+            await admit_run_tier(config, run_ctx.thread_store, thread_id, run_metadata)
+        except TierPolicyUnavailable as exc:
+            logger.warning("Run on thread %s refused: %s", sanitize_log_param(thread_id), exc)
+            raise HTTPException(status_code=403, detail="This conversation's tier is not available on this gateway") from exc
 
         replay_kind = run_metadata.get("replay_kind")
         target_message_id = run_metadata.get("regenerate_from_message_id")

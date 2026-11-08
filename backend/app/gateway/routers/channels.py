@@ -171,3 +171,48 @@ async def relay_slack_event(body: SlackRelayRequest, request: Request) -> SlackR
     accepted = await channel.relay_event(body.envelope, body.argus)
     logger.info("[Channels] slack relay tier=%s action=%s accepted=%s", body.argus.get("tier"), body.argus.get("action") or "message", accepted)
     return SlackRelayResponse(accepted=accepted)
+
+
+# ---------------------------------------------------------------------------
+# [argus patch #174] Capability probe: the router delivers a restricted-tier
+# event only to a gateway that says it enforces the tier policy.
+# ---------------------------------------------------------------------------
+
+
+class SlackRelayPolicyInfo(BaseModel):
+    version: int
+    sha256: str
+    public_agent: str | None
+    agent_present: bool
+
+
+class SlackRelayCapabilitiesResponse(BaseModel):
+    # dm, plus each restricted tier relay_event accepts right now.
+    tiers: list[str]
+    # Null when the image has no valid argus-tier-policy.json.
+    policy: SlackRelayPolicyInfo | None
+
+
+@router.get("/slack/relay/capabilities", response_model=SlackRelayCapabilitiesResponse)
+async def slack_relay_capabilities(request: Request) -> SlackRelayCapabilitiesResponse:
+    """What this gateway can take from the Slack router.
+
+    Guarded like the relay route. A gateway without #174 answers 404 here,
+    which the router reads as "no restricted tiers"; so does one whose Slack
+    channel is not running on the relay transport.
+    """
+    from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, is_valid_internal_auth_token
+
+    if not is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):
+        raise HTTPException(status_code=403, detail="Internal token required")
+
+    from app.channels.service import get_channel_service
+
+    service = get_channel_service()
+    if service is None:
+        raise HTTPException(status_code=503, detail="Channel service is not running")
+    channel = service.get_channel("slack")
+    if channel is None or not channel.is_running or getattr(channel, "uses_relay_transport", False) is not True:
+        raise HTTPException(status_code=404, detail="Channel slack is not running on the relay transport")
+
+    return SlackRelayCapabilitiesResponse(**await channel.relay_capabilities())

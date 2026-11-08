@@ -9,6 +9,7 @@ from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.mcp.config_normalization import normalize_mcp_interceptor_paths
 from deerflow.mcp.context_headers import build_context_headers_interceptor
 from deerflow.mcp.oauth import build_oauth_tool_interceptor
+from deerflow.mcp.run_tier import build_run_tier_interceptor
 from deerflow.mcp.user_scoped_auth import build_user_scoped_auth_interceptor
 from deerflow.reflection import resolve_variable
 
@@ -24,7 +25,7 @@ def build_mcp_tool_interceptors(
     resolver: Any = resolve_variable,
     target_logger: logging.Logger = logger,
 ) -> list[Any]:
-    """Build OAuth, user-scoped auth, context headers, then custom MCP interceptors."""
+    """Build OAuth, user-scoped auth, context headers, custom, then the run-tier MCP interceptor."""
     interceptors: list[Any] = []
     oauth_interceptor = oauth_builder(extensions_config)
     if oauth_interceptor is not None:
@@ -71,6 +72,14 @@ def build_mcp_tool_interceptors(
                 f"Failed to load MCP interceptor {interceptor_path}",
                 exc_info=True,
             )
+
+    # [argus patch #174] Built in and after every configured interceptor, so
+    # it runs closest to the transport: X-Argus-Run-Tier cannot be removed or
+    # rewritten by a citizen's mcpInterceptors, and a restricted run's call to
+    # a server outside its tier policy is refused here too.
+    run_tier_interceptor = build_run_tier_interceptor(extensions_config)
+    if run_tier_interceptor is not None:
+        interceptors.append(run_tier_interceptor)
     return interceptors
 
 

@@ -3300,10 +3300,11 @@ run_ownership:
 #     # transport: relay
 #     # relay_url: http://slack-router:8080/api/
 #     # relay_token: $SLACK_ROUTER_API_KEY   # this gateway's router key, sent as the bot token
-#     # tier_agents:                    # agent per relayed tier; a missing tier keeps the channel default
+#     # tier_agents:                    # agent per relayed tier; a missing dm keeps the channel default
 #     #   dm: atlas
-#     #   public: atlas-public
-#     #   private: atlas
+#     #   public: atlas-slack-public    # [argus patch #174] the opt-in for a restricted tier: unset
+#     #   private: atlas                # refuses it; set, it runs the agent the image's
+#     #                                 # argus-tier-policy.json names, under that policy
 #     # owner_email: owner@example.com
 #
 #   telegram:

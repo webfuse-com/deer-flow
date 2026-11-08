@@ -56,6 +56,7 @@ from deerflow.agents.middlewares.tool_error_handling_middleware import build_lea
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from deerflow.agents.task_continuity.tools import append_task_continuity_tools
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
+from deerflow.agents.tier_policy import ARGUS_TIER_VARS_KEY, TierPolicyUnavailable, clamp_pythia_ring, filter_tools_for_tier, guard_tier_middlewares, render_tier_prompt, resolve_run_tier_policy, verify_tier_tool_view
 from deerflow.authz.principal import build_principal_from_context
 from deerflow.authz.provider import AuthzDecision, AuthzRequest
 from deerflow.authz.runtime import resolve_authorization_provider
@@ -545,6 +546,8 @@ def build_middlewares(
     from deerflow.extensions import get_agent_build_extensions
 
     resolved_extensions = extensions if extensions is not None else get_agent_build_extensions()
+    # [argus patch #174] None unless the run is tiered (raises for a tier with no policy).
+    tier_policy = resolve_run_tier_policy(_get_runtime_config(config))
     runtime_middleware_kwargs = {
         "app_config": resolved_app_config,
         "lazy_init": True,
@@ -585,7 +588,8 @@ def build_middlewares(
         )
     )
 
-    if resolved_app_config.skills.auto_route:
+    # [argus patch #174] A tiered run never auto-routes into a skill.
+    if resolved_app_config.skills.auto_route and tier_policy is None:
         from deerflow.agents.middlewares.skill_auto_routing_middleware import SkillAutoRoutingMiddleware
 
         middlewares.append(
@@ -740,6 +744,9 @@ def build_middlewares(
     if _stack_disabled and _ring not in ("none", ""):
         logger.info("PythiaRetrievalMiddleware: agent %r requests ring %r but the stack flag disables retrieval; not attaching.", agent_name, _ring)
         _ring = "none"
+    # [argus patch #174] A tiered run's ring is capped at the policy's
+    # pythia_ring_max, whatever the citizen-editable agent config says.
+    _ring = clamp_pythia_ring(_ring, tier_policy)
     if _ring not in ("none", ""):
         from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
 
@@ -1105,6 +1112,13 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     )
     max_total_subagents = effective_total_subagents_per_run(cfg.get("max_total_subagents"), resolved_app_config)
     is_bootstrap = cfg.get("is_bootstrap", False)
+    # [argus patch #174] A tiered run (a Slack channel thread) builds inside the
+    # image-held tier policy: its agent, no memory, no subagents, its skills,
+    # its tool ceiling. Run admission already pinned all of it; this is the
+    # build-time enforcement, and a tier without a valid policy fails the build.
+    tier_policy = resolve_run_tier_policy(cfg)
+    if tier_policy is not None and is_bootstrap:
+        raise TierPolicyUnavailable(f"run tier {tier_policy.tier!r} cannot run the bootstrap agent")
     interaction_policy = resolve_run_interaction_policy(config)
     non_interactive = not interaction_policy.allows_clarification
     # The live host capability never comes from checkpoint-configurable data.
@@ -1112,7 +1126,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     scheduler_capability = runtime_context.get(SCHEDULER_CAPABILITY_CONTEXT_KEY) if isinstance(runtime_context, Mapping) else None
     if is_bootstrap or cfg.get("is_subagent") or not is_scheduler_capability(scheduler_capability) or scheduler_capability.mode != interaction_policy.mode.value:
         scheduler_capability = None
-    agent_name = validate_agent_name(cfg.get("agent_name"))
+    agent_name = validate_agent_name(tier_policy.agent if tier_policy is not None else cfg.get("agent_name"))
 
     agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
     # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
@@ -1121,17 +1135,17 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     schedule_allowed = cfg.get("allowed_tools")
     extra_allowed: set[str] | None = set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
 
-    memory_enabled = getattr(agent_config, "memory_enabled", True) is not False
+    memory_enabled = getattr(agent_config, "memory_enabled", True) is not False and tier_policy is None
     # Keep compatibility with lightweight AgentConfig-shaped objects used by
     # integrations that predate caller-level subagent restrictions.
     allowed_subagents = getattr(agent_config, "allowed_subagents", None) if agent_config is not None else None
     # The request switch may disable delegation, but it can never widen the
     # server-side custom-agent policy. An explicit empty list is a hard deny.
-    subagent_enabled = bool(requested_subagent_enabled and allowed_subagents != [])
+    subagent_enabled = bool(requested_subagent_enabled and allowed_subagents != [] and tier_policy is None)
     config.setdefault("configurable", {})["subagent_enabled"] = subagent_enabled
     if isinstance(config.get("context"), dict):
         config["context"]["subagent_enabled"] = subagent_enabled
-    available_skills = _available_skill_names(agent_config, is_bootstrap)
+    available_skills = _available_skill_names(agent_config, is_bootstrap) if tier_policy is None else set(tier_policy.skills)
 
     # Phase 3: enforce skill authorization (Layer 1). Filter the skill
     # allowlist by the provider's "skill" policy so denied skills never
@@ -1315,6 +1329,8 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
             _append_memory_tools_without_name_conflicts(authorization_candidates)
         _append_project_document_tools_if_pinned(authorization_candidates, cfg)
         append_task_continuity_tools(authorization_candidates, resolved_app_config)
+        # [argus patch #174] Drops the policy's tier-only tools (never tiered here).
+        authorization_candidates = filter_tools_for_tier(authorization_candidates, tier_policy)
         configured_tool_ids = {id(tool) for tool in configured_tools}
         authorized_tools, _authz_provider = apply_tool_authorization(
             authorization_candidates,
@@ -1496,6 +1512,13 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         _append_memory_tools_without_name_conflicts(authorization_candidates)
     _append_project_document_tools_if_pinned(authorization_candidates, cfg)
     append_task_continuity_tools(authorization_candidates, resolved_app_config)
+    # [argus patch #174] The tier ceiling, after EVERY append path: the agent's
+    # allowed_tools (#53) is citizen-editable, is unioned with a schedule's list
+    # (#43, extra_allowed above), and does not cover update_agent (extra_tools),
+    # describe_skill, the memory tools, the project document tools or the
+    # task-continuity tools appended just above. For an owner/dm run this only
+    # drops the policy's tier-only tools.
+    authorization_candidates = filter_tools_for_tier(authorization_candidates, tier_policy)
     configured_tool_ids = {id(tool) for tool in configured_tools}
     authorized_tools, _authz_provider = apply_tool_authorization(
         authorization_candidates,
@@ -1507,7 +1530,9 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
     final_tools, setup = assemble_deferred_tools(
         configured_tools,
-        enabled=resolved_app_config.tool_search.enabled,
+        # [argus patch #174] A tiered run binds its few tools directly: nothing
+        # deferred, so no tool_search promotion path exists.
+        enabled=resolved_app_config.tool_search.enabled and tier_policy is None,
         exclude=deferral_exclude(resolved_app_config.tool_search, extra_allowed),
         defer=getattr(resolved_app_config.tool_search, "defer", ()),
     )
@@ -1532,6 +1557,10 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         skill_authorization=skill_authorization,
         subagent_execution_capacity=subagent_execution_capacity,
     )
+    if tier_policy is not None:
+        # [argus patch #174] Middleware-declared tools narrowed to the ceiling;
+        # the call-time guard outermost.
+        middlewares = guard_tier_middlewares(middlewares, final_tools, tier_policy)
     middlewares, declared_authorized = narrow_declared_tools(
         middlewares,
         outcome=layer_one,
@@ -1556,8 +1585,16 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         memory_enabled=memory_enabled,
         bash_available=has_bash_tool(authorized_tools),
     )
+    if tier_policy is not None and tier_policy.prompt:
+        # [argus patch #174] Platform text after the agent's soul: a citizen
+        # edit to SOUL.md cannot remove the tier's contract. Its placeholders
+        # take the relay's persona, channel, audience and trigger user.
+        system_prompt = f"{system_prompt}\n\n{render_tier_prompt(tier_policy, cfg.get(ARGUS_TIER_VARS_KEY))}"
     bound_middlewares = normalize_middleware_state_schemas(middlewares, mode)
     verify_declared_tool_view(bound_middlewares, authorized_names=declared_authorized)
+    if tier_policy is not None:
+        # [argus patch #174] Final assertion on exactly what is bound.
+        verify_tier_tool_view(final_tools, bound_middlewares, tier_policy)
     graph = create_agent(
         model=chat_model,
         tools=final_tools,
