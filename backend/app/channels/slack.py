@@ -447,7 +447,8 @@ class SlackChannel(Channel):
                 return False
 
         metadata: dict[str, Any] = {"tier": tier, tier_policy.ARGUS_TIER_KEY: tier}
-        for key in ("trigger_user", "persona"):
+        # [argus patch #174] audience and channel_label fill policy.prompt's placeholders.
+        for key in ("trigger_user", "persona", "audience", "channel_label"):
             value = argus.get(key)
             if isinstance(value, str) and value:
                 metadata[key] = value

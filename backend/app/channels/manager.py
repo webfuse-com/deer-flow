@@ -59,7 +59,7 @@ from app.gateway.github import run_policy as _github_run_policy  # noqa: F401
 from app.gateway.internal_auth import create_internal_auth_headers
 from app.gateway.path_utils import resolve_outputs_confined_path
 from deerflow.agents.human_input import read_human_input_response
-from deerflow.agents.tier_policy import ARGUS_TIER_KEY, apply_tier_policy, policy_for
+from deerflow.agents.tier_policy import ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY, apply_tier_policy, policy_for, tier_prompt_variables
 from deerflow.config.agents_config import list_custom_agents, load_agent_config
 from deerflow.config.paths import make_safe_user_id
 from deerflow.runtime import END_SENTINEL, StreamBridge
@@ -2563,6 +2563,8 @@ class ChannelManager:
             run_context[ARGUS_TIER_KEY] = tier
             if (tier_policy := policy_for(tier)) is not None:
                 apply_tier_policy(run_config, tier_policy, context=run_context)
+                # The router's persona, channel, audience and trigger user for policy.prompt.
+                run_context[ARGUS_TIER_VARS_KEY] = tier_prompt_variables(msg.metadata)
 
         return assistant_id, run_config, run_context
 

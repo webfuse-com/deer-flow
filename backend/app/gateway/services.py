@@ -52,7 +52,7 @@ from deerflow.agents.middlewares.tool_output_budget_middleware import TOOL_OUTPU
 from deerflow.agents.middlewares.tool_receipt import TOOL_RECEIPT_KEY, TOOL_RECEIPT_LEDGER_KEY
 from deerflow.agents.middlewares.tool_transform_meta import TOOL_TRANSFORMS_KEY
 from deerflow.agents.middlewares.view_image_middleware import _IMAGE_CONTEXT_MESSAGE_MARKER_KEY
-from deerflow.agents.tier_policy import ARGUS_TIER_KEY, TierPolicyUnavailable, admit_run_tier
+from deerflow.agents.tier_policy import ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY, TierPolicyUnavailable, admit_run_tier
 from deerflow.config.agents_config import load_agent_config
 from deerflow.config.app_config import get_app_config
 from deerflow.config.database_config import resolve_checkpoint_graph_cache_max
@@ -971,9 +971,10 @@ _SERVER_OWNED_RUNTIME_CONTEXT_KEYS: frozenset[str] = (
 # (``ChannelManager._apply_channel_policy`` and ``app.gateway.github.run_policy``),
 # which reach the Gateway over the internally-authenticated request channel, so
 # they are internal-only as well — see :data:`_INTERNAL_ONLY_CONTEXT_KEYS`.
-# [argus patch #174] ``argus_tier`` names a restricted run tier; only the channel
-# manager may set it, and run admission also reads it from thread metadata.
-_CONTEXT_RUNTIME_ONLY_KEYS: frozenset[str] = frozenset({"github_token", "disable_clarification", "channel_name", ARGUS_TIER_KEY})
+# [argus patch #174] ``argus_tier`` names a restricted run tier (run admission
+# also reads it from thread metadata) and ``argus_tier_vars`` carries the
+# relay's prompt variables; only the channel manager may set either.
+_CONTEXT_RUNTIME_ONLY_KEYS: frozenset[str] = frozenset({"github_token", "disable_clarification", "channel_name", ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY})
 
 # Public run-only controls are accepted through body.context, not body.config.
 _MODEL_SELECTION_CONTEXT_KEYS = frozenset({"subagent_model_name", "model_selection_requested"})

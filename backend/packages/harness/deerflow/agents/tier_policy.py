@@ -35,10 +35,17 @@ Schema (version 1)::
           "mcp_servers": {"pythia": "http://argus-kb-api:8000/pythia/mcp"},
           "disable_clarification": true,
           "silence_token": null,
-          "prompt": "Platform text appended after the agent's soul."
+          "prompt": "You are {persona}, answering in {channel_label} ({audience}) for <@{trigger_user}>."
         }
       }
     }
+
+Top-level keys other than ``version``, ``tier_only_tools`` and ``tiers`` (a
+``_comment`` documentation array, say) are ignored. ``prompt`` is rendered with
+``str.format_map`` over :data:`TIER_PROMPT_VARIABLES` from the relay's router
+block (:func:`render_tier_prompt`); a variable the run does not carry renders
+empty. ``silence_token`` is parsed and not used by the gateway: the router drops
+a channel post that is exactly the token.
 
 Fail closed: a missing, unreadable or invalid file, an unknown ``version``, or
 a missing or invalid tier entry means :func:`policy_for` returns ``None`` and
@@ -86,6 +93,11 @@ TIER_POLICY_VERSION = 1
 
 # runtime.context key and server-owned thread-metadata key.
 ARGUS_TIER_KEY = "argus_tier"
+# runtime.context key carrying the relay's prompt variables (internal-only).
+ARGUS_TIER_VARS_KEY = "argus_tier_vars"
+# The router-block fields policy.prompt may name as {placeholders}.
+TIER_PROMPT_VARIABLES = ("persona", "channel_label", "audience", "trigger_user")
+_TIER_PROMPT_VALUE_MAX_CHARS = 200
 # The per-call MCP header (mcp/run_tier.py).
 RUN_TIER_HEADER = "X-Argus-Run-Tier"
 # Header value for a run that names no tier.
@@ -176,7 +188,7 @@ def _parse_tier(tier: str, raw: object, tier_only_tools: frozenset[str]) -> Tier
     if not isinstance(raw, dict):
         raise ValueError(f"tiers.{tier} must be an object")
     known = {"agent", "memory_mode", "subagents", "skills", "pythia_ring_max", "strip_context", "tools", "mcp_servers", "disable_clarification", "silence_token", "prompt"}
-    unknown = sorted(set(raw) - known)
+    unknown = sorted(key for key in set(raw) - known if not str(key).startswith("_"))
     if unknown:
         logger.warning("[tier-policy] tiers.%s: unknown keys ignored: %s", tier, ", ".join(unknown))
     agent = raw.get("agent")
@@ -416,6 +428,45 @@ async def admit_run_tier(config: MutableMapping[str, Any], thread_store: Any, th
         if run_metadata is not None:
             run_metadata[ARGUS_TIER_KEY] = policy.tier
     return policy
+
+
+def tier_prompt_variables(metadata: Mapping[str, Any] | None) -> dict[str, str]:
+    """The prompt variables a relayed message carries (router-block strings, whitespace collapsed, capped)."""
+    variables: dict[str, str] = {}
+    for name in TIER_PROMPT_VARIABLES:
+        value = (metadata or {}).get(name)
+        if isinstance(value, str):
+            cleaned = " ".join(value.split())[:_TIER_PROMPT_VALUE_MAX_CHARS]
+            if cleaned:
+                variables[name] = cleaned
+    return variables
+
+
+class _BlankForMissing(dict):
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def render_tier_prompt(policy: TierPolicy, variables: object = None) -> str | None:
+    """``policy.prompt`` with its ``{placeholders}`` filled; the raw prompt if it cannot be formatted.
+
+    Only :data:`TIER_PROMPT_VARIABLES` are offered; any other name, or a
+    variable the run does not carry (a later web run on the thread), renders
+    as an empty string. A prompt ``str.format_map`` cannot handle (a stray
+    brace, a positional field, an attribute lookup) is appended as written,
+    with a warning: the platform text is never dropped and the build never
+    fails over it.
+    """
+    if not policy.prompt:
+        return None
+    values = _BlankForMissing()
+    if isinstance(variables, Mapping):
+        values.update({name: value for name, value in tier_prompt_variables(variables).items()})
+    try:
+        return policy.prompt.format_map(values)
+    except Exception as exc:
+        logger.warning("[tier-policy] tier %s prompt could not be rendered (%s); appending it as written", policy.tier, type(exc).__name__)
+        return policy.prompt
 
 
 def tier_agent_present(agent_name: str, *, user_id: str | None = None) -> bool:

@@ -56,7 +56,7 @@ from deerflow.agents.middlewares.tool_error_handling_middleware import build_lea
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from deerflow.agents.task_continuity.tools import append_task_continuity_tools
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
-from deerflow.agents.tier_policy import TierPolicyUnavailable, clamp_pythia_ring, filter_tools_for_tier, guard_tier_middlewares, resolve_run_tier_policy, verify_tier_tool_view
+from deerflow.agents.tier_policy import ARGUS_TIER_VARS_KEY, TierPolicyUnavailable, clamp_pythia_ring, filter_tools_for_tier, guard_tier_middlewares, render_tier_prompt, resolve_run_tier_policy, verify_tier_tool_view
 from deerflow.authz.principal import build_principal_from_context
 from deerflow.authz.provider import AuthzDecision, AuthzRequest
 from deerflow.authz.runtime import resolve_authorization_provider
@@ -1587,8 +1587,9 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     )
     if tier_policy is not None and tier_policy.prompt:
         # [argus patch #174] Platform text after the agent's soul: a citizen
-        # edit to SOUL.md cannot remove the tier's contract.
-        system_prompt = f"{system_prompt}\n\n{tier_policy.prompt}"
+        # edit to SOUL.md cannot remove the tier's contract. Its placeholders
+        # take the relay's persona, channel, audience and trigger user.
+        system_prompt = f"{system_prompt}\n\n{render_tier_prompt(tier_policy, cfg.get(ARGUS_TIER_VARS_KEY))}"
     bound_middlewares = normalize_middleware_state_schemas(middlewares, mode)
     verify_declared_tool_view(bound_middlewares, authorized_names=declared_authorized)
     if tier_policy is not None:
