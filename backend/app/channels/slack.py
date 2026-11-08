@@ -479,9 +479,13 @@ class SlackChannel(Channel):
         ``tiers`` lists ``dm`` plus each restricted tier ``relay_event`` would
         accept right now. ``policy`` is null without a valid policy file.
         """
+        return await asyncio.to_thread(self._relay_capabilities)
+
+    def _relay_capabilities(self) -> dict[str, Any]:
+        """Blocking half of :meth:`relay_capabilities` (the policy file and agent lookups)."""
         tiers = ["dm"]
         for tier in ("public", "private"):
-            agent_name, _ = await asyncio.to_thread(self._restricted_tier_agent, tier)
+            agent_name, _ = self._restricted_tier_agent(tier)
             if agent_name is not None:
                 tiers.append(tier)
         policies = tier_policy.load_tier_policies()
@@ -492,7 +496,7 @@ class SlackChannel(Channel):
                 "version": policies.version,
                 "sha256": policies.sha256,
                 "public_agent": public.agent if public is not None else None,
-                "agent_present": public is not None and await asyncio.to_thread(tier_policy.tier_agent_present, public.agent),
+                "agent_present": public is not None and tier_policy.tier_agent_present(public.agent),
             }
         return {"tiers": tiers, "policy": policy}
 

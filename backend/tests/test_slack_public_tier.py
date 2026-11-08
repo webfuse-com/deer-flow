@@ -191,6 +191,27 @@ def test_the_cache_follows_the_file(policy_path):
     assert tier_policy.policy_for("public") is None
 
 
+def test_cached_lookups_never_touch_the_disk(policy_path, monkeypatch):
+    # Cold: nothing loaded yet, so the event-loop paths see no policy and no file.
+    assert tier_policy.cached_policy_for("public") is None
+    _write_policy(policy_path, POLICY)
+    assert tier_policy.cached_policy_for("public") is None
+    assert tier_policy.last_known_tier_policy_file_present() is True  # first call checks once
+    assert tier_policy.load_tier_policies() is not None
+    # Warm: served from memory even if the disk becomes unreachable.
+    monkeypatch.setattr(tier_policy.os, "stat", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no stat")))
+    monkeypatch.setattr(type(policy_path), "is_file", lambda self: (_ for _ in ()).throw(AssertionError("no stat")))
+    assert tier_policy.cached_policy_for("public").agent == POLICY_AGENT
+    assert tier_policy.cached_policy_for("dm") is None
+    assert tier_policy.last_known_tier_policy_file_present() is True
+    monkeypatch.undo()
+    # A load that finds the file gone clears what the cached views report.
+    policy_path.unlink()
+    assert tier_policy.load_tier_policies() is None
+    assert tier_policy.cached_policy_for("public") is None
+    assert tier_policy.last_known_tier_policy_file_present() is False
+
+
 def test_tiers_and_urls():
     assert not tier_policy.is_restricted_tier(None)
     assert not tier_policy.is_restricted_tier("dm")
@@ -418,6 +439,19 @@ def test_manager_applies_the_policy_last_over_citizen_session_context(public_pol
     assert "argus_tier" not in run_config["configurable"]
     # The shared session config is not mutated.
     assert CITIZEN_SESSION["slack"]["context"]["user_email"] == "owner@example.com"
+
+
+def test_manager_with_a_cold_cache_leaves_the_policy_to_admission(policy_path, agents_present):
+    # The manager runs on the event loop and never reads the file; with nothing
+    # loaded yet it forwards the tier and gateway admission applies the policy.
+    _write_policy(policy_path, POLICY)
+    _, _, run_context = _manager()._resolve_run_params(_public_msg(), "thread-1")
+    assert run_context["argus_tier"] == "public"
+    # Not applied here (admission, which reads the file off the loop, does it):
+    # the citizen's session values are still present at this point.
+    assert run_context["memory_mode"] == "read-write"
+    # The prompt variables travel either way.
+    assert run_context["argus_tier_vars"] == ROUTER_VARS
 
 
 def test_manager_leaves_dm_runs_alone(public_policy):

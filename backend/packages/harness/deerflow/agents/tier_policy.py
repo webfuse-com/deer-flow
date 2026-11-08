@@ -73,6 +73,7 @@ Enforcement points (each one alone holds the ceiling):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -157,6 +158,10 @@ class TierPolicies:
 
 _cache_lock = threading.Lock()
 _cache: tuple[Any, TierPolicies | None] | None = None
+# The last observed presence of the policy file (None: never checked). Every
+# filesystem check below records it, so callers that may sit on an event loop
+# read it without touching the disk (see last_known_tier_policy_file_present).
+_file_present: bool | None = None
 
 
 def normalize_mcp_url(url: object) -> str | None:
@@ -266,28 +271,51 @@ def _parse(data: bytes) -> TierPolicies:
 
 
 def tier_policy_file_present() -> bool:
-    """True when the image ships a policy file (valid or not)."""
+    """True when the image ships a policy file (valid or not). Blocking: a ``stat``."""
+    global _file_present
     try:
-        return TIER_POLICY_PATH.is_file()
+        present = TIER_POLICY_PATH.is_file()
     except OSError:
-        return False
+        present = False
+    _file_present = present
+    return present
+
+
+def last_known_tier_policy_file_present() -> bool:
+    """The last recorded presence of the policy file; one ``stat`` only if nothing checked yet.
+
+    For synchronous callers that may run on an event loop (the MCP
+    interceptor builder at discovery time). Every off-loop policy load
+    refreshes the value, and the file is image-baked, so it does not change
+    under a running gateway.
+    """
+    present = _file_present
+    return tier_policy_file_present() if present is None else present
 
 
 def load_tier_policies() -> TierPolicies | None:
     """The image's tier policies, or None when the file is missing or invalid.
 
-    Cached on the file's identity (path, mtime, size), so a consumer on a hot
-    path (the MCP interceptor) pays one ``stat`` per call.
+    Blocking (a ``stat``, and a read when the file changed): async callers go
+    through :func:`aload_tier_policies` or ``asyncio.to_thread``. Cached on the
+    file's identity (path, mtime, size), so every call sees an edited, replaced
+    or removed file and pays one ``stat`` otherwise.
     """
-    global _cache
+    global _cache, _file_present
     path = TIER_POLICY_PATH
     try:
         stat = os.stat(path)
     except FileNotFoundError:
+        _file_present = False
+        with _cache_lock:
+            _cache = (None, None)
         return None
     except OSError as exc:
         logger.error("[tier-policy] %s unreadable (%s): restricted tiers are refused", path, type(exc).__name__)
+        with _cache_lock:
+            _cache = (None, None)
         return None
+    _file_present = True
     key = (str(path), stat.st_mtime_ns, stat.st_size)
     with _cache_lock:
         if _cache is not None and _cache[0] == key:
@@ -302,10 +330,31 @@ def load_tier_policies() -> TierPolicies | None:
     return policies
 
 
+async def aload_tier_policies() -> TierPolicies | None:
+    """:func:`load_tier_policies` off the event loop."""
+    return await asyncio.to_thread(load_tier_policies)
+
+
+def cached_policy_for(tier: object) -> TierPolicy | None:
+    """The policy for a restricted tier from the last load, without touching the disk.
+
+    For synchronous code on the event loop (the channel manager). The relay
+    loads the policy off the loop moments before a relayed message reaches the
+    manager, so the cache is warm; run admission re-checks the file anyway.
+    """
+    if not is_restricted_tier(tier):
+        return None
+    with _cache_lock:
+        cached = _cache
+    policies = cached[1] if cached is not None else None
+    return policies.tiers.get(tier) if policies is not None else None  # type: ignore[arg-type]
+
+
 def reset_tier_policy_cache() -> None:
-    global _cache
+    global _cache, _file_present
     with _cache_lock:
         _cache = None
+    _file_present = None
 
 
 def is_restricted_tier(tier: object) -> bool:
@@ -402,6 +451,7 @@ async def admit_run_tier(config: MutableMapping[str, Any], thread_store: Any, th
     the image ships a policy file: without one no tier can run, and an image
     without the file is a broken build, equivalent to a pre-#174 rollback.
     A store error propagates (the run is refused), it never reads as "no tier".
+    The policy file is checked and read off the event loop.
     """
     if run_metadata is not None:
         run_metadata.pop(ARGUS_TIER_KEY, None)
@@ -410,14 +460,15 @@ async def admit_run_tier(config: MutableMapping[str, Any], thread_store: Any, th
     context_tier = context.get(ARGUS_TIER_KEY) if isinstance(context, Mapping) else None
     configurable_tier = configurable.get(ARGUS_TIER_KEY) if isinstance(configurable, Mapping) else None
     thread_tier = None
-    record = await thread_store.get(thread_id, user_id=None) if thread_store is not None and tier_policy_file_present() else None
+    present, policies = await asyncio.to_thread(_policy_file_state)
+    record = await thread_store.get(thread_id, user_id=None) if thread_store is not None and present else None
     metadata = record.get("metadata") if isinstance(record, Mapping) else None
     if isinstance(metadata, Mapping):
         thread_tier = metadata.get(ARGUS_TIER_KEY)
     tier = stricter_tier(context_tier, configurable_tier, thread_tier)
     if not is_restricted_tier(tier):
         return None
-    policy = policy_for(tier)
+    policy = policies.tiers.get(tier) if policies is not None else None  # type: ignore[arg-type]
     if policy is None:
         raise TierPolicyUnavailable(f"run tier {tier!r} has no valid policy")
     config.setdefault("context", {})
@@ -467,6 +518,23 @@ def render_tier_prompt(policy: TierPolicy, variables: object = None) -> str | No
     except Exception as exc:
         logger.warning("[tier-policy] tier %s prompt could not be rendered (%s); appending it as written", policy.tier, type(exc).__name__)
         return policy.prompt
+
+
+def _policy_file_state() -> tuple[bool, TierPolicies | None]:
+    """Blocking: whether the policy file exists, and its policies."""
+    if not tier_policy_file_present():
+        return False, None
+    return True, load_tier_policies()
+
+
+def restricted_mcp_call_refusal(tier: str, server_name: object) -> str | None:
+    """Blocking: why a restricted run may not call ``server_name``, or None when it may."""
+    policy = policy_for(tier)
+    if policy is None:
+        return f"run tier {tier!r} has no valid policy"
+    if not mcp_server_allowed(server_name, policy):
+        return f"not on the {tier} tier's server list"
+    return None
 
 
 def tier_agent_present(agent_name: str, *, user_id: str | None = None) -> bool:

@@ -22,13 +22,19 @@ Per call:
    a restricted run even before the overlay and kb-api learn the header.
 
 Registered only when the image ships the policy file
-(``tier_policy.tier_policy_file_present``): without it no run can be tiered
-(admission and assembly refuse), and an absent header already means ``owner``
-to every receiver.
+(``tier_policy.last_known_tier_policy_file_present``): without it no run can
+be tiered (admission and assembly refuse), and an absent header already means
+``owner`` to every receiver.
+
+No filesystem access on the event loop: an owner or dm call reads only the run
+context, and a restricted call checks the policy and the deployment server list
+in a worker thread (``asyncio.to_thread``), where the policy file's (path,
+mtime, size) cache applies as everywhere else.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -40,9 +46,8 @@ from deerflow.agents.tier_policy import (
     RUN_TIER_HEADER,
     header_tier_value,
     is_restricted_tier,
-    mcp_server_allowed,
-    policy_for,
-    tier_policy_file_present,
+    last_known_tier_policy_file_present,
+    restricted_mcp_call_refusal,
 )
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.mcp.headers import apply_header_overrides, header_spellings
@@ -69,7 +74,7 @@ def _run_tier(request: Any) -> str:
 
 def build_run_tier_interceptor(extensions_config: ExtensionsConfig) -> Any | None:
     """The run-tier interceptor, or None when the image has no tier policy."""
-    if not tier_policy_file_present():
+    if not last_known_tier_policy_file_present():
         return None
     http_spellings: dict[str, dict[str, str]] = {name: header_spellings(server.headers) for name, server in extensions_config.mcp_servers.items() if server.type in ("http", "sse")}
 
@@ -77,12 +82,9 @@ def build_run_tier_interceptor(extensions_config: ExtensionsConfig) -> Any | Non
         tier = _run_tier(request)
         restricted = is_restricted_tier(tier)
         if restricted:
-            policy = policy_for(tier)
-            if policy is None:
-                logger.warning("[tier-policy] refused MCP call to %r: run tier %r has no valid policy", request.server_name, tier)
-                raise ToolException(f"MCP server '{request.server_name}' is not available in this conversation.")
-            if not mcp_server_allowed(request.server_name, policy):
-                logger.warning("[tier-policy] refused MCP call to %r: not on the %s tier's server list", request.server_name, tier)
+            refusal = await asyncio.to_thread(restricted_mcp_call_refusal, tier, request.server_name)
+            if refusal is not None:
+                logger.warning("[tier-policy] refused MCP call to %r: %s", request.server_name, refusal)
                 raise ToolException(f"MCP server '{request.server_name}' is not available in this conversation.")
         spellings = http_spellings.get(request.server_name)
         if spellings is None:
