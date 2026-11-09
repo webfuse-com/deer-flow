@@ -8,14 +8,16 @@ way (a promotion path, a later addition, a hallucinated name that happens to
 resolve) never executes. The refusal is an error ToolMessage, not an
 exception, so the model sees it and the turn continues.
 
-[argus patch #175] With ``taint`` (the owner tier), the run is tainted once any
-of its AI messages calls a PRIVATE tool, or memory was injected into it. The
-check reads the run's own messages (the worker's pre-run message ids mark the
-boundary), so a PRIVATE call in the same model step as a write is seen before
-either executes. A tainted run's WRITE and egress calls get
-``tier_policy.TAINT_REFUSAL``, and its AI messages are stamped with the source
-labels (``tier_policy.TURN_PRIVATE_KEY``) so the channel manager can flag the
-answer posts.
+[argus patch #175] With ``taint`` (the owner tier), a call is "after taint"
+when another call of the run, earlier or in the same model step, is PRIVATE, or
+memory was injected into the run. The check reads the run's own messages (the
+worker's pre-run message ids mark the boundary), so the first PRIVATE call runs
+under the full ceiling, and a write in the same step as a PRIVATE read is seen
+before either executes. After taint only ``TaintClasses.permitted_after_taint``
+may run (PUBLIC tools, private reads, self-writes); anything else gets
+``tier_policy.TAINT_REFUSAL``. The run's AI messages are stamped with the
+source labels (``tier_policy.TURN_PRIVATE_KEY``) so the channel manager can flag
+the answer posts.
 """
 
 from __future__ import annotations
@@ -51,11 +53,11 @@ class TierToolGuardMiddleware(AgentMiddleware[AgentState]):
         self.allowed_names = frozenset(allowed_names)
         self.taint = taint
 
-    def _run_sources(self, state: Any, runtime: Any) -> list[str]:
+    def _run_sources(self, state: Any, runtime: Any, *, exclude_call_id: object = None) -> list[str]:
         if self.taint is None:
             return []
         messages = (state or {}).get("messages") if isinstance(state, dict) else getattr(state, "messages", None)
-        return run_private_sources(current_run_messages(messages or [], _pre_existing_ids(runtime)), self.taint)
+        return run_private_sources(current_run_messages(messages or [], _pre_existing_ids(runtime)), self.taint, exclude_call_id=exclude_call_id)
 
     def _refusal(self, request: ToolCallRequest) -> ToolMessage | None:
         call = request.tool_call or {}
@@ -63,8 +65,8 @@ class TierToolGuardMiddleware(AgentMiddleware[AgentState]):
         if not isinstance(name, str) or name not in self.allowed_names:
             logger.warning("[tier-policy] tier %s: refused a call to %r outside the tool ceiling", self.tier, name)
             return self._error(call, f"Error: the tool {name!r} is not available in this conversation.")
-        if self.taint is not None and self.taint.blocked_after_taint(name):
-            sources = self._run_sources(getattr(request, "state", None), getattr(request, "runtime", None))
+        if self.taint is not None and not self.taint.permitted_after_taint(name):
+            sources = self._run_sources(getattr(request, "state", None), getattr(request, "runtime", None), exclude_call_id=call.get("id"))
             if sources:
                 logger.info("[tier-policy] tier %s: refused %r after private reads (%s)", self.tier, name, ", ".join(sources))
                 return self._error(call, TAINT_REFUSAL)

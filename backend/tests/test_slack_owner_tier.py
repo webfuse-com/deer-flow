@@ -50,8 +50,10 @@ OWNER_POLICY = {
     "memory_mode": "read-only",
     "pythia_ring_max": "internal",
     "mcp_servers": {"pythia": PYTHIA_URL},
-    "public_tools": ["pythia_query", "slack_channel_history", "slack_search", "web_search", "web_search_exa"],
-    "write_tools": ["asana_create_task", "asana_create_project", "github_create_issue", "github_add_comment", "gmail_create_draft", "drive_create_doc", "drive_update_doc"],
+    "public_tools": ["pythia_query", "slack_channel_history", "slack_search", "web_search", "web_search_exa", "tool_search", "describe_skill", "ask_clarification"],
+    "private_read_tools": ["calendar_list_events", "gmail_search"],
+    "self_write_tools": ["gmail_create_draft", "drive_create_doc"],
+    "write_tools": ["asana_create_task", "asana_create_project", "github_create_issue", "github_add_comment", "drive_update_doc"],
     "egress_tools": ["web_search", "web_search_exa", "image_search", "web_fetch"],
 }
 POLICY = {
@@ -116,7 +118,9 @@ def test_owner_tier_parses_with_defaults(owner_policy):
     assert not owner_policy.has_ceiling and not owner_policy.thread_bound
     assert owner_policy.memory_mode == "read-only" and owner_policy.reads_memory
     assert owner_policy.pythia_ring_max == "internal"
-    assert owner_policy.taint.write_tools >= {"asana_create_task", "gmail_create_draft"}
+    assert owner_policy.taint.write_tools >= {"asana_create_task"}
+    assert owner_policy.taint.private_read_tools == {"calendar_list_events", "gmail_search"}
+    assert owner_policy.taint.self_write_tools == {"gmail_create_draft", "drive_create_doc"}
     assert "user_email" in owner_policy.strip_context
     assert tier_policy.is_restricted_tier("owner")
 
@@ -125,8 +129,11 @@ def test_owner_tier_parses_with_defaults(owner_policy):
     "change",
     [
         {"public_tools": None},
+        {"private_read_tools": None},
+        {"self_write_tools": None},
         {"write_tools": None},
         {"egress_tools": None},
+        {"self_write_tools": "gmail_create_draft"},
         {"subagents": True},
         {"memory_mode": "read-write"},
         {"pythia_ring_max": "everything"},
@@ -172,22 +179,44 @@ def test_the_owner_tier_ranks_below_public():
 
 def test_classification(owner_policy):
     classify = tier_policy.classify_tool
-    # WRITE by name.
+    # WRITE by name, for both write lists (writes never taint).
     assert classify(_mcp("asana_create_task", "asana"), owner_policy) == tier_policy.ToolClass("write", "asana")
-    # PUBLIC: an in-process listed tool, and a listed MCP tool from an allowlisted URL.
-    assert classify(NamedTool("web_search"), owner_policy).kind == "public"
+    assert classify(_mcp("gmail_create_draft", "gmail"), owner_policy) == tier_policy.ToolClass("write", "gmail")
+    # PUBLIC: listed in-process tools (infra tools included) and a listed MCP tool from an allowlisted URL.
+    for name in ("web_search", "tool_search", "describe_skill", "ask_clarification"):
+        assert classify(NamedTool(name), owner_policy).kind == "public"
     assert classify(_mcp("pythia_query", "pythia"), owner_policy).kind == "public"
-    # PRIVATE by default: an unknown tool, any other MCP tool, a lookalike, an alias.
+    # PRIVATE by default: private reads, an unknown tool, any other MCP tool, a lookalike, an alias.
+    assert classify(_mcp("calendar_list_events", "calendar"), owner_policy) == tier_policy.ToolClass("private", "calendar")
     assert classify(NamedTool("bash"), owner_policy) == tier_policy.ToolClass("private", "bash")
     assert classify(NamedTool("brand_new_tool"), owner_policy) == tier_policy.ToolClass("private", "brand")
-    assert classify(_mcp("calendar_list_events", "calendar"), owner_policy) == tier_policy.ToolClass("private", "calendar")
-    assert classify(_mcp("gmail_search", "gmail"), owner_policy) == tier_policy.ToolClass("private", "gmail")
+    for name in ("present_files", "view_image"):
+        assert classify(NamedTool(name), owner_policy).kind == "private"
+    assert classify(_mcp("gmail_send_message", "gmail"), owner_policy) == tier_policy.ToolClass("private", "gmail")
     assert classify(NamedTool("pythia_query"), owner_policy).kind == "private"  # in-process lookalike
     assert classify(_mcp("web_search", "personal-search"), owner_policy).kind == "private"  # MCP, not from a listed URL
-    # Unknown names the model produces are PRIVATE too.
-    classes = tier_policy.TaintClasses(classes={}, egress=owner_policy.taint.egress_tools)
-    assert classes.of("anything_else") == tier_policy.ToolClass("private", "anything")
-    assert classes.blocked_after_taint("web_fetch") and classes.blocked_after_taint("web_search")
+
+
+def test_the_after_taint_allowlist(owner_policy):
+    taint = tier_policy.guard_tier_middlewares([], [NamedTool("web_search"), NamedTool("tool_search"), _mcp("pythia_query", "pythia")], owner_policy)[0].taint
+    permitted = taint.permitted_after_taint
+    # PUBLIC minus egress, private reads, self-writes.
+    for name in ("pythia_query", "tool_search", "calendar_list_events", "gmail_search", "gmail_create_draft", "drive_create_doc"):
+        assert permitted(name), name
+    # Egress even when PUBLIC, writes, and everything unclassified.
+    for name in ("web_search", "web_search_exa", "web_fetch", "asana_create_task", "drive_update_doc", "bash", "browser_navigate", "gmail_send_message", "present_files", "never_heard_of_it", None):
+        assert not permitted(name), name
+
+
+def test_egress_and_write_lists_win_over_the_allowlists(policy_path):
+    policy = copy.deepcopy(POLICY)
+    policy["tiers"]["owner"]["private_read_tools"] = ["calendar_list_events", "web_fetch"]
+    policy["tiers"]["owner"]["self_write_tools"] = ["asana_create_task"]
+    _write_policy(policy_path, policy)
+    taint = tier_policy.guard_tier_middlewares([], [], tier_policy.policy_for("owner"))[0].taint
+    assert not taint.permitted_after_taint("web_fetch")  # egress, also listed as a read
+    assert not taint.permitted_after_taint("asana_create_task")  # write_tools, also listed as a self-write
+    assert taint.permitted_after_taint("calendar_list_events")
 
 
 def test_labels_are_short_and_header_safe():
@@ -199,10 +228,23 @@ def test_labels_are_short_and_header_safe():
 
 # -- the taint guard -----------------------------------------------------------
 
+GUARD_TOOLS = [
+    NamedTool("web_search"),
+    NamedTool("web_fetch"),
+    NamedTool("bash"),
+    NamedTool("read_secret_notes"),
+    NamedTool("present_files"),
+    _mcp("pythia_query", "pythia"),
+    _mcp("asana_create_task", "asana"),
+    _mcp("calendar_list_events", "calendar"),
+    _mcp("gmail_search", "gmail"),
+    _mcp("gmail_create_draft", "gmail"),
+    _mcp("gmail_send_message", "gmail"),
+]
+
 
 def _guard(policy):
-    tools = [NamedTool("web_search"), NamedTool("web_fetch"), _mcp("pythia_query", "pythia"), _mcp("asana_create_task", "asana"), _mcp("calendar_list_events", "calendar"), _mcp("gmail_search", "gmail")]
-    stack = tier_policy.guard_tier_middlewares([], tools, policy)
+    stack = tier_policy.guard_tier_middlewares([], GUARD_TOOLS, policy)
     guard = stack[0]
     assert isinstance(guard, TierToolGuardMiddleware) and guard.taint is not None
     return guard
@@ -213,13 +255,16 @@ def _ai(*names, msg_id):
 
 
 def _call(guard, name, messages, *, pre_existing=frozenset({"h0", "a0"})):
+    """Run the guard for the newest AI message's call of ``name`` (its own id, as the tool node does)."""
     runtime = SimpleNamespace(context={CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY: pre_existing})
-    request = SimpleNamespace(tool_call={"name": name, "id": "call-x", "args": {}}, state={"messages": messages}, runtime=runtime)
+    last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    call_id = next((c["id"] for c in (last_ai.tool_calls if last_ai else []) if c["name"] == name), "call-x")
+    request = SimpleNamespace(tool_call={"name": name, "id": call_id, "args": {}}, state={"messages": messages}, runtime=runtime)
     executed = []
 
     def handler(req):
         executed.append(req.tool_call["name"])
-        return ToolMessage(content="ok", tool_call_id="call-x")
+        return ToolMessage(content="ok", tool_call_id=call_id)
 
     result = guard.wrap_tool_call(request, handler)
     return result, executed
@@ -230,37 +275,47 @@ def _turn(*messages):
     return [HumanMessage(content="earlier", id="h0"), _ai("gmail_search", msg_id="a0"), HumanMessage(content="now", id="h1"), *messages]
 
 
-def test_public_and_write_tools_run_before_any_private_read(owner_policy):
-    guard = _guard(owner_policy)
-    messages = _turn(_ai("web_search", "pythia_query", "asana_create_task", msg_id="a1"))
-    for name in ("web_search", "pythia_query", "asana_create_task"):
-        result, executed = _call(guard, name, messages)
-        assert executed == [name] and result.content == "ok"
+def _after_calendar(*names):
+    """This run read the calendar, then asks for ``names``."""
+    return _turn(_ai("calendar_list_events", msg_id="a1"), ToolMessage(content="9:00 board", tool_call_id="a1-0"), _ai(*names, msg_id="a2"))
 
 
-def test_a_private_read_taints_the_run_and_refuses_writes_and_egress(owner_policy):
+def test_before_taint_everything_in_the_ceiling_runs(owner_policy):
     guard = _guard(owner_policy)
-    messages = _turn(_ai("calendar_list_events", msg_id="a1"), ToolMessage(content="9:00 board", tool_call_id="a1-0"), _ai("asana_create_task", msg_id="a2"))
-    for name in ("asana_create_task", "web_search", "web_fetch"):
+    messages = _turn(_ai("web_search", "pythia_query", "asana_create_task", "gmail_create_draft", msg_id="a1"))
+    for name in ("web_search", "pythia_query", "asana_create_task", "gmail_create_draft"):
         result, executed = _call(guard, name, messages)
-        assert executed == [] and result.status == "error"
+        assert executed == [name] and result.content == "ok", name
+    # The first PRIVATE call itself runs under the full ceiling, allowlisted or not.
+    for name in ("bash", "web_fetch", "gmail_send_message", "present_files", "calendar_list_events"):
+        result, executed = _call(guard, name, _turn(_ai(name, msg_id="a1")))
+        assert executed == [name], name
+
+
+def test_after_taint_only_the_allowlist_runs(owner_policy):
+    guard = _guard(owner_policy)
+    # Allowed: a private read, a self-write, a PUBLIC non-egress tool.
+    for name in ("gmail_search", "gmail_create_draft", "pythia_query"):
+        result, executed = _call(guard, name, _after_calendar(name))
+        assert executed == [name], name
+    # Refused: a write, egress (web_search is also PUBLIC), bash, a send, an unclassified tool, present_files.
+    for name in ("asana_create_task", "web_search", "web_fetch", "bash", "gmail_send_message", "read_secret_notes", "present_files"):
+        result, executed = _call(guard, name, _after_calendar(name))
+        assert executed == [] and result.status == "error", name
         assert result.content == tier_policy.TAINT_REFUSAL
-    # Reads still run: more private data, and public company knowledge.
-    for name in ("gmail_search", "pythia_query"):
-        result, executed = _call(guard, name, messages)
-        assert executed == [name]
 
 
-def test_a_private_call_in_the_same_step_taints_its_siblings(owner_policy):
+def test_a_private_call_in_the_same_step_counts(owner_policy):
     guard = _guard(owner_policy)
-    messages = _turn(_ai("calendar_list_events", "asana_create_task", msg_id="a1"))
-    result, executed = _call(guard, "asana_create_task", messages)
-    assert executed == [] and result.content == tier_policy.TAINT_REFUSAL
+    messages = _turn(_ai("calendar_list_events", "asana_create_task", "bash", msg_id="a1"))
+    # The read runs (it is allowlisted); the write and the second PRIVATE call are after taint.
+    assert _call(guard, "calendar_list_events", messages)[1] == ["calendar_list_events"]
+    assert _call(guard, "asana_create_task", messages)[0].content == tier_policy.TAINT_REFUSAL
+    assert _call(guard, "bash", messages)[0].content == tier_policy.TAINT_REFUSAL
 
 
 def test_an_unknown_tool_is_private_and_taints(owner_policy):
     guard = _guard(owner_policy)
-    guard.allowed_names = guard.allowed_names | {"read_secret_notes"}
     messages = _turn(_ai("read_secret_notes", msg_id="a1"), _ai("asana_create_task", msg_id="a2"))
     result, _ = _call(guard, "asana_create_task", messages)
     assert result.content == tier_policy.TAINT_REFUSAL
@@ -300,15 +355,15 @@ def test_a_tainted_run_stamps_its_answer(owner_policy):
     (stamped,) = update["messages"]
     assert stamped.id == "a2" and stamped.additional_kwargs[tier_policy.TURN_PRIVATE_KEY] == ["calendar", "gmail"]
     assert guard.after_agent({"messages": [*state["messages"][:-1], stamped]}, runtime) is None  # already stamped
-    # An untainted run is not stamped.
-    clean = {"messages": _turn(_ai("web_search", msg_id="a1"), AIMessage(content="Found it.", id="a2"))}
+    # An untainted run (PUBLIC and WRITE calls only) is not stamped.
+    clean = {"messages": _turn(_ai("web_search", "gmail_create_draft", msg_id="a1"), AIMessage(content="Drafted.", id="a2"))}
     assert guard.after_model(clean, runtime) is None
 
 
 def test_the_async_guard_refuses_the_same(owner_policy):
     guard = _guard(owner_policy)
     runtime = SimpleNamespace(context={CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY: frozenset({"h0", "a0"})})
-    request = SimpleNamespace(tool_call={"name": "web_search", "id": "c", "args": {}}, state={"messages": _turn(_ai("calendar_list_events", "web_search", msg_id="a1"))}, runtime=runtime)
+    request = SimpleNamespace(tool_call={"name": "web_search", "id": "a1-1", "args": {}}, state={"messages": _turn(_ai("calendar_list_events", "web_search", msg_id="a1"))}, runtime=runtime)
 
     async def handler(req):
         raise AssertionError("must not run")
@@ -408,7 +463,8 @@ def test_owner_assembly_keeps_the_owners_agent_and_tools_minus_subagents(owner_p
     assert guard.taint.of("calendar_list_events").kind == "private"
     assert guard.taint.of("pythia_query").kind == "public"
     assert guard.taint.of("asana_create_task").kind == "write"
-    assert guard.taint.of("tool_search").kind == "private"  # not listed: default deny
+    assert guard.taint.of("tool_search").kind == "public"  # listed in public_tools
+    assert guard.taint.of("bash").kind == "private"  # not listed: default deny
 
 
 def test_owner_memory_off_reads_nothing(policy_path, agents_present, monkeypatch):
@@ -417,6 +473,36 @@ def test_owner_memory_off_reads_nothing(policy_path, agents_present, monkeypatch
     _write_policy(policy_path, policy)
     captured = _assemble(monkeypatch, {"argus_tier": "owner", "agent_name": "atlas"}, OWNER_TOOLS)
     assert captured["build_kwargs"]["memory_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_memory_off_injects_nothing_and_writes_nothing(policy_path, agents_present):
+    from deerflow.agents.lead_agent import agent as lead_agent_module
+    from deerflow.agents.memory.write_policy import effective_memory_mode
+    from deerflow.agents.middlewares.dynamic_context_middleware import DynamicContextMiddleware
+    from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
+    from deerflow.config.app_config import AppConfig
+
+    policy = copy.deepcopy(POLICY)
+    policy["tiers"]["owner"]["memory_mode"] = "off"
+    _write_policy(policy_path, policy)
+    owner = tier_policy.policy_for("owner")
+    assert owner.memory_mode == "off" and not owner.reads_memory
+    # Admission: the run's memory mode is off, so nothing is written and the injector reads nothing.
+    store = MemoryThreadMetaStore(InMemoryStore())
+    await store.create("thread-c", user_id="owner-1")
+    config = {"configurable": {"memory_mode": "read-write"}, "context": {"argus_tier": "owner", "agent_name": "atlas", "memory_mode": "read-write"}}
+    await tier_policy.admit_run_tier(config, store, "thread-c", {})
+    runtime = SimpleNamespace(context=config["context"])
+    assert effective_memory_mode(runtime) == "off"
+    assert memory_write_allowed(runtime) is False
+    # Assembly passes memory_enabled=False (test_owner_memory_off_reads_nothing), and the real
+    # middleware chain built that way has no memory writer and an injector with memory switched off.
+    app_config = AppConfig.model_validate({"sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"}})
+    stack = lead_agent_module.build_middlewares({"configurable": {}, "context": {"argus_tier": "owner"}}, "default-model", agent_name="atlas", app_config=app_config, memory_enabled=owner.reads_memory)
+    assert not any(isinstance(m, MemoryMiddleware) for m in stack)
+    (injector,) = [m for m in stack if isinstance(m, DynamicContextMiddleware)]
+    assert injector._memory_enabled is False
 
 
 def test_the_pythia_ring_is_capped_at_internal(owner_policy):
@@ -709,6 +795,31 @@ async def test_only_a_tainted_answer_and_its_files_carry_the_headers(owner_polic
     operator_calls = [name for name, _ in operator.calls]
     assert "reactions.add" in operator_calls
     assert [kwargs["text"] for name, kwargs in operator.calls if name == "chat.postMessage"] == ["Task created."]
+
+
+@pytest.mark.asyncio
+async def test_every_post_and_upload_of_a_tainted_turn_is_flagged_and_none_of_a_clean_one(owner_policy, tmp_path):
+    """The channel's own outbound dispatch: the answer, then each attachment (what present_files produces)."""
+    channel = await _started()
+    factory = channel.config["web_client_factory"]
+    operator = channel._web_client
+    files = []
+    for name in ("agenda.md", "notes.pdf"):
+        path = tmp_path / name
+        path.write_text(name)
+        files.append(ResolvedAttachment(virtual_path=f"/mnt/user-data/outputs/{name}", actual_path=path, filename=name, mime_type="text/plain", size=len(name), is_image=False))
+    try:
+        await channel._on_outbound(OutboundMessage(channel_name="slack", chat_id="C1", thread_id="t1", text="Board at 9.", thread_ts="1.0", attachments=files, metadata={tier_policy.TURN_PRIVATE_KEY: ["calendar"]}))
+        tainted_clients = [client for client in factory.clients if "headers" in client.kwargs]
+        await channel._on_outbound(OutboundMessage(channel_name="slack", chat_id="C1", thread_id="t2", text="Task created.", thread_ts="5.0", attachments=files, metadata={}))
+    finally:
+        await channel.stop()
+    calls = [name for client in tainted_clients for name, _ in client.calls]
+    assert sorted(calls) == ["chat.postMessage", "files.upload_v2", "files.upload_v2"]
+    assert all(client.kwargs["headers"][tier_policy.TURN_PRIVATE_HEADER] == "1" for client in tainted_clients)
+    # The clean turn made no flagged client; its post and uploads went through the operator client.
+    assert [client for client in factory.clients if "headers" in client.kwargs] == tainted_clients
+    assert [name for name, kwargs in operator.calls if name in ("chat.postMessage", "files.upload_v2") and kwargs.get("thread_ts") == "5.0"] == ["chat.postMessage", "files.upload_v2", "files.upload_v2"]
 
 
 @pytest.mark.asyncio

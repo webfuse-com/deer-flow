@@ -46,11 +46,13 @@ Schema (version 1)::
           "prompt": "You are {persona}, answering in {channel_label} ({audience}) for <@{trigger_user}>."
         },
         "owner": {
-          "memory_mode": "read-only",
+          "memory_mode": "off",
           "pythia_ring_max": "internal",
           "mcp_servers": {"pythia": "http://argus-kb-api:8000/pythia/mcp"},
-          "public_tools": ["pythia_query", "slack_channel_history", "slack_search", "web_search", "web_search_exa"],
-          "write_tools": ["asana_create_task", "github_create_issue", "gmail_create_draft"],
+          "public_tools": ["pythia_query", "slack_channel_history", "web_search", "tool_search", "describe_skill"],
+          "private_read_tools": ["calendar_list_events", "gmail_search_threads"],
+          "self_write_tools": ["gmail_create_draft"],
+          "write_tools": ["asana_create_task", "github_create_issue"],
           "egress_tools": ["web_search", "web_search_exa", "image_search", "web_fetch"],
           "prompt": "You are {persona}, answering {trigger_user} in {channel_label}."
         }
@@ -60,23 +62,30 @@ Schema (version 1)::
 ``tiers.owner`` has no ``agent`` or ``tools``: the agent is the stack's
 ``tier_agents.owner`` (else its default agent) and the ceiling is that agent's
 own tool set minus :data:`OWNER_TIER_EXCLUDED_TOOLS`. ``public_tools``,
-``write_tools`` and ``egress_tools`` are required (empty lists are allowed);
-``memory_mode`` defaults to ``read-only``, ``pythia_ring_max`` to ``internal``,
-``subagents`` must be false. Classification (:func:`classify_tool`):
+``private_read_tools``, ``self_write_tools``, ``write_tools`` and
+``egress_tools`` are required lists (empty allowed); ``memory_mode`` defaults to
+``read-only`` (``off``: nothing injected, nothing written), ``pythia_ring_max``
+to ``internal``, ``subagents`` must be false. Classification
+(:func:`classify_tool`) decides what taints a run:
 
-- a WRITE tool is named in ``write_tools``;
-- a PUBLIC tool is named in ``public_tools`` and, when it is an MCP tool, comes
+- WRITE (never taints): named in ``write_tools`` or ``self_write_tools``;
+- PUBLIC (never taints): named in ``public_tools`` and, when it is an MCP tool,
   from a deployment server whose URL is in ``mcp_servers`` (an in-process tool
   carrying a ``<server key>_`` prefix of those servers is not public);
-- everything else is PRIVATE, MCP tools and unknown names included. Memory
-  injected into the turn (``memory_mode: read-only``) is a PRIVATE read too.
+- PRIVATE (taints): everything else, ``private_read_tools``, MCP tools and
+  unknown names included. Memory injected into the turn (``memory_mode:
+  read-only``) is a PRIVATE read too.
 
-The first PRIVATE tool call in a run taints it; after that every WRITE or
-``egress_tools`` call is refused (:data:`TAINT_REFUSAL`) and the run's answer
-messages carry :data:`TURN_PRIVATE_KEY` with short source labels (the MCP server
-key, else the tool name's first word; ``memory``). ``mcp_servers`` also names
-the servers whose caller token is withheld, which keeps Pythia at the internal
-ring; every other server keeps the owner's identity.
+Before the first PRIVATE call a run has the owner's full ceiling. After it the
+run is tainted and only an allowlist may run (:meth:`TaintClasses.permitted_after_taint`):
+PUBLIC tools, ``private_read_tools`` and ``self_write_tools``, never anything
+in ``egress_tools`` or ``write_tools`` even if listed elsewhere. Every other
+call (writes, egress, ``bash``, browsers, sends, unknown tools) gets
+:data:`TAINT_REFUSAL`. The tainted run's answer messages carry
+:data:`TURN_PRIVATE_KEY` with short source labels (the MCP server key, else the
+tool name's first word; ``memory``). ``mcp_servers`` also names the servers
+whose caller token is withheld, which keeps Pythia at the internal ring; every
+other server keeps the owner's identity.
 
 Top-level keys other than ``version``, ``tier_only_tools`` and ``tiers`` (a
 ``_comment`` documentation array, say) are ignored. ``prompt`` is rendered with
@@ -191,6 +200,9 @@ class TaintRules:
     public_tools: frozenset[str]
     write_tools: frozenset[str]
     egress_tools: frozenset[str]
+    # Allowed after taint: reads (they taint) and writes that stay in the owner's accounts.
+    private_read_tools: frozenset[str] = frozenset()
+    self_write_tools: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -276,7 +288,7 @@ def _string_list(value: object, field_name: str, tier: str) -> list[str]:
 def _parse_owner_tier(raw: dict, tier_only_tools: frozenset[str]) -> TierPolicy:
     """[argus patch #175] ``tiers.owner``: classes instead of a ceiling."""
     tier = OWNER_TIER
-    known = {"memory_mode", "subagents", "pythia_ring_max", "strip_context", "mcp_servers", "public_tools", "write_tools", "egress_tools", "disable_clarification", "silence_token", "prompt"}
+    known = {"memory_mode", "subagents", "pythia_ring_max", "strip_context", "mcp_servers", "public_tools", "private_read_tools", "self_write_tools", "write_tools", "egress_tools", "disable_clarification", "silence_token", "prompt"}
     unknown = sorted(key for key in set(raw) - known if not str(key).startswith("_"))
     if unknown:
         logger.warning("[tier-policy] tiers.owner: keys ignored (the agent is tier_agents.owner, the ceiling its own tools): %s", ", ".join(unknown))
@@ -289,7 +301,7 @@ def _parse_owner_tier(raw: dict, tier_only_tools: frozenset[str]) -> TierPolicy:
     if ring not in PYTHIA_RINGS:
         raise ValueError(f"tiers.owner.pythia_ring_max must be one of {list(PYTHIA_RINGS)}")
     classes = {}
-    for name in ("public_tools", "write_tools", "egress_tools"):
+    for name in ("public_tools", "private_read_tools", "self_write_tools", "write_tools", "egress_tools"):
         if name not in raw:
             raise ValueError(f"tiers.owner.{name} is required")
         classes[name] = frozenset(_string_list(raw[name], name, tier))
@@ -803,9 +815,12 @@ def guard_tier_middlewares(middlewares: Iterable[Any], tools: Iterable[Any], pol
     if policy.taint is not None:
         # [argus patch #175] Classes for every name this build can call; any
         # other name the model produces is PRIVATE.
+        rules = policy.taint
         taint = TaintClasses(
             classes={tool.name: classify_tool(tool, policy, server_urls=server_urls) for tool in [*bound, *declared] if isinstance(getattr(tool, "name", None), str)},
-            egress=policy.taint.egress_tools,
+            egress=rules.egress_tools,
+            never_after_taint=rules.egress_tools | rules.write_tools,
+            allowed_after_taint=(rules.private_read_tools | rules.self_write_tools) - rules.egress_tools - rules.write_tools,
         )
     return [TierToolGuardMiddleware(policy.tier, allowed, taint=taint), *stack]
 
@@ -832,13 +847,20 @@ class TaintClasses:
 
     classes: Mapping[str, ToolClass]
     egress: frozenset[str]
+    # egress_tools | write_tools: refused after taint whatever else lists them.
+    never_after_taint: frozenset[str] = frozenset()
+    # private_read_tools | self_write_tools, minus never_after_taint.
+    allowed_after_taint: frozenset[str] = frozenset()
 
     def of(self, name: object) -> ToolClass:
         found = self.classes.get(name) if isinstance(name, str) else None
         return found if found is not None else ToolClass("private", source_label(name))
 
-    def blocked_after_taint(self, name: object) -> bool:
-        return self.of(name).kind == "write" or name in self.egress
+    def permitted_after_taint(self, name: object) -> bool:
+        """The allowlist a tainted run is held to: PUBLIC tools, private reads, self-writes."""
+        if not isinstance(name, str) or name in self.never_after_taint or name in self.egress:
+            return False
+        return self.of(name).kind == "public" or name in self.allowed_after_taint
 
 
 def classify_tool(tool: Any, policy: TierPolicy, *, server_urls: Mapping[str, str | None] | None = None) -> ToolClass:
@@ -851,7 +873,7 @@ def classify_tool(tool: Any, policy: TierPolicy, *, server_urls: Mapping[str, st
     label = source_label(source["server_name"] if source else name)
     if rules is None or not isinstance(name, str):
         return ToolClass("private", label)
-    if name in rules.write_tools:
+    if name in rules.write_tools or name in rules.self_write_tools:
         return ToolClass("write", label)
     if name in rules.public_tools:
         if is_mcp_tool(tool):
@@ -899,8 +921,13 @@ def current_run_messages(messages: Iterable[Any], pre_existing_ids: object) -> l
     return messages
 
 
-def run_private_sources(messages: Iterable[Any], taint: TaintClasses) -> list[str]:
-    """Sorted labels of the PRIVATE reads in ``messages`` (one run's messages)."""
+def run_private_sources(messages: Iterable[Any], taint: TaintClasses, *, exclude_call_id: object = None) -> list[str]:
+    """Sorted labels of the PRIVATE reads in ``messages`` (one run's messages).
+
+    ``exclude_call_id`` leaves one tool call out: the guard asks whether a call
+    comes after a PRIVATE call, so the first PRIVATE call itself runs under the
+    full ceiling, while a sibling in the same model step counts.
+    """
     labels: set[str] = set()
     for message in messages:
         if _is_injected_memory(message):
@@ -909,6 +936,9 @@ def run_private_sources(messages: Iterable[Any], taint: TaintClasses) -> list[st
             continue
         for call in _message_field(message, "tool_calls") or ():
             name = call.get("name") if isinstance(call, Mapping) else getattr(call, "name", None)
+            call_id = call.get("id") if isinstance(call, Mapping) else getattr(call, "id", None)
+            if exclude_call_id is not None and call_id == exclude_call_id:
+                continue
             cls = taint.of(name)
             if cls.kind == "private":
                 labels.add(cls.label)

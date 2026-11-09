@@ -52,6 +52,8 @@ POLICY = {
         "owner": {
             "mcp_servers": {"pythia": PYTHIA_URL},
             "public_tools": ["pythia_query", "web_search"],
+            "private_read_tools": ["calendar_read"],
+            "self_write_tools": [],
             "write_tools": ["asana_create_task"],
             "egress_tools": ["web_search"],
         },
