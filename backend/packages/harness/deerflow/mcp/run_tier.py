@@ -1,4 +1,4 @@
-"""[argus patch #174] ``X-Argus-Run-Tier`` on every MCP call, set last.
+"""[argus patch #174, #175] ``X-Argus-Run-Tier`` on every MCP call, set last.
 
 The interceptor is built in (``mcp/interceptors.py`` appends it after the
 citizen-configured ``mcpInterceptors``), so it runs closest to the transport:
@@ -10,16 +10,19 @@ Per call:
 
 1. The run's tier comes from the live run context (``request.runtime``, then
    ``get_runtime()``, as ``context_headers.py`` reads it); a call outside a
-   run, or a run without a tier, is ``owner``.
+   run, or a run without a tier, is sent as ``owner``.
 2. A restricted tier needs a policy: none means the call is refused. With one,
-   the call is refused unless its server is a deployment server whose URL is on
-   the policy's list (``tier_policy.mcp_server_allowed``).
+   a tier with a ceiling (public) is refused unless the server is a deployment
+   server whose URL is on the policy's list (``tier_policy.mcp_server_allowed``);
+   the owner tier (#175) may call every server.
 3. HTTP/SSE servers get ``X-Argus-Run-Tier: <tier>``. atlas-mcp refuses every
    suite for a restricted value and kb-api clamps to the internal ring.
 4. A restricted run's call drops any ``X-Pythia-Caller-Token`` an earlier
    interceptor added (the overlay's ``argus_caller_token`` mints one from the
    stack email, not from the run context), so no personal-ring token leaves
-   a restricted run even before the overlay and kb-api learn the header.
+   a restricted run even before the overlay and kb-api learn the header. The
+   owner tier drops it only on the policy's listed servers (Pythia), which
+   caps Pythia at the internal ring and keeps the owner's identity elsewhere.
 
 Registered only when the image ships the policy file
 (``tier_policy.last_known_tier_policy_file_present``): without it no run can
@@ -42,12 +45,11 @@ from langchain_core.tools import ToolException
 
 from deerflow.agents.tier_policy import (
     ARGUS_TIER_KEY,
-    OWNER_TIER,
     RUN_TIER_HEADER,
     header_tier_value,
     is_restricted_tier,
     last_known_tier_policy_file_present,
-    restricted_mcp_call_refusal,
+    restricted_mcp_call_decision,
 )
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.mcp.headers import apply_header_overrides, header_spellings
@@ -58,7 +60,7 @@ logger = logging.getLogger(__name__)
 PYTHIA_CALLER_TOKEN_HEADER = "x-pythia-caller-token"
 
 
-def _run_tier(request: Any) -> str:
+def _run_tier(request: Any) -> str | None:
     runtime = getattr(request, "runtime", None)
     if runtime is None:
         try:
@@ -69,7 +71,7 @@ def _run_tier(request: Any) -> str:
             runtime = None
     context = getattr(runtime, "context", None)
     tier = context.get(ARGUS_TIER_KEY) if isinstance(context, dict) else None
-    return tier if isinstance(tier, str) and tier else OWNER_TIER
+    return tier if isinstance(tier, str) and tier else None
 
 
 def build_run_tier_interceptor(extensions_config: ExtensionsConfig) -> Any | None:
@@ -81,8 +83,9 @@ def build_run_tier_interceptor(extensions_config: ExtensionsConfig) -> Any | Non
     async def run_tier_interceptor(request: Any, handler: Any) -> Any:
         tier = _run_tier(request)
         restricted = is_restricted_tier(tier)
+        withhold_token = False
         if restricted:
-            refusal = await asyncio.to_thread(restricted_mcp_call_refusal, tier, request.server_name)
+            refusal, withhold_token = await asyncio.to_thread(restricted_mcp_call_decision, tier, request.server_name)
             if refusal is not None:
                 logger.warning("[tier-policy] refused MCP call to %r: %s", request.server_name, refusal)
                 raise ToolException(f"MCP server '{request.server_name}' is not available in this conversation.")
@@ -90,7 +93,7 @@ def build_run_tier_interceptor(extensions_config: ExtensionsConfig) -> Any | Non
         if spellings is None:
             return await handler(request)
         headers = apply_header_overrides(request.headers, {RUN_TIER_HEADER: header_tier_value(tier)}, spellings=spellings)
-        if restricted:
+        if withhold_token:
             headers = {name: value for name, value in headers.items() if name.lower() != PYTHIA_CALLER_TOKEN_HEADER}
         return await handler(request.override(headers=headers))
 

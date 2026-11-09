@@ -3305,6 +3305,8 @@ run_ownership:
 #     #   public: atlas-slack-public    # [argus patch #174] the opt-in for a restricted tier: unset
 #     #   private: atlas                # refuses it; set, it runs the agent the image's
 #     #                                 # argus-tier-policy.json names, under that policy
+#     #   owner: atlas                  # [argus patch #175] the owner's own channel runs; unset runs
+#     #                                 # the default agent, under the policy's tiers.owner
 #     # owner_email: owner@example.com
 #
 #   telegram:

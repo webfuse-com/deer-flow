@@ -47,7 +47,8 @@ _SLACK_ACCEPTED_MESSAGE_SUBTYPES = frozenset({"file_share"})
 # holds the Slack app, delivers events and serves the Web API at relay_url.
 SLACK_TRANSPORT_RELAY = "relay"
 # The audiences a relayed event can come from (the router decides which).
-SLACK_RELAY_TIERS = frozenset({"dm", "public", "private"})
+# [argus patch #175] ``owner``: a channel run the router verified its owner triggered.
+SLACK_RELAY_TIERS = frozenset({"dm", "public", "private", "owner"})
 # A bot's display name in hydrated thread context is capped at this length.
 _SLACK_BOT_LABEL_MAX_CHARS = 80
 # [argus patch #172] The router's synthetic method naming the stack's owner,
@@ -441,8 +442,8 @@ class SlackChannel(Channel):
         if tier_policy.is_restricted_tier(tier):
             # [argus patch #174] Fail closed: no policy, no opt-in or no agent
             # means no run, never the owner's full default agent.
-            agent_name, refusal = await asyncio.to_thread(self._restricted_tier_agent, tier)
-            if agent_name is None:
+            accepted, agent_name, refusal = await asyncio.to_thread(self._restricted_tier_agent, tier)
+            if not accepted:
                 logger.warning("[Slack] relay event refused: %s", refusal)
                 return False
 
@@ -460,18 +461,43 @@ class SlackChannel(Channel):
         team_id = envelope.get("team_id") or envelope.get("team") or event.get("team")
         return await asyncio.to_thread(self._handle_message_event, event, team_id=team_id, relay=delivery)
 
-    def _restricted_tier_agent(self, tier: str) -> tuple[str | None, str]:
-        """[argus patch #174] ``(agent, "")`` for a restricted tier this gateway can run, else ``(None, why)``."""
+    def _default_agent_name(self) -> str | None:
+        """[argus patch #175] The channel's default custom agent (``session``), or None for the lead agent."""
+        session = self.config.get("session")
+        session = session if isinstance(session, dict) else {}
+        context = session.get("context") if isinstance(session.get("context"), dict) else {}
+        for value in (context.get("agent_name"), session.get("assistant_id")):
+            if isinstance(value, str) and value.strip():
+                name = value.strip().lower().replace("_", "-")
+                return None if name == "lead-agent" else name
+        return None
+
+    def _restricted_tier_agent(self, tier: str) -> tuple[bool, str | None, str]:
+        """[argus patch #174] ``(True, agent, "")`` for a restricted tier this gateway can run, else ``(False, None, why)``.
+
+        [argus patch #175] The owner tier runs ``tier_agents.owner`` or, unset,
+        the channel default (``agent`` None: no per-message override); its
+        policy names no agent. The agent must be on the stack either way.
+        """
+        if tier == tier_policy.OWNER_TIER:
+            policy = tier_policy.policy_for(tier)
+            if policy is None:
+                return False, None, f"no valid {tier} tier policy in this image ({tier_policy.TIER_POLICY_PATH.name})"
+            agent = self._tier_agents.get(tier)
+            resolved = agent or self._default_agent_name()
+            if resolved is not None and not tier_policy.tier_agent_present(resolved):
+                return False, None, f"the {tier} tier's agent {resolved!r} is not on this stack"
+            return True, agent, ""
         if tier not in self._tier_agents:
-            return None, f"tier_agents.{tier} is not set; a restricted tier never falls back to the channel default"
+            return False, None, f"tier_agents.{tier} is not set; a restricted tier never falls back to the channel default"
         policy = tier_policy.policy_for(tier)
-        if policy is None:
-            return None, f"no valid {tier} tier policy in this image ({tier_policy.TIER_POLICY_PATH.name})"
+        if policy is None or policy.agent is None:
+            return False, None, f"no valid {tier} tier policy in this image ({tier_policy.TIER_POLICY_PATH.name})"
         if self._tier_agents[tier] != policy.agent:
             logger.info("[Slack] tier_agents.%s=%s ignored: the tier policy runs %s", tier, self._tier_agents[tier], policy.agent)
         if not tier_policy.tier_agent_present(policy.agent):
-            return None, f"the {tier} tier's agent {policy.agent!r} is not on this stack"
-        return policy.agent, ""
+            return False, None, f"the {tier} tier's agent {policy.agent!r} is not on this stack"
+        return True, policy.agent, ""
 
     async def relay_capabilities(self) -> dict[str, Any]:
         """[argus patch #174] The router's capability probe: the tiers this gateway accepts and its policy.
@@ -484,9 +510,9 @@ class SlackChannel(Channel):
     def _relay_capabilities(self) -> dict[str, Any]:
         """Blocking half of :meth:`relay_capabilities` (the policy file and agent lookups)."""
         tiers = ["dm"]
-        for tier in ("public", "private"):
-            agent_name, _ = self._restricted_tier_agent(tier)
-            if agent_name is not None:
+        for tier in ("public", "private", tier_policy.OWNER_TIER):
+            accepted, _, _ = self._restricted_tier_agent(tier)
+            if accepted:
                 tiers.append(tier)
         policies = tier_policy.load_tier_policies()
         policy: dict[str, Any] | None = None
@@ -496,7 +522,7 @@ class SlackChannel(Channel):
                 "version": policies.version,
                 "sha256": policies.sha256,
                 "public_agent": public.agent if public is not None else None,
-                "agent_present": public is not None and tier_policy.tier_agent_present(public.agent),
+                "agent_present": public is not None and public.agent is not None and tier_policy.tier_agent_present(public.agent),
             }
         return {"tiers": tiers, "policy": policy}
 
@@ -566,9 +592,12 @@ class SlackChannel(Channel):
         # allows one) and that message roots the run's thread.
         root_post = self._relay and not msg.thread_ts
         posted: dict[str, str] = {}
+        # [argus patch #175] A tainted turn's answer goes through a client that
+        # flags it for the router; reactions and ack cleanup do not.
+        post_client = self._turn_private_client(msg) or web_client
 
         async def post_message() -> None:
-            resp = await asyncio.to_thread(web_client.chat_postMessage, **kwargs)
+            resp = await asyncio.to_thread(post_client.chat_postMessage, **kwargs)
             if root_post:
                 posted["ts"] = str(_response_value(resp, "ts") or "")
             # Add a completion reaction to the thread root
@@ -615,6 +644,22 @@ class SlackChannel(Channel):
             await self._bind_root_post(msg, posted["ts"])
             msg.thread_ts = posted["ts"]
 
+    def _turn_private_client(self, msg: OutboundMessage) -> Any | None:
+        """[argus patch #175] A relay client that marks every call as a tainted turn's post, or None.
+
+        The manager puts the run's private source labels on the outbound
+        (``tier_policy.TURN_PRIVATE_KEY``). On the relay transport the answer
+        and its files then carry ``X-Argus-Turn-Private: 1`` and
+        ``X-Argus-Turn-Sources``, and the router turns them into an owner-only
+        draft. The bytes of a file go straight to Slack's upload URL, which
+        slack_sdk sends without the client's headers.
+        """
+        labels = (msg.metadata or {}).get(tier_policy.TURN_PRIVATE_KEY)
+        if not self._relay or not self._relay_base_url or not labels:
+            return None
+        relay_token = str(self.config.get("relay_token") or "").strip()
+        return self._web_client_factory(token=relay_token, base_url=self._relay_base_url, headers=tier_policy.turn_private_headers(labels))
+
     async def _bind_root_post(self, msg: OutboundMessage, root_ts: str) -> None:
         """[argus patch #172] Bind ``(slack, DM, root_ts)`` to the run's thread.
 
@@ -646,7 +691,9 @@ class SlackChannel(Channel):
             if msg.thread_ts:
                 kwargs["thread_ts"] = msg.thread_ts
 
-            await asyncio.to_thread(web_client.files_upload_v2, **kwargs)
+            # [argus patch #175] A tainted turn's files are flagged like its answer.
+            upload_client = self._turn_private_client(msg) or web_client
+            await asyncio.to_thread(upload_client.files_upload_v2, **kwargs)
             logger.info("[Slack] file uploaded: %s to channel=%s", attachment.filename, msg.chat_id)
             return True
         except Exception:

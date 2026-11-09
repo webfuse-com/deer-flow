@@ -215,7 +215,10 @@ def test_cached_lookups_never_touch_the_disk(policy_path, monkeypatch):
 def test_tiers_and_urls():
     assert not tier_policy.is_restricted_tier(None)
     assert not tier_policy.is_restricted_tier("dm")
-    assert not tier_policy.is_restricted_tier("owner")
+    # [argus patch #175] "owner" is now the owner channel tier (a policy is required);
+    # a run without a tier is unrestricted and still sends the header "owner".
+    assert tier_policy.is_restricted_tier("owner")
+    assert tier_policy.header_tier_value(None) == "owner"
     assert tier_policy.is_restricted_tier("public")
     assert tier_policy.is_restricted_tier("anything-else")
     assert tier_policy.stricter_tier(None, "dm", "public") == "public"

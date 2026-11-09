@@ -1126,7 +1126,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     scheduler_capability = runtime_context.get(SCHEDULER_CAPABILITY_CONTEXT_KEY) if isinstance(runtime_context, Mapping) else None
     if is_bootstrap or cfg.get("is_subagent") or not is_scheduler_capability(scheduler_capability) or scheduler_capability.mode != interaction_policy.mode.value:
         scheduler_capability = None
-    agent_name = validate_agent_name(tier_policy.agent if tier_policy is not None else cfg.get("agent_name"))
+    agent_name = validate_agent_name(tier_policy.agent if tier_policy is not None and tier_policy.agent else cfg.get("agent_name"))
 
     agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
     # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
@@ -1135,7 +1135,8 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     schedule_allowed = cfg.get("allowed_tools")
     extra_allowed: set[str] | None = set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
 
-    memory_enabled = getattr(agent_config, "memory_enabled", True) is not False and tier_policy is None
+    # [argus patch #175] The owner tier reads memory (injection) but never writes it.
+    memory_enabled = getattr(agent_config, "memory_enabled", True) is not False and (tier_policy is None or tier_policy.reads_memory)
     # Keep compatibility with lightweight AgentConfig-shaped objects used by
     # integrations that predate caller-level subagent restrictions.
     allowed_subagents = getattr(agent_config, "allowed_subagents", None) if agent_config is not None else None
@@ -1145,7 +1146,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     config.setdefault("configurable", {})["subagent_enabled"] = subagent_enabled
     if isinstance(config.get("context"), dict):
         config["context"]["subagent_enabled"] = subagent_enabled
-    available_skills = _available_skill_names(agent_config, is_bootstrap) if tier_policy is None else set(tier_policy.skills)
+    available_skills = _available_skill_names(agent_config, is_bootstrap) if tier_policy is None or tier_policy.skills is None else set(tier_policy.skills)
 
     # Phase 3: enforce skill authorization (Layer 1). Filter the skill
     # allowlist by the provider's "skill" policy so denied skills never
@@ -1508,7 +1509,8 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     authorization_candidates = [*configured_tools]
     if skill_setup.describe_skill_tool:
         authorization_candidates.append(skill_setup.describe_skill_tool)
-    if memory_enabled and should_use_memory_tools(resolved_app_config.memory):
+    # [argus patch #175] No memory tools in a tiered run: they could write.
+    if memory_enabled and tier_policy is None and should_use_memory_tools(resolved_app_config.memory):
         _append_memory_tools_without_name_conflicts(authorization_candidates)
     _append_project_document_tools_if_pinned(authorization_candidates, cfg)
     append_task_continuity_tools(authorization_candidates, resolved_app_config)
@@ -1530,9 +1532,10 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
     final_tools, setup = assemble_deferred_tools(
         configured_tools,
-        # [argus patch #174] A tiered run binds its few tools directly: nothing
-        # deferred, so no tool_search promotion path exists.
-        enabled=resolved_app_config.tool_search.enabled and tier_policy is None,
+        # [argus patch #174] A tier with a ceiling binds its few tools directly:
+        # nothing deferred, so no tool_search promotion path exists. The owner
+        # tier (#175) keeps the agent's deferral; the guard covers promotions.
+        enabled=resolved_app_config.tool_search.enabled and (tier_policy is None or not tier_policy.has_ceiling),
         exclude=deferral_exclude(resolved_app_config.tool_search, extra_allowed),
         defer=getattr(resolved_app_config.tool_search, "defer", ()),
     )
