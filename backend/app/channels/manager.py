@@ -59,7 +59,7 @@ from app.gateway.github import run_policy as _github_run_policy  # noqa: F401
 from app.gateway.internal_auth import create_internal_auth_headers
 from app.gateway.path_utils import resolve_outputs_confined_path
 from deerflow.agents.human_input import read_human_input_response
-from deerflow.agents.tier_policy import ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY, apply_tier_policy, cached_policy_for, is_restricted_tier, tier_prompt_variables
+from deerflow.agents.tier_policy import ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY, TURN_PRIVATE_KEY, apply_tier_policy, cached_policy_for, is_restricted_tier, tier_prompt_variables, turn_private_labels
 from deerflow.config.agents_config import list_custom_agents, load_agent_config
 from deerflow.config.paths import make_safe_user_id
 from deerflow.runtime import END_SENTINEL, StreamBridge
@@ -4265,6 +4265,11 @@ class ChannelManager:
             owner_user_id=msg.owner_user_id,
             metadata=_response_metadata_with_clarification(result, msg.metadata, pending_clarification=pending_clarification),
         )
+        # [argus patch #175] A run that read private data (the owner tier's taint
+        # guard stamped its AI messages) flags its answer: Slack sends it with
+        # X-Argus-Turn-Private and the router drafts it to the owner only.
+        if turn_labels := turn_private_labels(_current_turn_messages(result)):
+            outbound.metadata[TURN_PRIVATE_KEY] = turn_labels
         logger.info("[Manager] publishing outbound message to bus: channel=%s, chat_id=%s", msg.channel_name, msg.chat_id)
         await self.bus.publish_outbound(outbound)
         # [argus patch #173] ``channel: notify`` resolved to Slack and Telegram:

@@ -1,10 +1,18 @@
-"""[argus patch #174] Run tiers: the ceiling a restricted run cannot widen.
+"""[argus patch #174, #175] Run tiers: the ceiling a restricted run cannot widen.
 
-A run tier says who the answer is for. ``owner`` (no tier) and ``dm`` are the
-stack owner talking to their own Atlas and keep today's behaviour. ``public``
-(a Slack channel thread any colleague in the channel can read and steer) and,
-later, ``private`` are restricted: their ceiling comes from a policy file the
-platform bakes into the image, never from anything a citizen can edit.
+A run tier says who the answer is for. A run without a tier, and ``dm``, are
+the stack owner talking to their own Atlas and keep today's behaviour. The
+restricted tiers take their rules from a policy file the platform bakes into
+the image, never from anything a citizen can edit:
+
+- ``public`` (#174): a Slack channel thread any colleague in the channel can
+  read; a fixed tool ceiling, no memory, no personal data.
+- ``owner`` (#175): a channel run the router verified its owner triggered. The
+  owner's own agent and tools (minus subagents and ``update_agent``), memory
+  read-only, the Pythia ring capped, and taint gating: the first PRIVATE read
+  in a turn refuses that turn's writes and egress, and flags its answer posts
+  (``X-Argus-Turn-Private``) so the router drafts them to the owner only.
+- ``private`` (phase 3b): refused until a policy defines it.
 
 The policy file
 ---------------
@@ -36,9 +44,39 @@ Schema (version 1)::
           "disable_clarification": true,
           "silence_token": null,
           "prompt": "You are {persona}, answering in {channel_label} ({audience}) for <@{trigger_user}>."
+        },
+        "owner": {
+          "memory_mode": "read-only",
+          "pythia_ring_max": "internal",
+          "mcp_servers": {"pythia": "http://argus-kb-api:8000/pythia/mcp"},
+          "public_tools": ["pythia_query", "slack_channel_history", "slack_search", "web_search", "web_search_exa"],
+          "write_tools": ["asana_create_task", "github_create_issue", "gmail_create_draft"],
+          "egress_tools": ["web_search", "web_search_exa", "image_search", "web_fetch"],
+          "prompt": "You are {persona}, answering {trigger_user} in {channel_label}."
         }
       }
     }
+
+``tiers.owner`` has no ``agent`` or ``tools``: the agent is the stack's
+``tier_agents.owner`` (else its default agent) and the ceiling is that agent's
+own tool set minus :data:`OWNER_TIER_EXCLUDED_TOOLS`. ``public_tools``,
+``write_tools`` and ``egress_tools`` are required (empty lists are allowed);
+``memory_mode`` defaults to ``read-only``, ``pythia_ring_max`` to ``internal``,
+``subagents`` must be false. Classification (:func:`classify_tool`):
+
+- a WRITE tool is named in ``write_tools``;
+- a PUBLIC tool is named in ``public_tools`` and, when it is an MCP tool, comes
+  from a deployment server whose URL is in ``mcp_servers`` (an in-process tool
+  carrying a ``<server key>_`` prefix of those servers is not public);
+- everything else is PRIVATE, MCP tools and unknown names included. Memory
+  injected into the turn (``memory_mode: read-only``) is a PRIVATE read too.
+
+The first PRIVATE tool call in a run taints it; after that every WRITE or
+``egress_tools`` call is refused (:data:`TAINT_REFUSAL`) and the run's answer
+messages carry :data:`TURN_PRIVATE_KEY` with short source labels (the MCP server
+key, else the tool name's first word; ``memory``). ``mcp_servers`` also names
+the servers whose caller token is withheld, which keeps Pythia at the internal
+ring; every other server keeps the owner's identity.
 
 Top-level keys other than ``version``, ``tier_only_tools`` and ``tiers`` (a
 ``_comment`` documentation array, say) are ignored. ``prompt`` is rendered with
@@ -55,8 +93,10 @@ call). Nothing falls back to the owner's full agent.
 
 Enforcement points (each one alone holds the ceiling):
 
-- ``app/channels/slack.py`` ``relay_event``: the policy's agent, never
-  ``tier_agents`` and never the channel default.
+- ``app/channels/slack.py`` ``relay_event``: the public tier runs the policy's
+  agent, never ``tier_agents`` and never the channel default; the owner tier
+  runs ``tier_agents.owner`` or the default agent, and the adapter sends a
+  tainted answer with the ``X-Argus-Turn-*`` headers.
 - ``app/channels/manager.py`` ``_resolve_run_params`` and
   ``app/gateway/services.py`` ``start_run``: :func:`apply_tier_policy` is the
   last write to both run-config sections, so ``session.context`` from
@@ -101,16 +141,33 @@ TIER_PROMPT_VARIABLES = ("persona", "channel_label", "audience", "trigger_user")
 _TIER_PROMPT_VALUE_MAX_CHARS = 200
 # The per-call MCP header (mcp/run_tier.py).
 RUN_TIER_HEADER = "X-Argus-Run-Tier"
-# Header value for a run that names no tier.
+# [argus patch #175] The owner tier: a channel run its owner triggered. Also
+# the header value for a run that names no tier (both are the full owner to
+# atlas-mcp and kb-api; the gateway enforces the owner tier's caps itself).
 OWNER_TIER = "owner"
-# Tiers that are the owner talking to their own Atlas: no policy, no restriction.
-UNRESTRICTED_TIERS = frozenset({OWNER_TIER, "dm"})
+# The owner talking to their own Atlas in their DM: no policy, no restriction.
+UNRESTRICTED_TIERS = frozenset({"dm"})
 # Tiers a policy may define.
-POLICY_TIERS = frozenset({"public", "private"})
+POLICY_TIERS = frozenset({"public", "private", OWNER_TIER})
 # Strictest wins when two carriers name different tiers. An unknown tier ranks
 # above everything so it is the one chosen, and then refused (no policy).
-_TIER_RANK = {OWNER_TIER: 0, "dm": 0, "private": 1, "public": 2}
-_UNKNOWN_TIER_RANK = 3
+_TIER_RANK = {"dm": 0, OWNER_TIER: 1, "private": 2, "public": 3}
+_UNKNOWN_TIER_RANK = 4
+# Never bound in an owner-tier run: subagents and external agents run outside
+# the taint guard, and update_agent/setup_agent would let channel text rewrite
+# the owner's agent for every later run.
+OWNER_TIER_EXCLUDED_TOOLS = frozenset({"task", "batch_task", "batch_status", "cancel_batch", "read_batch_result", "invoke_acp_agent", "update_agent", "setup_agent"})
+
+# [argus patch #175] Taint: the AIMessage additional_kwargs key (and outbound
+# metadata key) carrying a tainted run's source labels, and the relay headers.
+TURN_PRIVATE_KEY = "argus_turn_private"
+TURN_PRIVATE_HEADER = "X-Argus-Turn-Private"
+TURN_SOURCES_HEADER = "X-Argus-Turn-Sources"
+TAINT_REFUSAL = "This turn read private data, so it can't write or search the web. Ask again in a new message to act."
+MEMORY_SOURCE_LABEL = "memory"
+_LABEL_RE = re.compile(r"[^a-z0-9_-]+")
+_MAX_LABELS = 16
+_MAX_LABEL_CHARS = 32
 
 # Removed from every run-config carrier of a tiered run, whatever the policy says.
 # user_email mints a personal Pythia caller token; allowed_tools is a schedule's
@@ -128,13 +185,25 @@ class TierPolicyUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True)
+class TaintRules:
+    """[argus patch #175] The owner tier's tool classes (names)."""
+
+    public_tools: frozenset[str]
+    write_tools: frozenset[str]
+    egress_tools: frozenset[str]
+
+
+@dataclass(frozen=True)
 class TierPolicy:
     tier: str
-    agent: str
-    tools: frozenset[str]
+    # None: the run keeps its own agent (the owner tier).
+    agent: str | None
+    # None: no fixed ceiling, the agent's own tools minus OWNER_TIER_EXCLUDED_TOOLS.
+    tools: frozenset[str] | None
     mcp_servers: Mapping[str, str]  # server key -> normalized URL
     memory_mode: str = "off"
-    skills: frozenset[str] = frozenset()
+    # None: the agent's own skills.
+    skills: frozenset[str] | None = frozenset()
     pythia_ring_max: str = "internal"
     strip_context: tuple[str, ...] = ()
     disable_clarification: bool = True
@@ -142,10 +211,25 @@ class TierPolicy:
     prompt: str | None = None
     subagents: bool = False
     tier_only_tools: frozenset[str] = frozenset()
+    taint: TaintRules | None = None
 
     @property
     def mcp_urls(self) -> frozenset[str]:
         return frozenset(self.mcp_servers.values())
+
+    @property
+    def has_ceiling(self) -> bool:
+        return self.tools is not None
+
+    @property
+    def thread_bound(self) -> bool:
+        """Whether admission stamps the tier on the thread (not the owner tier)."""
+        return self.taint is None
+
+    @property
+    def reads_memory(self) -> bool:
+        """Memory is injected (never written): only a taint-tracked tier may read it."""
+        return self.taint is not None and self.memory_mode == "read-only"
 
 
 @dataclass(frozen=True)
@@ -189,9 +273,73 @@ def _string_list(value: object, field_name: str, tier: str) -> list[str]:
     return value
 
 
+def _parse_owner_tier(raw: dict, tier_only_tools: frozenset[str]) -> TierPolicy:
+    """[argus patch #175] ``tiers.owner``: classes instead of a ceiling."""
+    tier = OWNER_TIER
+    known = {"memory_mode", "subagents", "pythia_ring_max", "strip_context", "mcp_servers", "public_tools", "write_tools", "egress_tools", "disable_clarification", "silence_token", "prompt"}
+    unknown = sorted(key for key in set(raw) - known if not str(key).startswith("_"))
+    if unknown:
+        logger.warning("[tier-policy] tiers.owner: keys ignored (the agent is tier_agents.owner, the ceiling its own tools): %s", ", ".join(unknown))
+    memory_mode = raw.get("memory_mode", "read-only")
+    if memory_mode not in MEMORY_MODES:
+        raise ValueError(f"tiers.owner.memory_mode must be one of {sorted(MEMORY_MODES)}")
+    if raw.get("subagents", False) is not False:
+        raise ValueError("tiers.owner.subagents must be false in version 1")
+    ring = raw.get("pythia_ring_max", "internal")
+    if ring not in PYTHIA_RINGS:
+        raise ValueError(f"tiers.owner.pythia_ring_max must be one of {list(PYTHIA_RINGS)}")
+    classes = {}
+    for name in ("public_tools", "write_tools", "egress_tools"):
+        if name not in raw:
+            raise ValueError(f"tiers.owner.{name} is required")
+        classes[name] = frozenset(_string_list(raw[name], name, tier))
+    common = _parse_common(tier, raw)
+    return TierPolicy(
+        tier=tier,
+        agent=None,
+        tools=None,
+        memory_mode=memory_mode,
+        skills=None,
+        pythia_ring_max=ring,
+        tier_only_tools=tier_only_tools,
+        taint=TaintRules(**classes),
+        **common,
+    )
+
+
+def _parse_common(tier: str, raw: dict) -> dict[str, Any]:
+    strip = _string_list(raw.get("strip_context", []), "strip_context", tier)
+    servers_raw = raw.get("mcp_servers", {})
+    if not isinstance(servers_raw, dict):
+        raise ValueError(f"tiers.{tier}.mcp_servers must be an object of server key to URL")
+    servers: dict[str, str] = {}
+    for key, url in servers_raw.items():
+        normalized = normalize_mcp_url(url)
+        if not isinstance(key, str) or not key or normalized is None:
+            raise ValueError(f"tiers.{tier}.mcp_servers.{key} must be an http(s) URL")
+        servers[key] = normalized
+    disable_clarification = raw.get("disable_clarification", True)
+    if not isinstance(disable_clarification, bool):
+        raise ValueError(f"tiers.{tier}.disable_clarification must be a boolean")
+    silence_token = raw.get("silence_token")
+    prompt = raw.get("prompt")
+    for name, value in (("silence_token", silence_token), ("prompt", prompt)):
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"tiers.{tier}.{name} must be a string or null")
+    return {
+        "mcp_servers": servers,
+        "strip_context": tuple(dict.fromkeys([*ALWAYS_STRIPPED_CONTEXT_KEYS, *strip])),
+        "disable_clarification": disable_clarification,
+        "silence_token": silence_token or None,
+        "prompt": prompt.strip() if isinstance(prompt, str) and prompt.strip() else None,
+    }
+
+
 def _parse_tier(tier: str, raw: object, tier_only_tools: frozenset[str]) -> TierPolicy:
     if not isinstance(raw, dict):
         raise ValueError(f"tiers.{tier} must be an object")
+    if tier == OWNER_TIER:
+        return _parse_owner_tier(raw, tier_only_tools)
     known = {"agent", "memory_mode", "subagents", "skills", "pythia_ring_max", "strip_context", "tools", "mcp_servers", "disable_clarification", "silence_token", "prompt"}
     unknown = sorted(key for key in set(raw) - known if not str(key).startswith("_"))
     if unknown:
@@ -212,37 +360,15 @@ def _parse_tier(tier: str, raw: object, tier_only_tools: frozenset[str]) -> Tier
         raise ValueError(f"tiers.{tier}.tools is required")
     tools = _string_list(raw["tools"], "tools", tier)
     skills = _string_list(raw.get("skills", []), "skills", tier)
-    strip = _string_list(raw.get("strip_context", []), "strip_context", tier)
-    servers_raw = raw.get("mcp_servers", {})
-    if not isinstance(servers_raw, dict):
-        raise ValueError(f"tiers.{tier}.mcp_servers must be an object of server key to URL")
-    servers: dict[str, str] = {}
-    for key, url in servers_raw.items():
-        normalized = normalize_mcp_url(url)
-        if not isinstance(key, str) or not key or normalized is None:
-            raise ValueError(f"tiers.{tier}.mcp_servers.{key} must be an http(s) URL")
-        servers[key] = normalized
-    disable_clarification = raw.get("disable_clarification", True)
-    if not isinstance(disable_clarification, bool):
-        raise ValueError(f"tiers.{tier}.disable_clarification must be a boolean")
-    silence_token = raw.get("silence_token")
-    prompt = raw.get("prompt")
-    for name, value in (("silence_token", silence_token), ("prompt", prompt)):
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"tiers.{tier}.{name} must be a string or null")
     return TierPolicy(
         tier=tier,
         agent=agent,
         tools=frozenset(tools),
-        mcp_servers=servers,
         memory_mode=memory_mode,
         skills=frozenset(skills),
         pythia_ring_max=ring,
-        strip_context=tuple(dict.fromkeys([*ALWAYS_STRIPPED_CONTEXT_KEYS, *strip])),
-        disable_clarification=disable_clarification,
-        silence_token=silence_token or None,
-        prompt=prompt.strip() if isinstance(prompt, str) and prompt.strip() else None,
         tier_only_tools=tier_only_tools,
+        **_parse_common(tier, raw),
     )
 
 
@@ -358,7 +484,7 @@ def reset_tier_policy_cache() -> None:
 
 
 def is_restricted_tier(tier: object) -> bool:
-    """True for any named tier other than ``owner``/``dm`` (unknown values included)."""
+    """True for any named tier other than ``dm`` (``owner`` and unknown values included)."""
     return isinstance(tier, str) and bool(tier) and tier not in UNRESTRICTED_TIERS
 
 
@@ -381,7 +507,7 @@ def stricter_tier(*tiers: object) -> str | None:
 
 
 def header_tier_value(tier: object) -> str:
-    """The ``X-Argus-Run-Tier`` value for a run's tier."""
+    """The ``X-Argus-Run-Tier`` value for a run's tier (``owner`` for no tier)."""
     if isinstance(tier, str) and _TIER_VALUE_RE.fullmatch(tier):
         return tier
     return OWNER_TIER if not tier else "public"
@@ -427,7 +553,9 @@ def apply_tier_policy(config: MutableMapping[str, Any], policy: TierPolicy, *, c
     for carrier in carriers:
         for key in policy.strip_context:
             carrier.pop(key, None)
-        carrier["agent_name"] = policy.agent
+        if policy.agent is not None:
+            # The owner tier (#175) keeps the run's own agent.
+            carrier["agent_name"] = policy.agent
         carrier["memory_mode"] = policy.memory_mode
         carrier["subagent_enabled"] = False
         carrier["is_bootstrap"] = False
@@ -473,7 +601,9 @@ async def admit_run_tier(config: MutableMapping[str, Any], thread_store: Any, th
         raise TierPolicyUnavailable(f"run tier {tier!r} has no valid policy")
     config.setdefault("context", {})
     apply_tier_policy(config, policy)
-    if thread_tier != policy.tier:
+    # [argus patch #175] The owner tier is not bound to the thread: a later run
+    # there (the owner on the web) is not a channel run.
+    if thread_tier != policy.tier and policy.thread_bound:
         if record is not None:
             await thread_store.update_metadata(thread_id, {ARGUS_TIER_KEY: policy.tier}, touch=False, user_id=None)
         if run_metadata is not None:
@@ -527,14 +657,20 @@ def _policy_file_state() -> tuple[bool, TierPolicies | None]:
     return True, load_tier_policies()
 
 
-def restricted_mcp_call_refusal(tier: str, server_name: object) -> str | None:
-    """Blocking: why a restricted run may not call ``server_name``, or None when it may."""
+def restricted_mcp_call_decision(tier: str, server_name: object) -> tuple[str | None, bool]:
+    """Blocking: ``(why the call is refused or None, whether to withhold the caller token)``.
+
+    A tier with a ceiling (public) may call only its listed servers and never
+    sends a caller token. The owner tier (#175) may call every server and
+    withholds the token only on its listed servers (Pythia: the internal ring).
+    """
     policy = policy_for(tier)
     if policy is None:
-        return f"run tier {tier!r} has no valid policy"
-    if not mcp_server_allowed(server_name, policy):
-        return f"not on the {tier} tier's server list"
-    return None
+        return f"run tier {tier!r} has no valid policy", True
+    listed = mcp_server_allowed(server_name, policy)
+    if policy.has_ceiling:
+        return (None if listed else f"not on the {tier} tier's server list"), True
+    return None, listed
 
 
 def tier_agent_present(agent_name: str, *, user_id: str | None = None) -> bool:
@@ -590,7 +726,12 @@ def tier_tool_allowed(tool: Any, policy: TierPolicy, *, server_urls: Mapping[str
     from deerflow.tools.mcp_metadata import get_mcp_source, is_mcp_tool
 
     name = getattr(tool, "name", None)
-    if not isinstance(name, str) or name not in policy.tools:
+    if not isinstance(name, str):
+        return False
+    if policy.tools is None:
+        # [argus patch #175] The owner tier: the agent's own tools minus the exclusions.
+        return name not in OWNER_TIER_EXCLUDED_TOOLS
+    if name not in policy.tools:
         return False
     if is_mcp_tool(tool):
         source = get_mcp_source(tool)
@@ -602,8 +743,8 @@ def filter_tools_for_tier[ToolT](tools: Iterable[ToolT], policy: TierPolicy | No
     """Apply the tier ceiling to an assembled tool list.
 
     With a policy: only tools that pass :func:`tier_tool_allowed`. Without one
-    (owner/dm runs): the policy file's ``tier_only_tools`` are dropped, so an
-    owner's prompt never carries a channel-thread-only tool.
+    (untiered/dm runs): the policy file's ``tier_only_tools`` are dropped, so an
+    owner's DM or web prompt never carries a channel-thread-only tool.
     """
     tools = list(tools)
     if policy is None:
@@ -658,4 +799,135 @@ def guard_tier_middlewares(middlewares: Iterable[Any], tools: Iterable[Any], pol
     declared_allowed = {tool.name for tool in declared if tier_tool_allowed(tool, policy, server_urls=server_urls)}
     stack = apply_declared_tool_view(stack, authorized_names=declared_allowed)
     allowed = {tool.name for tool in bound if tier_tool_allowed(tool, policy, server_urls=server_urls)} | declared_allowed
-    return [TierToolGuardMiddleware(policy.tier, allowed), *stack]
+    taint = None
+    if policy.taint is not None:
+        # [argus patch #175] Classes for every name this build can call; any
+        # other name the model produces is PRIVATE.
+        taint = TaintClasses(
+            classes={tool.name: classify_tool(tool, policy, server_urls=server_urls) for tool in [*bound, *declared] if isinstance(getattr(tool, "name", None), str)},
+            egress=policy.taint.egress_tools,
+        )
+    return [TierToolGuardMiddleware(policy.tier, allowed, taint=taint), *stack]
+
+
+# -- [argus patch #175] taint ---------------------------------------------------
+
+
+def source_label(name: object) -> str:
+    """A short, header-safe label for a private source (an MCP server key or a tool name)."""
+    text = str(name or "").strip().lower()
+    head = text.split("_", 1)[0] if "_" in text else text
+    return _LABEL_RE.sub("-", head).strip("-")[:_MAX_LABEL_CHARS] or "tool"
+
+
+@dataclass(frozen=True)
+class ToolClass:
+    kind: str  # "public" | "write" | "private"
+    label: str
+
+
+@dataclass(frozen=True)
+class TaintClasses:
+    """A build's tool classes for the taint guard; unknown names are PRIVATE."""
+
+    classes: Mapping[str, ToolClass]
+    egress: frozenset[str]
+
+    def of(self, name: object) -> ToolClass:
+        found = self.classes.get(name) if isinstance(name, str) else None
+        return found if found is not None else ToolClass("private", source_label(name))
+
+    def blocked_after_taint(self, name: object) -> bool:
+        return self.of(name).kind == "write" or name in self.egress
+
+
+def classify_tool(tool: Any, policy: TierPolicy, *, server_urls: Mapping[str, str | None] | None = None) -> ToolClass:
+    """WRITE, PUBLIC or PRIVATE for one tool under the owner tier's classes (default PRIVATE)."""
+    from deerflow.tools.mcp_metadata import get_mcp_source, is_mcp_tool
+
+    name = getattr(tool, "name", None)
+    rules = policy.taint
+    source = get_mcp_source(tool) if is_mcp_tool(tool) else None
+    label = source_label(source["server_name"] if source else name)
+    if rules is None or not isinstance(name, str):
+        return ToolClass("private", label)
+    if name in rules.write_tools:
+        return ToolClass("write", label)
+    if name in rules.public_tools:
+        if is_mcp_tool(tool):
+            if source is not None and mcp_server_allowed(source["server_name"], policy, server_urls=server_urls):
+                return ToolClass("public", label)
+        elif not any(name.startswith(f"{key}_") for key in policy.mcp_servers):
+            return ToolClass("public", label)
+    return ToolClass("private", label)
+
+
+def _message_field(message: Any, key: str) -> Any:
+    return message.get(key) if isinstance(message, Mapping) else getattr(message, key, None)
+
+
+# DynamicContextMiddleware's marker on its injected messages (its
+# _DYNAMIC_CONTEXT_REMINDER_KEY; spelled out so this module stays import-light,
+# a test pins the two together). Memory rides a HumanMessage ``<id>__memory``.
+_DYNAMIC_CONTEXT_REMINDER_KEY = "dynamic_context_reminder"
+
+
+def _is_injected_memory(message: Any) -> bool:
+    kwargs = _message_field(message, "additional_kwargs") or {}
+    message_type = _message_field(message, "type")
+    return message_type == "human" and str(_message_field(message, "id") or "").endswith("__memory") and kwargs.get(_DYNAMIC_CONTEXT_REMINDER_KEY) is True
+
+
+def current_run_messages(messages: Iterable[Any], pre_existing_ids: object) -> list[Any]:
+    """The messages this run added: not in the worker's pre-run id set.
+
+    Without that set (an embedded harness), everything after the last visible
+    human message, plus the hidden messages injected just before it (memory).
+    """
+    messages = list(messages)
+    if isinstance(pre_existing_ids, (set, frozenset, list, tuple)):
+        known = {str(item) for item in pre_existing_ids if item}
+        return [message for message in messages if str(_message_field(message, "id") or "") not in known]
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        kwargs = _message_field(message, "additional_kwargs") or {}
+        if _message_field(message, "type") == "human" and not kwargs.get("hide_from_ui"):
+            start = index
+            while start > 0 and (_message_field(messages[start - 1], "additional_kwargs") or {}).get("hide_from_ui"):
+                start -= 1
+            return messages[start:]
+    return messages
+
+
+def run_private_sources(messages: Iterable[Any], taint: TaintClasses) -> list[str]:
+    """Sorted labels of the PRIVATE reads in ``messages`` (one run's messages)."""
+    labels: set[str] = set()
+    for message in messages:
+        if _is_injected_memory(message):
+            labels.add(MEMORY_SOURCE_LABEL)
+        if _message_field(message, "type") != "ai":
+            continue
+        for call in _message_field(message, "tool_calls") or ():
+            name = call.get("name") if isinstance(call, Mapping) else getattr(call, "name", None)
+            cls = taint.of(name)
+            if cls.kind == "private":
+                labels.add(cls.label)
+    return sorted(labels)[:_MAX_LABELS]
+
+
+def turn_private_labels(messages: Iterable[Any]) -> list[str]:
+    """The labels a run's answer messages were stamped with (the channel manager's read)."""
+    labels: set[str] = set()
+    for message in messages:
+        if _message_field(message, "type") != "ai":
+            continue
+        stamp = (_message_field(message, "additional_kwargs") or {}).get(TURN_PRIVATE_KEY)
+        if isinstance(stamp, (list, tuple)):
+            labels.update(source_label(item) for item in stamp if isinstance(item, str) and item)
+    return sorted(labels)[:_MAX_LABELS]
+
+
+def turn_private_headers(labels: Iterable[str]) -> dict[str, str]:
+    """The relay headers for a tainted turn's answer posts."""
+    clean = sorted({source_label(label) for label in labels if label})[:_MAX_LABELS]
+    return {TURN_PRIVATE_HEADER: "1", TURN_SOURCES_HEADER: ",".join(clean)}
