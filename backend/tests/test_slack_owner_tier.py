@@ -52,8 +52,9 @@ OWNER_POLICY = {
     "mcp_servers": {"pythia": PYTHIA_URL},
     "public_tools": ["pythia_query", "slack_channel_history", "slack_search", "web_search", "web_search_exa", "tool_search", "describe_skill", "ask_clarification"],
     "private_read_tools": ["calendar_list_events", "gmail_search"],
+    # A subset of write_tools by design: a write before taint, still allowed after it.
     "self_write_tools": ["gmail_create_draft", "drive_create_doc"],
-    "write_tools": ["asana_create_task", "asana_create_project", "github_create_issue", "github_add_comment", "drive_update_doc"],
+    "write_tools": ["asana_create_task", "asana_create_project", "github_create_issue", "github_add_comment", "gmail_create_draft", "drive_create_doc", "drive_update_doc"],
     "egress_tools": ["web_search", "web_search_exa", "image_search", "web_fetch"],
 }
 POLICY = {
@@ -118,7 +119,7 @@ def test_owner_tier_parses_with_defaults(owner_policy):
     assert not owner_policy.has_ceiling and not owner_policy.thread_bound
     assert owner_policy.memory_mode == "read-only" and owner_policy.reads_memory
     assert owner_policy.pythia_ring_max == "internal"
-    assert owner_policy.taint.write_tools >= {"asana_create_task"}
+    assert owner_policy.taint.write_tools >= {"asana_create_task", "gmail_create_draft"}
     assert owner_policy.taint.private_read_tools == {"calendar_list_events", "gmail_search"}
     assert owner_policy.taint.self_write_tools == {"gmail_create_draft", "drive_create_doc"}
     assert "user_email" in owner_policy.strip_context
@@ -208,15 +209,31 @@ def test_the_after_taint_allowlist(owner_policy):
         assert not permitted(name), name
 
 
-def test_egress_and_write_lists_win_over_the_allowlists(policy_path):
+def test_self_writes_stay_allowed_though_they_are_writes_and_egress_beats_everything(policy_path, caplog):
     policy = copy.deepcopy(POLICY)
-    policy["tiers"]["owner"]["private_read_tools"] = ["calendar_list_events", "web_fetch"]
-    policy["tiers"]["owner"]["self_write_tools"] = ["asana_create_task"]
+    owner = policy["tiers"]["owner"]
+    owner["write_tools"] = ["github_create_issue", "gmail_create_draft"]
+    owner["self_write_tools"] = ["gmail_create_draft", "web_fetch", "slack_post_draft"]
+    owner["private_read_tools"] = ["calendar_list_events", "image_search"]
     _write_policy(policy_path, policy)
     taint = tier_policy.guard_tier_middlewares([], [], tier_policy.policy_for("owner"))[0].taint
-    assert not taint.permitted_after_taint("web_fetch")  # egress, also listed as a read
-    assert not taint.permitted_after_taint("asana_create_task")  # write_tools, also listed as a self-write
+    assert taint.permitted_after_taint("gmail_create_draft")  # in write_tools and self_write_tools
+    assert not taint.permitted_after_taint("github_create_issue")  # write_tools only
+    assert not taint.permitted_after_taint("web_fetch")  # egress beats self_write_tools
+    assert not taint.permitted_after_taint("image_search")  # egress beats private_read_tools
     assert taint.permitted_after_taint("calendar_list_events")
+    # A self-write that is missing from write_tools still works, with a warning.
+    assert taint.permitted_after_taint("slack_post_draft")
+    assert "self_write_tools not in write_tools: slack_post_draft" in caplog.text
+
+
+def test_a_draft_after_a_private_read_runs_and_an_issue_does_not(owner_policy):
+    guard = _guard(owner_policy)
+    result, executed = _call(guard, "gmail_create_draft", _after_calendar("gmail_create_draft"))
+    assert executed == ["gmail_create_draft"]
+    guard.allowed_names = guard.allowed_names | {"github_create_issue"}
+    result, executed = _call(guard, "github_create_issue", _after_calendar("github_create_issue"))
+    assert executed == [] and result.content == tier_policy.TAINT_REFUSAL
 
 
 def test_labels_are_short_and_header_safe():

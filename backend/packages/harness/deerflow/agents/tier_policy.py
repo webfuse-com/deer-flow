@@ -52,7 +52,7 @@ Schema (version 1)::
           "public_tools": ["pythia_query", "slack_channel_history", "web_search", "tool_search", "describe_skill"],
           "private_read_tools": ["calendar_list_events", "gmail_search_threads"],
           "self_write_tools": ["gmail_create_draft"],
-          "write_tools": ["asana_create_task", "github_create_issue"],
+          "write_tools": ["asana_create_task", "github_create_issue", "gmail_create_draft"],
           "egress_tools": ["web_search", "web_search_exa", "image_search", "web_fetch"],
           "prompt": "You are {persona}, answering {trigger_user} in {channel_label}."
         }
@@ -68,7 +68,9 @@ own tool set minus :data:`OWNER_TIER_EXCLUDED_TOOLS`. ``public_tools``,
 to ``internal``, ``subagents`` must be false. Classification
 (:func:`classify_tool`) decides what taints a run:
 
-- WRITE (never taints): named in ``write_tools`` or ``self_write_tools``;
+- WRITE (never taints): named in ``write_tools`` or ``self_write_tools``
+  (``self_write_tools`` is meant as a subset of ``write_tools``: the writes that
+  stay in the owner's own accounts, such as a Gmail draft);
 - PUBLIC (never taints): named in ``public_tools`` and, when it is an MCP tool,
   from a deployment server whose URL is in ``mcp_servers`` (an in-process tool
   carrying a ``<server key>_`` prefix of those servers is not public);
@@ -78,10 +80,10 @@ to ``internal``, ``subagents`` must be false. Classification
 
 Before the first PRIVATE call a run has the owner's full ceiling. After it the
 run is tainted and only an allowlist may run (:meth:`TaintClasses.permitted_after_taint`):
-PUBLIC tools, ``private_read_tools`` and ``self_write_tools``, never anything
-in ``egress_tools`` or ``write_tools`` even if listed elsewhere. Every other
-call (writes, egress, ``bash``, browsers, sends, unknown tools) gets
-:data:`TAINT_REFUSAL`. The tainted run's answer messages carry
+(``public_tools`` minus ``egress_tools``), ``private_read_tools`` and
+``self_write_tools``, the last even though they are also in ``write_tools``.
+``egress_tools`` beats everything. Every other call (other writes, egress,
+``bash``, browsers, sends, unknown tools) gets :data:`TAINT_REFUSAL`. The tainted run's answer messages carry
 :data:`TURN_PRIVATE_KEY` with short source labels (the MCP server key, else the
 tool name's first word; ``memory``). ``mcp_servers`` also names the servers
 whose caller token is withheld, which keeps Pythia at the internal ring; every
@@ -305,6 +307,10 @@ def _parse_owner_tier(raw: dict, tier_only_tools: frozenset[str]) -> TierPolicy:
         if name not in raw:
             raise ValueError(f"tiers.owner.{name} is required")
         classes[name] = frozenset(_string_list(raw[name], name, tier))
+    outside = sorted(classes["self_write_tools"] - classes["write_tools"])
+    if outside:
+        # Still allowed after taint; listing them in write_tools too is the convention.
+        logger.warning("[tier-policy] tiers.owner.self_write_tools not in write_tools: %s", ", ".join(outside))
     common = _parse_common(tier, raw)
     return TierPolicy(
         tier=tier,
@@ -819,8 +825,9 @@ def guard_tier_middlewares(middlewares: Iterable[Any], tools: Iterable[Any], pol
         taint = TaintClasses(
             classes={tool.name: classify_tool(tool, policy, server_urls=server_urls) for tool in [*bound, *declared] if isinstance(getattr(tool, "name", None), str)},
             egress=rules.egress_tools,
-            never_after_taint=rules.egress_tools | rules.write_tools,
-            allowed_after_taint=(rules.private_read_tools | rules.self_write_tools) - rules.egress_tools - rules.write_tools,
+            # write_tools minus the self-writes; egress beats everything.
+            never_after_taint=rules.egress_tools | (rules.write_tools - rules.self_write_tools),
+            allowed_after_taint=(rules.private_read_tools | rules.self_write_tools) - rules.egress_tools,
         )
     return [TierToolGuardMiddleware(policy.tier, allowed, taint=taint), *stack]
 
@@ -847,9 +854,9 @@ class TaintClasses:
 
     classes: Mapping[str, ToolClass]
     egress: frozenset[str]
-    # egress_tools | write_tools: refused after taint whatever else lists them.
+    # egress_tools | (write_tools - self_write_tools): refused after taint.
     never_after_taint: frozenset[str] = frozenset()
-    # private_read_tools | self_write_tools, minus never_after_taint.
+    # (private_read_tools | self_write_tools) - egress_tools.
     allowed_after_taint: frozenset[str] = frozenset()
 
     def of(self, name: object) -> ToolClass:
@@ -857,10 +864,12 @@ class TaintClasses:
         return found if found is not None else ToolClass("private", source_label(name))
 
     def permitted_after_taint(self, name: object) -> bool:
-        """The allowlist a tainted run is held to: PUBLIC tools, private reads, self-writes."""
-        if not isinstance(name, str) or name in self.never_after_taint or name in self.egress:
+        """The allowlist a tainted run is held to: PUBLIC tools minus egress, private reads, self-writes."""
+        if not isinstance(name, str) or name in self.egress:
             return False
-        return self.of(name).kind == "public" or name in self.allowed_after_taint
+        if name in self.allowed_after_taint:
+            return True
+        return name not in self.never_after_taint and self.of(name).kind == "public"
 
 
 def classify_tool(tool: Any, policy: TierPolicy, *, server_urls: Mapping[str, str | None] | None = None) -> ToolClass:
