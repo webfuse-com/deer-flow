@@ -72,15 +72,25 @@ to ``internal``, ``subagents`` must be false. Classification
   (``self_write_tools`` is meant as a subset of ``write_tools``: the writes that
   stay in the owner's own accounts, such as a Gmail draft);
 - PUBLIC (never taints): named in ``public_tools`` and, when it is an MCP tool,
-  from a deployment server whose URL is in ``mcp_servers`` (an in-process tool
-  carrying a ``<server key>_`` prefix of those servers is not public);
+  from a deployment server whose URL is in ``mcp_servers`` or (#176)
+  ``internal_servers`` (an in-process tool carrying a ``<server key>_`` prefix
+  of those servers is not public);
+- INTERNAL (never taints, [argus patch #176]): named in ``internal_tools`` and,
+  when it is an MCP tool, from a deployment server matching ``internal_servers``:
+  company data every colleague may read (Sentry, logs, GitHub, BigQuery). The
+  router only admits internal channels, so it posts like PUBLIC; unlike
+  ``mcp_servers``, these servers keep the caller token. A ``{stack}`` path
+  segment in an ``internal_servers`` URL matches the stack's own route on
+  atlas-mcp. Both keys are optional;
 - PRIVATE (taints): everything else, ``private_read_tools``, MCP tools and
   unknown names included. Memory injected into the turn (``memory_mode:
-  read-only``) is a PRIVATE read too.
+  read-only``) is a PRIVATE read too. A call the gateway answered without
+  running it (a tier refusal, the deferred-tool gate) read nothing and does not
+  count (#176).
 
 Before the first PRIVATE call a run has the owner's full ceiling. After it the
 run is tainted and only an allowlist may run (:meth:`TaintClasses.permitted_after_taint`):
-(``public_tools`` minus ``egress_tools``), ``private_read_tools`` and
+(PUBLIC and INTERNAL tools minus ``egress_tools``), ``private_read_tools`` and
 ``self_write_tools``, the last even though they are also in ``write_tools``.
 ``egress_tools`` beats everything. Every other call (other writes, egress,
 ``bash``, browsers, sends, unknown tools) gets :data:`TAINT_REFUSAL`. The tainted run's answer messages carry
@@ -174,7 +184,17 @@ OWNER_TIER_EXCLUDED_TOOLS = frozenset({"task", "batch_task", "batch_status", "ca
 TURN_PRIVATE_KEY = "argus_turn_private"
 TURN_PRIVATE_HEADER = "X-Argus-Turn-Private"
 TURN_SOURCES_HEADER = "X-Argus-Turn-Sources"
-TAINT_REFUSAL = "This turn read private data, so it can't write or search the web. Ask again in a new message to act."
+# [argus patch #176] The refusal names what tainted the turn and covers reads
+# too: an earlier text only spoke of writes and web search, and a model asked
+# to explain a refused read invented a cause.
+TAINT_REFUSAL = (
+    "Not run: this turn already read private data ({sources}), so {tool} is off for the rest of it. "
+    "After a private read a channel turn may still use company knowledge, company data tools, the owner's private reads and drafts in the owner's own accounts, "
+    "but not other tools, writes to shared places or web search. "
+    "Ask again in a new message to run {tool}; that answer is still a draft for the owner to post."
+)
+# Marks a ToolMessage the tier guard produced instead of running the call.
+REJECTED_BEFORE_RUN_KEY = "argus_tier_rejected"
 MEMORY_SOURCE_LABEL = "memory"
 _LABEL_RE = re.compile(r"[^a-z0-9_-]+")
 _MAX_LABELS = 16
@@ -205,6 +225,9 @@ class TaintRules:
     # Allowed after taint: reads (they taint) and writes that stay in the owner's accounts.
     private_read_tools: frozenset[str] = frozenset()
     self_write_tools: frozenset[str] = frozenset()
+    # [argus patch #176] Company data every colleague can read (Sentry, logs,
+    # GitHub, BigQuery): never taints, allowed after taint, keeps the caller token.
+    internal_tools: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -226,6 +249,10 @@ class TierPolicy:
     subagents: bool = False
     tier_only_tools: frozenset[str] = frozenset()
     taint: TaintRules | None = None
+    # [argus patch #176] Owner tier: server key -> normalized URL pattern of the
+    # servers whose listed tools may be INTERNAL (or PUBLIC) while keeping the
+    # caller token; a ``{stack}`` path segment matches one stack slug.
+    internal_servers: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def mcp_urls(self) -> frozenset[str]:
@@ -290,7 +317,23 @@ def _string_list(value: object, field_name: str, tier: str) -> list[str]:
 def _parse_owner_tier(raw: dict, tier_only_tools: frozenset[str]) -> TierPolicy:
     """[argus patch #175] ``tiers.owner``: classes instead of a ceiling."""
     tier = OWNER_TIER
-    known = {"memory_mode", "subagents", "pythia_ring_max", "strip_context", "mcp_servers", "public_tools", "private_read_tools", "self_write_tools", "write_tools", "egress_tools", "disable_clarification", "silence_token", "prompt"}
+    known = {
+        "memory_mode",
+        "subagents",
+        "pythia_ring_max",
+        "strip_context",
+        "mcp_servers",
+        "internal_servers",
+        "public_tools",
+        "internal_tools",
+        "private_read_tools",
+        "self_write_tools",
+        "write_tools",
+        "egress_tools",
+        "disable_clarification",
+        "silence_token",
+        "prompt",
+    }
     unknown = sorted(key for key in set(raw) - known if not str(key).startswith("_"))
     if unknown:
         logger.warning("[tier-policy] tiers.owner: keys ignored (the agent is tier_agents.owner, the ceiling its own tools): %s", ", ".join(unknown))
@@ -307,6 +350,9 @@ def _parse_owner_tier(raw: dict, tier_only_tools: frozenset[str]) -> TierPolicy:
         if name not in raw:
             raise ValueError(f"tiers.owner.{name} is required")
         classes[name] = frozenset(_string_list(raw[name], name, tier))
+    # [argus patch #176] Optional, so a policy from before #176 still parses.
+    classes["internal_tools"] = frozenset(_string_list(raw.get("internal_tools", []), "internal_tools", tier))
+    internal_servers = _parse_internal_servers(raw.get("internal_servers", {}))
     outside = sorted(classes["self_write_tools"] - classes["write_tools"])
     if outside:
         # Still allowed after taint; listing them in write_tools too is the convention.
@@ -321,8 +367,42 @@ def _parse_owner_tier(raw: dict, tier_only_tools: frozenset[str]) -> TierPolicy:
         pythia_ring_max=ring,
         tier_only_tools=tier_only_tools,
         taint=TaintRules(**classes),
+        internal_servers=internal_servers,
         **common,
     )
+
+
+# [argus patch #176] The one placeholder an internal server URL may carry: a
+# whole path segment standing for the stack's slug, because atlas-mcp serves
+# each stack's GitHub and Webfuse tools under its own project route
+# (``/atlas-<name>/github/mcp``) while the policy is one file for the fleet.
+STACK_URL_PLACEHOLDER = "{stack}"
+_STACK_SEGMENT_PATTERN = "[a-z][a-z0-9-]{0,62}"
+
+
+def _parse_internal_servers(raw: object) -> dict[str, str]:
+    """``tiers.owner.internal_servers``: server key -> normalized URL (``{stack}`` allowed as a path segment)."""
+    if not isinstance(raw, dict):
+        raise ValueError("tiers.owner.internal_servers must be an object of server key to URL")
+    servers: dict[str, str] = {}
+    for key, url in raw.items():
+        normalized = normalize_mcp_url(url)
+        if not isinstance(key, str) or not key or normalized is None:
+            raise ValueError(f"tiers.owner.internal_servers.{key} must be an http(s) URL")
+        parts = urlsplit(normalized)
+        segments = parts.path.split("/")
+        if any(ch in parts.netloc or ch in (parts.query or "") for ch in "{}") or any(("{" in seg or "}" in seg) and seg != STACK_URL_PLACEHOLDER for seg in segments):
+            raise ValueError(f"tiers.owner.internal_servers.{key}: the only placeholder is a whole {STACK_URL_PLACEHOLDER} path segment")
+        servers[key] = normalized
+    return servers
+
+
+def _url_matches(pattern: str, url: str) -> bool:
+    """Whether a normalized server URL matches a normalized policy URL (``{stack}`` = one slug segment)."""
+    if STACK_URL_PLACEHOLDER not in pattern:
+        return pattern == url
+    regex = re.escape(pattern).replace(re.escape(STACK_URL_PLACEHOLDER), _STACK_SEGMENT_PATTERN)
+    return re.fullmatch(regex, url) is not None
 
 
 def _parse_common(tier: str, raw: dict) -> dict[str, Any]:
@@ -718,6 +798,21 @@ def _global_mcp_server_urls() -> dict[str, str | None]:
     return {name: normalize_mcp_url(server.url) if server.type in ("http", "sse") else None for name, server in servers.items()}
 
 
+def internal_server_allowed(server_name: object, policy: TierPolicy, *, server_urls: Mapping[str, str | None] | None = None) -> bool:
+    """[argus patch #176] A deployment MCP server whose URL matches one of ``internal_servers``.
+
+    Looked up by name in the global extensions config like
+    :func:`mcp_server_allowed`. ``{stack}`` matches any one slug segment: the
+    URL comes from the stack's own deployment config, and atlas-mcp serves a
+    project route only to that project's key, so it reaches the stack's own route.
+    """
+    if not isinstance(server_name, str) or not server_name or not policy.internal_servers:
+        return False
+    urls = _global_mcp_server_urls() if server_urls is None else server_urls
+    url = urls.get(server_name)
+    return url is not None and any(_url_matches(pattern, url) for pattern in policy.internal_servers.values())
+
+
 def mcp_server_allowed(server_name: object, policy: TierPolicy, *, server_urls: Mapping[str, str | None] | None = None) -> bool:
     """A deployment MCP server whose URL is on the policy's list.
 
@@ -844,8 +939,12 @@ def source_label(name: object) -> str:
 
 @dataclass(frozen=True)
 class ToolClass:
-    kind: str  # "public" | "write" | "private"
+    kind: str  # "public" | "internal" | "write" | "private"
     label: str
+
+
+# [argus patch #176] Kinds that never taint and stay allowed after taint (minus egress).
+NON_TAINTING_READ_KINDS = frozenset({"public", "internal"})
 
 
 @dataclass(frozen=True)
@@ -864,16 +963,16 @@ class TaintClasses:
         return found if found is not None else ToolClass("private", source_label(name))
 
     def permitted_after_taint(self, name: object) -> bool:
-        """The allowlist a tainted run is held to: PUBLIC tools minus egress, private reads, self-writes."""
+        """The allowlist a tainted run is held to: PUBLIC and INTERNAL tools minus egress, private reads, self-writes."""
         if not isinstance(name, str) or name in self.egress:
             return False
         if name in self.allowed_after_taint:
             return True
-        return name not in self.never_after_taint and self.of(name).kind == "public"
+        return name not in self.never_after_taint and self.of(name).kind in NON_TAINTING_READ_KINDS
 
 
 def classify_tool(tool: Any, policy: TierPolicy, *, server_urls: Mapping[str, str | None] | None = None) -> ToolClass:
-    """WRITE, PUBLIC or PRIVATE for one tool under the owner tier's classes (default PRIVATE)."""
+    """WRITE, PUBLIC, INTERNAL or PRIVATE for one tool under the owner tier's classes (default PRIVATE)."""
     from deerflow.tools.mcp_metadata import get_mcp_source, is_mcp_tool
 
     name = getattr(tool, "name", None)
@@ -884,12 +983,22 @@ def classify_tool(tool: Any, policy: TierPolicy, *, server_urls: Mapping[str, st
         return ToolClass("private", label)
     if name in rules.write_tools or name in rules.self_write_tools:
         return ToolClass("write", label)
+    # An in-process tool carrying a listed server's prefix is a lookalike, never PUBLIC or INTERNAL.
+    lookalike = not is_mcp_tool(tool) and any(name.startswith(f"{key}_") for key in (*policy.mcp_servers, *policy.internal_servers))
     if name in rules.public_tools:
         if is_mcp_tool(tool):
-            if source is not None and mcp_server_allowed(source["server_name"], policy, server_urls=server_urls):
+            # [argus patch #176] A PUBLIC tool may also come from an internal server (Webfuse docs on atlas-mcp).
+            if source is not None and (mcp_server_allowed(source["server_name"], policy, server_urls=server_urls) or internal_server_allowed(source["server_name"], policy, server_urls=server_urls)):
                 return ToolClass("public", label)
-        elif not any(name.startswith(f"{key}_") for key in policy.mcp_servers):
+        elif not lookalike:
             return ToolClass("public", label)
+    if name in rules.internal_tools:
+        # [argus patch #176] INTERNAL: company data, MCP only from an internal server.
+        if is_mcp_tool(tool):
+            if source is not None and internal_server_allowed(source["server_name"], policy, server_urls=server_urls):
+                return ToolClass("internal", label)
+        elif not lookalike:
+            return ToolClass("internal", label)
     return ToolClass("private", label)
 
 
@@ -930,6 +1039,41 @@ def current_run_messages(messages: Iterable[Any], pre_existing_ids: object) -> l
     return messages
 
 
+def deferred_rejection_text(name: str) -> str:
+    """The deferred-tool gate's answer to a call of a tool not promoted yet (``DeferredToolFilterMiddleware``)."""
+    return f"Error: Tool '{name}' is deferred and has not been promoted yet. Call tool_search first to expose and promote this tool's schema, then retry."
+
+
+def _calls_rejected_before_running(messages: list[Any]) -> set[str]:
+    """[argus patch #176] Ids of tool calls the gateway answered without running them.
+
+    Two answers qualify, both error ToolMessages the gateway itself wrote: one
+    the tier guard marked (:data:`REJECTED_BEFORE_RUN_KEY`: a refusal or a name
+    outside the ceiling), and the deferred-tool gate's exact text for that
+    call's own tool name. A call still in flight, or one a tool answered, even
+    with an error, still counts as a read.
+    """
+    rejected: set[str] = set()
+    for message in messages:
+        if _message_field(message, "type") != "tool" or _message_field(message, "status") != "error":
+            continue
+        call_id = _message_field(message, "tool_call_id")
+        if not call_id:
+            continue
+        kwargs = _message_field(message, "additional_kwargs") or {}
+        name = _message_field(message, "name")
+        content = _message_field(message, "content")
+        if kwargs.get(REJECTED_BEFORE_RUN_KEY) is True or (isinstance(name, str) and content == deferred_rejection_text(name)):
+            rejected.add(str(call_id))
+    return rejected
+
+
+def taint_refusal(tool: object, sources: Iterable[str]) -> str:
+    """[argus patch #176] The refusal for a call after taint, naming the call and the turn's private sources."""
+    names = ", ".join(sorted({str(source) for source in sources if source})) or "private data"
+    return TAINT_REFUSAL.format(sources=names, tool=str(tool or "this tool"))
+
+
 def run_private_sources(messages: Iterable[Any], taint: TaintClasses, *, exclude_call_id: object = None) -> list[str]:
     """Sorted labels of the PRIVATE reads in ``messages`` (one run's messages).
 
@@ -937,6 +1081,8 @@ def run_private_sources(messages: Iterable[Any], taint: TaintClasses, *, exclude
     comes after a PRIVATE call, so the first PRIVATE call itself runs under the
     full ceiling, while a sibling in the same model step counts.
     """
+    messages = list(messages)
+    rejected = _calls_rejected_before_running(messages)
     labels: set[str] = set()
     for message in messages:
         if _is_injected_memory(message):
@@ -947,6 +1093,9 @@ def run_private_sources(messages: Iterable[Any], taint: TaintClasses, *, exclude
             name = call.get("name") if isinstance(call, Mapping) else getattr(call, "name", None)
             call_id = call.get("id") if isinstance(call, Mapping) else getattr(call, "id", None)
             if exclude_call_id is not None and call_id == exclude_call_id:
+                continue
+            if call_id is not None and str(call_id) in rejected:
+                # [argus patch #176] Never ran, so it read nothing.
                 continue
             cls = taint.of(name)
             if cls.kind == "private":

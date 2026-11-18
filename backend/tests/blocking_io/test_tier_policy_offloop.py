@@ -207,7 +207,7 @@ async def test_the_taint_guard_and_the_flagged_post_do_no_io(policy_file) -> Non
         return ToolMessage(content="ok", tool_call_id="c2")
 
     refused = await guard.awrap_tool_call(request, handler)
-    assert refused.content == tier_policy.TAINT_REFUSAL
+    assert refused.content.startswith(tier_policy.TAINT_REFUSAL.split("{", 1)[0])
     assert guard.after_model({"messages": messages}, runtime)["messages"][0].additional_kwargs[tier_policy.TURN_PRIVATE_KEY] == ["calendar"]
 
     class Client:
