@@ -44,7 +44,10 @@ DB_URL = "http://argus-kb-api:8000/pythia/db/mcp"
 GMAIL_URL = "http://argus-atlas-mcp:8000/atlas-nicholas/gmail/mcp"
 CALENDAR_URL = "http://argus-atlas-mcp:8000/atlas-nicholas/calendar/mcp"
 ASANA_URL = "http://argus-atlas-mcp:8000/atlas-nicholas/asana/mcp"
-GLOBAL_MCP = {"pythia": PYTHIA_URL, "db": DB_URL, "gmail": GMAIL_URL, "calendar": CALENDAR_URL, "asana": ASANA_URL}
+SENTRY_URL = "http://argus-kb-api:8000/pythia/sentry/mcp"
+GITHUB_URL = "http://argus-atlas-mcp:8000/atlas-nicholas/github/mcp"
+ATLAS_URL = "http://argus-atlas-mcp:8000/atlas-nicholas/atlas/mcp"
+GLOBAL_MCP = {"pythia": PYTHIA_URL, "db": DB_URL, "gmail": GMAIL_URL, "calendar": CALENDAR_URL, "asana": ASANA_URL, "sentry": SENTRY_URL, "github": GITHUB_URL, "atlas": ATLAS_URL}
 
 OWNER_POLICY = {
     "memory_mode": "read-only",
@@ -233,7 +236,13 @@ def test_a_draft_after_a_private_read_runs_and_an_issue_does_not(owner_policy):
     assert executed == ["gmail_create_draft"]
     guard.allowed_names = guard.allowed_names | {"github_create_issue"}
     result, executed = _call(guard, "github_create_issue", _after_calendar("github_create_issue"))
-    assert executed == [] and result.content == tier_policy.TAINT_REFUSAL
+    assert executed == [] and result.content == tier_policy.taint_refusal("github_create_issue", ["calendar"])
+
+
+def _taint_refused(content: object, tool: str | None = None) -> bool:
+    """A tier-guard taint refusal (#176 names the call and the turn's private sources)."""
+    prefix = tier_policy.TAINT_REFUSAL.split("{", 1)[0]
+    return isinstance(content, str) and content.startswith(prefix) and (tool is None or f"so {tool} is off" in content)
 
 
 def test_labels_are_short_and_header_safe():
@@ -319,7 +328,7 @@ def test_after_taint_only_the_allowlist_runs(owner_policy):
     for name in ("asana_create_task", "web_search", "web_fetch", "bash", "gmail_send_message", "read_secret_notes", "present_files"):
         result, executed = _call(guard, name, _after_calendar(name))
         assert executed == [] and result.status == "error", name
-        assert result.content == tier_policy.TAINT_REFUSAL
+        assert _taint_refused(result.content, name), name
 
 
 def test_a_private_call_in_the_same_step_counts(owner_policy):
@@ -327,15 +336,15 @@ def test_a_private_call_in_the_same_step_counts(owner_policy):
     messages = _turn(_ai("calendar_list_events", "asana_create_task", "bash", msg_id="a1"))
     # The read runs (it is allowlisted); the write and the second PRIVATE call are after taint.
     assert _call(guard, "calendar_list_events", messages)[1] == ["calendar_list_events"]
-    assert _call(guard, "asana_create_task", messages)[0].content == tier_policy.TAINT_REFUSAL
-    assert _call(guard, "bash", messages)[0].content == tier_policy.TAINT_REFUSAL
+    assert _call(guard, "asana_create_task", messages)[0].content == tier_policy.taint_refusal("asana_create_task", ["bash", "calendar"])
+    assert _call(guard, "bash", messages)[0].content == tier_policy.taint_refusal("bash", ["calendar"])
 
 
 def test_an_unknown_tool_is_private_and_taints(owner_policy):
     guard = _guard(owner_policy)
     messages = _turn(_ai("read_secret_notes", msg_id="a1"), _ai("asana_create_task", msg_id="a2"))
     result, _ = _call(guard, "asana_create_task", messages)
-    assert result.content == tier_policy.TAINT_REFUSAL
+    assert result.content == tier_policy.taint_refusal("asana_create_task", ["read"])
 
 
 def test_an_earlier_turn_does_not_taint_this_run(owner_policy):
@@ -353,7 +362,7 @@ def test_injected_memory_is_a_private_read(owner_policy):
     memory = HumanMessage(content="Nicholas prefers...", id="h1__memory", additional_kwargs={"hide_from_ui": True, "dynamic_context_reminder": True})
     messages = [memory, HumanMessage(content="now", id="h1__user"), _ai("asana_create_task", msg_id="a1")]
     result, executed = _call(guard, "asana_create_task", messages, pre_existing=frozenset())
-    assert executed == [] and result.content == tier_policy.TAINT_REFUSAL
+    assert executed == [] and result.content == tier_policy.taint_refusal("asana_create_task", ["memory"])
     assert guard._run_sources({"messages": messages}, SimpleNamespace(context={})) == ["memory"]
 
 
@@ -386,7 +395,7 @@ def test_the_async_guard_refuses_the_same(owner_policy):
         raise AssertionError("must not run")
 
     result = asyncio.run(guard.awrap_tool_call(request, handler))
-    assert result.content == tier_policy.TAINT_REFUSAL
+    assert _taint_refused(result.content)
 
 
 def test_the_manager_reads_the_stamp():
@@ -941,8 +950,193 @@ def test_a_real_graph_refuses_the_write_after_a_private_read_and_stamps_the_answ
     result = graph.invoke(history, context=context) if invocation == "invoke" else asyncio.run(graph.ainvoke(history, context=context))
     assert executed == ["calendar"]
     refused = next(m for m in result["messages"] if isinstance(m, ToolMessage) and m.tool_call_id == "c2")
-    assert refused.content == tier_policy.TAINT_REFUSAL
+    assert _taint_refused(refused.content)
     final = result["messages"][-1]
     assert isinstance(final, AIMessage) and final.additional_kwargs[tier_policy.TURN_PRIVATE_KEY] == ["calendar"]
     # Every AI message of the run after the read carries the stamp the manager reads.
     assert tier_policy.turn_private_labels(result["messages"]) == ["calendar"]
+
+
+# -- [argus patch #176] INTERNAL tools, and only calls that ran taint ------------
+
+INTERNAL_OWNER_POLICY = {
+    **OWNER_POLICY,
+    "internal_servers": {
+        "sentry": SENTRY_URL,
+        "github": "http://argus-atlas-mcp:8000/{stack}/github/mcp",
+        "atlas": "http://argus-atlas-mcp:8000/{stack}/atlas/mcp",
+    },
+    "internal_tools": ["sentry_projects", "sentry_issues", "github_get_issue", "github_read_file", "web_fetch"],
+    "public_tools": [*OWNER_POLICY["public_tools"], "atlas_webfuse_docs_search"],
+}
+
+
+@pytest.fixture()
+def internal_policy(policy_path, agents_present):
+    policy = copy.deepcopy(POLICY)
+    policy["tiers"]["owner"] = copy.deepcopy(INTERNAL_OWNER_POLICY)
+    _write_policy(policy_path, policy)
+    return tier_policy.policy_for("owner")
+
+
+def test_a_policy_without_internal_keys_still_parses(owner_policy):
+    assert owner_policy.internal_servers == {}
+    assert owner_policy.taint.internal_tools == frozenset()
+    assert tier_policy.classify_tool(_mcp("sentry_issues", "sentry"), owner_policy) == tier_policy.ToolClass("private", "sentry")
+
+
+def test_internal_keys_parse(internal_policy):
+    assert internal_policy.internal_servers["github"] == "http://argus-atlas-mcp:8000/{stack}/github/mcp"
+    assert "sentry_issues" in internal_policy.taint.internal_tools
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"internal_servers": ["http://argus-kb-api:8000/pythia/sentry/mcp"]},
+        {"internal_servers": {"sentry": "ftp://argus-kb-api/pythia/sentry/mcp"}},
+        {"internal_servers": {"github": "http://argus-atlas-mcp:8000/atlas-{stack}/github/mcp"}},
+        {"internal_servers": {"github": "http://{stack}:8000/github/mcp"}},
+        {"internal_servers": {"github": "http://argus-atlas-mcp:8000/{project}/github/mcp"}},
+        {"internal_tools": "sentry_issues"},
+        {"internal_tools": [""]},
+    ],
+)
+def test_a_bad_internal_entry_refuses_the_owner_tier_only(policy_path, agents_present, change):
+    policy = copy.deepcopy(POLICY)
+    policy["tiers"]["owner"].update(change)
+    _write_policy(policy_path, policy)
+    assert tier_policy.policy_for("owner") is None
+    assert tier_policy.policy_for("public") is not None
+
+
+def test_internal_classification(internal_policy):
+    classify = tier_policy.classify_tool
+    # INTERNAL: listed, from an internal server (a {stack} route matches the stack's own route).
+    assert classify(_mcp("sentry_issues", "sentry"), internal_policy) == tier_policy.ToolClass("internal", "sentry")
+    assert classify(_mcp("github_get_issue", "github"), internal_policy).kind == "internal"
+    # PUBLIC may come from an internal server too.
+    assert classify(_mcp("atlas_webfuse_docs_search", "atlas"), internal_policy).kind == "public"
+    # Writes stay writes; an unlisted tool on an internal server stays PRIVATE.
+    assert classify(_mcp("github_create_issue", "github"), internal_policy).kind == "write"
+    assert classify(_mcp("github_create_pr", "github"), internal_policy).kind == "private"
+    assert classify(_mcp("atlas_list_threads", "atlas"), internal_policy).kind == "private"
+    # A listed name from a server that does not match, or an in-process lookalike, is PRIVATE.
+    elsewhere = {**GLOBAL_MCP, "sentry": "http://evil.example/pythia/sentry/mcp", "github": "http://argus-atlas-mcp:8000/a/b/github/mcp"}
+    assert classify(_mcp("sentry_issues", "sentry"), internal_policy, server_urls=elsewhere).kind == "private"
+    assert classify(_mcp("github_get_issue", "github"), internal_policy, server_urls=elsewhere).kind == "private"
+    assert classify(_mcp("sentry_issues", "personal-sentry"), internal_policy).kind == "private"
+    assert classify(NamedTool("sentry_issues"), internal_policy).kind == "private"
+    assert classify(NamedTool("github_get_issue"), internal_policy).kind == "private"
+    # Private reads stay private reads.
+    assert classify(_mcp("calendar_list_events", "calendar"), internal_policy).kind == "private"
+
+
+def test_internal_tools_are_allowed_after_taint_but_egress_still_wins(internal_policy):
+    tools = [_mcp("sentry_issues", "sentry"), _mcp("github_get_issue", "github"), _mcp("atlas_webfuse_docs_search", "atlas"), _mcp("github_create_pr", "github")]
+    taint = tier_policy.guard_tier_middlewares([], tools, internal_policy)[0].taint
+    for name in ("sentry_issues", "github_get_issue", "atlas_webfuse_docs_search"):
+        assert taint.permitted_after_taint(name), name
+    assert not taint.permitted_after_taint("github_create_pr")
+    assert not taint.permitted_after_taint("web_fetch")  # listed INTERNAL, but egress
+
+
+INTERNAL_GUARD_TOOLS = [*GUARD_TOOLS, NamedTool("tool_search"), _mcp("sentry_projects", "sentry"), _mcp("sentry_issues", "sentry"), _mcp("github_get_issue", "github"), _mcp("github_create_pr", "github")]
+
+
+def _internal_guard(policy):
+    guard = tier_policy.guard_tier_middlewares([], INTERNAL_GUARD_TOOLS, policy)[0]
+    assert isinstance(guard, TierToolGuardMiddleware) and guard.taint is not None
+    return guard
+
+
+def test_internal_reads_never_taint_the_turn(internal_policy):
+    guard = _internal_guard(internal_policy)
+    # Vamsi's turn: list the projects, then search the issues, then act.
+    messages = _turn(_ai("sentry_projects", msg_id="a1"), ToolMessage(content="[session_ui]", tool_call_id="a1-0"), _ai("sentry_issues", msg_id="a2"))
+    assert _call(guard, "sentry_issues", messages)[1] == ["sentry_issues"]
+    messages = [*messages, ToolMessage(content="top issue", tool_call_id="a2-0"), _ai("github_get_issue", "asana_create_task", msg_id="a3")]
+    assert _call(guard, "asana_create_task", messages)[1] == ["asana_create_task"]
+    assert guard._run_sources({"messages": messages}, SimpleNamespace(context={CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY: frozenset({"h0", "a0"})})) == []
+    # After a private read an internal read still runs; a write does not.
+    assert _call(guard, "sentry_issues", _after_calendar("sentry_issues"))[1] == ["sentry_issues"]
+    result, executed = _call(guard, "asana_create_task", _turn(_ai("sentry_issues", msg_id="a1"), _ai("calendar_list_events", msg_id="a2"), _ai("asana_create_task", msg_id="a3")))
+    assert executed == [] and result.content == tier_policy.taint_refusal("asana_create_task", ["calendar"])
+
+
+def _deferred_reply(call_id, name):
+    return ToolMessage(content=tier_policy.deferred_rejection_text(name), tool_call_id=call_id, name=name, status="error")
+
+
+def test_a_call_the_deferred_gate_rejected_does_not_taint(owner_policy):
+    # Sentry PRIVATE (a policy without internal keys): the turn of 2026-11-18. The first
+    # call hit the deferred gate, tool_search promoted the tool, the real call must run.
+    guard = _internal_guard(owner_policy)
+    messages = _turn(
+        _ai("sentry_issues", msg_id="a1"),
+        _deferred_reply("a1-0", "sentry_issues"),
+        _ai("tool_search", msg_id="a2"),
+        ToolMessage(content="[sentry_issues]", tool_call_id="a2-0"),
+        _ai("sentry_issues", msg_id="a3"),
+    )
+    assert _call(guard, "sentry_issues", messages)[1] == ["sentry_issues"]
+    # Once it ran, it is a private read like any other.
+    after = [*messages, ToolMessage(content="issues", tool_call_id="a3-0"), _ai("asana_create_task", msg_id="a4")]
+    assert _taint_refused(_call(guard, "asana_create_task", after)[0].content, "asana_create_task")
+
+
+def test_a_guard_refusal_does_not_taint_but_a_tool_error_does(owner_policy):
+    guard = _internal_guard(owner_policy)
+    # A name outside the ceiling is refused by the guard, marked, and read nothing.
+    refusal, executed = _call(guard, "not_bound_here", _turn(_ai("not_bound_here", msg_id="a1")))
+    assert executed == [] and refusal.additional_kwargs.get(tier_policy.REJECTED_BEFORE_RUN_KEY) is True
+    messages = _turn(_ai("not_bound_here", msg_id="a1"), refusal, _ai("asana_create_task", msg_id="a2"))
+    assert _call(guard, "asana_create_task", messages)[1] == ["asana_create_task"]
+    # A tool that ran and failed may still have read something: it counts.
+    failed = ToolMessage(content="upstream 500", tool_call_id="a1-0", name="sentry_issues", status="error")
+    messages = _turn(_ai("sentry_issues", msg_id="a1"), failed, _ai("asana_create_task", msg_id="a2"))
+    assert _taint_refused(_call(guard, "asana_create_task", messages)[0].content)
+    # The deferred text counts only as that call's own error ToolMessage.
+    for reply in (
+        ToolMessage(content=tier_policy.deferred_rejection_text("other_tool"), tool_call_id="a1-0", name="sentry_issues", status="error"),
+        ToolMessage(content=tier_policy.deferred_rejection_text("sentry_issues"), tool_call_id="a1-0", name="sentry_issues"),
+    ):
+        messages = _turn(_ai("sentry_issues", msg_id="a1"), reply, _ai("asana_create_task", msg_id="a2"))
+        assert _taint_refused(_call(guard, "asana_create_task", messages)[0].content), reply
+    # A sibling still in flight counts (no answer yet).
+    messages = _turn(_ai("sentry_issues", "asana_create_task", msg_id="a1"))
+    assert _taint_refused(_call(guard, "asana_create_task", messages)[0].content)
+
+
+def test_the_deferred_text_matches_the_gate():
+    from deerflow.agents.middlewares.deferred_tool_filter_middleware import DeferredToolFilterMiddleware
+
+    gate = DeferredToolFilterMiddleware(frozenset({"sentry_issues"}), None)
+    request = SimpleNamespace(tool_call={"name": "sentry_issues", "id": "c1", "args": {}}, state={"messages": []})
+    reply = gate._blocked_tool_message(request)
+    assert reply is not None and reply.status == "error"
+    assert reply.content == tier_policy.deferred_rejection_text("sentry_issues")
+
+
+def test_the_refusal_names_the_call_and_the_sources():
+    text = tier_policy.taint_refusal("sentry_issues", ["sentry", "calendar", "sentry"])
+    assert text.startswith("Not run: this turn already read private data (calendar, sentry), so sentry_issues is off")
+    assert "Ask again in a new message to run sentry_issues" in text and "draft" in text
+    assert "{" not in text and "}" not in text
+
+
+def test_internal_servers_keep_the_caller_token(internal_policy):
+    from deerflow.mcp.run_tier import build_run_tier_interceptor
+
+    interceptor = build_run_tier_interceptor(_extensions())
+    seen = {}
+
+    async def transport(request):
+        seen[request.server_name] = dict(request.headers or {})
+        return "result"
+
+    for server in ("sentry", "github", "pythia"):
+        asyncio.run(interceptor(_mcp_request(server, "owner", headers={"X-Pythia-Caller-Token": "signed-for-owner"}), transport))
+    assert seen["sentry"]["X-Pythia-Caller-Token"] == "signed-for-owner"
+    assert seen["github"]["X-Pythia-Caller-Token"] == "signed-for-owner"
+    assert "X-Pythia-Caller-Token" not in seen["pythia"]

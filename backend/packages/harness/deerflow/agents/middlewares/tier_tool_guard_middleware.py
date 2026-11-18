@@ -18,6 +18,11 @@ may run (PUBLIC tools, private reads, self-writes); anything else gets
 ``tier_policy.TAINT_REFUSAL``. The run's AI messages are stamped with the
 source labels (``tier_policy.TURN_PRIVATE_KEY``) so the channel manager can flag
 the answer posts.
+
+[argus patch #176] INTERNAL tools (company data) never taint and stay allowed
+after taint like PUBLIC ones. Every refusal this guard writes carries
+``tier_policy.REJECTED_BEFORE_RUN_KEY``, and a call answered that way (or by
+the deferred-tool gate) is not a read, so it never taints the run.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
-from deerflow.agents.tier_policy import TAINT_REFUSAL, TURN_PRIVATE_KEY, TaintClasses, current_run_messages, run_private_sources
+from deerflow.agents.tier_policy import REJECTED_BEFORE_RUN_KEY, TURN_PRIVATE_KEY, TaintClasses, current_run_messages, run_private_sources, taint_refusal
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
 
 logger = logging.getLogger(__name__)
@@ -69,13 +74,14 @@ class TierToolGuardMiddleware(AgentMiddleware[AgentState]):
             sources = self._run_sources(getattr(request, "state", None), getattr(request, "runtime", None), exclude_call_id=call.get("id"))
             if sources:
                 logger.info("[tier-policy] tier %s: refused %r after private reads (%s)", self.tier, name, ", ".join(sources))
-                return self._error(call, TAINT_REFUSAL)
+                return self._error(call, taint_refusal(name, sources))
         return None
 
     @staticmethod
     def _error(call: dict, content: str) -> ToolMessage:
         name = call.get("name")
-        return ToolMessage(content=content, tool_call_id=str(call.get("id") or ""), name=name if isinstance(name, str) else None, status="error")
+        # [argus patch #176] Marked, so the taint count knows this call never ran.
+        return ToolMessage(content=content, tool_call_id=str(call.get("id") or ""), name=name if isinstance(name, str) else None, status="error", additional_kwargs={REJECTED_BEFORE_RUN_KEY: True})
 
     def _stamp(self, state: Any, runtime: Any) -> dict | None:
         """Stamp the newest AI message of a tainted run with its source labels."""
