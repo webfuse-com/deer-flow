@@ -107,6 +107,14 @@ class SubagentOverrideConfig(BaseModel):
         min_length=1,
         description="Model name for this subagent (None = inherit from parent agent)",
     )
+    thinking_enabled: bool | None = Field(
+        default=None,
+        description="Whether to enable thinking/reasoning for this subagent (None = no override)",
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description="Reasoning effort accepted or mapped by the selected model (None = use its default)",
+    )
     skills: list[str] | None = Field(
         default=None,
         description="Skill names whitelist for this subagent (None = inherit all enabled skills, [] = no skills)",
@@ -114,10 +122,6 @@ class SubagentOverrideConfig(BaseModel):
     token_budget: TokenBudgetConfig | None = Field(
         default=None,
         description="Per-run token budget override for this subagent (None = use the global subagents.token_budget default). Symmetric with timeout_seconds/max_turns.",
-    )
-    thinking_enabled: bool | None = Field(
-        default=None,
-        description="Per-agent thinking override (None = use the agent's own setting; built-ins default off). Only applies when the resolved model profile supports thinking.",
     )
 
     @field_validator("timeout_seconds", "max_turns", mode="before")
@@ -151,6 +155,14 @@ class CustomSubagentConfig(BaseModel):
         default="inherit",
         description="Model to use - 'inherit' uses parent's model",
     )
+    thinking_enabled: bool | None = Field(
+        default=None,
+        description="Whether to enable thinking/reasoning for this subagent (None = no override)",
+    )
+    reasoning_effort: str | None = Field(
+        default=None,
+        description="Reasoning effort accepted or mapped by the selected model (None = use its default)",
+    )
     max_turns: int = Field(
         default=50,
         ge=1,
@@ -160,10 +172,6 @@ class CustomSubagentConfig(BaseModel):
         default=900,
         ge=1,
         description="Maximum execution time in seconds",
-    )
-    thinking_enabled: bool | None = Field(
-        default=None,
-        description="Request the model's extended-thinking mode for this subagent (None = default off). Only applies when the resolved model profile supports thinking.",
     )
 
     @field_validator("timeout_seconds", "max_turns", mode="before")
@@ -264,21 +272,6 @@ class SubagentsAppConfig(BaseModel):
             return override.model
         return None
 
-    def get_thinking_for(self, agent_name: str) -> bool | None:
-        """Get the thinking override for a specific agent.
-
-        Args:
-            agent_name: The name of the subagent.
-
-        Returns:
-            The thinking override if set, None otherwise (use the agent's own
-            value; built-ins default off).
-        """
-        override = self.agents.get(agent_name)
-        if override is not None:
-            return override.thinking_enabled
-        return None
-
     def get_max_turns_for(self, agent_name: str, builtin_default: int) -> int:
         """Get the effective max_turns for a specific agent."""
         override = self.agents.get(agent_name)
@@ -300,6 +293,20 @@ class SubagentsAppConfig(BaseModel):
         override = self.agents.get(agent_name)
         if override is not None and override.skills is not None:
             return override.skills
+        return None
+
+    def get_thinking_enabled_for(self, agent_name: str) -> bool | None:
+        """Return an explicit per-agent thinking override, including False."""
+        override = self.agents.get(agent_name)
+        if override is not None and override.thinking_enabled is not None:
+            return override.thinking_enabled
+        return None
+
+    def get_reasoning_effort_for(self, agent_name: str) -> str | None:
+        """Return the per-agent effort request; the selected model resolves it."""
+        override = self.agents.get(agent_name)
+        if override is not None and override.reasoning_effort is not None:
+            return override.reasoning_effort
         return None
 
     def get_token_budget_for(
@@ -367,6 +374,10 @@ def load_subagents_config_from_dict(config_dict: dict) -> None:
             parts.append(f"max_turns={override.max_turns}")
         if override.model is not None:
             parts.append(f"model={override.model}")
+        if override.thinking_enabled is not None:
+            parts.append(f"thinking_enabled={override.thinking_enabled}")
+        if override.reasoning_effort is not None:
+            parts.append(f"reasoning_effort={override.reasoning_effort}")
         if override.skills is not None:
             parts.append(f"skills={override.skills}")
         if parts:

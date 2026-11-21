@@ -4,6 +4,9 @@ from enum import StrEnum
 
 # Shared by Gateway admission and RunManager; values remain wire-format strings.
 EVIDENCE_ORIGINS = frozenset({"interactive", "scheduled", "extension_evaluation", "unknown"})
+# [argus patch #66] RunDeadlineMiddleware keeps the run start across goal
+# continuations, so a time_capped run would re-enter an expired deadline.
+GOAL_RUN_HARD_STOP_REASONS = frozenset({"token_capped", "loop_capped", "time_capped"})
 
 
 class ThreadOperationKind(StrEnum):
@@ -23,6 +26,7 @@ class RunStatus(StrEnum):
     pending = "pending"
     running = "running"
     success = "success"
+    waiting_for_input = "waiting_for_input"
     error = "error"
     timeout = "timeout"
     interrupted = "interrupted"

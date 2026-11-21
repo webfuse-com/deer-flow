@@ -1,0 +1,123 @@
+"""[argus patch #174, #175] Call-time backstop for a tiered run's tool ceiling, and taint gating.
+
+Assembly already binds only tools inside the tier's ceiling and asserts it
+(``deerflow.agents.tier_policy.verify_tier_tool_view``). This middleware is the
+outermost tool wrapper of a tiered run and refuses any call whose tool name is
+not in the set the build bound, so a tool that reaches the tool node some other
+way (a promotion path, a later addition, a hallucinated name that happens to
+resolve) never executes. The refusal is an error ToolMessage, not an
+exception, so the model sees it and the turn continues.
+
+[argus patch #175] With ``taint`` (the owner tier), a call is "after taint"
+when another call of the run, earlier or in the same model step, is PRIVATE, or
+memory was injected into the run. The check reads the run's own messages (the
+worker's pre-run message ids mark the boundary), so the first PRIVATE call runs
+under the full ceiling, and a write in the same step as a PRIVATE read is seen
+before either executes. After taint only ``TaintClasses.permitted_after_taint``
+may run (PUBLIC tools, private reads, self-writes); anything else gets
+``tier_policy.TAINT_REFUSAL``. The run's AI messages are stamped with the
+source labels (``tier_policy.TURN_PRIVATE_KEY``) so the channel manager can flag
+the answer posts.
+
+[argus patch #176] INTERNAL tools (company data) never taint and stay allowed
+after taint like PUBLIC ones. Every refusal this guard writes carries
+``tier_policy.REJECTED_BEFORE_RUN_KEY``, and a call answered that way (or by
+the deferred-tool gate) is not a read, so it never taints the run.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable, Iterable
+from typing import Any, override
+
+from langchain.agents import AgentState
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.runtime import Runtime
+from langgraph.types import Command
+
+from deerflow.agents.tier_policy import REJECTED_BEFORE_RUN_KEY, TURN_PRIVATE_KEY, TaintClasses, current_run_messages, run_private_sources, taint_refusal
+from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
+
+logger = logging.getLogger(__name__)
+
+
+def _pre_existing_ids(runtime: Any) -> object:
+    context = getattr(runtime, "context", None)
+    return context.get(CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY) if isinstance(context, dict) else None
+
+
+class TierToolGuardMiddleware(AgentMiddleware[AgentState]):
+    """Refuse any tool call outside ``allowed_names``; with ``taint``, gate writes and egress."""
+
+    def __init__(self, tier: str, allowed_names: Iterable[str], *, taint: TaintClasses | None = None) -> None:
+        super().__init__()
+        self.tier = tier
+        self.allowed_names = frozenset(allowed_names)
+        self.taint = taint
+
+    def _run_sources(self, state: Any, runtime: Any, *, exclude_call_id: object = None) -> list[str]:
+        if self.taint is None:
+            return []
+        messages = (state or {}).get("messages") if isinstance(state, dict) else getattr(state, "messages", None)
+        return run_private_sources(current_run_messages(messages or [], _pre_existing_ids(runtime)), self.taint, exclude_call_id=exclude_call_id)
+
+    def _refusal(self, request: ToolCallRequest) -> ToolMessage | None:
+        call = request.tool_call or {}
+        name = call.get("name")
+        if not isinstance(name, str) or name not in self.allowed_names:
+            logger.warning("[tier-policy] tier %s: refused a call to %r outside the tool ceiling", self.tier, name)
+            return self._error(call, f"Error: the tool {name!r} is not available in this conversation.")
+        if self.taint is not None and not self.taint.permitted_after_taint(name):
+            sources = self._run_sources(getattr(request, "state", None), getattr(request, "runtime", None), exclude_call_id=call.get("id"))
+            if sources:
+                logger.info("[tier-policy] tier %s: refused %r after private reads (%s)", self.tier, name, ", ".join(sources))
+                return self._error(call, taint_refusal(name, sources))
+        return None
+
+    @staticmethod
+    def _error(call: dict, content: str) -> ToolMessage:
+        name = call.get("name")
+        # [argus patch #176] Marked, so the taint count knows this call never ran.
+        return ToolMessage(content=content, tool_call_id=str(call.get("id") or ""), name=name if isinstance(name, str) else None, status="error", additional_kwargs={REJECTED_BEFORE_RUN_KEY: True})
+
+    def _stamp(self, state: Any, runtime: Any) -> dict | None:
+        """Stamp the newest AI message of a tainted run with its source labels."""
+        if self.taint is None:
+            return None
+        messages = (state or {}).get("messages") if isinstance(state, dict) else None
+        if not messages or not isinstance(messages[-1], AIMessage):
+            return None
+        sources = self._run_sources(state, runtime)
+        last = messages[-1]
+        if not sources or last.additional_kwargs.get(TURN_PRIVATE_KEY) == sources:
+            return None
+        return {"messages": [last.model_copy(update={"additional_kwargs": {**last.additional_kwargs, TURN_PRIVATE_KEY: sources}})]}
+
+    @override
+    def after_model(self, state: AgentState, runtime: Runtime) -> dict | None:
+        return self._stamp(state, runtime)
+
+    @override
+    def after_agent(self, state: AgentState, runtime: Runtime) -> dict | None:
+        return self._stamp(state, runtime)
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        refusal = self._refusal(request)
+        return refusal if refusal is not None else handler(request)
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        refusal = self._refusal(request)
+        return refusal if refusal is not None else await handler(request)

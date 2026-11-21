@@ -1,3 +1,6 @@
+rs.mock("@/components/workspace/projects/project-memory-section", () => ({
+  ProjectMemorySection: () => null,
+}));
 import { afterEach, beforeEach, describe, expect, it, rs } from "@rstest/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { PropsWithChildren, ReactNode } from "react";
@@ -28,6 +31,11 @@ const mocks = rs.hoisted(() => ({
     surface: { id: string; title: string };
     value: string;
   }[],
+  memoryPending: false,
+}));
+
+rs.mock("@/core/projects/memory", () => ({
+  useProjectMemoryMutationPending: () => mocks.memoryPending,
 }));
 
 rs.mock("next/navigation", () => ({
@@ -132,6 +140,7 @@ function openInstructionsTab() {
 
 beforeEach(() => {
   mocks.pluginTabs = [];
+  mocks.memoryPending = false;
   mocks.project = makeProject("");
   mocks.projectsConfig = undefined;
   mocks.patchPending = false;
@@ -190,6 +199,28 @@ describe("ProjectPage instructions reconciliation", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Instructions" }));
     return utils;
   }
+
+  it("prevents instruction edits while a memory promotion is in flight", () => {
+    mocks.project = makeProject("base");
+    mocks.memoryPending = true;
+    const { rerender } = renderInstructions();
+    expect(
+      screen
+        .getByRole("textbox", { name: "Instructions" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    mocks.memoryPending = false;
+    refetchWith("base\n- Use API v2");
+    rerender(<ProjectPage />);
+    expect(
+      screen.getByRole("textbox", { name: "Instructions" }),
+    ).toHaveProperty("value", "base\n- Use API v2");
+    expect(
+      screen
+        .getByRole("textbox", { name: "Instructions" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+  });
 
   function editor() {
     return screen.getByRole("textbox", { name: "Instructions" });

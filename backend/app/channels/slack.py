@@ -6,12 +6,14 @@ import asyncio
 import html
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 from markdown_to_mrkdwn import SlackMarkdownConverter
 
+from app.channels._delivery_outcome import DELIVERY_ERROR_KEY
 from app.channels.allowed_users import parse_allowed_users, parse_string_or_int_user_id
 from app.channels.base import Channel, ChannelStopTimeout
 from app.channels.commands import is_known_channel_command
@@ -25,6 +27,7 @@ from app.channels.message_bus import (
     OutboundMessage,
     ResolvedAttachment,
 )
+from deerflow.agents import tier_policy
 from deerflow.uploads.manager import is_upload_staging_file, normalize_filename
 
 logger = logging.getLogger(__name__)
@@ -40,8 +43,124 @@ SLACK_ALLOWED_FILE_HOST_SUFFIXES = frozenset({"files.slack.com"})
 # (edits, deletes, joins, bot_message, thread_broadcast, …) stays ignored so we
 # do not double-fire or treat platform noise as a user message.
 _SLACK_ACCEPTED_MESSAGE_SUBTYPES = frozenset({"file_share"})
+# [argus patch #171] ``transport: relay``: no Socket Mode client; a router
+# holds the Slack app, delivers events and serves the Web API at relay_url.
+SLACK_TRANSPORT_RELAY = "relay"
+# The audiences a relayed event can come from (the router decides which).
+# [argus patch #175] ``owner``: a channel run the router verified its owner triggered.
+SLACK_RELAY_TIERS = frozenset({"dm", "public", "private", "owner"})
+# A bot's display name in hydrated thread context is capped at this length.
+_SLACK_BOT_LABEL_MAX_CHARS = 80
+# [argus patch #172] The router's synthetic method naming the stack's owner,
+# their DM with the app and where they want notifications.
+SLACK_ARGUS_OWNER_METHOD = "argus.owner"
+# A fire waits at most this long for it; slack_sdk's own timeout is 30 s.
+_SLACK_ARGUS_OWNER_TIMEOUT_SECONDS = 10.0
+# Prefix of an owner_conversation() error that means no answer at all.
+SLACK_ROUTER_UNREACHABLE = "router_unreachable"
+# The notification channels argus.owner may name.
+_SLACK_OWNER_CHANNELS = ("slack", "telegram")
+# A real Slack message ts. Synthetic topics (sched:<id>, hook:..., notify:...)
+# never match, so they are not Slack threads to hydrate.
+_SLACK_TS_RE = re.compile(r"\d+\.\d+")
 
 _slack_md_converter = SlackMarkdownConverter()
+
+
+@dataclass(frozen=True)
+class SlackOwner:
+    """[argus patch #172] The router's ``argus.owner`` answer for this stack.
+
+    ``enabled``: Slack is enabled for the stack. ``user_id``/``dm``: the
+    owner's Slack user and their DM with the app (empty when unresolved).
+    ``channels``: where the owner wants notifications, in order (the router
+    applies the stack's preference; read by ``channel: notify``, #173).
+    """
+
+    enabled: bool
+    user_id: str
+    dm: str
+    channels: tuple[str, ...] = ()
+
+
+def _slack_error_code(exc: BaseException) -> str:
+    """[argus patch #172] Slack's (or the router's) error code for a refused call, else the exception type."""
+    response = getattr(exc, "response", None)
+    getter = getattr(response, "get", None)
+    code = getter("error") if callable(getter) else None
+    return code if isinstance(code, str) and code else type(exc).__name__
+
+
+def _response_value(response: Any, key: str) -> Any:
+    """A field of a Web API answer (a ``SlackResponse`` or a plain dict)."""
+    getter = getattr(response, "get", None)
+    return getter(key) if callable(getter) else None
+
+
+@dataclass(frozen=True)
+class _RelayDelivery:
+    """[argus patch #171] What the router said about one relayed event."""
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+    agent_name: str | None = None
+    # Channel commands (/memory, /agent, /new, ...) act on the owner's state,
+    # so only the owner's DM may issue them; elsewhere they are chat text.
+    commands_allowed: bool = False
+
+
+def _relay_base_url(value: Any) -> str | None:
+    """[argus patch #171] ``relay_url`` as a slack_sdk ``base_url``.
+
+    slack_sdk joins the method name onto ``base_url`` with ``urljoin``, so a
+    URL without a trailing slash would drop its last path segment
+    (``http://router:8080/api`` + ``chat.postMessage`` ->
+    ``http://router:8080/chat.postMessage``). None for a missing or non-HTTP URL.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    url = value.strip()
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return url if url.endswith("/") else f"{url}/"
+
+
+def _parse_tier_agents(value: Any) -> dict[str, str]:
+    """[argus patch #171] ``tier_agents: {dm|public|private: <agent>}``.
+
+    [argus patch #174] Only ``dm`` may fall back to the channel default when
+    unset. A restricted tier (``public``, ``private``) needs its entry as the
+    stack's opt-in and then runs the image-held tier policy's agent, whatever
+    the entry names; unset means the tier is refused.
+    """
+    if not isinstance(value, dict):
+        return {}
+    agents: dict[str, str] = {}
+    for tier, agent in value.items():
+        if tier not in SLACK_RELAY_TIERS:
+            logger.warning("[Slack] tier_agents.%s ignored: tiers are %s", tier, ", ".join(sorted(SLACK_RELAY_TIERS)))
+            continue
+        if isinstance(agent, str) and agent.strip():
+            agents[tier] = agent.strip()
+    return agents
+
+
+def _slack_bot_label(message: dict) -> str:
+    """[argus patch #171, amends #22] Name a bot message in thread context.
+
+    The bot's own name: the message's ``username`` (a persona such as "Atlas
+    for Nicholas" set at post time), then ``bot_profile.name`` (the app's bot
+    name, e.g. "Pythia"), then "a bot". Whitespace is collapsed and the name
+    capped so a bot name cannot reshape the context block.
+    """
+    profile = message.get("bot_profile")
+    profile_name = profile.get("name") if isinstance(profile, dict) else None
+    for candidate in (message.get("username"), profile_name):
+        if isinstance(candidate, str):
+            name = " ".join(candidate.split())[:_SLACK_BOT_LABEL_MAX_CHARS]
+            if name:
+                return name
+    return "a bot"
 
 
 def _escape_slack_text(text: str) -> str:
@@ -118,6 +237,16 @@ class SlackChannel(Channel):
         - ``allowed_users``: (optional) List of allowed Slack user IDs, or a
           single Slack user ID as shorthand. Unset, empty or blank = allow
           all. A non-empty value without a valid ID denies everyone.
+
+    [argus patch #171] Relay transport (``transport: relay``):
+        - ``relay_url``: the router's Web API base (``http://router:8080/api/``).
+        - ``relay_token``: this gateway's router key, sent as the bot token.
+        - ``tier_agents``: (optional) ``{dm|public|private: <agent>}``, the
+          agent a relayed message of that tier runs; a missing tier keeps the
+          channel default.
+      No Socket Mode client is created and ``bot_token``/``app_token`` are not
+      read. Events arrive through :meth:`relay_event`; ``allowed_users`` does
+      not apply to them because the router has already authorized the sender.
     """
 
     def __init__(self, bus: MessageBus, config: dict[str, Any]) -> None:
@@ -129,6 +258,10 @@ class SlackChannel(Channel):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._allowed_users = _parse_allowed_users(config.get("allowed_users"))
         self._web_client_factory = config.get("web_client_factory")
+        # [argus patch #171] relay transport: every WebClient talks to the router.
+        self._relay = str(config.get("transport") or "").strip().lower() == SLACK_TRANSPORT_RELAY
+        self._relay_base_url = _relay_base_url(config.get("relay_url")) if self._relay else None
+        self._tier_agents = _parse_tier_agents(config.get("tier_agents")) if self._relay else {}
         self._connection_web_clients: dict[str, tuple[str, Any]] = {}
         configured_bot_user_id = config.get("bot_user_id")
         self._bot_user_id = str(configured_bot_user_id).lstrip("@") if configured_bot_user_id else None
@@ -156,6 +289,10 @@ class SlackChannel(Channel):
         self._SocketModeResponse = SocketModeResponse
         if self._web_client_factory is None:
             self._web_client_factory = WebClient
+
+        if self._relay:
+            await self._start_relay()
+            return
 
         bot_token = self.config.get("bot_token", "")
         app_token = self.config.get("app_token", "")
@@ -187,6 +324,207 @@ class SlackChannel(Channel):
         socket_client = self._socket_client
         self._socket_connect_future = asyncio.get_event_loop().run_in_executor(None, self._connect_socket_mode, socket_client)
         logger.info("Slack channel started")
+
+    async def _start_relay(self) -> None:
+        """[argus patch #171] Start without Socket Mode.
+
+        The router serves the Web API at ``relay_url`` and answers
+        ``auth.test`` with the app's bot user id, so the operator WebClient is
+        built exactly as in Socket Mode, only aimed at the router. Intake,
+        the running flag and the outbound subscription are the same as in
+        Socket Mode; events arrive through :meth:`relay_event`.
+        """
+        relay_token = str(self.config.get("relay_token") or "").strip()
+        if not self._relay_base_url or not relay_token:
+            logger.error("Slack relay transport requires relay_url (an http(s) URL) and relay_token")
+            return
+        await self._initialize_operator_web_client(relay_token)
+        self._loop = asyncio.get_running_loop()
+        self._open_threadsafe_future_intake()
+        self._running = True
+        self.bus.subscribe_outbound(self._on_outbound)
+        logger.info("Slack channel started (relay transport, Web API at %s)", self._relay_base_url)
+
+    @property
+    def uses_relay_transport(self) -> bool:
+        """[argus patch #171] Whether events arrive through :meth:`relay_event`."""
+        return self._relay
+
+    async def owner_conversation(self) -> tuple[SlackOwner | None, str]:
+        """[argus patch #172] Ask the router for this stack's owner: ``(owner, error)``.
+
+        One call of the router's synthetic ``argus.owner`` through the relay
+        WebClient. The router answers it even when Slack is not enabled for
+        the stack; no Slack scope, email or directory method reaches the
+        gateway. ``error`` is the router's error code for a refusal, or
+        starts with :data:`SLACK_ROUTER_UNREACHABLE` when there was no answer.
+        """
+        if not self._relay or self._web_client is None:
+            return None, "slack is not running on the relay transport"
+        try:
+            resp = await asyncio.wait_for(asyncio.to_thread(self._web_client.api_call, SLACK_ARGUS_OWNER_METHOD), timeout=_SLACK_ARGUS_OWNER_TIMEOUT_SECONDS)
+        except TimeoutError:
+            return None, f"{SLACK_ROUTER_UNREACHABLE}: no answer in {_SLACK_ARGUS_OWNER_TIMEOUT_SECONDS:g} s"
+        except Exception as exc:
+            code = _slack_error_code(exc)
+            if code == type(exc).__name__:
+                # No error code: the request itself failed (connection, HTTP, JSON).
+                return None, f"{SLACK_ROUTER_UNREACHABLE}: {code}"
+            return None, code
+        if _response_value(resp, "ok") is not True:
+            return None, "malformed argus.owner answer"
+        channels = _response_value(resp, "channels")
+        listed = channels if isinstance(channels, list | tuple) else ()
+        return (
+            SlackOwner(
+                enabled=_response_value(resp, "enabled") is True,
+                user_id=str(_response_value(resp, "user_id") or ""),
+                dm=str(_response_value(resp, "dm") or ""),
+                channels=tuple(dict.fromkeys(c for c in listed if c in _SLACK_OWNER_CHANNELS)),
+            ),
+            "",
+        )
+
+    async def relay_event(self, envelope: dict, argus: dict) -> bool:
+        """[argus patch #171] Handle one Events API envelope the Slack router delivered.
+
+        The event takes the same path as a Socket Mode event
+        (``_handle_message_event``), minus the socket ack, and on a worker
+        thread as the SDK's own callback does: the handler posts the eyes
+        reaction and the progress reply synchronously. ``argus`` is the
+        router's verdict: ``tier`` (dm|public|private) picks the agent from
+        ``tier_agents`` and rides the message metadata with ``trigger_user``
+        and ``persona``. The router has already authorized the sender, so
+        ``allowed_users`` does not apply.
+
+        [argus patch #174] A restricted tier (public, later private) runs the
+        agent its image-held tier policy names, never ``tier_agents`` and
+        never the channel default, and is refused when the policy is missing
+        or invalid, ``tier_agents`` has no entry for it, or the agent is not
+        on this stack. The tier rides ``metadata.argus_tier``, which the
+        manager and run admission turn into the policy's ceiling.
+
+        ``action: stop`` is refused: the channel manager has no path to cancel
+        a run a channel started (Slack waits on ``runs.wait`` with
+        ``on_disconnect: continue``).
+
+        Returns whether the event became a queued inbound message.
+        """
+        if not self._relay or not self._running:
+            logger.warning("[Slack] relay event refused: the channel is not running on the relay transport")
+            return False
+        if not isinstance(envelope, dict) or not isinstance(argus, dict):
+            return False
+        event = envelope.get("event")
+        if not isinstance(event, dict):
+            return False
+        action = argus.get("action") or "message"
+        if action == "stop":
+            logger.info(
+                "[Slack] relay stop for channel=%s thread_ts=%s not applied: the channel manager cannot cancel a channel run",
+                event.get("channel"),
+                event.get("thread_ts") or event.get("ts"),
+            )
+            return False
+        if action != "message":
+            logger.warning("[Slack] relay event with unknown action %r refused", action)
+            return False
+        tier = argus.get("tier")
+        if tier not in SLACK_RELAY_TIERS:
+            # Fail closed: the tier chooses the agent, and an unknown tier must
+            # not fall back to the channel default (the owner's full agent).
+            logger.warning("[Slack] relay event refused: unknown tier %r", tier)
+            return False
+        if event.get("type") not in ("message", "app_mention"):
+            return False
+
+        agent_name = self._tier_agents.get(tier)
+        if tier_policy.is_restricted_tier(tier):
+            # [argus patch #174] Fail closed: no policy, no opt-in or no agent
+            # means no run, never the owner's full default agent.
+            accepted, agent_name, refusal = await asyncio.to_thread(self._restricted_tier_agent, tier)
+            if not accepted:
+                logger.warning("[Slack] relay event refused: %s", refusal)
+                return False
+
+        metadata: dict[str, Any] = {"tier": tier, tier_policy.ARGUS_TIER_KEY: tier}
+        # [argus patch #174] audience and channel_label fill policy.prompt's placeholders.
+        for key in ("trigger_user", "persona", "audience", "channel_label"):
+            value = argus.get(key)
+            if isinstance(value, str) and value:
+                metadata[key] = value
+        delivery = _RelayDelivery(
+            metadata=metadata,
+            agent_name=agent_name,
+            commands_allowed=tier == "dm",
+        )
+        team_id = envelope.get("team_id") or envelope.get("team") or event.get("team")
+        return await asyncio.to_thread(self._handle_message_event, event, team_id=team_id, relay=delivery)
+
+    def _default_agent_name(self) -> str | None:
+        """[argus patch #175] The channel's default custom agent (``session``), or None for the lead agent."""
+        session = self.config.get("session")
+        session = session if isinstance(session, dict) else {}
+        context = session.get("context") if isinstance(session.get("context"), dict) else {}
+        for value in (context.get("agent_name"), session.get("assistant_id")):
+            if isinstance(value, str) and value.strip():
+                name = value.strip().lower().replace("_", "-")
+                return None if name == "lead-agent" else name
+        return None
+
+    def _restricted_tier_agent(self, tier: str) -> tuple[bool, str | None, str]:
+        """[argus patch #174] ``(True, agent, "")`` for a restricted tier this gateway can run, else ``(False, None, why)``.
+
+        [argus patch #175] The owner tier runs ``tier_agents.owner`` or, unset,
+        the channel default (``agent`` None: no per-message override); its
+        policy names no agent. The agent must be on the stack either way.
+        """
+        if tier == tier_policy.OWNER_TIER:
+            policy = tier_policy.policy_for(tier)
+            if policy is None:
+                return False, None, f"no valid {tier} tier policy in this image ({tier_policy.TIER_POLICY_PATH.name})"
+            agent = self._tier_agents.get(tier)
+            resolved = agent or self._default_agent_name()
+            if resolved is not None and not tier_policy.tier_agent_present(resolved):
+                return False, None, f"the {tier} tier's agent {resolved!r} is not on this stack"
+            return True, agent, ""
+        if tier not in self._tier_agents:
+            return False, None, f"tier_agents.{tier} is not set; a restricted tier never falls back to the channel default"
+        policy = tier_policy.policy_for(tier)
+        if policy is None or policy.agent is None:
+            return False, None, f"no valid {tier} tier policy in this image ({tier_policy.TIER_POLICY_PATH.name})"
+        if self._tier_agents[tier] != policy.agent:
+            logger.info("[Slack] tier_agents.%s=%s ignored: the tier policy runs %s", tier, self._tier_agents[tier], policy.agent)
+        if not tier_policy.tier_agent_present(policy.agent):
+            return False, None, f"the {tier} tier's agent {policy.agent!r} is not on this stack"
+        return True, policy.agent, ""
+
+    async def relay_capabilities(self) -> dict[str, Any]:
+        """[argus patch #174] The router's capability probe: the tiers this gateway accepts and its policy.
+
+        ``tiers`` lists ``dm`` plus each restricted tier ``relay_event`` would
+        accept right now. ``policy`` is null without a valid policy file.
+        """
+        return await asyncio.to_thread(self._relay_capabilities)
+
+    def _relay_capabilities(self) -> dict[str, Any]:
+        """Blocking half of :meth:`relay_capabilities` (the policy file and agent lookups)."""
+        tiers = ["dm"]
+        for tier in ("public", "private", tier_policy.OWNER_TIER):
+            accepted, _, _ = self._restricted_tier_agent(tier)
+            if accepted:
+                tiers.append(tier)
+        policies = tier_policy.load_tier_policies()
+        policy: dict[str, Any] | None = None
+        if policies is not None:
+            public = policies.tiers.get("public")
+            policy = {
+                "version": policies.version,
+                "sha256": policies.sha256,
+                "public_agent": public.agent if public is not None else None,
+                "agent_present": public is not None and public.agent is not None and tier_policy.tier_agent_present(public.agent),
+            }
+        return {"tiers": tiers, "policy": policy}
 
     def _connect_socket_mode(self, socket_client: Any) -> None:
         """Connect one start attempt's Socket Mode client if it is still current.
@@ -237,6 +575,8 @@ class SlackChannel(Channel):
     async def send(self, msg: OutboundMessage, *, _max_retries: int = 3) -> None:
         web_client = await self._get_web_client_for_message(msg)
         if not web_client:
+            # [argus patch #172] Nothing was posted; the delivery report must say so.
+            msg.metadata[DELIVERY_ERROR_KEY] = "no Slack web client"
             return
 
         kwargs: dict[str, Any] = {
@@ -245,9 +585,21 @@ class SlackChannel(Channel):
         }
         if msg.thread_ts:
             kwargs["thread_ts"] = msg.thread_ts
+        # [argus patch #172] Every Slack event carries a thread_ts, so on the
+        # relay transport an outbound without one answers a synthetic inbound
+        # (a playbook fire, a notify, their error replies). It posts as a new
+        # top-level message in the owner's DM (the only place the router
+        # allows one) and that message roots the run's thread.
+        root_post = self._relay and not msg.thread_ts
+        posted: dict[str, str] = {}
+        # [argus patch #175] A tainted turn's answer goes through a client that
+        # flags it for the router; reactions and ack cleanup do not.
+        post_client = self._turn_private_client(msg) or web_client
 
         async def post_message() -> None:
-            await asyncio.to_thread(web_client.chat_postMessage, **kwargs)
+            resp = await asyncio.to_thread(post_client.chat_postMessage, **kwargs)
+            if root_post:
+                posted["ts"] = str(_response_value(resp, "ts") or "")
             # Add a completion reaction to the thread root
             if msg.thread_ts:
                 await asyncio.to_thread(
@@ -267,7 +619,10 @@ class SlackChannel(Channel):
                 max_retries=_max_retries,
                 log_prefix="[Slack]",
             )
-        except Exception:
+        except Exception as exc:
+            # [argus patch #172] _on_outbound swallows this; the manager reads
+            # the reason back and reports the turn failed, not delivered.
+            msg.metadata[DELIVERY_ERROR_KEY] = _slack_error_code(exc)
             # Add failure reaction on error
             if msg.thread_ts:
                 try:
@@ -281,6 +636,45 @@ class SlackChannel(Channel):
                 except Exception:
                     pass
             raise
+        if posted.get("ts"):
+            # [argus patch #172] Outside the retried post, so a store error can
+            # never post twice. Set thread_ts only now, after the reaction and
+            # ack block, so Atlas's own root gets no check mark and the files
+            # _on_outbound sends next land in the root's thread.
+            await self._bind_root_post(msg, posted["ts"])
+            msg.thread_ts = posted["ts"]
+
+    def _turn_private_client(self, msg: OutboundMessage) -> Any | None:
+        """[argus patch #175] A relay client that marks every call as a tainted turn's post, or None.
+
+        The manager puts the run's private source labels on the outbound
+        (``tier_policy.TURN_PRIVATE_KEY``). On the relay transport the answer
+        and its files then carry ``X-Argus-Turn-Private: 1`` and
+        ``X-Argus-Turn-Sources``, and the router turns them into an owner-only
+        draft. The bytes of a file go straight to Slack's upload URL, which
+        slack_sdk sends without the client's headers.
+        """
+        labels = (msg.metadata or {}).get(tier_policy.TURN_PRIVATE_KEY)
+        if not self._relay or not self._relay_base_url or not labels:
+            return None
+        relay_token = str(self.config.get("relay_token") or "").strip()
+        return self._web_client_factory(token=relay_token, base_url=self._relay_base_url, headers=tier_policy.turn_private_headers(labels))
+
+    async def _bind_root_post(self, msg: OutboundMessage, root_ts: str) -> None:
+        """[argus patch #172] Bind ``(slack, DM, root_ts)`` to the run's thread.
+
+        A reply under the root arrives with ``thread_ts = root_ts`` (its topic),
+        so it continues the run's DeerFlow thread instead of starting a new
+        one. The same alias Feishu's ``_remember_thread_mapping`` writes for
+        its cards. Best effort: logged, never raised, never retried.
+        """
+        store = self.config.get("channel_store")
+        if store is None or not msg.thread_id:
+            return
+        try:
+            await store.set_thread_id(self.name, msg.chat_id, msg.thread_id, topic_id=root_ts, user_id=str(msg.metadata.get("user_id") or ""))
+        except Exception:
+            logger.exception("[Slack] could not bind root message %s in %s to thread %s", root_ts, msg.chat_id, msg.thread_id)
 
     async def send_file(self, msg: OutboundMessage, attachment: ResolvedAttachment) -> bool:
         web_client = await self._get_web_client_for_message(msg)
@@ -297,7 +691,9 @@ class SlackChannel(Channel):
             if msg.thread_ts:
                 kwargs["thread_ts"] = msg.thread_ts
 
-            await asyncio.to_thread(web_client.files_upload_v2, **kwargs)
+            # [argus patch #175] A tainted turn's files are flagged like its answer.
+            upload_client = self._turn_private_client(msg) or web_client
+            await asyncio.to_thread(upload_client.files_upload_v2, **kwargs)
             logger.info("[Slack] file uploaded: %s to channel=%s", attachment.filename, msg.chat_id)
             return True
         except Exception:
@@ -316,8 +712,14 @@ class SlackChannel(Channel):
         Best-effort: "" on any error (incl. missing_scope on a private channel
         without groups:history). Excludes `exclude_ts` (the current reply) and
         the bot's own "Working on it..." acks. Bot posts are kept (the minutes
-        are a bot post and ARE the context)."""
+        are a bot post and ARE the context), each labelled by its own name
+        ([argus patch #171]: Pythia, an Atlas persona, any other bot).
+
+        [argus patch #172] A synthetic topic (``sched:<id>``, ``hook:...``) is
+        no Slack thread: "" without a call."""
         if not self._web_client or not chat_id or not thread_ts:
+            return ""
+        if not _SLACK_TS_RE.fullmatch(thread_ts):
             return ""
         try:
             resp = await asyncio.to_thread(self._web_client.conversations_replies, channel=chat_id, ts=thread_ts, limit=limit)
@@ -333,7 +735,7 @@ class SlackChannel(Channel):
             body = (m.get("text") or "").strip()
             if not body or body.startswith(":hourglass"):  # skip the ack
                 continue
-            who = "Pythia" if m.get("bot_id") else f"<@{m.get('user', 'user')}>"
+            who = _slack_bot_label(m) if m.get("bot_id") else f"<@{m.get('user', 'user')}>"
             lines.append(f"{who}: {body}")
         if not lines:
             return ""
@@ -342,8 +744,14 @@ class SlackChannel(Channel):
 
     # -- internal ----------------------------------------------------------
 
+    def _new_web_client(self, token: str):
+        """[argus patch #171] On the relay transport every WebClient is aimed at the router."""
+        if self._relay_base_url:
+            return self._web_client_factory(token=token, base_url=self._relay_base_url)
+        return self._web_client_factory(token=token)
+
     async def _initialize_operator_web_client(self, bot_token: str) -> None:
-        self._web_client = self._web_client_factory(token=bot_token)
+        self._web_client = self._new_web_client(bot_token)
         if self._bot_user_id is not None:
             return
         try:
@@ -376,7 +784,7 @@ class SlackChannel(Channel):
                 from slack_sdk import WebClient
 
                 self._web_client_factory = WebClient
-            web_client = self._web_client_factory(token=access_token)
+            web_client = self._new_web_client(access_token)
             self._connection_web_clients[connection_id] = (access_token, web_client)
             return web_client
         return self._web_client
@@ -470,13 +878,21 @@ class SlackChannel(Channel):
         except Exception:
             logger.exception("Error processing Slack event")
 
-    def _handle_message_event(self, event: dict, *, team_id: str | None = None) -> None:
+    def _handle_message_event(self, event: dict, *, team_id: str | None = None, relay: _RelayDelivery | None = None) -> bool:
+        """Turn one Slack message event into an inbound message.
+
+        Returns whether it became work (a reserved inbound message or a
+        scheduled connect bind). [argus patch #171] ``relay`` carries the
+        router's verdict for a relayed event: ``allowed_users`` is skipped,
+        commands only count where the router allows them, and the tier's
+        agent and metadata ride the inbound message.
+        """
         # Ignore bot traffic and platform subtypes we do not handle as chat.
         # file_share is a user upload (optional caption + files[]) and must not
         # be dropped just because Slack sets subtype.
         subtype = event.get("subtype")
         if event.get("bot_id") or (subtype and subtype not in _SLACK_ACCEPTED_MESSAGE_SUBTYPES):
-            return
+            return False
 
         user_id = event.get("user", "")
 
@@ -488,7 +904,7 @@ class SlackChannel(Channel):
         text = _unescape_slack_text(text)
         files = self._extract_inbound_files(event)
         if not text and not files:
-            return
+            return False
 
         connect_code = self._pending_connect_code(text)
         if connect_code:
@@ -505,18 +921,20 @@ class SlackChannel(Channel):
                 )
                 if not scheduled:
                     logger.info("[Slack] main loop stopped before channel connection bind could be scheduled")
-            return
+                return scheduled
+            return False
 
         # Check allowed users after connect-code handling so browser-initiated
         # binding can bootstrap a new external identity.
-        if self._allowed_users is not None and user_id not in self._allowed_users:
+        # [argus patch #171] A relayed event's sender was authorized by the router.
+        if relay is None and self._allowed_users is not None and user_id not in self._allowed_users:
             logger.debug("Ignoring message from non-allowed user: %s", user_id)
-            return
+            return False
 
         channel_id = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts", "")
 
-        if is_known_channel_command(text):
+        if is_known_channel_command(text) and (relay is None or relay.commands_allowed):
             msg_type = InboundMessageType.COMMAND
         else:
             msg_type = InboundMessageType.CHAT
@@ -544,11 +962,17 @@ class SlackChannel(Channel):
         # reply lands on a thread that has no DeerFlow conversation yet — e.g. a
         # reply under the raw-posted minutes draft.
         inbound.metadata["event_ts"] = event.get("ts", "")
+        if relay is not None:
+            # [argus patch #171] tier, trigger_user, persona; the tier's agent
+            # wins over the channel default for this message only.
+            inbound.metadata.update(relay.metadata)
+            if relay.agent_name:
+                inbound.agent_name = relay.agent_name
 
         if self._loop and self._loop.is_running():
             reservation = self._reserve_inbound(inbound)
             if reservation is None:
-                return
+                return False
             # Acknowledge with an eyes reaction on the user's message.
             react_ts = event.get("ts", thread_ts)
             self._add_reaction(channel_id, react_ts, "eyes")
@@ -560,6 +984,7 @@ class SlackChannel(Channel):
                     # Reservation bounds callbacks scheduled from the SDK
                     # thread; no coroutine/Future waits for queue capacity.
                     self._loop.call_soon_threadsafe(self._commit_reserved_inbound, reservation, inbound)
+                    return True
                 else:
                     scheduled = self._submit_threadsafe_coroutine(
                         self._publish_inbound_with_connection(inbound, reservation=reservation, team_id=team_id),
@@ -570,9 +995,11 @@ class SlackChannel(Channel):
                     )
                     if not scheduled:
                         logger.info("[Slack] main loop stopped before reserved inbound could be scheduled")
+                    return scheduled
             except RuntimeError:
                 reservation.release()
                 logger.info("[Slack] main loop stopped before reserved inbound could be scheduled")
+        return False
 
     async def receive_file(self, msg: InboundMessage, thread_id: str, *, user_id: str | None = None) -> InboundMessage:
         """Download inbound Slack file_share attachments for the shared upload pipeline.
@@ -584,6 +1011,16 @@ class SlackChannel(Channel):
         """
         del thread_id, user_id
         if not msg.files:
+            return msg
+
+        if self._relay:
+            # [argus patch #171] The token here is the router key, not a Slack
+            # token: it must never go to files.slack.com, and the router does
+            # not proxy file downloads.
+            names = [self._safe_inbound_filename(f.get("filename"), "attachment") for f in msg.files if isinstance(f, dict)]
+            notice = f"[Slack attachment unavailable: {', '.join(names) or 'attachment'} (files are not relayed)]"
+            msg.text = f"{msg.text}\n\n{notice}" if msg.text else notice
+            msg.files = []
             return msg
 
         web_client = await self._get_web_client_for_inbound(msg)
@@ -824,12 +1261,12 @@ class SlackChannel(Channel):
         thread_ts = str(event.get("thread_ts") or event.get("ts") or "")
         state = await self._connection_repo.consume_oauth_state(provider="slack", state=code)
         if state is None:
-            await self._post_connection_reply(channel_id, "Slack connection code is invalid or expired.", thread_ts)
+            await self._post_connection_reply(channel_id, await self._connect_reply_text("invalid_code"), thread_ts)
             return True
 
         user_id = str(event.get("user") or "")
         if not user_id or not team_id:
-            await self._post_connection_reply(channel_id, "Slack connection could not be completed from this message.", thread_ts)
+            await self._post_connection_reply(channel_id, await self._connect_reply_text("incomplete", owner_user_id=state["owner_user_id"]), thread_ts)
             return True
 
         await self._connection_repo.upsert_connection(
@@ -843,7 +1280,7 @@ class SlackChannel(Channel):
             },
             status="connected",
         )
-        await self._post_connection_reply(channel_id, "Slack connected to DeerFlow.", thread_ts)
+        await self._post_connection_reply(channel_id, await self._connect_reply_text("connected", owner_user_id=state["owner_user_id"]), thread_ts)
         return True
 
     async def _post_connection_reply(self, channel_id: str, text: str, thread_ts: str | None = None) -> None:

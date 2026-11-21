@@ -13,7 +13,10 @@ export const BrowserTrigger = () => {
   const browserView = useMaybeBrowserView();
   const sidecar = useMaybeSidecar();
 
-  if (!browserView) {
+  // [argus patch #168] Only once the agent has browsed in this chat, to reopen
+  // the panel on its screenshot. The manual live browser behind an empty
+  // panel never connected on Argus (every stream request 403 in Oct 2026).
+  if (!browserView?.latestFrame) {
     return null;
   }
   const browserVisible = browserView.open && !sidecar?.open;

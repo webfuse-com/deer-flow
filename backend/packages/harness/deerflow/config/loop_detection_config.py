@@ -8,9 +8,9 @@ from deerflow.config._boolean_guards import reject_boolean
 class ToolFreqOverride(BaseModel):
     """Per-tool frequency threshold override.
 
-    Can be higher or lower than the global defaults. Commonly used to raise
-    thresholds for high-frequency tools like bash in batch workflows (e.g.
-    RNA-seq pipelines) without weakening protection on every other tool.
+    Can be higher or lower than the global observability thresholds. Commonly
+    used to tune reporting for high-frequency tools like bash in batch workflows
+    without changing loop protection on every other tool.
     """
 
     warn: int = Field(ge=1)
@@ -58,24 +58,16 @@ class LoopDetectionConfig(BaseModel):
     tool_freq_warn: int = Field(
         default=30,
         ge=1,
-        description="Number of calls to the same tool type before injecting a frequency warning",
+        description="Number of same-tool calls in the observation window before recording a frequency metric",
     )
     tool_freq_hard_limit: int = Field(
         default=50,
         ge=1,
-        description="Number of calls to the same tool type before forcing a stop",
+        description="Second same-tool frequency metric threshold; it does not stop the run",
     )
     tool_freq_overrides: dict[str, ToolFreqOverride] = Field(
         default_factory=dict,
-        description=(
-            "Per-tool overrides for tool_freq_warn / tool_freq_hard_limit, keyed by tool name. "
-            "Values can be higher or lower than the global defaults. Commonly used to raise thresholds "
-            "for high-frequency tools like bash. [argus patch #82] Keys may also be SUBCATEGORY names "
-            "of the form <tool>.<subcategory> (currently only bash.inspection is produced). A subcategory "
-            "counter is only tracked when its key is present in this dict (that presence is the gate; "
-            "default config tracks nothing new). Note that no_hard_stop_tools matches exact counter names "
-            "only (exempting bash does NOT exempt bash.inspection)."
-        ),
+        description=("Per-tool observability thresholds for tool_freq_warn / tool_freq_hard_limit, keyed by tool name. [argus sync] Subcategory keys such as bash.inspection are retired and ignored."),
     )
     read_file_bucket_size_lines: int = Field(
         default=200,
@@ -89,9 +81,8 @@ class LoopDetectionConfig(BaseModel):
     no_hard_stop_tools: list[str] = Field(
         default_factory=list,
         description=(
-            "[argus] Tools exempt from loop-detection hard stops (both Layer 1 identical-hash and "
-            "Layer 2 frequency). Warnings are still injected, but the run is never force-stopped by "
-            "repeated calls to these tools. Use for cheap idempotent query tools where a hard stop "
+            "[argus] Tools exempt from the loop-detection identical-call hard stop (Layer 1). Warnings are still injected, but the run is never force-stopped by "
+            "repeated identical calls to these tools. Per-tool frequency is observation-only and unaffected. Use for cheap idempotent query tools where a hard stop "
             "destroys more value than the loop wastes; token_budget and run_deadline remain the cost "
             "backstops. The exemption applies only when EVERY tool in a repeated call set is listed."
         ),
@@ -111,19 +102,13 @@ class LoopDetectionConfig(BaseModel):
 
     fresh_result_extension_tools: list[str] = Field(
         default_factory=list,
-        description=(
-            "[argus patch #100] Tools whose Layer 2 frequency hard stop is downgraded to an escalating "
-            "warning while their most recent result was a success with fresh content (not a "
-            "near-duplicate of that tool's recent results). Meant for read-only search tools, where a "
-            "new result is new information; a no-results reply, an error, a near-duplicate or a "
-            "result too short to judge keeps the stop. Not for bash, whose output is always new."
-        ),
+        description="[argus sync] DEPRECATED, ignored (patch #100 retired: upstream's per-tool frequency is observation-only). Kept so stack configs that set it keep loading.",
     )
     fresh_result_extension_factor: float = Field(
         default=2.0,
         ge=1.0,
         le=10.0,
-        description=("[argus patch #100] Ceiling for fresh_result_extension_tools as a multiple of the tool's hard limit; at that count the hard stop fires regardless of freshness. 1.0 disables."),
+        description="[argus sync] DEPRECATED, ignored (patch #100 retired).",
     )
 
     @field_validator(
@@ -141,7 +126,7 @@ class LoopDetectionConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":
-        """Ensure hard stop cannot happen before the warning threshold."""
+        """Keep thresholds ordered for predictable metric reporting."""
         if self.hard_limit < self.warn_threshold:
             raise ValueError("hard_limit must be greater than or equal to warn_threshold")
         if self.tool_freq_hard_limit < self.tool_freq_warn:

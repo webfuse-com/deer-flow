@@ -3,21 +3,26 @@
 import {
   BookOpenTextIcon,
   BlocksIcon,
+  SearchIcon,
   BotIcon,
   CalendarClock,
   Clock3Icon,
   LandmarkIcon,
+  LayoutGridIcon,
   LightbulbIcon,
   MessagesSquare,
+  ChartColumn,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
 import {
   SidebarGroup,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import {
   Tooltip,
@@ -25,14 +30,24 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentsApiEnabled } from "@/core/agents";
+import { useAuth } from "@/core/auth/AuthProvider";
+import { hasPermission, PERMISSIONS } from "@/core/auth/permissions";
 import {
   useCapabilityCenterEnabled,
   useScheduledTasksFeature,
 } from "@/core/features/hooks";
 import { useI18n } from "@/core/i18n/hooks";
+import { OPEN_SEARCH_EVENT } from "@/core/search/api";
+import { isStaticWebsiteOnly } from "@/core/static-mode";
+
+import {
+  setCommandPaletteOpen,
+  useMetaKeyLabel,
+} from "./command-palette-store";
 
 export function WorkspaceNavChatList() {
   const { t } = useI18n();
+  const metaKey = useMetaKeyLabel();
   const pathname = usePathname();
   const { enabled: agentsEnabled } = useAgentsApiEnabled();
   const { enabled: capabilityCenterEnabled } = useCapabilityCenterEnabled();
@@ -40,9 +55,36 @@ export function WorkspaceNavChatList() {
   // page (patch #115) the page is the place for schedules; otherwise the
   // Chronos link stays (patch #65).
   const externalScheduler = useScheduledTasksFeature().external === true;
+  const { user } = useAuth();
+  const { setOpenMobile } = useSidebar();
+  const [shortcut, setShortcut] = useState("⌘K");
+  useEffect(() => {
+    setShortcut(navigator.userAgent.includes("Mac") ? "⌘K" : "Ctrl K");
+  }, []);
+  const usageEnabled =
+    !!user &&
+    hasPermission(user, PERMISSIONS.RUNS_READ) &&
+    !isStaticWebsiteOnly();
   return (
     <SidebarGroup className="pt-1">
       <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            onClick={() => {
+              setOpenMobile(false);
+              window.dispatchEvent(new Event(OPEN_SEARCH_EVENT));
+            }}
+            aria-label={t.workspaceSearch.open}
+            tooltip={t.workspaceSearch.title}
+            className="text-muted-foreground"
+          >
+            <SearchIcon />
+            <span>{t.workspaceSearch.open}</span>
+            <kbd aria-hidden className="ml-auto text-xs">
+              {shortcut}
+            </kbd>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
         <SidebarMenuItem>
           <SidebarMenuButton isActive={pathname === "/workspace/chats"} asChild>
             <Link className="text-muted-foreground" href="/workspace/chats">
@@ -93,6 +135,34 @@ export function WorkspaceNavChatList() {
             </Tooltip>
           )}
         </SidebarMenuItem>
+        {/* [argus patch #167] Opens the command palette: apps, projects and
+            company tools, and shows its shortcut so people learn it. */}
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            className="text-muted-foreground"
+            tooltip={`${t.sidebar.apps} (${metaKey}K)`}
+            onClick={() => setCommandPaletteOpen(true)}
+          >
+            <LayoutGridIcon />
+            <span>{t.sidebar.apps}</span>
+            <kbd className="bg-muted ml-auto rounded px-1.5 font-mono text-[10px] group-data-[collapsible=icon]:hidden">
+              {metaKey}K
+            </kbd>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        {usageEnabled && (
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={pathname.startsWith("/workspace/usage")}
+              asChild
+            >
+              <Link className="text-muted-foreground" href="/workspace/usage">
+                <ChartColumn />
+                <span>{t.usage.title}</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        )}
         <SidebarMenuItem>
           {externalScheduler ? (
             <SidebarMenuButton

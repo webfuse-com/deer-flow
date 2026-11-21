@@ -1,11 +1,14 @@
 import {
+  AppWindowIcon,
   BellIcon,
   BookmarkIcon,
+  BriefcaseIcon,
   DownloadIcon,
   FileJsonIcon,
   FileTextIcon,
   PuzzleIcon,
   SpoolIcon,
+  UsersIcon,
   type LucideIcon,
 } from "lucide-react";
 
@@ -17,8 +20,11 @@ import type { FrontendContribution, FrontendExtension } from "./contracts";
 
 export function extensionIcon(name?: string): LucideIcon {
   const icons: Record<string, LucideIcon> = {
+    "app-window": AppWindowIcon, // [argus patch #167] palette groups
     bell: BellIcon,
+    users: UsersIcon,
     bookmark: BookmarkIcon,
+    briefcase: BriefcaseIcon, // [argus patch #167]
     download: DownloadIcon,
     "file-json": FileJsonIcon,
     "file-text": FileTextIcon,
@@ -89,6 +95,32 @@ export async function loadFrontendExtensions(
             typeof loadedModule.conversationActions !== "function")
         )
           throw new Error("Incompatible browser extension");
+        if (loadedModule.artifactPreviews !== undefined) {
+          const seen = new Set<string>();
+          if (
+            !Array.isArray(loadedModule.artifactPreviews) ||
+            loadedModule.artifactPreviews.length > 16
+          )
+            throw new Error("Invalid artifact previews");
+          for (const renderer of loadedModule.artifactPreviews) {
+            if (
+              !renderer ||
+              typeof renderer.id !== "string" ||
+              !/^[a-z][a-z0-9-]{0,63}$/.test(renderer.id) ||
+              seen.has(renderer.id) ||
+              typeof renderer.mount !== "function" ||
+              !Array.isArray(renderer.extensions) ||
+              renderer.extensions.length === 0 ||
+              renderer.extensions.length > 32 ||
+              renderer.extensions.some(
+                (ext) =>
+                  typeof ext !== "string" || !/^[a-z0-9]{1,16}$/.test(ext),
+              )
+            )
+              throw new Error("Invalid artifact preview renderer");
+            seen.add(renderer.id);
+          }
+        }
         if (loadedModule.mentionProviders !== undefined) {
           const seen = new Set<string>();
           if (
@@ -108,6 +140,34 @@ export async function loadFrontendExtensions(
               typeof provider.search !== "function"
             )
               throw new Error("Invalid mention provider");
+            seen.add(provider.id);
+          }
+        }
+        // [argus patch #167] Command-palette groups.
+        if (loadedModule.commandProviders !== undefined) {
+          const seen = new Set<string>();
+          if (
+            !Array.isArray(loadedModule.commandProviders) ||
+            loadedModule.commandProviders.length > 8
+          )
+            throw new Error("Invalid command providers");
+          for (const provider of loadedModule.commandProviders) {
+            if (
+              !provider ||
+              typeof provider.id !== "string" ||
+              !/^[a-z][a-z0-9-]{0,63}$/.test(provider.id) ||
+              seen.has(provider.id) ||
+              typeof provider.label !== "string" ||
+              !provider.label.trim() ||
+              provider.label.length > 120 ||
+              (provider.icon !== undefined &&
+                typeof provider.icon !== "string") ||
+              (provider.position !== undefined &&
+                provider.position !== "start" &&
+                provider.position !== "end") ||
+              typeof provider.items !== "function"
+            )
+              throw new Error("Invalid command provider");
             seen.add(provider.id);
           }
         }

@@ -56,6 +56,7 @@ from deerflow.agents.middlewares.tool_error_handling_middleware import build_lea
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from deerflow.agents.task_continuity.tools import append_task_continuity_tools
 from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
+from deerflow.agents.tier_policy import ARGUS_TIER_VARS_KEY, TierPolicyUnavailable, clamp_pythia_ring, filter_tools_for_tier, guard_tier_middlewares, render_tier_prompt, resolve_run_tier_policy, verify_tier_tool_view
 from deerflow.authz.principal import build_principal_from_context
 from deerflow.authz.provider import AuthzDecision, AuthzRequest
 from deerflow.authz.runtime import resolve_authorization_provider
@@ -67,6 +68,7 @@ from deerflow.config.subagents_config import (
     effective_subagent_concurrency,
     effective_total_subagents_per_run,
 )
+from deerflow.mcp.agent_auth import AGENT_AUTH_CONTEXT_KEY, AgentMcpAuthority
 from deerflow.models import create_chat_model
 from deerflow.models.reasoning import resolve_reasoning_contract, resolve_reasoning_request
 from deerflow.runtime.checkpoint_mode import (
@@ -76,6 +78,7 @@ from deerflow.runtime.checkpoint_mode import (
     frozen_checkpoint_channel_mode,
     inject_checkpoint_mode,
 )
+from deerflow.runtime.context_keys import MCP_BROWSER_USER_CONTEXT_KEY
 from deerflow.scheduler.runtime import SCHEDULER_CAPABILITY_CONTEXT_KEY, is_scheduler_capability
 from deerflow.skills.types import Skill
 from deerflow.subagents.capacity import configured_subagent_max_running
@@ -376,9 +379,9 @@ def _create_todo_list_middleware(is_plan_mode: bool) -> TodoMiddleware | None:
 You have access to the `write_todos` tool to help you manage and track complex multi-step objectives.
 
 **CRITICAL RULES:**
-- Mark todos as completed IMMEDIATELY after finishing each step - do NOT batch completions
-- Keep EXACTLY ONE task as `in_progress` at any time (unless tasks can run in parallel)
-- Update the todo list in REAL-TIME as you work - this gives users visibility into your progress
+- Update todos at meaningful milestones; group related status changes in one call
+- Mark a task `completed` only after it is fully finished and verified
+- Use `in_progress` only for work that is actively underway; do not keep a task active just to show progress
 - DO NOT use this tool for simple tasks (< 3 steps) - just complete them directly
 
 **When to Use:**
@@ -430,16 +433,18 @@ Skip this tool when:
 
 ## How to Use
 
-1. **Starting a task**: Mark it as `in_progress` BEFORE beginning work
-2. **Completing a task**: Mark it as `completed` IMMEDIATELY after finishing
+1. **Starting a task**: Mark it as `in_progress` when work begins
+2. **Completing a task**: Mark it as `completed` after it is fully finished and verified
 3. **Updating the list**: Add new tasks, remove irrelevant ones, or update descriptions as needed
 4. **Multiple updates**: You can make several updates at once (e.g., complete one task and start the next)
 
 ## Task States
 
 - `pending`: Task not yet started
-- `in_progress`: Currently working on (can have multiple if tasks run in parallel)
-- `completed`: Task finished successfully
+- `in_progress`: Currently being worked on
+- `blocked`: Work cannot continue because a dependency or error must be resolved; terminal for this run
+- `waiting`: Waiting for the user or an external resource; terminal for this run
+- `completed`: Task fully finished and verified
 
 ## Task Completion Requirements
 
@@ -452,18 +457,15 @@ Never mark a task as completed if:
 - You couldn't find necessary resources or dependencies
 - Quality standards haven't been met
 
-If blocked, keep the task as `in_progress` and create a new task describing what needs to be resolved.
+If blocked or waiting, record that status and keep the reason in the task description. The run may finish with those statuses; do not relabel them as completed.
 
 ## Best Practices
 
 - Create specific, actionable items
 - Break complex tasks into smaller, manageable steps
 - Use clear, descriptive task names
-- Update task status in real-time as you work
-- Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
+- Update task status at meaningful milestones and group related changes when practical
 - Remove tasks that are no longer relevant
-- **IMPORTANT**: When you write the todo list, mark your first task(s) as `in_progress` immediately
-- **IMPORTANT**: Unless all tasks are completed, always have at least one task `in_progress` to show progress
 
 Being proactive with task management demonstrates thoroughness and ensures all requirements are completed successfully.
 
@@ -522,8 +524,8 @@ def build_middlewares(
         app_config: Explicit AppConfig; falls back to ``get_app_config()`` when omitted.
         deferred_setup: Optional deferred-MCP-tool setup that attaches
             ``DeferredToolFilterMiddleware`` when ``tool_search`` is enabled.
-        mcp_routing_middleware: Optional PR2 middleware that auto-promotes
-            deferred MCP schemas before the deferred filter runs.
+        mcp_routing_middleware: Compatibility middleware for advisory MCP
+            capability metadata; schema selection requires tool_search.
         user_id: Effective user ID for user-scoped skill loading. Passed through
             to ``SkillActivationMiddleware`` so it can resolve per-user custom skills.
         authorization_provider: Provider already resolved for assembly-time
@@ -545,6 +547,8 @@ def build_middlewares(
     from deerflow.extensions import get_agent_build_extensions
 
     resolved_extensions = extensions if extensions is not None else get_agent_build_extensions()
+    # [argus patch #174] None unless the run is tiered (raises for a tier with no policy).
+    tier_policy = resolve_run_tier_policy(_get_runtime_config(config))
     runtime_middleware_kwargs = {
         "app_config": resolved_app_config,
         "lazy_init": True,
@@ -585,7 +589,8 @@ def build_middlewares(
         )
     )
 
-    if resolved_app_config.skills.auto_route:
+    # [argus patch #174] A tiered run never auto-routes into a skill.
+    if resolved_app_config.skills.auto_route and tier_policy is None:
         from deerflow.agents.middlewares.skill_auto_routing_middleware import SkillAutoRoutingMiddleware
 
         middlewares.append(
@@ -740,6 +745,9 @@ def build_middlewares(
     if _stack_disabled and _ring not in ("none", ""):
         logger.info("PythiaRetrievalMiddleware: agent %r requests ring %r but the stack flag disables retrieval; not attaching.", agent_name, _ring)
         _ring = "none"
+    # [argus patch #174] A tiered run's ring is capped at the policy's
+    # pythia_ring_max, whatever the citizen-editable agent config says.
+    _ring = clamp_pythia_ring(_ring, tier_policy)
     if _ring not in ("none", ""):
         from deerflow.agents.middlewares.pythia_retrieval_middleware import PythiaRetrievalMiddleware
 
@@ -783,6 +791,31 @@ def build_middlewares(
 
     middlewares.append(SystemMessageCoalescingMiddleware())
 
+    # [argus patch #37] EmptyFinalRetryMiddleware: re-invoke the model once if it
+    # returns a filler-only FINAL turn (".", "...", no tool_calls). Truly empty
+    # finals are upstream's model-boundary retry (#5080), which skips unattended
+    # runs (#44). Registered before LoopDetection so a retried final still flows
+    # through loop/safety after_model accounting.
+    # [argus patch #98] ForcedStopSynthesisMiddleware: a loop/deadline/token hard
+    # stop strips the turn's tool calls and appends a notice, which left users
+    # with the notice alone. Registered before ALL the stoppers (loop detection is
+    # now the earliest, upstream #8248) so reverse-order after_model dispatch runs
+    # it after them: it removes the stamped stub and jumps back to the model once
+    # with no tools bound. An empty synthesis never reaches upstream's retry, so
+    # the middleware retries it once itself.
+    if resolved_app_config.forced_stop_synthesis.enabled:
+        from deerflow.agents.middlewares.forced_stop_synthesis_middleware import ForcedStopSynthesisMiddleware
+
+        middlewares.append(ForcedStopSynthesisMiddleware())
+
+    middlewares.append(EmptyFinalRetryMiddleware())
+
+    # after_model runs in reverse order. Apply the delegation limit first
+    # so loop observations use the same batch that reaches the tools node.
+    loop_detection_config = resolved_app_config.loop_detection
+    if loop_detection_config.enabled:
+        middlewares.append(LoopDetectionMiddleware.from_config(loop_detection_config))
+
     # Add SubagentLimitMiddleware to truncate excess parallel task calls
     subagent_enabled = cfg.get("subagent_enabled", False)
     effective_max_subagents_per_run: int | None = None
@@ -796,29 +829,6 @@ def build_middlewares(
         effective_max_subagents_per_run = max_total_subagents
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents, max_total=max_total_subagents))
 
-    # [argus patch #37] EmptyFinalRetryMiddleware: re-invoke the model once if it
-    # returns a filler-only FINAL turn (".", "...", no tool_calls). Truly empty
-    # finals are upstream's model-boundary retry (#5080), which skips unattended
-    # runs (#44). Registered before LoopDetection so a retried final still flows
-    # through loop/safety after_model accounting.
-    # [argus patch #98] ForcedStopSynthesisMiddleware: a loop/deadline/token hard
-    # stop strips the turn's tool calls and appends a notice, which left users
-    # with the notice alone. Registered before the stoppers so reverse-order
-    # after_model dispatch runs it after them: it removes the stamped stub and
-    # jumps back to the model once with no tools bound. An empty synthesis never
-    # reaches upstream's retry, so the middleware retries it once itself.
-    if resolved_app_config.forced_stop_synthesis.enabled:
-        from deerflow.agents.middlewares.forced_stop_synthesis_middleware import ForcedStopSynthesisMiddleware
-
-        middlewares.append(ForcedStopSynthesisMiddleware())
-
-    middlewares.append(EmptyFinalRetryMiddleware())
-
-    # LoopDetectionMiddleware — detect and break repetitive tool call loops
-    loop_detection_config = resolved_app_config.loop_detection
-    if loop_detection_config.enabled:
-        middlewares.append(LoopDetectionMiddleware.from_config(loop_detection_config))
-
     # RunDeadlineMiddleware - enforce a per-run wall-clock deadline. Sits next
     # to the token budget because it is the same shape of guard (warn, then a
     # graceful tool-call-stripping stop) on a different axis: wall clock rather
@@ -829,7 +839,6 @@ def build_middlewares(
         from deerflow.agents.middlewares.run_deadline_middleware import RunDeadlineMiddleware
 
         middlewares.append(RunDeadlineMiddleware.from_config(run_limits_config))
-
     # TokenBudgetMiddleware - enforce per-run token limits
     token_budget_config = resolved_app_config.token_budget
     if token_budget_config.enabled:
@@ -856,7 +865,7 @@ def build_middlewares(
     if custom_middlewares:
         middlewares.extend(custom_middlewares)
 
-    configured_middlewares = load_configured_extension_middlewares(resolved_app_config)
+    configured_middlewares = load_configured_extension_middlewares(resolved_app_config, scope="lead")
     if configured_middlewares:
         middlewares.extend(configured_middlewares)
 
@@ -882,6 +891,17 @@ def build_middlewares(
 
     # ClarificationMiddleware should always be last
     middlewares.append(ClarificationMiddleware())
+
+    from deerflow.runtime.runs.input_control import run_input_control
+
+    if run_input_control(cfg) is not None:
+        from deerflow.agents.middlewares.run_input_middleware import RunInputAdmissionMiddleware, RunInputMiddleware
+
+        # New direct input goes through the ordinary sanitization chain.
+        middlewares.insert(0, RunInputAdmissionMiddleware())
+        # after_agent runs in reverse order: decide whether to continue before
+        # sandbox and other terminal cleanup hooks execute.
+        middlewares.append(RunInputMiddleware())
 
     # Extension contributions are merged only here, once the full stack exists.
     # Doing it inside build_lead_runtime_middlewares() would place
@@ -934,6 +954,29 @@ def _available_skill_names(agent_config, is_bootstrap: bool) -> set[str] | None:
     if agent_config and agent_config.skills is not None:
         return set(agent_config.skills)
     return None
+
+
+def _insert_hitl_approval_middleware(middlewares: list, final_tools: list, app_config: AppConfig, *, supports_resume: bool, model_name: str | None = None) -> None:
+    hitl_config = getattr(app_config, "hitl_approval", None)
+    if hitl_config is None or hitl_config.enabled is not True:
+        return
+    from deerflow.approvals.middleware import ToolApprovalMiddleware
+
+    known_tool_names = {tool.name for tool in final_tools}
+    unknown_names = set(hitl_config.tools) - known_tool_names
+    if unknown_names:
+        logger.warning("hitl_approval.tools contains names not present in this build's tool set: %s", sorted(unknown_names))
+    logger.info(
+        "hitl_approval enabled: tools=%s non_interactive=%s max_actions=%s",
+        hitl_config.tools,
+        hitl_config.non_interactive,
+        hitl_config.max_actions,
+    )
+    # Resolve artifact handles first, then approve the concrete operation.
+    # Authorization remains inside this wrapper so edited arguments are checked
+    # by the same mandatory guardrails before reaching the bound tool.
+    index = next((i + 1 for i, middleware in enumerate(middlewares) if type(middleware).__name__ == "ArtifactResolutionMiddleware"), 0)
+    middlewares.insert(index, ToolApprovalMiddleware(hitl_config, app_config=app_config, supports_resume=supports_resume, model_name=model_name))
 
 
 def _load_enabled_available_skills(available_skills: set[str] | None, *, app_config: AppConfig, user_id: str | None = None) -> list[Skill]:
@@ -1105,6 +1148,13 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     )
     max_total_subagents = effective_total_subagents_per_run(cfg.get("max_total_subagents"), resolved_app_config)
     is_bootstrap = cfg.get("is_bootstrap", False)
+    # [argus patch #174] A tiered run (a Slack channel thread) builds inside the
+    # image-held tier policy: its agent, no memory, no subagents, its skills,
+    # its tool ceiling. Run admission already pinned all of it; this is the
+    # build-time enforcement, and a tier without a valid policy fails the build.
+    tier_policy = resolve_run_tier_policy(cfg)
+    if tier_policy is not None and is_bootstrap:
+        raise TierPolicyUnavailable(f"run tier {tier_policy.tier!r} cannot run the bootstrap agent")
     interaction_policy = resolve_run_interaction_policy(config)
     non_interactive = not interaction_policy.allows_clarification
     # The live host capability never comes from checkpoint-configurable data.
@@ -1112,26 +1162,34 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     scheduler_capability = runtime_context.get(SCHEDULER_CAPABILITY_CONTEXT_KEY) if isinstance(runtime_context, Mapping) else None
     if is_bootstrap or cfg.get("is_subagent") or not is_scheduler_capability(scheduler_capability) or scheduler_capability.mode != interaction_policy.mode.value:
         scheduler_capability = None
-    agent_name = validate_agent_name(cfg.get("agent_name"))
+    agent_name = validate_agent_name(tier_policy.agent if tier_policy is not None and tier_policy.agent else cfg.get("agent_name"))
 
-    agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
+    agent_authority = runtime_context.get(AGENT_AUTH_CONTEXT_KEY) if isinstance(runtime_context, Mapping) else None
+    pinned_agent = isinstance(agent_authority, AgentMcpAuthority) and not is_bootstrap and not cfg.get("is_subagent")
+    if pinned_agent:
+        agent_config = agent_authority.agent_config()
+        if agent_authority.user_id != resolved_user_id or agent_config is None or agent_config.name != agent_name:
+            raise ValueError("Admitted MCP agent definition does not match this run")
+    else:
+        agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
     # [argus patch #43] Per-run tool whitelist from the schedule frontmatter.
     # Forwarded from InboundMessage -> run_context -> runtime context. Merged
     # into the agent ceiling by filter_tools_by_agent_allowed_tools (#53).
     schedule_allowed = cfg.get("allowed_tools")
     extra_allowed: set[str] | None = set(schedule_allowed) if isinstance(schedule_allowed, list) and schedule_allowed else None
 
-    memory_enabled = getattr(agent_config, "memory_enabled", True) is not False
+    # [argus patch #175] The owner tier reads memory (injection) but never writes it.
+    memory_enabled = getattr(agent_config, "memory_enabled", True) is not False and (tier_policy is None or tier_policy.reads_memory)
     # Keep compatibility with lightweight AgentConfig-shaped objects used by
     # integrations that predate caller-level subagent restrictions.
     allowed_subagents = getattr(agent_config, "allowed_subagents", None) if agent_config is not None else None
     # The request switch may disable delegation, but it can never widen the
     # server-side custom-agent policy. An explicit empty list is a hard deny.
-    subagent_enabled = bool(requested_subagent_enabled and allowed_subagents != [])
+    subagent_enabled = bool(requested_subagent_enabled and allowed_subagents != [] and tier_policy is None)
     config.setdefault("configurable", {})["subagent_enabled"] = subagent_enabled
     if isinstance(config.get("context"), dict):
         config["context"]["subagent_enabled"] = subagent_enabled
-    available_skills = _available_skill_names(agent_config, is_bootstrap)
+    available_skills = _available_skill_names(agent_config, is_bootstrap) if tier_policy is None or tier_policy.skills is None else set(tier_policy.skills)
 
     # Phase 3: enforce skill authorization (Layer 1). Filter the skill
     # allowlist by the provider's "skill" policy so denied skills never
@@ -1315,6 +1373,8 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
             _append_memory_tools_without_name_conflicts(authorization_candidates)
         _append_project_document_tools_if_pinned(authorization_candidates, cfg)
         append_task_continuity_tools(authorization_candidates, resolved_app_config)
+        # [argus patch #174] Drops the policy's tier-only tools (never tiered here).
+        authorization_candidates = filter_tools_for_tier(authorization_candidates, tier_policy)
         configured_tool_ids = {id(tool) for tool in configured_tools}
         authorized_tools, _authz_provider = apply_tool_authorization(
             authorization_candidates,
@@ -1363,6 +1423,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
             app_config=resolved_app_config,
             authorization_provider=_authz_provider,
         )
+        _insert_hitl_approval_middleware(middlewares, final_tools, resolved_app_config, supports_resume=False, model_name=model_name)
         system_prompt = apply_prompt_template(
             subagent_enabled=subagent_enabled,
             max_concurrent_subagents=max_concurrent_subagents,
@@ -1467,6 +1528,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         mcp_plugins=getattr(agent_config, "mcp_plugins", None),
         subagent_enabled=subagent_enabled,
         include_conversation_reader=callable(cfg.get(CONVERSATION_READER_CONTEXT_KEY)) and not bool(cfg.get("is_subagent")),
+        **({"mcp_browser_user": runtime_context[MCP_BROWSER_USER_CONTEXT_KEY]} if isinstance(runtime_context, Mapping) and runtime_context.get(MCP_BROWSER_USER_CONTEXT_KEY) and not cfg.get("is_subagent") else {}),
         **({"scheduler_capability": scheduler_capability} if scheduler_capability is not None else {}),
         app_config=resolved_app_config,
         chat_model=chat_model,
@@ -1492,10 +1554,18 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     authorization_candidates = [*configured_tools]
     if skill_setup.describe_skill_tool:
         authorization_candidates.append(skill_setup.describe_skill_tool)
-    if memory_enabled and should_use_memory_tools(resolved_app_config.memory):
+    # [argus patch #175] No memory tools in a tiered run: they could write.
+    if memory_enabled and tier_policy is None and should_use_memory_tools(resolved_app_config.memory):
         _append_memory_tools_without_name_conflicts(authorization_candidates)
     _append_project_document_tools_if_pinned(authorization_candidates, cfg)
     append_task_continuity_tools(authorization_candidates, resolved_app_config)
+    # [argus patch #174] The tier ceiling, after EVERY append path: the agent's
+    # allowed_tools (#53) is citizen-editable, is unioned with a schedule's list
+    # (#43, extra_allowed above), and does not cover update_agent (extra_tools),
+    # describe_skill, the memory tools, the project document tools or the
+    # task-continuity tools appended just above. For an owner/dm run this only
+    # drops the policy's tier-only tools.
+    authorization_candidates = filter_tools_for_tier(authorization_candidates, tier_policy)
     configured_tool_ids = {id(tool) for tool in configured_tools}
     authorized_tools, _authz_provider = apply_tool_authorization(
         authorization_candidates,
@@ -1507,7 +1577,10 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     late_tools = [tool for tool in authorized_tools if id(tool) not in configured_tool_ids]
     final_tools, setup = assemble_deferred_tools(
         configured_tools,
-        enabled=resolved_app_config.tool_search.enabled,
+        # [argus patch #174] A tier with a ceiling binds its few tools directly:
+        # nothing deferred, so no tool_search promotion path exists. The owner
+        # tier (#175) keeps the agent's deferral; the guard covers promotions.
+        enabled=resolved_app_config.tool_search.enabled and (tier_policy is None or not tier_policy.has_ceiling),
         exclude=deferral_exclude(resolved_app_config.tool_search, extra_allowed),
         defer=getattr(resolved_app_config.tool_search, "defer", ()),
     )
@@ -1532,6 +1605,10 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         skill_authorization=skill_authorization,
         subagent_execution_capacity=subagent_execution_capacity,
     )
+    if tier_policy is not None:
+        # [argus patch #174] Middleware-declared tools narrowed to the ceiling;
+        # the call-time guard outermost.
+        middlewares = guard_tier_middlewares(middlewares, final_tools, tier_policy)
     middlewares, declared_authorized = narrow_declared_tools(
         middlewares,
         outcome=layer_one,
@@ -1539,11 +1616,13 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         app_config=resolved_app_config,
         authorization_provider=_authz_provider,
     )
+    _insert_hitl_approval_middleware(middlewares, final_tools, resolved_app_config, supports_resume=not (config.get("context") or {}).get("_hitl_disabled_resume_escape", False), model_name=model_name)
     system_prompt = apply_prompt_template(
         subagent_enabled=subagent_enabled,
         max_concurrent_subagents=max_concurrent_subagents,
         max_total_subagents=max_total_subagents,
         agent_name=agent_name,
+        agent_soul=agent_authority.soul if pinned_agent else None,
         available_skills=available_skills,
         app_config=resolved_app_config,
         deferred_names=setup.deferred_names,
@@ -1556,8 +1635,16 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         memory_enabled=memory_enabled,
         bash_available=has_bash_tool(authorized_tools),
     )
+    if tier_policy is not None and tier_policy.prompt:
+        # [argus patch #174] Platform text after the agent's soul: a citizen
+        # edit to SOUL.md cannot remove the tier's contract. Its placeholders
+        # take the relay's persona, channel, audience and trigger user.
+        system_prompt = f"{system_prompt}\n\n{render_tier_prompt(tier_policy, cfg.get(ARGUS_TIER_VARS_KEY))}"
     bound_middlewares = normalize_middleware_state_schemas(middlewares, mode)
     verify_declared_tool_view(bound_middlewares, authorized_names=declared_authorized)
+    if tier_policy is not None:
+        # [argus patch #174] Final assertion on exactly what is bound.
+        verify_tier_tool_view(final_tools, bound_middlewares, tier_policy)
     graph = create_agent(
         model=chat_model,
         tools=final_tools,

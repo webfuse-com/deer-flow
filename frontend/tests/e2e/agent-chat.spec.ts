@@ -352,6 +352,33 @@ test.describe("Agent chat", () => {
             title: "Browser agent conversation",
             agent_name: agent.name,
             messages: [
+              // [argus patch #168] the agent's browser frame shows the trigger
+              {
+                type: "ai",
+                id: "msg-ai-browser-call",
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call-browse",
+                    name: "browser_navigate",
+                    args: { url: "https://example.com" },
+                  },
+                ],
+              },
+              {
+                type: "tool",
+                id: "msg-tool-browser",
+                tool_call_id: "call-browse",
+                name: "browser_navigate",
+                content: "Opened https://example.com",
+                additional_kwargs: {
+                  browser_view: {
+                    screenshot: "/mnt/user-data/outputs/browser.png",
+                    url: "https://example.com",
+                    title: "Example Domain",
+                  },
+                },
+              },
               {
                 type: "ai",
                 id: "msg-ai-browser-agent",
@@ -384,10 +411,17 @@ test.describe("Agent chat", () => {
       const browserTrigger = page.getByTestId("browser-trigger");
       if (expectedVisible) {
         await expect(browserTrigger).toBeVisible();
-        await browserTrigger.click();
+        // [argus patch #168] the agent's frame opened the panel; the trigger
+        // closes it and opens it again.
         await expect(
           page.getByPlaceholder("Enter a URL and press Enter"),
         ).toBeVisible();
+        await expect(browserTrigger).toHaveAttribute("aria-label", "Close");
+        await browserTrigger.click();
+        await expect(browserTrigger).toHaveAttribute(
+          "aria-label",
+          "Open browser panel",
+        );
       } else {
         await expect(browserTrigger).toHaveCount(0);
       }

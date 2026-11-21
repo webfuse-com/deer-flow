@@ -110,15 +110,16 @@ function mount() {
   );
 }
 
-async function openProviderList() {
-  fireEvent.pointerDown(screen.getByRole("combobox", { name: "Provider" }), {
-    button: 0,
-    ctrlKey: false,
-    pointerType: "mouse",
-  });
-  return (await screen.findAllByRole("option")).map(
-    (option) => option.textContent,
-  );
+// [argus patch #161] Upstream's provider picker is a native <select>
+// (model-connection-fields.tsx): read its options and its selected option.
+function providerSelect() {
+  return screen.getByRole<HTMLSelectElement>("combobox", { name: "Provider" });
+}
+function providerOptions() {
+  return Array.from(providerSelect().options).map((option) => option.text);
+}
+function selectedProvider() {
+  return providerSelect().selectedOptions[0]?.text;
 }
 
 describe("provider presets gate", () => {
@@ -157,15 +158,8 @@ describe("provider presets gate", () => {
       ).toBe(false),
     );
     fireEvent.click(screen.getByRole("button", { name: "Add model" }));
-    expect(screen.getByRole("combobox", { name: "Provider" }).textContent).toBe(
-      enUS.settings.models.customProvider,
-    );
-    expect(await openProviderList()).toEqual([
-      enUS.settings.models.customProvider,
-    ]);
-    fireEvent.keyDown(document.activeElement ?? document.body, {
-      key: "Escape",
-    });
+    expect(selectedProvider()).toBe(enUS.settings.models.customProvider);
+    expect(providerOptions()).toEqual([enUS.settings.models.customProvider]);
     fireEvent.change(screen.getByLabelText("Base URL"), {
       target: { value: "http://argus-litellm:4000/v1" },
     });
@@ -185,10 +179,8 @@ describe("provider presets gate", () => {
     rs.mocked(loadManagedModels).mockResolvedValue({ models: [onPreset] });
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Edit model" }));
-    expect(screen.getByRole("combobox", { name: "Provider" }).textContent).toBe(
-      "Anthropic",
-    );
-    expect(await openProviderList()).toEqual([
+    expect(selectedProvider()).toBe("Anthropic");
+    expect(providerOptions()).toEqual([
       "Anthropic",
       enUS.settings.models.customProvider,
     ]);

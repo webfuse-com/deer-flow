@@ -19,6 +19,53 @@ const entry = {
 const extension = { apiVersion: 1, module: entry.module };
 const code = "export default {apiVersion: 1, module: 'bookmarks.v1'};";
 
+test("accepts bounded exact-extension artifact renderers", async () => {
+  rs.spyOn(globalThis, "fetch").mockResolvedValue(new Response(code));
+  const loaded = {
+    ...extension,
+    artifactPreviews: [
+      {
+        id: "office",
+        extensions: ["xlsx", "docx"],
+        mount: () => ({ dispose: () => undefined }),
+      },
+    ],
+  };
+  expect(
+    (
+      await loadFrontendExtensions([entry], async () => ({ default: loaded }))
+    )[0]?.extension,
+  ).toEqual(loaded);
+});
+
+for (const renderers of [
+  {},
+  [{ id: "bad", extensions: [".xlsx"], mount: () => undefined }],
+  [{ id: "bad", extensions: ["XLSX"], mount: () => undefined }],
+  [{ id: "bad", extensions: [], mount: () => undefined }],
+  [{ id: "bad", extensions: ["xlsx"] }],
+  Array.from({ length: 2 }, () => ({
+    id: "duplicate",
+    extensions: ["xlsx"],
+    mount: () => undefined,
+  })),
+  Array.from({ length: 17 }, (_, n) => ({
+    id: `renderer-${n}`,
+    extensions: ["xlsx"],
+    mount: () => undefined,
+  })),
+]) {
+  test(`rejects invalid artifact previews ${JSON.stringify(renderers)}`, async () => {
+    rs.spyOn(globalThis, "fetch").mockResolvedValue(new Response(code));
+    const loaded = { ...extension, artifactPreviews: renderers };
+    const result = await loadFrontendExtensions([entry], async () => ({
+      default: loaded,
+    }));
+    expect(result[0]?.extension).toBeUndefined();
+    expect(result[0]?.error).toBeTruthy();
+  });
+}
+
 beforeEach(() => {
   config.backend = "";
   rs.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -219,6 +266,40 @@ test("validates optional mention providers independently for each installed modu
     );
     expect(loaded[0]?.error).toBeTruthy();
     expect(loaded[1]?.extension?.mentionProviders).toEqual([provider]);
+  }
+});
+
+// [argus patch #167]
+test("validates optional command providers independently for each installed module", async () => {
+  const assets = {
+    ...entry,
+    transport: "assets-v1" as const,
+    entry: `/api/plugins/${entry.namespace}/assets/${"b".repeat(64)}/index.mjs`,
+  };
+  const provider = { id: "apps", label: "Apps", items: async () => [] };
+  for (const commandProviders of [
+    null,
+    [provider, provider],
+    [{ ...provider, items: null }],
+    [{ ...provider, id: "../bad" }],
+    [{ ...provider, label: " " }],
+    [{ ...provider, icon: 7 }],
+    [{ ...provider, position: "middle" }],
+    Array(9).fill(provider),
+  ]) {
+    const importer = rs
+      .fn()
+      .mockResolvedValueOnce({ default: { ...extension, commandProviders } })
+      .mockResolvedValueOnce({
+        default: { ...extension, commandProviders: [provider] },
+      });
+    const loaded = await loadFrontendExtensions(
+      [assets, assets],
+      rs.fn(),
+      importer,
+    );
+    expect(loaded[0]?.error).toBeTruthy();
+    expect(loaded[1]?.extension?.commandProviders).toEqual([provider]);
   }
 });
 

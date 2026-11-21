@@ -17,12 +17,18 @@ from app.channels.base import Channel, ChannelStopTimeout
 from app.channels.leadership import ChannelLeadership, RenewOutcome
 from app.channels.manager import DEFAULT_CHANNEL_MAX_CONCURRENCY, DEFAULT_CHANNEL_SHUTDOWN_GRACE_PERIOD_SECONDS, DEFAULT_GATEWAY_URL, DEFAULT_LANGGRAPH_URL, ChannelManager
 from app.channels.message_bus import DEFAULT_INBOUND_QUEUE_MAXSIZE, MessageBus
+from app.channels.reply_locale import ReplyLocaleResolver, supported_locale
 from app.channels.runtime_config_store import RuntimeConfigStore, SqlChannelRuntimeConfigStore, merge_runtime_channel_configs, overlay_runtime_channel_configs, resolve_runtime_config_store, runtime_channel_disconnected
 from app.channels.store import ChannelStore, JsonChannelStore, SqlChannelStore, resolve_channel_store
 from deerflow.config.channel_leader_lease_config import CHANNEL_LEADER_LEASE_FIELD, CHANNEL_LEADER_LEASE_KEY, ChannelLeaderLeaseConfig, channel_leader_lease_config
 from deerflow.utils.file_io import await_drained
 
 logger = logging.getLogger(__name__)
+
+
+def _is_slack_relay(name: str, channel_config: Mapping[str, Any]) -> bool:
+    """[argus patch #171] ``channels.slack.transport: relay``: a router holds the Slack app."""
+    return name == "slack" and str(channel_config.get("transport") or "").strip().lower() == "relay"
 
 
 def channel_owner_emails_from_config(config: dict[str, Any]) -> dict[str, str]:
@@ -32,6 +38,8 @@ def channel_owner_emails_from_config(config: dict[str, Any]) -> dict[str, str]:
     runs as, so that channel's chats are owned by that user and show in their
     web UI. Honoured only for a channel locked to named senders
     (``allowed_users``): without the lock anyone could write as the owner.
+    [argus patch #171] A Slack channel on the relay transport counts as
+    locked: the router admits only senders it has authorized for this stack.
     """
     emails: dict[str, str] = {}
     for name, channel_config in config.items():
@@ -40,7 +48,7 @@ def channel_owner_emails_from_config(config: dict[str, Any]) -> dict[str, str]:
         email = channel_config.get("owner_email")
         if not isinstance(email, str) or "@" not in email:
             continue
-        if not channel_config.get("allowed_users"):
+        if not channel_config.get("allowed_users") and not _is_slack_relay(name, channel_config):
             logger.warning("channels.%s.owner_email ignored: the channel has no allowed_users lock", name)
             continue
         emails[name] = email.strip().lower()
@@ -78,6 +86,9 @@ _CHANNEL_CREDENTIAL_KEYS: dict[str, list[str]] = {
     "wecom": ["bot_id", "bot_secret"],
     "wechat": ["bot_token"],
 }
+# [argus patch #171] A Slack channel on the relay transport holds no Slack
+# token: its credentials are the router's URL and this gateway's router key.
+_SLACK_RELAY_CREDENTIAL_KEYS: list[str] = ["relay_url", "relay_token"]
 
 # Providers the leader lease never arbitrates: GitHub receives webhooks pushed
 # to whichever instance the load balancer picks and opens no platform
@@ -93,7 +104,7 @@ _CHANNELS_GATEWAY_URL_ENV = "DEER_FLOW_CHANNELS_GATEWAY_URL"
 
 
 def _channel_has_credentials(name: str, channel_config: dict[str, Any]) -> bool:
-    cred_keys = _CHANNEL_CREDENTIAL_KEYS.get(name, [])
+    cred_keys = _SLACK_RELAY_CREDENTIAL_KEYS if _is_slack_relay(name, channel_config) else _CHANNEL_CREDENTIAL_KEYS.get(name, [])
     return any(not isinstance(channel_config.get(key), bool) and channel_config.get(key) is not None and str(channel_config[key]).strip() for key in cred_keys)
 
 
@@ -273,6 +284,13 @@ class ChannelService:
         else:
             self.store = resolve_channel_store(app_config)
         self._connection_repo = connection_repo
+        # Language of DeerFlow's own replies (/connect, /goal): the owner's web UI
+        # language, read from the connection repository's database, else
+        # channel_connections.notification_locale (captured here; restart-scoped).
+        self._reply_locale = ReplyLocaleResolver(
+            session_factory=getattr(connection_repo, "session_factory", None),
+            default_locale=supported_locale(getattr(getattr(app_config, "channel_connections", None), "notification_locale", None)),
+        )
         self._get_stream_bridge = get_stream_bridge
         langgraph_url = _resolve_service_url(config, "langgraph_url", _CHANNELS_LANGGRAPH_URL_ENV, DEFAULT_LANGGRAPH_URL)
         gateway_url = _resolve_service_url(config, "gateway_url", _CHANNELS_GATEWAY_URL_ENV, DEFAULT_GATEWAY_URL)
@@ -300,6 +318,7 @@ class ChannelService:
             get_stream_bridge=get_stream_bridge,
             coalesce_window=float(coalesce_window) if isinstance(coalesce_window, (int, float)) else None,
             channel_owner_emails=channel_owner_emails,
+            reply_locale=self._reply_locale,
         )
         self._channels: dict[str, Any] = {}  # name -> Channel instance
         self._config = config
@@ -831,6 +850,7 @@ class ChannelService:
                 config["seen_event_store_path"] = await asyncio.to_thread(_default_seen_store_path)
             if self._connection_repo is not None:
                 config["connection_repo"] = self._connection_repo
+            config["reply_locale"] = self._reply_locale
             # A stop may have started while this coroutine was suspended in
             # pre-start I/O above. Fence publication again immediately before
             # the new instance becomes service-owned.

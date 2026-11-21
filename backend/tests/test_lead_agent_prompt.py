@@ -148,13 +148,13 @@ def test_apply_prompt_template_preserves_interactive_clarification_guidance(monk
 
     prompt = prompt_module.apply_prompt_template(app_config=config)
 
-    # [argus] The fork's compact interactive clarification replaces upstream's
-    # ask-first block and its worked example (fork PR #49).
-    assert "Call `ask_clarification` before action only for a missing required input" in prompt
-    assert "Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped." in prompt
-    assert "Ask only when missing information would materially change the result" in prompt
-    assert "Clarify only material missing inputs, product choices, or risky effects" in prompt
-    assert "WORKFLOW PRIORITY: CLARIFY" not in prompt
+    assert "continue independent work where possible" in prompt
+    assert "reasonable, reversible assumptions" in prompt
+    assert "when essential information is missing" in prompt
+    assert "authorization is" in prompt
+    assert "sibling tool\ncalls in that turn are dropped" in prompt
+    assert "CLARIFY → PLAN → ACT" not in prompt
+    assert "ALWAYS ask" not in prompt
 
 
 def test_apply_prompt_template_includes_memory_tool_guidance_only_in_tool_mode(monkeypatch):
@@ -803,6 +803,8 @@ def test_system_prompt_language_rule_covers_scheduled_runs_and_stored_text():
     line = " ".join(part.strip() for part in lines[start:end])
 
     assert "the user's latest message" in line
+    assert "An explicit user request for a response language takes precedence" in line
+    assert "<response_language_preference>" in line
     assert "short notes before tool calls" in line
     assert "task titles, scheduled instructions and notes" in line
     assert "scheduled run" in line

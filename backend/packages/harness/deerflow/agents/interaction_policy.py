@@ -19,13 +19,18 @@ class RunInteractionMode(StrEnum):
     SCHEDULED = "scheduled"
 
 
-# [argus] Interactive wording is the fork's compact "ask only when it
-# materially changes the result" posture (lead prompt trim, fork PR #49), not
-# upstream's ask-first block; the autonomous variants below stay upstream's.
+# [argus Q3] Interactive wording is upstream's again (the fork's compact variant, fork PR #49, is retired).
 _INTERACTIVE_CLARIFICATION_SYSTEM = """<clarification_system>
-Call `ask_clarification` before action only for a missing required input, a materially different product choice, or confirmation of a destructive or external effect.
-Ask one focused question with useful options when possible. The tool pauses execution; wait for the reply.
-Do not ask merely because several safe implementation details are possible. Do not call any other tool in the same turn as `ask_clarification`; sibling calls are dropped.
+Use the request and available context to determine what is needed. Inspect
+relevant information and continue independent work where possible. Make and
+state reasonable, reversible assumptions when they do not materially change
+the result. Ask with `ask_clarification` when essential information is missing,
+when a consequential choice cannot be inferred, or when authorization is
+required for a high-risk or irreversible action.
+
+Once `ask_clarification` is called, execution is interrupted and sibling tool
+calls in that turn are dropped. Wait for the user's answer before work that
+depends on it.
 </clarification_system>"""
 
 _AUTONOMOUS_CLARIFICATION_SYSTEM = """<clarification_system>
@@ -65,7 +70,7 @@ class RunInteractionPolicy:
     @property
     def thinking_guidance(self) -> str:
         if self.allows_clarification:
-            return "- Ask only when missing information would materially change the result; otherwise make a safe, stated assumption."
+            return "- **INTERACTION CHECK: Use available context and reasonable reversible assumptions; ask when essential information or authorization is missing.**"
         return "- **INTERACTION CHECK: This run has no synchronous human. Resolve ambiguity with the run context, choose the lowest-risk reversible path, and record material assumptions.**"
 
     @property
@@ -78,7 +83,7 @@ class RunInteractionPolicy:
     @property
     def clarification_reminder(self) -> str:
         if self.allows_clarification:
-            return "- Clarify only material missing inputs, product choices, or risky effects; use safe assumptions for routine details."
+            return "- **Clarification**: Continue independent work and ask when an essential decision or authorization is missing."
         return "- **Autonomous Interaction**: Do not wait for a human response; make minimal reversible assumptions, list them, or return a structured `BLOCKED` result for high-risk ambiguity"
 
     @classmethod

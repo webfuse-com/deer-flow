@@ -7,7 +7,6 @@ import { toast } from "sonner";
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
 import { BrowserTrigger } from "@/components/workspace/browser-view";
-import { ContextUsageBadge } from "@/components/workspace/context-usage-badge";
 import { DebugSandboxTrigger } from "@/components/workspace/debug-sandbox-trigger";
 import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { GoalStatus } from "@/components/workspace/goal-status";
@@ -17,13 +16,11 @@ import {
 } from "@/components/workspace/input-box";
 import { InternalizeTrigger } from "@/components/workspace/internalize-trigger";
 import { KnowledgeScopeSelector } from "@/components/workspace/knowledge-scope-selector";
-import {
-  MessageList,
-  MESSAGE_LIST_DEFAULT_PADDING_BOTTOM,
-} from "@/components/workspace/messages";
+import { MESSAGE_LIST_DEFAULT_PADDING_BOTTOM } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { HumanInputCard } from "@/components/workspace/messages/human-input-card";
 import { ProjectAffiliationBadge } from "@/components/workspace/projects/project-affiliation-badge";
+import { SearchableMessageList as MessageList } from "@/components/workspace/search-message-window";
 import {
   SidecarProvider,
   SidecarTrigger,
@@ -31,11 +28,11 @@ import {
 import { ThreadArchiveStatus } from "@/components/workspace/thread-archive-status";
 import { ThreadBackgroundTasks } from "@/components/workspace/thread-background-tasks";
 import { ThreadExtensionActions } from "@/components/workspace/thread-extension-actions";
+import { ThreadRunInputs } from "@/components/workspace/thread-run-inputs";
 import { ThreadScheduledTasksButton } from "@/components/workspace/thread-scheduled-tasks-button";
 import { ThreadSubagentBatches } from "@/components/workspace/thread-subagent-batches";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
-import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { Welcome } from "@/components/workspace/welcome";
 import { WorkspaceSidebarTrigger } from "@/components/workspace/workspace-sidebar-trigger";
@@ -73,19 +70,13 @@ import {
   useBranchThread,
   useThreadMetadata,
   useThreadStream,
-  useThreadTokenUsage,
 } from "@/core/threads/hooks";
-import {
-  selectContextUsage,
-  threadTokenUsageToTokenUsage,
-} from "@/core/threads/token-usage";
-import { useThreadQueue } from "@/core/threads/use-thread-queue";
+import {} from "@/core/threads/token-usage";
 import { projectIdOfThread, textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
 
 import { ChatBox } from "./chat-box";
-import { QueuedMessages } from "./queued-messages";
 import { useSpecificChatMode } from "./use-chat-mode";
 import { useMarkOpenThreadRead } from "./use-mark-open-thread-read";
 import { useProjectNewChat } from "./use-project-new-chat";
@@ -117,20 +108,9 @@ export default function ChatPage() {
   const prepareModelControl = modelControl.prepare;
   const [modelChoiceSummary, setModelChoiceSummary] = useState("");
   useEffect(() => setModelChoiceSummary(""), [threadId, user?.id]);
-  const [localSettings, setLocalSettings] = useLocalSettings();
-  const {
-    queue,
-    enqueue: enqueueMessage,
-    dequeue: dequeueMessage,
-    remove: removeQueuedMessage,
-    update: updateQueuedMessage,
-  } = useThreadQueue(isNewThread || isMock ? undefined : threadId);
+  const [localSettings] = useLocalSettings();
   const { enabled: browserControlEnabled } = useBrowserControlEnabled();
   const { tokenUsageEnabled } = useModels();
-  const threadTokenUsage = useThreadTokenUsage(
-    isNewThread || isMock ? undefined : threadId,
-    { enabled: !isMock },
-  );
   const threadMetadata = useThreadMetadata(threadId, {
     enabled: !isNewThread && !isMock,
     isMock,
@@ -147,8 +127,6 @@ export default function ChatPage() {
     enabled: !isMock,
   });
   const branchThread = useBranchThread();
-  const backendTokenUsage = threadTokenUsageToTokenUsage(threadTokenUsage.data);
-  const contextUsage = selectContextUsage(threadTokenUsage.data);
   const mountedRef = useRef(false);
   useSpecificChatMode();
 
@@ -203,15 +181,22 @@ export default function ChatPage() {
 
   const {
     thread,
-    activeRunId,
-    pendingUsageMessages,
     sendMessage,
+    sendInput,
+    runInputs,
+    canSendInput,
+    activeRunId,
+    activeRunStartedAt,
     regenerateMessage,
     editAndRegenerateMessage,
     isUploading,
     isHistoryLoading,
     hasMoreHistory,
     loadMoreHistory,
+    approvalRequests,
+    hasPendingApproval,
+    submitHitlApproval,
+    waitingForInputRunIds,
   } = useThreadStream({
     threadId: isNewThread ? undefined : threadId,
     displayThreadId: threadId,
@@ -242,27 +227,10 @@ export default function ChatPage() {
         });
       }
     },
+    restInterrupts: threadMetadata.data?.interrupts,
+    restInterruptsLoading: threadMetadata.isLoading,
+    restInterruptsError: threadMetadata.isError,
   });
-
-  const queueRef = useRef(queue);
-  queueRef.current = queue;
-
-  const processQueueNext = useCallback(() => {
-    if (thread.isLoading || isUploading) return;
-    const nextItem = dequeueMessage();
-    if (nextItem) {
-      void sendMessage(threadId, nextItem.message, undefined, nextItem.options);
-    }
-  }, [dequeueMessage, isUploading, sendMessage, thread.isLoading, threadId]);
-
-  useEffect(() => {
-    if (!thread.isLoading && !isUploading && queue.length > 0) {
-      const timer = setTimeout(() => {
-        processQueueNext();
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [isUploading, processQueueNext, queue.length, thread.isLoading]);
 
   const hasThreadMessages = thread.messages.length > 0;
   // A schedule_task result refreshes the header button and cards at once.
@@ -406,6 +374,17 @@ export default function ChatPage() {
       }
       const executionOptions = {
         ...scopedOptions,
+        onSent: () => {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("message");
+          url.searchParams.delete("message_seq");
+          history.replaceState(
+            null,
+            "",
+            `${url.pathname}${url.search}${url.hash}`,
+          );
+          scopedOptions?.onSent?.();
+        },
         additionalKwargs: {
           ...scopedOptions?.additionalKwargs,
           ...modelInput.additionalKwargs,
@@ -463,6 +442,13 @@ export default function ChatPage() {
       return sent;
     },
     [currentKnowledgeScopeSnapshot, sendMessage, threadId],
+  );
+  const handleSubmitApproval = useCallback(
+    (
+      request: (typeof approvalRequests)[number],
+      responses: Parameters<typeof submitHitlApproval>[2],
+    ) => submitHitlApproval(threadId, request, responses),
+    [submitHitlApproval, threadId],
   );
   const handleStop = useCallback(async () => {
     await thread.stop();
@@ -548,7 +534,8 @@ export default function ChatPage() {
     !isUploading &&
     !thread.isLoading &&
     !branchThread.isPending &&
-    !hasOpenHumanInputCard;
+    !hasOpenHumanInputCard &&
+    !hasPendingApproval;
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -600,22 +587,7 @@ export default function ChatPage() {
                 {!isNewThread && !isMock && (
                   <ThreadScheduledTasksButton threadId={threadId} />
                 )}
-                {tokenUsageEnabled ? (
-                  <TokenUsageIndicator
-                    threadId={isNewThread ? undefined : threadId}
-                    backendUsage={backendTokenUsage}
-                    contextUsage={contextUsage}
-                    enabled={tokenUsageEnabled}
-                    messages={thread.messages}
-                    pendingMessages={pendingUsageMessages}
-                    preferences={localSettings.tokenUsage}
-                    onPreferencesChange={(preferences) =>
-                      setLocalSettings("tokenUsage", preferences)
-                    }
-                  />
-                ) : (
-                  <ContextUsageBadge contextUsage={contextUsage} />
-                )}
+                {/* [argus patch #168] no token or context pill in the header */}
                 <SidecarTrigger />
                 {browserEnabled && <BrowserTrigger />}
                 <DebugSandboxTrigger threadId={threadId} />
@@ -630,6 +602,8 @@ export default function ChatPage() {
             <main className="flex min-h-0 max-w-full grow flex-col">
               <div className="flex min-h-0 flex-1 justify-center">
                 <MessageList
+                  activeRunId={activeRunId}
+                  activeRunStartedAt={activeRunStartedAt}
                   archiveDownloadsEnabled={
                     isNewThread || isMock || threadMetadata.data != null
                   }
@@ -637,7 +611,6 @@ export default function ChatPage() {
                   testId="main-message-list"
                   threadId={threadId}
                   thread={thread}
-                  activeRunId={activeRunId}
                   scheduledTaskEvents={scheduledTaskEvents.data}
                   enableConversationOutline
                   paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}
@@ -645,12 +618,25 @@ export default function ChatPage() {
                   loadMoreHistory={loadMoreHistory}
                   isHistoryLoading={isHistoryLoading}
                   tokenUsageInlineMode={tokenUsageInlineMode}
+                  approvalRequests={approvalRequests}
+                  approvalMetadataLoading={
+                    hasPendingApproval && approvalRequests.length === 0
+                  }
+                  approvalMetadataError={
+                    hasPendingApproval &&
+                    approvalRequests.length === 0 &&
+                    threadMetadata.isError
+                  }
+                  onReloadApprovalMetadata={() => threadMetadata.refetch()}
+                  waitingForInputRunIds={waitingForInputRunIds}
+                  onSubmitApproval={handleSubmitApproval}
                   canRegenerate={
                     !isNewThread &&
                     !isMock &&
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
                     !isUploading &&
-                    !thread.isLoading
+                    !thread.isLoading &&
+                    !hasPendingApproval
                   }
                   onRegenerateMessage={handleRegenerate}
                   canEdit={editBase && !hasGoal}
@@ -667,7 +653,8 @@ export default function ChatPage() {
                     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY !== "true" &&
                     !isUploading &&
                     !thread.isLoading &&
-                    !branchThread.isPending
+                    !branchThread.isPending &&
+                    !hasPendingApproval
                   }
                   onBranchTurn={handleBranchTurn}
                 />
@@ -706,6 +693,12 @@ export default function ChatPage() {
                           outcome={goalOutcome}
                           isRunning={thread.isLoading}
                           hasOpenHumanInputCard={hasOpenHumanInputCard}
+                          hasPendingApproval={hasPendingApproval}
+                          approvalMetadataError={
+                            hasPendingApproval &&
+                            approvalRequests.length === 0 &&
+                            threadMetadata.isError
+                          }
                         />
                         {hasTodos && (
                           <TodoList
@@ -734,11 +727,13 @@ export default function ChatPage() {
                     </p>
                   )}
                   {mountedRef.current ? (
-                    <>
-                      <QueuedMessages
-                        queue={queue}
-                        onRemove={removeQueuedMessage}
-                        onUpdate={updateQueuedMessage}
+                    <div className="w-full">
+                      <ThreadRunInputs
+                        inputs={runInputs}
+                        threadId={isNewThread || isMock ? undefined : threadId}
+                        isRunning={thread.isLoading}
+                        canCreate={canCreateRuns}
+                        canCancel={canStopStreaming}
                       />
                       <InputBox
                         className={cn(
@@ -753,7 +748,11 @@ export default function ChatPage() {
                           selectorVisible && knowledgeScope ? (
                             <KnowledgeScopeSelector
                               agentName="lead_agent"
-                              disabled={thread.isLoading || isUploading}
+                              disabled={
+                                thread.isLoading ||
+                                isUploading ||
+                                hasPendingApproval
+                              }
                               selection={knowledgeScope}
                               onChange={setKnowledgeScope}
                             />
@@ -778,8 +777,10 @@ export default function ChatPage() {
                           env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
                           isUploading ||
                           modelControl.busy ||
-                          (!isNewThread && isHistoryLoading)
+                          (!isNewThread && isHistoryLoading) ||
+                          hasPendingApproval
                         }
+                        inputLocked={hasPendingApproval}
                         onContextChange={(context, options) => {
                           if (options?.automatic)
                             resolveThreadContext(threadId, context);
@@ -798,12 +799,14 @@ export default function ChatPage() {
                           setIsNewThread(false);
                         }}
                         onSubmit={handleSubmit}
-                        onQueue={(msg, opts) => enqueueMessage(msg, opts)}
+                        // [argus patch #162 retired] Queue and Steer (upstream #7729) replaces the
+                        // client-side queue; the tab-title running marker stays.
+                        onBusySubmit={canSendInput ? sendInput : undefined}
                         onStop={handleStop}
                         canStopStreaming={canStopStreaming}
                         canCreateRuns={canCreateRuns}
                       />
-                    </>
+                    </div>
                   ) : (
                     <div
                       aria-hidden="true"

@@ -186,6 +186,69 @@ describe("fetchInfiniteThreadsPage", () => {
     expect(page).toMatchObject({ hiddenCount: 0, hasMore: false });
     expect(getInfiniteThreadsNextPageParam(page, [page])).toBeUndefined();
   });
+
+  test("[argus patch #169] a list filter keeps fetching until the page is full and never reaches the API", async () => {
+    const telegram = {
+      channel_source: { type: "im_channel", provider: "telegram" },
+    };
+    const search = rs
+      .fn()
+      .mockResolvedValueOnce([
+        makeThread("telegram-1", "Telegram", telegram),
+        makeThread("mine-1"),
+      ])
+      .mockResolvedValueOnce([
+        makeThread("aeacus-1", "Night job", { aeacus: { key: "it-1" } }),
+      ]);
+
+    const page = await fetchInfiniteThreadsPage(
+      { threads: { search } },
+      { sortBy: "updated_at", sortOrder: "desc", listFilter: "mine" },
+      0,
+      2,
+    );
+
+    expect(page.threads.map((thread) => thread.thread_id)).toEqual(["mine-1"]);
+    expect(search).toHaveBeenNthCalledWith(1, {
+      sortBy: "updated_at",
+      sortOrder: "desc",
+      limit: 2,
+      offset: 0,
+    });
+    expect(search).toHaveBeenNthCalledWith(2, {
+      sortBy: "updated_at",
+      sortOrder: "desc",
+      limit: 2,
+      offset: 2,
+    });
+    expect(page).toMatchObject({ hiddenCount: 2, hasMore: false });
+  });
+
+  test("[argus patch #169] a full filtered page stops at the row that filled it", async () => {
+    const search = rs
+      .fn()
+      .mockResolvedValueOnce([
+        makeThread("mine-1"),
+        makeThread("aeacus-1", "Night job", { aeacus: {} }),
+        makeThread("mine-2"),
+        makeThread("mine-3"),
+      ]);
+
+    const page = await fetchInfiniteThreadsPage(
+      { threads: { search } },
+      { listFilter: "mine" },
+      0,
+      2,
+    );
+
+    expect(page.threads.map((thread) => thread.thread_id)).toEqual([
+      "mine-1",
+      "mine-2",
+    ]);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(page).toMatchObject({ hiddenCount: 1, hasMore: true });
+    expect(getInfiniteThreadsNextPageParam(page, [page])).toBe(3);
+  });
 });
 
 describe("mapInfiniteThreadsCache", () => {
@@ -292,6 +355,15 @@ describe("upsertThreadInInfiniteCache", () => {
     const client = seedClient();
     upsertThreadInInfiniteCache(client, makeThread("new"));
     expect(readCache(client)).toBeUndefined();
+  });
+
+  test("[argus patch #169] leaves a chip-filtered list to the server", () => {
+    const client = new QueryClient();
+    const key = [...INFINITE_THREADS_QUERY_KEY_PREFIX, { listFilter: "mine" }];
+    client.setQueryData(key, makeInfiniteData([[makeThread("a")]]));
+    upsertThreadInInfiniteCache(client, makeThread("new"));
+    const cache = client.getQueryData<InfiniteThreadsData>(key);
+    expect(cache?.pages[0]?.threads.map((t) => t.thread_id)).toEqual(["a"]);
   });
 
   test("prepends a brand-new thread to the first page", () => {

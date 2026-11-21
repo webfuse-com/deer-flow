@@ -20,6 +20,7 @@ import {
 import {
   bindFrontendServices,
   openConversation,
+  requestExtensionRoute,
 } from "@/core/extensions/services";
 import { mountSurface } from "@/core/extensions/surfaces";
 import { useI18n } from "@/core/i18n/hooks";
@@ -65,6 +66,13 @@ function Surface({
                 status: projectStatus ?? "",
               }
             : undefined,
+        requestBackend: (path, options) =>
+          requestExtensionRoute(
+            path,
+            options,
+            abort.signal,
+            entry.viewer_id ?? "",
+          ),
         openConversation: (id, signal) =>
           openConversation(id, (path) => router.push(path), signal),
         callBackend: bindFrontendServices(

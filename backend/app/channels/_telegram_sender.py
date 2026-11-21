@@ -120,7 +120,12 @@ async def send(channel: TelegramChannel, msg: OutboundMessage, *, max_retries: i
 
     bot = channel._application.bot
     for chunk in chunks:
-        await send_one(channel, bot, chat_id, msg.chat_id, chunk, max_retries=max_retries)
+        message_id = await send_one(channel, bot, chat_id, msg.chat_id, chunk, max_retries=max_retries)
+        # Upstream's reply-thread memory, ported by hand because it landed only
+        # in the fenced send code: a reply to this message in a group continues
+        # the same conversation. A no-op in private chats; it logs its own failures.
+        if message_id is not None:
+            await channel._remember_reply_thread(msg, message_id)
 
     # [argus patch #10] Only the final message in a response clears the
     # working-indicator emoji. Streaming partials (is_final=False) leave it.
@@ -128,7 +133,7 @@ async def send(channel: TelegramChannel, msg: OutboundMessage, *, max_retries: i
         await clear_working(channel, chat_id, msg.chat_id)
 
 
-async def send_one(channel: TelegramChannel, bot, chat_id: int, chat_key: str, text: str, *, max_retries: int = 3) -> None:
+async def send_one(channel: TelegramChannel, bot, chat_id: int, chat_key: str, text: str, *, max_retries: int = 3) -> int | None:
     """Send a single (already chunked) HTML message with retry + a
     plain-text fallback if Telegram rejects the HTML (a malformed entity
     must never drop the message)."""
@@ -148,7 +153,7 @@ async def send_one(channel: TelegramChannel, bot, chat_id: int, chat_key: str, t
         try:
             sent = await bot.send_message(**kwargs)
             channel._last_bot_message[chat_key] = sent.message_id
-            return
+            return sent.message_id
         except Exception as exc:
             last_exc = exc
             # A BadRequest is almost always malformed HTML — retrying the
@@ -159,9 +164,11 @@ async def send_one(channel: TelegramChannel, bot, chat_id: int, chat_key: str, t
                 kwargs.pop("parse_mode", None)
                 continue
             if attempt < max_retries - 1:
-                delay = 2**attempt  # 1s, 2s
+                # Upstream's flood-wait handling, ported by hand: the longer of
+                # 2**attempt and Telegram's retry_after, capped by the channel.
+                delay = channel._outbound_retry_delay(attempt, exc)
                 logger.warning(
-                    "[Telegram] send failed (attempt %d/%d), retrying in %ds: %s",
+                    "[Telegram] send failed (attempt %d/%d), retrying in %ss: %s",
                     attempt + 1,
                     max_retries,
                     delay,

@@ -82,8 +82,9 @@ def test_custom_interceptor_loaded_and_appended():
         asyncio.run(get_mcp_tools())
 
         interceptors = _get_interceptors(mock_cls)
-        assert len(interceptors) == 1
-        assert interceptors[0] is fake_interceptor
+        assert len(interceptors) == 2
+        assert interceptors[0].__name__ == "agent_auth_interceptor"
+        assert interceptors[1] is fake_interceptor
 
 
 def test_multiple_custom_interceptors():
@@ -113,9 +114,9 @@ def test_multiple_custom_interceptors():
         asyncio.run(get_mcp_tools())
 
         interceptors = _get_interceptors(mock_cls)
-        assert len(interceptors) == 2
-        assert interceptors[0] is interceptor_a
-        assert interceptors[1] is interceptor_b
+        assert len(interceptors) == 3
+        assert interceptors[1] is interceptor_a
+        assert interceptors[2] is interceptor_b
 
 
 def test_custom_interceptor_builder_returning_none_is_skipped():
@@ -132,7 +133,7 @@ def test_custom_interceptor_builder_returning_none_is_skipped():
     ):
         asyncio.run(get_mcp_tools())
 
-        assert len(_get_interceptors(mock_cls)) == 0
+        assert [i.__name__ for i in _get_interceptors(mock_cls)] == ["agent_auth_interceptor"]
 
 
 def test_custom_interceptor_resolve_error_logs_warning_and_continues():
@@ -180,7 +181,7 @@ def test_custom_interceptor_builder_exception_logs_warning_and_continues():
 
 
 def test_no_mcp_interceptors_field_is_safe():
-    """When mcpInterceptors is absent from config, no interceptors are added."""
+    """Without custom builders, the live protection guard remains installed."""
     p = _make_patches(interceptor_paths=None)
 
     with (
@@ -192,7 +193,7 @@ def test_no_mcp_interceptors_field_is_safe():
     ):
         asyncio.run(get_mcp_tools())
 
-        assert len(_get_interceptors(mock_cls)) == 0
+        assert [i.__name__ for i in _get_interceptors(mock_cls)] == ["agent_auth_interceptor"]
 
 
 def test_custom_interceptor_coexists_with_oauth_interceptor():
@@ -217,9 +218,9 @@ def test_custom_interceptor_coexists_with_oauth_interceptor():
         asyncio.run(get_mcp_tools())
 
         interceptors = _get_interceptors(mock_cls)
-        assert len(interceptors) == 2
+        assert len(interceptors) == 3
         assert interceptors[0] is oauth_fn
-        assert interceptors[1] is custom_fn
+        assert interceptors[2] is custom_fn
 
 
 def test_mcp_interceptors_single_string_is_normalized():
@@ -240,7 +241,8 @@ def test_mcp_interceptors_single_string_is_normalized():
     ):
         asyncio.run(get_mcp_tools())
 
-        assert len(_get_interceptors(mock_cls)) == 1
+        assert len(_get_interceptors(mock_cls)) == 2
+        assert _get_interceptors(mock_cls)[-1] is fake_interceptor
 
 
 def test_mcp_interceptors_invalid_type_logs_warning():
@@ -257,7 +259,7 @@ def test_mcp_interceptors_invalid_type_logs_warning():
     ):
         asyncio.run(get_mcp_tools())
 
-        assert len(_get_interceptors(mock_cls)) == 0
+        assert [i.__name__ for i in _get_interceptors(mock_cls)] == ["agent_auth_interceptor"]
         mock_warn.assert_called_once()
         assert "must be a list" in mock_warn.call_args[0][0]
 
@@ -277,7 +279,7 @@ def test_custom_interceptor_non_callable_return_logs_warning():
     ):
         asyncio.run(get_mcp_tools())
 
-        assert len(_get_interceptors(mock_cls)) == 0
+        assert [i.__name__ for i in _get_interceptors(mock_cls)] == ["agent_auth_interceptor"]
         mock_warn.assert_called_once()
         assert "non-callable" in mock_warn.call_args[0][0]
 
@@ -330,7 +332,7 @@ def test_custom_interceptor_builder_runs_once_per_enabled_server():
     # [argus patch #93] index 0 is the per-server operation-error interceptor.
     assert all(interceptors[0].__qualname__ == "preserve_operation_errors.<locals>.intercept" for _names, interceptors in clients)
     assert clients[0][1][0] is not clients[1][1][0]
-    per_client = [interceptors[1] for _names, interceptors in clients]
+    per_client = [interceptors[-1] for _names, interceptors in clients]
     assert per_client[0] is built[0]
     assert per_client[1] is built[1]
     assert per_client[0] is not per_client[1]

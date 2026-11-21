@@ -2,12 +2,21 @@
 
 import { ArchiveRestore } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   ThreadChannelBadge,
   ThreadOriginIcon,
@@ -23,6 +32,15 @@ import {
 } from "@/components/workspace/workspace-container";
 import { useI18n } from "@/core/i18n/hooks";
 import { useInfiniteThreads } from "@/core/threads/hooks";
+import {
+  isThreadListFilter,
+  readSavedThreadListFilter,
+  saveThreadListFilter,
+  serverMetadataOfThreadListFilter,
+  subscribeSavedThreadListFilter,
+  THREAD_LIST_FILTERS,
+  type ThreadListFilter,
+} from "@/core/threads/list-filter";
 import { threadOriginOf } from "@/core/threads/origin";
 import { buildThreadListModel } from "@/core/threads/thread-list-model";
 import {
@@ -39,6 +57,33 @@ export default function ChatsPage() {
   const archived = view === "archived";
   const staticWebsite = env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true";
   const archiveAction = useThreadArchiveAction();
+  // [argus patch #169] Filter chips: `?show=` wins, else this browser's last
+  // choice. The saved choice is unknown during server render, so the list
+  // waits for it instead of loading "all" first.
+  const router = useRouter();
+  const pathname = usePathname();
+  const showParam = useSearchParams().get("show");
+  const savedFilter = useSyncExternalStore<ThreadListFilter | null>(
+    subscribeSavedThreadListFilter,
+    readSavedThreadListFilter,
+    () => null,
+  );
+  const listFilter: ThreadListFilter = isThreadListFilter(showParam)
+    ? showParam
+    : (savedFilter ?? "all");
+  const listFilterReady = isThreadListFilter(showParam) || savedFilter !== null;
+  const changeListFilter = useCallback(
+    (value: string) => {
+      if (!isThreadListFilter(value)) {
+        return;
+      }
+      saveThreadListFilter(value);
+      router.replace(value === "all" ? pathname : `${pathname}?show=${value}`, {
+        scroll: false,
+      });
+    },
+    [pathname, router],
+  );
   const {
     data: infiniteThreads,
     isLoading,
@@ -47,7 +92,18 @@ export default function ChatsPage() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-  } = useInfiniteThreads({ archived: staticWebsite ? undefined : archived });
+  } = useInfiniteThreads(
+    {
+      archived: staticWebsite ? undefined : archived,
+      ...(listFilter === "all"
+        ? {}
+        : {
+            listFilter,
+            metadata: serverMetadataOfThreadListFilter(listFilter) ?? undefined,
+          }),
+    },
+    { enabled: listFilterReady },
+  );
   const threadListModel = useMemo(
     () => buildThreadListModel(infiniteThreads?.pages ?? []),
     [infiniteThreads?.pages],
@@ -117,6 +173,25 @@ export default function ChatsPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
+            <ToggleGroup
+              type="single"
+              value={listFilter}
+              onValueChange={changeListFilter}
+              aria-label={t.chats.listFilters.label}
+              size="sm"
+              spacing={1}
+              className="flex-wrap"
+            >
+              {THREAD_LIST_FILTERS.map((value) => (
+                <ToggleGroupItem
+                  key={value}
+                  value={value}
+                  className="data-[state=on]:bg-secondary rounded-full px-2.5"
+                >
+                  {t.chats.listFilters[value]}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
           </header>
           <TabsContent value={view} className="min-h-0 flex-1">
             <main className="h-full">
@@ -130,18 +205,23 @@ export default function ChatsPage() {
                       </Button>
                     </div>
                   )}
-                  {!isLoading && !isError && filteredThreads.length === 0 && (
-                    <p
-                      role="status"
-                      className="text-muted-foreground p-8 text-center"
-                    >
-                      {isSearching
-                        ? t.chats.noMatchingChats
-                        : archived
-                          ? t.chats.noArchivedChats
-                          : t.chats.noActiveChats}
-                    </p>
-                  )}
+                  {listFilterReady &&
+                    !isLoading &&
+                    !isError &&
+                    filteredThreads.length === 0 && (
+                      <p
+                        role="status"
+                        className="text-muted-foreground p-8 text-center"
+                      >
+                        {isSearching
+                          ? t.chats.noMatchingChats
+                          : listFilter !== "all"
+                            ? t.chats.listFilters.empty
+                            : archived
+                              ? t.chats.noArchivedChats
+                              : t.chats.noActiveChats}
+                      </p>
+                    )}
                   <VirtualThreadList
                     estimateSize={76}
                     items={filteredThreads}

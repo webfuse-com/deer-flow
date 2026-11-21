@@ -1,121 +1,41 @@
-"""Per-subagent thinking configuration.
+"""Native registry coverage for per-worker reasoning defaults and overrides."""
 
-Covers the config surface (custom agents and per-agent overrides), the
-resolution helper, and the registry plumbing that carries the flag to
-``SubagentExecutor._create_agent``. ``None`` must always preserve the
-historical default (thinking off) so this change is inert until a subagent
-opts in.
-"""
+import pytest
 
-from deerflow.config.subagents_config import (
-    CustomSubagentConfig,
-    SubagentOverrideConfig,
-    SubagentsAppConfig,
-    load_subagents_config_from_dict,
-)
-from deerflow.subagents.config import SubagentConfig, resolve_subagent_thinking
+from deerflow.config.subagents_config import CustomSubagentConfig, SubagentOverrideConfig, SubagentsAppConfig
+from deerflow.persistence.managed_subagents import ManagedSubagentDefinition
+from deerflow.subagents import registry
 
 
-def _reset_subagents_config(**overrides) -> None:
-    load_subagents_config_from_dict({"timeout_seconds": 900, **overrides})
+@pytest.mark.parametrize("source", ["builtin", "config", "managed"])
+def test_reasoning_settings_flow_through_registry_without_mutating_definitions(monkeypatch, source):
+    name = "general-purpose" if source == "builtin" else "researcher"
+    settings = {"thinking_enabled": True, "reasoning_effort": "deep"}
+    app_config = SubagentsAppConfig()
+    monkeypatch.setattr(registry, "_managed_definitions", lambda **_: [])
+    if source == "builtin":
+        app_config.agents[name] = SubagentOverrideConfig(**settings)
+        original = registry.BUILTIN_SUBAGENTS[name]
+    elif source == "config":
+        original = CustomSubagentConfig(description="Research", system_prompt="Research the task.", **settings)
+        app_config.custom_agents[name] = original
+    else:
+        original = ManagedSubagentDefinition(name=name, description="Research", system_prompt="Research the task.", **settings)
+        monkeypatch.setattr(registry, "_managed_definitions", lambda **_: [original])
+
+    configured = registry.get_subagent_config(name, app_config=app_config)
+    assert (configured.thinking_enabled, configured.reasoning_effort) == (True, "deep")
+
+    app_config.agents[name] = SubagentOverrideConfig(thinking_enabled=False, reasoning_effort="lite")
+    overridden = registry.get_subagent_config(name, app_config=app_config)
+    assert (overridden.thinking_enabled, overridden.reasoning_effort) == (False, "lite")
+    assert (configured.thinking_enabled, configured.reasoning_effort) == (True, "deep")
+    assert original.thinking_enabled is (None if source == "builtin" else True)
+    assert original.reasoning_effort == (None if source == "builtin" else "deep")
 
 
-class TestResolveSubagentThinking:
-    def test_default_none_is_off(self):
-        config = SubagentConfig(name="a", description="a", system_prompt="p")
-        assert config.thinking_enabled is None
-        assert resolve_subagent_thinking(config) is False
-
-    def test_explicit_true(self):
-        config = SubagentConfig(name="a", description="a", system_prompt="p", thinking_enabled=True)
-        assert resolve_subagent_thinking(config) is True
-
-    def test_explicit_false(self):
-        config = SubagentConfig(name="a", description="a", system_prompt="p", thinking_enabled=False)
-        assert resolve_subagent_thinking(config) is False
-
-
-class TestConfigSurface:
-    def test_custom_subagent_accepts_thinking(self):
-        custom = CustomSubagentConfig(description="d", system_prompt="p", thinking_enabled=True)
-        assert custom.thinking_enabled is True
-        assert CustomSubagentConfig(description="d", system_prompt="p").thinking_enabled is None
-
-    def test_override_defaults_none_and_accepts_bool(self):
-        assert SubagentOverrideConfig().thinking_enabled is None
-        assert SubagentOverrideConfig(thinking_enabled=True).thinking_enabled is True
-        assert SubagentOverrideConfig(thinking_enabled=False).thinking_enabled is False
-
-    def test_get_thinking_for(self):
-        config = SubagentsAppConfig(agents={"bash": SubagentOverrideConfig(thinking_enabled=True)})
-        assert config.get_thinking_for("bash") is True
-        assert config.get_thinking_for("general-purpose") is None
-        assert config.get_thinking_for("unknown") is None
-
-
-class TestRegistryPlumbing:
-    def teardown_method(self):
-        _reset_subagents_config()
-
-    def test_custom_agent_thinking_carried_into_registry(self):
-        from deerflow.subagents.registry import get_subagent_config
-
-        load_subagents_config_from_dict(
-            {
-                "timeout_seconds": 900,
-                "custom_agents": {
-                    "build": {
-                        "description": "build worker",
-                        "system_prompt": "p",
-                        "model": "m1",
-                        "thinking_enabled": True,
-                    }
-                },
-            }
-        )
-        config = get_subagent_config("build")
-        assert config is not None
-        assert config.thinking_enabled is True
-        assert resolve_subagent_thinking(config) is True
-
-    def test_custom_agent_defaults_to_off(self):
-        from deerflow.subagents.registry import get_subagent_config
-
-        load_subagents_config_from_dict(
-            {
-                "timeout_seconds": 900,
-                "custom_agents": {"build": {"description": "build worker", "system_prompt": "p"}},
-            }
-        )
-        assert get_subagent_config("build").thinking_enabled is None
-
-    def test_per_agent_override_applies_to_builtin(self):
-        from deerflow.subagents.registry import get_subagent_config
-
-        load_subagents_config_from_dict(
-            {
-                "timeout_seconds": 900,
-                "agents": {"general-purpose": {"thinking_enabled": True}},
-            }
-        )
-        assert get_subagent_config("general-purpose").thinking_enabled is True
-        # Other agents keep their own value (None -> off).
-        assert get_subagent_config("bash").thinking_enabled is None
-
-    def test_per_agent_override_wins_over_custom_value(self):
-        from deerflow.subagents.registry import get_subagent_config
-
-        load_subagents_config_from_dict(
-            {
-                "timeout_seconds": 900,
-                "custom_agents": {
-                    "build": {
-                        "description": "build worker",
-                        "system_prompt": "p",
-                        "thinking_enabled": False,
-                    }
-                },
-                "agents": {"build": {"thinking_enabled": True}},
-            }
-        )
-        assert get_subagent_config("build").thinking_enabled is True
+def test_unconfigured_workers_keep_reasoning_defaults(monkeypatch):
+    monkeypatch.setattr(registry, "_managed_definitions", lambda **_: [])
+    configured = registry.get_subagent_config("general-purpose", app_config=SubagentsAppConfig())
+    assert configured.thinking_enabled is None
+    assert configured.reasoning_effort is None
