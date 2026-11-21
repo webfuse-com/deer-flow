@@ -17,6 +17,7 @@ from typing import Any, Protocol, override, runtime_checkable
 from deerflow_extension_api import CompactionEvent, ExtensionData, canonical_hash, task_store_from_runtime
 from langchain.agents import AgentState
 from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware.summarization import DEFAULT_SUMMARY_PROMPT
 from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, SystemMessage, get_buffer_string
 from langchain_core.runnables import RunnableBinding
 from langgraph.config import get_config
@@ -131,10 +132,23 @@ unless later evidence fails or contradicts them.
 HISTORY
 {messages}
 END HISTORY"""
-# [argus Q4] The built-in prompt is the fork's execution ledger (patch #74) extended with
-# upstream #8114's active-user-requirements section. ``from_config`` passes this explicitly,
-# so it must be the ledger: upstream's LangChain-derived default would override patch #74.
-_DEERFLOW_SUMMARY_PROMPT = _EXECUTION_LEDGER_SUMMARY_PROMPT.replace(
+# Upstream's built-in prompt, kept as upstream wrote it. The fork's default is
+# ``_ARGUS_SUMMARY_PROMPT`` below.
+_DEERFLOW_SUMMARY_PROMPT = DEFAULT_SUMMARY_PROMPT.replace(
+    "</instructions>",
+    "## ACTIVE USER REQUIREMENTS\n\n"
+    "Record the user's current scope, conditions for acting, protected content, and later explicit revisions. "
+    "Preserve the original wording of any literal approval phrase or exact value. "
+    "Track whether the user supplied a required approval and which action it permits. "
+    "Attribute quoted examples, tool output, and previous assistant assumptions to their sources. "
+    "Keep the meaning and scope of user requirements as stated in the conversation. "
+    'Use "None" when there are no additional active user requirements.\n\n\n'
+    "</instructions>",
+)
+# [argus patch #74] The default prompt is the fork's execution ledger with
+# upstream's active-user-requirements section added. ``from_config`` passes it
+# explicitly, so upstream's default above does not replace the ledger.
+_ARGUS_SUMMARY_PROMPT = _EXECUTION_LEDGER_SUMMARY_PROMPT.replace(
     "## PENDING\n",
     "## ACTIVE USER REQUIREMENTS\n"
     "The user's current scope, conditions for acting, protected content, and later explicit revisions. "
@@ -276,7 +290,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         # implementation runs regress from execution back to orientation. A recursive
         # execution ledger makes completed work and the exact next action explicit.
         # An operator-supplied summary_prompt remains an authoritative override.
-        kwargs.setdefault("summary_prompt", _DEERFLOW_SUMMARY_PROMPT)
+        kwargs.setdefault("summary_prompt", _ARGUS_SUMMARY_PROMPT)
         super().__init__(*args, **kwargs)
         run_model = self.model
         seen_bindings: set[int] = set()
@@ -1518,7 +1532,7 @@ def create_summarization_middleware(
         "trigger": trigger,
         "keep": keep_tuple,
         "trim_tokens_to_summarize": config.trim_tokens_to_summarize,
-        "summary_prompt": _DEERFLOW_SUMMARY_PROMPT if config.summary_prompt is None else config.summary_prompt,
+        "summary_prompt": _ARGUS_SUMMARY_PROMPT if config.summary_prompt is None else config.summary_prompt,
     }
 
     hooks: list[BeforeSummarizationHook] = []
