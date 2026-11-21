@@ -34,7 +34,16 @@ _TRACE_FILTER_NAME = "deerflow_trace_context_filter"
 # ``Incremented Retry for (url='…')``) keep their closing punctuation, while
 # a quote EMBEDDED in the URL (``/path'quoted'?token=…``) is consumed and
 # everything after it stays redacted.
-_URL_REDACT_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<userinfo>[^/?#\s@]*@)?(?P<host>[^/?#\s]+)(?P<rest>[/?#](?:[^\s'\"]|['\"](?!$|\s|\)))*)?")
+# [argus patch #159] A DOUBLE quote also closes ``rest`` before ``,``, ``;``,
+# ``}`` or ``]``: those are the shapes of a URL inside a JSON string, and the
+# old rule swallowed the closing quote and its comma, so a structured line such
+# as ``[SandboxAudit] {"command": "curl http://h/p", "verdict": "pass"}`` was no
+# longer valid JSON for the host tooling that parses it. Only the double quote:
+# it is never a raw URL character (RFC 3986 requires %22), while ``'`` is a
+# legal sub-delimiter that may sit before a comma inside a query. A
+# backslash-escaped character (``\"`` inside a JSON string) is consumed as a
+# pair and never closes, so an escaped embedded quote stays redacted.
+_URL_REDACT_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<userinfo>[^/?#\s@]*@)?(?P<host>[^/?#\s]+)(?P<rest>[/?#](?:[^\s'\"\\]|\\.|'(?!$|\s|\))|\"(?!$|\s|[),;}\]]))*)?")
 
 # urllib3's per-request DEBUG line (connectionpool.py:545 on urllib3 2.7.0)
 # splits the URL across the format string:
