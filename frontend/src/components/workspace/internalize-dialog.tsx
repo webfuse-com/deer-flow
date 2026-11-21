@@ -58,7 +58,7 @@ export function SharingErrorAlert({
     <Alert variant="destructive">
       <TriangleAlertIcon />
       <AlertTitle>
-        {sessionExpired ? t.sharing.sessionExpired : t.sharing.failed}
+        {sessionExpired ? t.agoraSharing.sessionExpired : t.agoraSharing.failed}
       </AlertTitle>
       <AlertDescription className="flex flex-col gap-2">
         <span>{error.message}</span>
@@ -69,11 +69,11 @@ export function SharingErrorAlert({
               variant="outline"
               onClick={() => window.location.reload()}
             >
-              {t.sharing.reload}
+              {t.agoraSharing.reload}
             </Button>
           ) : onRetry ? (
             <Button size="sm" variant="outline" onClick={onRetry}>
-              {t.sharing.retry}
+              {t.agoraSharing.retry}
             </Button>
           ) : null}
         </span>
@@ -87,24 +87,24 @@ export function ShareLinkRow({ url }: { url: string }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-muted-foreground text-xs">
-        {t.sharing.linkLabel}
+        {t.agoraSharing.linkLabel}
       </span>
       <div className="flex items-center gap-2">
         <Input
           readOnly
           value={url}
-          aria-label={t.sharing.linkLabel}
+          aria-label={t.agoraSharing.linkLabel}
           onFocus={(event) => event.currentTarget.select()}
         />
         <Button
           size="icon"
           variant="outline"
-          aria-label={t.sharing.copyLink}
-          title={t.sharing.copyLink}
+          aria-label={t.agoraSharing.copyLink}
+          title={t.agoraSharing.copyLink}
           onClick={() => {
             void writeTextToClipboard(url).then((didCopy) => {
               if (didCopy) {
-                toast.success(t.sharing.linkCopied);
+                toast.success(t.agoraSharing.linkCopied);
               } else {
                 toast.error(t.clipboard.failedToCopyToClipboard);
               }
@@ -118,8 +118,8 @@ export function ShareLinkRow({ url }: { url: string }) {
             href={url}
             target="_blank"
             rel="noopener noreferrer"
-            aria-label={t.sharing.openLink}
-            title={t.sharing.openLink}
+            aria-label={t.agoraSharing.openLink}
+            title={t.agoraSharing.openLink}
           >
             <ExternalLinkIcon />
           </a>
@@ -178,12 +178,14 @@ export function InternalizeDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {shared ? t.sharing.shared : t.sharing.dialogTitle}
+            {shared ? t.agoraSharing.shared : t.agoraSharing.dialogTitle}
           </DialogTitle>
           <DialogDescription>
             {shared && share
-              ? t.sharing.sharedSince(formatSnapshotDate(share.snapshot_at))
-              : t.sharing.dialogDescription}
+              ? t.agoraSharing.sharedSince(
+                  formatSnapshotDate(share.snapshot_at),
+                )
+              : t.agoraSharing.dialogDescription}
           </DialogDescription>
         </DialogHeader>
 
@@ -216,24 +218,26 @@ export function InternalizeDialog({
               {previewData && (
                 <ul className="text-muted-foreground flex flex-col gap-1">
                   <li>
-                    {t.sharing.preview(
+                    {t.agoraSharing.preview(
                       previewData.counts.human ?? 0,
                       previewData.counts.ai ?? 0,
                       previewData.counts.tool ?? 0,
                     )}
                   </li>
                   <li>
-                    {t.sharing.textSize(formatBytes(previewData.text_bytes))}
+                    {t.agoraSharing.textSize(
+                      formatBytes(previewData.text_bytes),
+                    )}
                   </li>
                   <li>
                     {previewData.files.count === 0
-                      ? t.sharing.noFiles
+                      ? t.agoraSharing.noFiles
                       : previewData.files.included
-                        ? t.sharing.files(
+                        ? t.agoraSharing.files(
                             previewData.files.count,
                             formatBytes(previewData.files.bytes),
                           )
-                        : t.sharing.filesTooLarge(
+                        : t.agoraSharing.filesTooLarge(
                             formatBytes(previewData.files.bytes),
                             "10 MB",
                           )}
@@ -243,14 +247,14 @@ export function InternalizeDialog({
               <label className="flex items-start justify-between gap-4">
                 <span className="flex flex-col gap-0.5">
                   <span className="font-medium">
-                    {t.sharing.includeToolBodies}
+                    {t.agoraSharing.includeToolBodies}
                   </span>
                   <span className="text-muted-foreground text-xs">
-                    {t.sharing.includeToolBodiesHint}
+                    {t.agoraSharing.includeToolBodiesHint}
                   </span>
                 </span>
                 <Switch
-                  aria-label={t.sharing.includeToolBodies}
+                  aria-label={t.agoraSharing.includeToolBodies}
                   checked={includeToolBodies}
                   disabled={busy}
                   onCheckedChange={setIncludeToolBodies}
@@ -260,7 +264,7 @@ export function InternalizeDialog({
                 <Alert className="border-amber-500/50 text-amber-700 dark:text-amber-400">
                   <TriangleAlertIcon />
                   <AlertTitle>
-                    {t.sharing.scrubWarning(previewData.scrub.count)}
+                    {t.agoraSharing.scrubWarning(previewData.scrub.count)}
                   </AlertTitle>
                   <AlertDescription>
                     <span className="flex flex-wrap gap-1">
@@ -275,14 +279,14 @@ export function InternalizeDialog({
                         ),
                       )}
                     </span>
-                    <span>{t.sharing.scrubHint}</span>
+                    <span>{t.agoraSharing.scrubHint}</span>
                   </AlertDescription>
                 </Alert>
               )}
               {tooLarge && preview.error && (
                 <Alert variant="destructive">
                   <TriangleAlertIcon />
-                  <AlertTitle>{t.sharing.tooLarge}</AlertTitle>
+                  <AlertTitle>{t.agoraSharing.tooLarge}</AlertTitle>
                   <AlertDescription>{preview.error.message}</AlertDescription>
                 </Alert>
               )}
@@ -295,22 +299,26 @@ export function InternalizeDialog({
               <ul className="text-muted-foreground flex flex-col gap-1">
                 <li>
                   {share.include_tool_bodies
-                    ? t.sharing.toolBodiesIncluded
-                    : t.sharing.toolBodiesOmitted}
+                    ? t.agoraSharing.toolBodiesIncluded
+                    : t.agoraSharing.toolBodiesOmitted}
                 </li>
                 <li>
                   {share.files_included
-                    ? t.sharing.filesBundled(formatBytes(share.files_bytes))
-                    : t.sharing.filesNotIncluded}
+                    ? t.agoraSharing.filesBundled(
+                        formatBytes(share.files_bytes),
+                      )
+                    : t.agoraSharing.filesNotIncluded}
                 </li>
                 {share.scrub_findings > 0 && (
-                  <li>{t.sharing.scrubWarning(share.scrub_findings)}</li>
+                  <li>{t.agoraSharing.scrubWarning(share.scrub_findings)}</li>
                 )}
               </ul>
               {confirmRevoke && (
                 <Alert variant="destructive">
                   <TriangleAlertIcon />
-                  <AlertDescription>{t.sharing.revokeConfirm}</AlertDescription>
+                  <AlertDescription>
+                    {t.agoraSharing.revokeConfirm}
+                  </AlertDescription>
                 </Alert>
               )}
             </>
@@ -337,7 +345,7 @@ export function InternalizeDialog({
                 }
                 onClick={() => {
                   internalize.mutate(includeToolBodies, {
-                    onSuccess: () => toast.success(t.sharing.success),
+                    onSuccess: () => toast.success(t.agoraSharing.success),
                   });
                 }}
               >
@@ -345,8 +353,8 @@ export function InternalizeDialog({
                   <LoaderIcon className="size-4 animate-spin" />
                 )}
                 {internalize.isPending
-                  ? t.sharing.confirming
-                  : t.sharing.confirm}
+                  ? t.agoraSharing.confirming
+                  : t.agoraSharing.confirm}
               </Button>
             </>
           ) : (
@@ -356,7 +364,7 @@ export function InternalizeDialog({
                 disabled={busy}
                 onClick={() => {
                   refresh.mutate(undefined, {
-                    onSuccess: () => toast.success(t.sharing.refreshed),
+                    onSuccess: () => toast.success(t.agoraSharing.refreshed),
                   });
                 }}
               >
@@ -365,7 +373,7 @@ export function InternalizeDialog({
                 ) : (
                   <RefreshCwIcon className="size-4" />
                 )}
-                {t.sharing.refresh}
+                {t.agoraSharing.refresh}
               </Button>
               {confirmRevoke ? (
                 <Button
@@ -375,7 +383,7 @@ export function InternalizeDialog({
                     revoke.mutate(undefined, {
                       onSuccess: () => {
                         setConfirmRevoke(false);
-                        toast.success(t.sharing.revoked);
+                        toast.success(t.agoraSharing.revoked);
                       },
                     });
                   }}
@@ -383,7 +391,7 @@ export function InternalizeDialog({
                   {revoke.isPending && (
                     <LoaderIcon className="size-4 animate-spin" />
                   )}
-                  {t.sharing.revokeYes}
+                  {t.agoraSharing.revokeYes}
                 </Button>
               ) : (
                 <Button
@@ -391,7 +399,7 @@ export function InternalizeDialog({
                   disabled={busy}
                   onClick={() => setConfirmRevoke(true)}
                 >
-                  {t.sharing.revoke}
+                  {t.agoraSharing.revoke}
                 </Button>
               )}
             </>

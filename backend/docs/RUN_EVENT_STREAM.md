@@ -75,8 +75,10 @@ outcome. It is a singleton identified by `(thread_id, run_id, event_type)` and
 confirmed through `put_if_absent()`. Content contains only `status`:
 `success`, `error`, `interrupted`, or `timeout`; graph outputs and error details
 are excluded. Metadata requires `protocol_version: 1` and a boolean `recovered`.
-Current Workers emit `recovered: false`; the marker describes evidence origin
-and grants no publication authority. Field definitions remain in the
+Owner Workers emit `recovered: false`; a confirmed recovery takeover emits
+`recovered: true` only when it creates a missing terminal. An existing matching
+event retains its original marker. The marker describes evidence origin and
+grants no publication authority. Field definitions remain in the
 [JSON contract](../../contracts/run_event_stream_contract.json).
 
 `run.start` and `run.end` retain their root-invocation producers, counts,
@@ -97,6 +99,18 @@ Rollback's `interrupted` ACK is intermediate while restoration remains pending;
 publication waits for restoration and the final `error` ACK. Ownership loss,
 rejected or unconfirmed commits, and unknown predecessor writes fail closed.
 Reading a historical terminal row does not create local publication authority.
+Recovery publication requires the boolean result of a successful atomic takeover
+claim, with the target bound to the claimed Run identity and its committed
+`error` outcome. The target is one-shot and cannot be reconstructed with another
+Run identity. A later same-status RunRow read cannot create that authority.
+Recovery receipts and terminal confirmation re-check the Run lifecycle inside
+the Event Store's mutation fence; a completed thread deletion wins,
+so a stale target cannot recreate an orphan event.
+When SQL Run and Event stores share an engine, the built-in guard reads the Run
+through the active event transaction, so recovery needs only one available pooled
+connection. It retains the mutation fence through the check and event commit.
+Different engines and custom Run lookups keep their normal read path. Memory
+guard/deletion fences are per-thread; a slow guard does not block unrelated threads.
 
 ### Evidence Ordering
 
@@ -123,6 +137,11 @@ appended later cannot be claimed as covered by an earlier Seal; an event alone
 does not prove complete evidence. Barrier release before END preserves immediate
 next-message admission, including when later cleanup is slow.
 
+Recovery publishes its zero-delivery receipt before `run.terminal`, matching the
+normal delivery-before-terminal order. Receipt failure remains non-fatal and does
+not prevent the terminal confirmation attempt. Both recovery writes are fenced
+by the current Run lifecycle.
+
 ### Idempotence and Failure Semantics
 
 Confirmation validates the returned event's identity, category, status, version,
@@ -132,7 +151,7 @@ required field types, positive sequence, and database user ownership:
 | --- | --- |
 | `CONFIRMED_NEW` | Insertion is confirmed and the returned event matches; Receipt capture may proceed. |
 | `CONFIRMED_EXISTING` | The existing event itself matches; accept idempotently and preserve its sequence and original source marker. |
-| `CONFLICT` | Identity or protocol fields contradict expectations or are malformed; record the conflict, do not overwrite, and do not seal as complete. |
+| `CONFLICT` | Identity or protocol fields contradict expectations or are malformed, or the guarded Run lifecycle no longer admits publication; record the conflict, do not overwrite, and do not seal as complete. |
 | `UNKNOWN` | The operation outcome cannot be established; preserve uncertainty and do not seal as complete. |
 
 `created=False` alone proves neither success nor conflict. Additional optional
@@ -162,11 +181,16 @@ Confirmation is limited to the Store's declared failure and concurrency model:
 | SQLite | Database-backed confirmation with per-thread in-process serialization; this does not establish PostgreSQL or multi-Gateway concurrency semantics. |
 | PostgreSQL | Database-backed confirmation with per-thread transaction advisory locking across independent connections/processes; concurrency validation requires real sessions. |
 
-Singleton insertion and RunRow terminal commit are separate transactions. A crash
-between them can leave a terminal Run without an event. Recovery publication,
-takeover backfill, historical migration, and durable outbox/reconciliation are
-outside the current owner-side implementation; eventual evidence after every
-terminal commit is not guaranteed. Missing events must not gate SSE recovery.
+Singleton insertion and RunRow terminal commit are separate transactions.
+`RecoveryTerminalPublisher` backfills an error terminal only after a successful
+takeover claim. A crash between a normal terminal commit and event confirmation
+can still leave a terminal Run without an event when no later takeover claim
+exists; closing that remaining gap requires durable outbox/reconciliation and
+is outside this implementation. Historical migration is also out of scope.
+Later recovery appends do not upgrade an earlier Evidence Seal's coverage, and
+terminal singleton confirmation does not deduplicate Redis END. Eventual
+evidence after every terminal commit is not yet guaranteed. Missing events must
+not gate SSE recovery.
 
 ## Producers
 
@@ -190,18 +214,20 @@ Current middleware tags are `guardrail`, `loop_detection`,
 are additive. Because the full event type is limited to 32 characters and
 `middleware:` uses 11, a tag must contain 1-21 characters.
 
-`middleware:loop_detection` records transitions into the warned state (first
-per call hash or per tool-frequency burst) and each hard stop produced by
-`LoopDetectionMiddleware` in lead-agent and ordinary task-tool subagent runs.
+`middleware:loop_detection` records hash-based loop transitions into the
+warned state and each hard stop produced by `LoopDetectionMiddleware` in
+lead-agent and ordinary task-tool subagent runs. Tool-name frequency thresholds
+are observability metrics: they are emitted as INFO logs with
+`action=observe_only` and do not create middleware events or alter control flow.
 Task-tool subagents forward the append to the parent loop because `RunJournal`
 and its event store must not cross the isolated-loop boundary. Durable batch
 subagents have no parent run journal and do not emit these events. The event's
-`action` is `warn` or
-`hard_stop`. The `changes` object identifies the detection layer, affected tool
-names, observed count, effective threshold, whether the producer was a
-subagent, and its agent id when applicable. Tool arguments, prompts, message
-content, tool results, and argument-derived hashes are not persisted in this
-event.
+`action` is `warn` or `hard_stop`. Historical runs can contain `reject_excess`
+actions and the `tool_frequency` detection layer. The `changes` object
+identifies the detection layer, affected tool names, observed count, effective
+threshold, whether the producer was a subagent, and its agent id when applicable. Tool arguments,
+prompts, message content, tool results, and argument-derived hashes are not
+persisted in this event.
 
 `middleware:tool_progress` records effective result-quality state transitions
 from `ToolProgressMiddleware`: `warn` for ACTIVE → WARNED, `block` for a

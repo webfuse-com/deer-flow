@@ -93,7 +93,7 @@ describe("InternalizeArtifactAction (DOM)", () => {
     renderAction("card");
     const button = await screen.findByTestId("internalize-artifact-card");
     expect(button.getAttribute("aria-label")).toBe(
-      enUS.sharing.artifact.internalize,
+      enUS.agoraSharing.artifact.internalize,
     );
     expect(button.textContent?.trim()).toBe("");
     expect(button.querySelector("svg")).not.toBeNull();
@@ -104,7 +104,7 @@ describe("InternalizeArtifactAction (DOM)", () => {
     mockStatus(true);
     renderAction("card");
     const button = await screen.findByRole("button", {
-      name: enUS.sharing.artifact.shared,
+      name: enUS.agoraSharing.artifact.shared,
     });
     expect(button.getAttribute("aria-pressed")).toBe("true");
     expect(button.querySelector("svg")?.getAttribute("data-shared")).toBe(

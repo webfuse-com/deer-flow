@@ -106,7 +106,7 @@ class AgentUpdateRequest(BaseModel):
     """Request body for updating a custom agent."""
 
     display_name: AgentDisplayName | None = Field(default=None, description="Updated display name; null clears it")
-    description: str | None = Field(default=None, description="Updated description")
+    description: str | None = Field(default=None, description="Updated description; null resets it to empty")
     model: str | None = Field(default=None, description="Updated model override")
     tool_groups: list[str] | None = Field(default=None, description="Updated tool group whitelist")
     mcp_plugins: list[str] | None = Field(default=None, description="MCP installation selection (None=all, []=none)")
@@ -184,6 +184,8 @@ def _validate_model_exists(model: str | None) -> None:
     Best-effort: if the app config cannot be loaded (e.g. no ``config.yaml`` on
     disk in a bare/test deployment), skip the check rather than failing the
     write — the runtime still falls back to the default for an unknown model.
+    It reads the live config, so async routes call it through
+    ``asyncio.to_thread``.
     """
     if not model:
         return
@@ -411,7 +413,7 @@ async def import_agent_package(body: AgentPackage, request: Request, name: str |
     _require_agents_api_enabled()
     target_name = name or body.agent.name
     _validate_agent_name(target_name)
-    _validate_model_exists(body.agent.model)
+    await asyncio.to_thread(_validate_model_exists, body.agent.model)
     normalized_name = _normalize_agent_name(target_name)
     user_id = get_effective_user_id()
 
@@ -544,7 +546,7 @@ async def create_agent_endpoint(body: AgentCreateRequest, request: Request) -> A
     """
     _require_agents_api_enabled()
     _validate_agent_name(body.name)
-    _validate_model_exists(body.model)
+    await asyncio.to_thread(_validate_model_exists, body.model)
     normalized_name = _normalize_agent_name(body.name)
     user_id = get_effective_user_id()
 
@@ -606,7 +608,7 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
         )
 
     if "model" in body.model_fields_set:
-        _validate_model_exists(body.model)
+        await asyncio.to_thread(_validate_model_exists, body.model)
 
     try:
         # Update config if any config fields changed
@@ -619,7 +621,9 @@ async def update_agent(name: str, body: AgentUpdateRequest, request: Request) ->
         if config_changed:
             updated = {
                 "name": agent_cfg.name,
-                "description": body.description if "description" in fields_set else agent_cfg.description,
+                # Explicit null resets to the AgentConfig default; storing None
+                # would make every later load of this agent fail validation.
+                "description": (body.description or "") if "description" in fields_set else agent_cfg.description,
             }
             if "display_name" in fields_set:
                 updated["display_name"] = body.display_name or None
@@ -767,7 +771,10 @@ async def update_user_profile(body: UserProfileUpdateRequest, request: Request) 
     def _write_profile() -> Path:
         user_md_path = get_paths().user_md_file(user_id)
         user_md_path.parent.mkdir(parents=True, exist_ok=True)
-        user_md_path.write_text(body.content, encoding="utf-8")
+        # newline="" stores the submitted text verbatim; a default text write
+        # would turn its LF into CRLF on Windows, so the bytes on disk no longer
+        # matched the content this endpoint accepts and returns.
+        user_md_path.write_text(body.content, encoding="utf-8", newline="")
         return user_md_path
 
     try:

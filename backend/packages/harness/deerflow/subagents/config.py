@@ -25,6 +25,9 @@ class SubagentConfig:
                 allowed-tools is compatibility metadata only and never restricts
                 this subagent's tools.
         model: Model to use - 'inherit' uses parent's model.
+        thinking_enabled: Whether to enable thinking/reasoning for this subagent.
+                None means use default (False).
+        reasoning_effort: Selected model's reasoning effort or None for its default.
         max_turns: Maximum agent turns — model call plus the tools it runs —
             before stopping. Built-in agents use the value set here
             (general-purpose=150, bash=60) unless the global
@@ -36,10 +39,6 @@ class SubagentConfig:
             effective limit is the global ``subagents.timeout_seconds`` (default
             1800 = 30 min), layered on by the registry; this 900 only applies
             when no differing global value exists.
-        thinking_enabled: Request the model's extended-thinking mode for this
-            subagent. ``None`` preserves the historical default (thinking off).
-            Only meaningful when the resolved model profile advertises
-            ``supports_thinking``; ignored otherwise by the model factory.
         prompt_overlay: Operator instructions around the complete system message.
     """
 
@@ -50,9 +49,10 @@ class SubagentConfig:
     disallowed_tools: list[str] | None = field(default_factory=lambda: ["task"])
     skills: list[str] | None = None
     model: str = "inherit"
+    thinking_enabled: bool | None = None
+    reasoning_effort: str | None = None
     max_turns: int = 50
     timeout_seconds: int = 900
-    thinking_enabled: bool | None = None
     prompt_overlay: PromptOverlay = field(default_factory=PromptOverlay)
 
 
@@ -60,17 +60,6 @@ def _default_model_name(app_config: "AppConfig") -> str:
     if not app_config.models:
         raise ValueError("No chat models are configured. Please configure at least one model in config.yaml.")
     return app_config.models[0].name
-
-
-def resolve_subagent_thinking(config: SubagentConfig) -> bool:
-    """Effective thinking flag for a subagent.
-
-    ``None`` preserves the historical default (off). An explicit True/False is
-    honored as-is; the model factory ignores True for models whose profile does
-    not advertise ``supports_thinking``.
-    """
-    thinking = getattr(config, "thinking_enabled", None)  # duck-typed configs may predate the field
-    return bool(thinking) if thinking is not None else False
 
 
 def resolve_subagent_model_name(config: SubagentConfig, parent_model: str | None, *, app_config: "AppConfig | None" = None) -> str:

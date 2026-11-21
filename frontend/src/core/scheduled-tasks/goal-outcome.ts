@@ -11,6 +11,7 @@ export type GoalReasonKey =
   | "tokenCapped"
   | "loopCapped"
   | "timeCapped"
+  | "recursionCapped"
   | "evaluatorFailed"
   | "noDurableEndOfTurn"
   | "threadChanged"
@@ -31,6 +32,7 @@ const REASON_KEYS: Record<string, GoalReasonKey> = {
   token_capped: "tokenCapped",
   loop_capped: "loopCapped",
   time_capped: "timeCapped",
+  recursion_capped: "recursionCapped",
   evaluator_failed: "evaluatorFailed",
   no_durable_end_of_turn: "noDurableEndOfTurn",
   thread_changed_after_evaluation: "threadChanged",

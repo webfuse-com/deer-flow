@@ -14,11 +14,32 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Path scoping lives in scripts/ci_changed_scopes.py so every workflow reads
+    # one rule set. It fails open: pushes and CI config changes run every scope.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.scopes.outputs.backend }}
+      frontend: ${{ steps.scopes.outputs.frontend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # The PR merge commit and its first parent, the base branch tip.
+          fetch-depth: 2
+
+      - name: Detect changed scopes
+        id: scopes
+        run: python3 scripts/ci_changed_scopes.py --event "${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+
   default-install-collection:
     # The main job installs --extra postgres; this job proves the documented
     # contributor path (uv sync --group dev, no extras) still collects the
     # whole suite, so optional-dependency imports must stay lazy.
-    if: github.event.pull_request.draft == false
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -46,14 +67,15 @@ jobs:
         run: uv run pytest --collect-only -q
 
   backend-unit-tests-shard:
-    # [argus] Upstream turned this job into a 4-shard matrix, which renames its
-    # check runs to "backend-unit-tests (1..4)" and leaves the branch
+    # [argus] Upstream turned this job into a shard matrix, which renames its
+    # check runs to "backend-unit-tests (1..N)" and leaves the branch
     # protection's required "backend-unit-tests" context reporting forever.
     # The shards keep their own names here and the aggregate job below carries
     # the required name, so the contract survives upstream changing the shard
     # count again (a `needs:` on a matrix job is green only when every leg is).
     name: backend-unit-tests-shard ${{ matrix.shard }}
-    if: github.event.pull_request.draft == false
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -64,7 +86,7 @@ jobs:
       # its peers.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
 
     services:
       postgres:
@@ -112,7 +134,7 @@ jobs:
         working-directory: backend
         run: uv sync --group dev --extra postgres
 
-      - name: Run unit tests of backend (shard ${{ matrix.shard }} of 4)
+      - name: Run unit tests of backend (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
         working-directory: backend
         env:
           # Expose the job's Postgres service to the cross-pod dedupe integration
@@ -121,19 +143,28 @@ jobs:
           # exercised in CI.
           DEERFLOW_TEST_WORKFLOW_POSTGRES: ${{ env.TEST_POSTGRES_URI }}
           DEDUPE_TEST_POSTGRES_URL: ${{ env.TEST_POSTGRES_URI }}
-        run: make test-shard SPLITS=4 GROUP=${{ matrix.shard }}
+        run: make test-shard SPLITS=${{ strategy.job-total }} GROUP=${{ matrix.shard }}
 
   backend-unit-tests:
     # [argus] The required status context. Green only when every shard passed;
-    # a cancelled or skipped shard is a failure here, not a silent pass.
+    # a cancelled or failed shard is a failure here, not a silent pass. Shards
+    # skipped because the change-scope detection ruled the backend out are a
+    # pass, as upstream's own skip is.
     name: backend-unit-tests
-    needs: [backend-unit-tests-shard]
+    needs: [changes, backend-unit-tests-shard]
     if: always() && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Every backend shard passed
         run: |
-          result='${{ needs.backend-unit-tests-shard.result }}'
-          echo "shards: ${result}"
-          [ "${result}" = "success" ] || exit 1
+          scope='${{ needs.changes.outputs.backend }}'
+          changes='${{ needs.changes.result }}'
+          shards='${{ needs.backend-unit-tests-shard.result }}'
+          echo "changes=${changes} backend-scope=${scope} shards=${shards}"
+          [ "${changes}" = "success" ] || exit 1
+          if [ "${scope}" = "true" ]; then
+            [ "${shards}" = "success" ] || exit 1
+          else
+            [ "${shards}" = "skipped" ] || exit 1
+          fi

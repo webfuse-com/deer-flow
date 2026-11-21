@@ -15,6 +15,8 @@ def make_run_event_store(config=None) -> RunEventStore:
 
         sf = get_session_factory()
         if sf is None:
+            if getattr(config, "producer_fencing", "off") == "strict":
+                raise RuntimeError("Strict producer fencing requires a persistent PostgreSQL RunStore")
             # database.backend=memory but run_events.backend=db -> fallback.
             # Keep the compatibility fallback, but make the loss of durable
             # run history impossible to miss in gateway logs.
@@ -22,7 +24,7 @@ def make_run_event_store(config=None) -> RunEventStore:
             return MemoryRunEventStore()
         from deerflow.runtime.events.store.db import DbRunEventStore
 
-        return DbRunEventStore(sf, max_trace_content=config.max_trace_content)
+        return DbRunEventStore(sf, max_trace_content=config.max_trace_content, producer_fencing=getattr(config, "producer_fencing", "off"), producer_cutover_id=getattr(config, "producer_cutover_id", None))
     if config.backend == "jsonl":
         from deerflow.runtime.events.store.jsonl import JsonlRunEventStore
 

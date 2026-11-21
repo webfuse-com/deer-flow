@@ -569,7 +569,7 @@ def test_stream_run_completes_and_persists_runtime_state(isolated_app):
 
 
 _CONFIG_SECTION_ERROR = "invalid_run_config_section"
-_UNRESOLVED_AGENT_DETAIL = "knowledge_scope assistant configuration could not be resolved"
+_NON_STRING_AGENT_DETAIL = "Invalid agent_name: expected a string, got int."
 
 
 @pytest.mark.parametrize(
@@ -592,9 +592,10 @@ _UNRESOLVED_AGENT_DETAIL = "knowledge_scope assistant configuration could not be
             "Invalid assistant_id '   ': must contain only letters, digits, and hyphens after normalization.",
             id="assistant-id-blank",
         ),
-        pytest.param({"config": {"configurable": {"agent_name": 1}}}, 422, _UNRESOLVED_AGENT_DETAIL, id="configurable-agent-name"),
-        pytest.param({"config": {"context": {"agent_name": 1}}}, 422, _UNRESOLVED_AGENT_DETAIL, id="config-context-agent-name"),
-        pytest.param({"context": {"agent_name": 1}}, 422, _UNRESOLVED_AGENT_DETAIL, id="context-agent-name"),
+        pytest.param({"config": {"configurable": {"agent_name": 1}}}, 422, _NON_STRING_AGENT_DETAIL, id="configurable-agent-name"),
+        pytest.param({"config": {"context": {"agent_name": 1}}}, 422, _NON_STRING_AGENT_DETAIL, id="config-context-agent-name"),
+        pytest.param({"context": {"agent_name": 1}}, 422, _NON_STRING_AGENT_DETAIL, id="context-agent-name"),
+        pytest.param({"context": {"agent_name": "ghost-agent"}}, 422, "Agent 'ghost-agent' not found", id="context-agent-missing"),
         pytest.param(
             {"input": {"messages": [{"role": "user", "content": "hi"}, {"role": "ai", "content": "", "tool_calls": "x"}]}},
             400,
@@ -799,6 +800,101 @@ def test_stream_run_executes_real_lead_agent_setup_agent_business_path(isolated_
         assert expected_soul.exists(), f"setup_agent did not write SOUL.md. tmp tree: {sorted(str(p.relative_to(isolated_deer_flow_home)) for p in isolated_deer_flow_home.rglob('SOUL.md'))}"
         assert f"Agent name: {agent_name}" in expected_soul.read_text(encoding="utf-8")
         assert not (isolated_deer_flow_home / "users" / "default" / "agents" / agent_name).exists()
+
+
+@pytest.mark.parametrize("checkpoint_mode", ["full", "delta"])
+@pytest.mark.parametrize("interrupt_at", ["interrupt_before", "interrupt_after"])
+@pytest.mark.parametrize("endpoint", ["", "/wait", "/stream"])
+@pytest.mark.parametrize("resume_input", ["null", "sdk-omitted"])
+def test_static_breakpoint_resumes_with_null_input(isolated_app, checkpoint_mode, interrupt_at, endpoint, resume_input, caplog):
+    from starlette.testclient import TestClient
+
+    from deerflow.config.app_config import get_app_config
+
+    get_app_config().database.checkpoint_channel_mode = checkpoint_mode
+    model = FakeToolCallingModel(responses=[AIMessage(content="One model call."), AIMessage(content="Repeated model call.")])
+    with (
+        patch("deerflow.agents.lead_agent.agent.create_chat_model", return_value=model),
+        TestClient(isolated_app) as client,
+    ):
+        assert isolated_app.state.mcp_task_repo is not None
+        csrf_token = _register_user(client)
+        thread_id = _create_thread(client, csrf_token)
+        headers = {"X-CSRF-Token": csrf_token}
+        path = f"/api/threads/{thread_id}/runs"
+        body = _run_body(
+            context={"thinking_enabled": False, "is_plan_mode": False, "subagent_enabled": False},
+            **{interrupt_at: ["model"]},
+        )
+        paused = client.post(f"{path}/wait", json=body, headers=headers)
+        assert paused.status_code == 200, paused.text
+        state = client.get(f"/api/threads/{thread_id}/state").json()
+        assert state["next"], state
+        if interrupt_at == "interrupt_before":
+            assert "model" in state["next"]
+            assert not any(message["type"] == "ai" for message in state["values"]["messages"])
+        else:
+            assert state["values"]["messages"][-1]["content"] == "One model call."
+
+        if resume_input == "null":
+            resumed = client.post(f"{path}{endpoint}", json={**body, "input": None}, headers=headers)
+            assert resumed.status_code == 200, resumed.text
+            if not endpoint:
+                _wait_for_status(client, thread_id, resumed.json()["run_id"], "success")
+            elif endpoint == "/stream":
+                assert not any(event["event"] == "error" for event in _parse_sse(resumed.text)), resumed.text
+        else:
+            import httpx
+            from langgraph_sdk.client import SyncLangGraphClient
+
+            def send_to_gateway(request):
+                assert "input" not in json.loads(request.content)
+                return client.request(request.method, f"/api{request.url.path}", content=request.content, headers=dict(request.headers))
+
+            with httpx.Client(base_url="http://testserver", transport=httpx.MockTransport(send_to_gateway)) as transport:
+                sdk = SyncLangGraphClient(transport)
+                options = {"context": body["context"], interrupt_at: ["model"], "headers": headers, "input": None}
+                if not endpoint:
+                    run = sdk.runs.create(thread_id, "lead_agent", **options)
+                    _wait_for_status(client, thread_id, run["run_id"], "success")
+                elif endpoint == "/wait":
+                    # Gateway does not accept the SDK's optional raise_error field.
+                    result = sdk.runs.wait(thread_id, "lead_agent", raise_error=None, **options)
+                    assert "__error__" not in result, result
+                else:
+                    events = list(sdk.runs.stream(thread_id, "lead_agent", stream_mode=["values"], **options))
+                    assert not any(event.event == "error" for event in events), events
+        state = client.get(f"/api/threads/{thread_id}/state").json()
+        assert state["next"] == [], state
+        replies = [message["content"] for message in state["values"]["messages"] if message["type"] == "ai"]
+        assert replies == ["One model call."]
+        assert "failed to project MCP task state" not in caplog.text
+
+
+@pytest.mark.parametrize("checkpoint_mode", ["full", "delta"])
+def test_null_input_does_not_start_a_new_turn(isolated_app, checkpoint_mode):
+    from starlette.testclient import TestClient
+
+    from deerflow.config.app_config import get_app_config
+
+    get_app_config().database.checkpoint_channel_mode = checkpoint_mode
+    model = FakeToolCallingModel(responses=[AIMessage(content="Original answer."), AIMessage(content="Unexpected repeat.")])
+    with patch("deerflow.agents.lead_agent.agent.create_chat_model", return_value=model), TestClient(isolated_app) as client:
+        headers = {"X-CSRF-Token": _register_user(client)}
+        thread_id = _create_thread(client, headers["X-CSRF-Token"])
+        path = f"/api/threads/{thread_id}/runs/wait"
+        body = _run_body(context={"thinking_enabled": False, "is_plan_mode": False, "subagent_enabled": False})
+        empty = client.post(path, json={**body, "input": None}, headers=headers)
+        assert empty.status_code == 200, empty.text
+        assert "__error__" in empty.json(), empty.text
+        assert not client.get(f"/api/threads/{thread_id}/state").json()["values"].get("messages")
+
+        completed = client.post(path, json=body, headers=headers)
+        assert completed.status_code == 200 and "__error__" not in completed.json(), completed.text
+        resumed = client.post(path, json={**body, "input": None}, headers=headers)
+        assert resumed.status_code == 200 and "__error__" not in resumed.json(), resumed.text
+        messages = client.get(f"/api/threads/{thread_id}/state").json()["values"]["messages"]
+        assert [m["content"] for m in messages if m["type"] == "ai"] == ["Original answer."]
 
 
 def test_cancel_interrupt_stops_running_background_run(isolated_app):

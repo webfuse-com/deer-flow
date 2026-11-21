@@ -31,6 +31,7 @@ from app.gateway.routers import (
     channel_connections,
     channels,
     console,
+    coordination,
     features,
     feedback,
     github_webhooks,
@@ -40,6 +41,7 @@ from app.gateway.routers import (
     knowledge,
     mcp,
     mcp_tasks,
+    mcp_user_oauth,
     memory,
     models,
     personal_mcp,
@@ -50,6 +52,8 @@ from app.gateway.routers import (
     projects,
     runs,
     scheduled_tasks,
+    search,
+    shares,
     skill_mutations,
     skills,
     subagent_batches,
@@ -64,10 +68,12 @@ from app.gateway.routers import (
     trash,
     uploads,
     user_preferences,
+    voice_input,
 )
 from app.gateway.trace_middleware import TraceMiddleware
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.logging_config import DEFAULT_LOG_DATE_FORMAT, DEFAULT_LOG_FORMAT, configure_logging
+from deerflow.sandbox.sandbox_provider import hold_sandbox_shutdown_ownership
 from deerflow.tracing.monocle import setup_monocle_tracing_if_enabled
 from deerflow.uploads.manager import cleanup_stale_upload_staging_files
 from deerflow.utils.file_io import await_drained
@@ -627,7 +633,17 @@ async def _runtime_with_mcp_pool_shutdown(app: FastAPI, startup_config: AppConfi
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
+    # Claim sandbox shutdown before any startup step can build a provider: a
+    # provider built on the event-loop thread would otherwise install SIGTERM/
+    # SIGINT handlers that destroy every sandbox before uvicorn starts the run
+    # drain. `_runtime_with_mcp_pool_shutdown` closes the provider afterwards.
+    with hold_sandbox_shutdown_ownership():
+        async with _gateway_lifespan(app):
+            yield
 
+
+@asynccontextmanager
+async def _gateway_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Load config and check necessary environment variables at startup.
     # `startup_config` is a local snapshot used only for one-shot bootstrap
     # work (logging level, langgraph_runtime engines, channels). Request-time
@@ -942,11 +958,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if subagent_batches_config.enabled and batch_repo is None:
             raise RuntimeError("subagent_batches.enabled requires database.backend sqlite or postgres")
         if batch_repo is not None:
+            from app.subagent_batches.continuation import BatchContinuations
+            from app.subagent_batches.identity import resolve_batch_principal
+
+            continuations = BatchContinuations(app)
+            app.state.batch_continuations = continuations
             batch_service = SubagentBatchService(
                 repository=batch_repo,
                 config=subagent_batches_config,
                 runtime_config=subagent_runtime_config,
                 extensions=getattr(app.state, "extensions", None),
+                prepare_continuation=continuations.prepare,
+                dispatch_continuation=continuations.dispatch,
+                cancel_continuation=continuations.cancel,
+                resolve_principal=lambda batch: resolve_batch_principal(batch, load_user=app.state.agent_runs_host.load_user),
             )
             app.state.subagent_batch_service = batch_service
             if subagent_batches_config.enabled:
@@ -1363,9 +1388,11 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     app.include_router(capabilities.router)
     app.include_router(mcp.router)
     app.include_router(personal_mcp.router)
+    app.include_router(mcp_user_oauth.router)
 
     # Durable MCP tasks are scoped to their owning thread.
     app.include_router(mcp_tasks.router)
+    app.include_router(coordination.router)
     app.include_router(subagent_batches.router)
 
     # Memory API is mounted at /api/memory
@@ -1394,7 +1421,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     app.include_router(uploads.router)
 
     # Thread cleanup API is mounted at /api/threads/{thread_id}
+    app.include_router(search.router)
     app.include_router(threads.router)
+    app.include_router(shares.router)
 
     # Per-user activity feed (own prefix, so /api/threads/{thread_id} never captures it)
     app.include_router(thread_activity.router)
@@ -1421,6 +1450,7 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Input polishing API is mounted at /api/input-polish
     app.include_router(input_polish.router)
+    app.include_router(voice_input.router)
 
     # User-facing IM channel connection API is mounted at /api/channels
     app.include_router(channel_connections.router)

@@ -15,9 +15,10 @@ a #7/#8 collision between the prompt blocks and the todo middleware). This
 file is now canonical; where older documents disagree, the section notes the
 alias. Baseline facts:
 
-- Upstream base: `66f00e7b8` (`bytedance/main`, 2026-10-25), reached by the
-  merge-based sync of 2026-10-25 (acropolis `docs/DEERFLOW-SYNC.md`; previous
-  base `65a18618` of 2026-10-10, 472 upstream commits behind; before that
+- Upstream base: `1c286b933` (`bytedance/main`, 2026-11-21), reached by the
+  merge-based sync of 2026-11-21 (acropolis `docs/DEERFLOW-SYNC.md`; previous
+  base `66f00e7b8` of 2026-10-25, 454 upstream commits behind; before that
+  `65a18618` of 2026-10-10,
   `fc26204d` of 2026-09-23, `3f0b6ecc` of 2026-09-11 and `3a967d4f` of
   2026-08-15). The 2026-07-02
   rebuild was against tag `v2.0.0` (`7e7f0410`), fork tip `2df36c99` (29
@@ -80,6 +81,27 @@ alias. Baseline facts:
   #4622), thinned #61 to its two frontend lines and folded #79 into #110.
 - Remote layout: `origin` = `webfuse-com/deer-flow` (the fork),
   `bytedance` = upstream. Sync against `bytedance`, never `origin/main`.
+- Sync 2026-11-21 in one line: retired #92 (upstream #7668 carries
+  `thinking_enabled` and `reasoning_effort` on subagents), #94 and #100
+  (upstream #8248 made the per-tool frequency layer a metric that never warns
+  or stops), #153 (upstream #7986 and #8396 grade a shell result by its exit
+  status and dropped classification by words) and the queue half of #162
+  (upstream #7729 Queue and Steer); thinned #68 to its identical-call gate,
+  #82 and #83 to their ToolProgress halves, #111 to the store class and where
+  a definition is kept; re-expressed #66 onto upstream #8356's shared timeout
+  helper and onto `GOAL_RUN_HARD_STOP_REASONS` in `runtime/runs/schemas.py`,
+  #74 next to upstream #8114's summary prompt, #163 onto upstream #7580's
+  launch config, #164 around upstream #7619's `normalize_asyncpg_url`, #167
+  onto upstream's conversation search dialog. Fixed on the merge: the owned
+  shell received the unwrapped command (#1, #104), the run worker lost #133's
+  auto-present call, two upstream Telegram send fixes (#7654 reply threads,
+  #7990 flood waits) ported into `_telegram_sender.py` (#40), duplicate
+  `thinking_enabled` keywords that did not compile, `browser_get_logs` passing
+  a tool name where upstream now takes the launch config. Fork CI: the
+  `backend-unit-tests` aggregate accepts shards skipped by upstream's change
+  detection. The README is upstream's index; its five fork paragraphs are not
+  carried into `docs/guide/`. Each touched section carries a "Sync 2026-11-21"
+  bullet.
 
 To see the live carry-list:
 
@@ -168,14 +190,14 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#88](#patch-88) | Rings sharing: Internalize a thread or artifact from the chat header; shared threads render read-only in the viewer's own frontend | argus-additive | this PR |
 | [#89](#patch-89) | UI round 2: ~~star brand mark~~ (test ids dropped 2026-10-25), Agora sidebar link, artifact header room, inline artifact viewing (sandboxed active content), lock/people share state glyphs | argus-edit | this PR |
 | [#90](#patch-90) | Re-register a store-mapped thread the Gateway registry no longer knows | generic-upstreamable | this PR |
-| [#92](#patch-92) | Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides | argus-additive | this PR |
-| [#94](#patch-94) | Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order | argus-edit | this PR |
+| [#92](#patch-92) | ~~Per-subagent `thinking_enabled` opt-in for custom agents and per-agent overrides~~ RETIRED 2026-11-21 (upstream #7668) | argus-additive | this PR |
+| [#94](#patch-94) | ~~Loop-detection frequency warning is a checkpoint that names the hard limit, not a stop order~~ RETIRED 2026-11-21 (upstream #8248) | argus-edit | this PR |
 | [#95](#patch-95) | `capability_center.enabled` config flag reported by `/api/features`; the frontend hides the Capability Center when off | argus-additive | this PR |
 | [#96](#patch-96) | ~~Middleware-short-circuited tool results are journaled at the next model start, in order, not only at run end~~ RETIRED 2026-10-10 (upstream #5671) | argus-edit | this PR |
 | [#97](#patch-97) | view_image context fits the many-image limits: images downscaled to a 1568 px long edge; a timed-out image call retries once without images (the 4-most-recent cap retired 2026-10-25 into upstream #6828/#6829) | argus-edit | this PR |
 | [#98](#patch-98) | A lead-agent hard stop (loop, deadline, token budget) is replaced by one tool-free answer turn instead of a bare notice | argus-additive | this PR |
 | [#99](#patch-99) | `AioSandbox.grep` falls back to one shell `grep` when the sandbox has no `/v1/file/grep` endpoint | argus-edit | this PR |
-| [#100](#patch-100) | Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh | argus-edit | this PR |
+| [#100](#patch-100) | ~~Layer 2 frequency stop stretches (up to a ceiling) for listed search tools while their latest result is fresh~~ RETIRED 2026-11-21 (upstream #8248) | argus-edit | this PR |
 | [#101](#patch-101) | Parallel tool calls that re-acquire the thread's sandbox in one step no longer crash the run (`replaces` marker instead of `Overwrite`) | argus-edit | this PR |
 | [#102](#patch-102) | Telegram `/f/` report links name the thread's storage bucket (`/f/<user>/<thread>/<file>`) | argus-edit | this PR |
 | [#103](#patch-103) | Open tabs stream runs they did not start: `GET /api/threads/activity` + the workspace subscribes and rejoins | argus-new | this PR |
@@ -219,7 +241,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#150](#patch-150) | A chat bound to a thread that was deleted after this process checked it: on "Thread <id> not found" the manager evicts its cached check, heals the binding as the first check does, retries the run once and tells the person the conversation starts over (not on an unattended fire); the thread DELETE route evicts the same caches | argus-edit | this PR |
 | [#151](#patch-151) | An unattended run whose final text is a short closing note ("Brief delivered and topic log updated.") delivers the substantive text an earlier AI message of the same turn carried, followed by the note, instead of the note alone | argus-edit | this PR |
 | [#152](#patch-152) | A final reply that is raw tool-call markup (`<tool_call>`, `<function=...>`, chat-template tokens, Claude and Kimi forms; on unattended runs also a bare JSON tool call) is not delivered: unattended runs with only trivial text left are reported failed and send nothing, an interactive reply that is nothing but markup becomes a one-line notice | argus-edit | this PR |
-| [#153](#patch-153) | A non-zero shell exit is graded by its trailing exit marker (126 permission, 127 not found, any other code including a 124 timeout `command_failed`, all model-recoverable), never by keywords in the command's output (a script that printed `mrr>500` read as an internal error and bash was blocked for the run) | argus-edit | this PR |
+| [#153](#patch-153) | ~~A non-zero shell exit is graded by its trailing exit marker (126 permission, 127 not found, any other code including a 124 timeout `command_failed`, all model-recoverable), never by keywords in the command's output (a script that printed `mrr>500` read as an internal error and bash was blocked for the run)~~ RETIRED 2026-11-21 (upstream #7986, #8396) | argus-edit | this PR |
 | [#154](#patch-154) | A removed sandbox reads as absent when the socket proxy's `GET /info` denial sits next to "no such object" (excused only when every queried name is reported missing), so a thread whose container was removed gets a new one instead of failing every file and shell tool | argus-edit | this PR |
 | [#155](#patch-155) | The tool-receipt ledger renders at the end of the request for models with the cache-stable tail layout (#125/#147), so its sliding window stops making a self-hosted prefix cache re-read the conversation on every call after a subagent returns | config-expressed | this PR |
 | [#156](#patch-156) | With `read_before_write.bash_reads_mark`, a successful pure-read bash call (`cat`, `head`, `tail`, `sed -n '<range>p'`) marks each file it printed as read at its current version, so an edit after a shell inspection is not blocked | config-expressed | this PR |
@@ -323,6 +345,7 @@ carry budget ledger.
   on every digest bump with the method above, then drop or retune the
   constants), or upstream does so.
 - Upstream status: none (it works around our pinned image's tmux pane).
+- Sync 2026-11-21: the owned shell path of upstream #7772 (`_exec_owned_shell`) now receives the wrapped command (`sent`), as the plain path does; the merge had handed it the raw command, so a `!` would have hit history expansion again.
 
 ## Patch #2
 
@@ -713,7 +736,7 @@ carry budget ledger.
   path, or Gateway defaults to continue for stream clients.
 - Upstream status: clean generic PR candidate.
 - Sync 2026-10-25: code kept. `frontend/src/AGENTS.md` is upstream's byte for byte (49,136 of 49,152 B), so its line is carried here instead: "`onDisconnect` is forwarded (WebUI sends `"continue"` via `WEB_THREAD_SUBMIT_STREAM_OPTIONS`)." `backend/app/gateway/AGENTS.md` carries no fork text either (equal to upstream); `backend/docs/STREAMING.md` keeps its paragraph.
-
+- Sync 2026-11-21: its one test moved into upstream's consolidated `tests/test_mcp_routing.py` (#8372).
 
 ## Patch #60
 
@@ -828,6 +851,7 @@ carry budget ledger.
   particular is a strict improvement with an in-repo precedent to cite.
 - Sync 2026-09-11: the timeout salvage is re-expressed into upstream's rewritten `execute_async` (`asyncio.wait_for` + `except TimeoutError` on the persistent isolated loop; upstream still stamps a bare `TIMED_OUT` there and salvages only on the GraphRecursionError path). Both outcomes now carry upstream's `tool_receipts=result.snapshot_tool_receipts()`. `time_capped` in `status_contract.py`, `run_deadline_middleware.py`, `run_limits_config.py`, `delegation_ledger.py` auto-merged intact. The sync `execute()`/`_execute_in_isolated_loop` timeout path is unchanged (ours never touched it).
 - Sync 2026-10-25: salvage re-expressed into upstream #7053's `asyncio.wait` timeout branch (no `TimeoutError` any more): in `run_with_timeout` the salvage runs when `execution_task not in done`, before upstream's `execution_task.cancel()` and `_supervise_background_execution`; COMPLETED + `time_capped` with partial text, else upstream's TIMED_OUT. `time_capped` is unioned with upstream #7355's `model_length_capped` (`subagents/status_contract.py`, `contracts/subagent_status_contract.json` stays v3 with five values, frontend `core/tasks/subtask-result.ts` and `types.ts` in the same order). `time_capped` joins `_GOAL_RUN_HARD_STOP_REASONS` (`runtime/runs/worker.py`): RunDeadline's start survives goal continuations, so a continuation after a wall-clock stop would hit the expired deadline at once (fleet: `run_limits.enabled: true`, 1200 s). That needs the value in `contracts/thread_goal_contract.json`, `contracts/scheduled_goal_notes_contract.json`, `app/scheduler/notification_text.py` (en-US, zh-CN), frontend `core/scheduled-tasks/goal-outcome.ts`, `components/workspace/goal-status-helpers.ts`, `goal-status.tsx`, `core/i18n/locales/{types,en-US,zh-CN}.ts` (`timeCapped`) and `tests/e2e/utils/raw-identifiers.ts`. Tests: `test_subagent_executor.py::TestCooperativeCancellation::test_timeout_salvage_runs_on_the_hard_timeout_branch` (no stream mocks; mutation-checked), `test_goal_worker.py::test_goal_worker_stands_down_after_run_hard_stop[time_capped]`.
+- Sync 2026-11-21: the timeout salvage moved into upstream #8356's `_await_admitted_execution`, guarded to the async path (`timeout.status is TIMED_OUT`); the sync path keeps upstream's FAILED. `try_set_terminal` leaves a `completed` + `time_capped` result alone; upstream's new past-the-deadline check would have turned the salvage back into a timeout. `test_timeout_salvage_runs_on_the_hard_timeout_branch` patches `_aexecute_admitted`, because the clock now starts at admission, and upstream's admission-gap test streams no text. `time_capped` is added to `GOAL_RUN_HARD_STOP_REASONS` in `runtime/runs/schemas.py`, where upstream moved the set, so a deadline stop also stops queued input delivery and owned sandbox commands, as the other hard stops do. Both contracts, `notification_text.py` and the frontend keep `time_capped` next to upstream's `recursion_capped`. `todo_middleware` lists `time_capped` and `model_calls_capped` as run stops, and `run_deadline_middleware` writes each as a literal for upstream's stop-reason inventory test.
 
 ## Patch #71
 
@@ -988,6 +1012,7 @@ carry budget ledger.
 - Delete-when: upstream raises the frontend `recursion_limit` to 10000 or counts turns instead of graph nodes.
 - Upstream status: clean generic PR candidate.
 - Sync 2026-10-25 (follow-up commit): THINNED to the frontend. The backend default edits are gone: `AppConfig.max_recursion_limit` and `services._DEFAULT_MAX_RECURSION_LIMIT` are upstream's 1000 again, and `config.example.yaml` and `test_gateway_services.py` are upstream's. The 22 atlas templates, pyrrhus and `projects/_template` set `max_recursion_limit: 10000`. Pythia's host `config.yaml` does not: until it sets it, its web runs (which send 10000) are clamped to 1000 with a WARNING per run.
+- Sync 2026-11-21: `THREAD_RUN_RECURSION_LIMIT` stays 10000 over upstream's new 1000; `hitl-approval.dom.test.tsx` expects it.
 
 ## Patch #62
 
@@ -1450,6 +1475,7 @@ carry budget ledger.
   patch.
 - Sync 2026-10-10: `chunk_html` measures chunks in UTF-16 code units (Telegram's unit): a chunk wider than the limit is split again at a proportionally smaller character limit. Upstream's `test_send_splits_an_emoji_heavy_final_reply_into_sendable_chunks` covers it.
 - Sync 2026-10-25: upstream #6791 (deleted reply targets in private chats) landed only in upstream's fenced send code, so it is ported by hand into `_telegram_sender.send_one`: `allow_sending_without_reply=True` for private chats (`chat_id > 0`) when replying to the bot's previous message; groups stay strict. The running reply needs no port: the stage emoji is sent without a reply target (its docstring says so; the reaction fallback has no such flag). The fence is untouched. `test_telegram_deleted_reply.py` (new upstream file): the three preview tests target the fenced copies (`_upstream_send_superseded`, `_upstream_send_running_reply_superseded`), plus four live-path tests (a private reply survives a deleted target, a group stays strict, the stage emoji is independent of the inbound message in both chat types); the live private test fails without the port. `channels/AGENTS.md` now warns that upstream's edit-in-place and Rich helpers in `telegram.py` are unreachable, so upstream send fixes must be ported into the sender. Sync checklist: diff upstream's `telegram.py` send paths against `_telegram_sender.py` every sync.
+- Sync 2026-11-21: two upstream send fixes landed only in the fenced code and are ported into `_telegram_sender.py`: #7654 (`send_one` returns the message id and `send` calls `channel._remember_reply_thread`, so a reply to the bot in a group stays on its thread; a no-op in private chats) and #7990 (`channel._outbound_retry_delay` in place of `2**attempt`, so a flood wait is honoured up to the channel's cap). #8056 (photo as document) and #7591 are live already. `channels/AGENTS.md` is upstream's rewrite plus two fork bullets. Upstream's new `test_telegram_reply_threads.py` and `test_telegram_send_retry_after.py` exercise the fenced copy where they assume edit-in-place.
 
 ## Patch #43
 
@@ -1749,6 +1775,7 @@ carry budget ledger.
   Gemini CLI's loop-recovery design, which soft-recovers before killing).
 - Sync 2026-09-11: re-expressed onto upstream's `_LoopDecision` shape after e7c059d8 (#5245 hard-stop ordering), 9b32b5d8 (#5127 event persistence), 13f0a7f2 (#4863 extension observers) and 36ce7590 (#5344 per-run state). The Layer-1 downgrade is a `warn` decision with a new `downgrade: "recoverable_retry" | "exempt_tool" | None` field. Four behaviour decisions: (1) a downgraded hard stop no longer short-circuits Layer 2 (upstream requires warnings not to skip frequency accounting), so a Layer-2 hard stop can supersede it; it still escalates per call because it is never marked "already warned" (default `recoverable_retry_limit` 24 < freq hard 50, so defaults are unchanged); (2) downgrades are persisted to the run journal as `action="warn"` with `changes["downgrade"]`, added only when set so upstream's exact-equality event tests stay untouched; (3) `release_policy_parameters()` now includes `read_file_bucket_size_lines`, `no_hard_stop_tools`, `recoverable_retry_limit`; (4) upstream's `_WARNING_MSG` stays defined but Layer-1 warnings use our actionable text. Tests ported from `_get_thread_id` to `_run_scope_key` indexing.
 - Sync 2026-10-25: re-expressed onto upstream #6804 (80a71b090, save-first loop warnings). `_TOOL_LOOP_WARNING_MSG`, `_RECOVERABLE_RETRY_MSG` and `_TOOL_EXEMPT_RETRY_MSG` keep the named tools, count, outcome and action text and now end "... or stop repeating them/the call/it and wrap up now. " plus upstream's `_WRAP_UP_INSTRUCTIONS` (save first, one bounded read-before-write retry, then the final answer). Layer 2's `_TOOL_FREQ_EXEMPT_MSG` and #100's `_TOOL_FREQ_FRESH_MSG` are unchanged; #69, #82, #83 and #100 kept as merged.
+- Sync 2026-11-21: THINNED to the identical-call gate. Upstream #8248 made the per-tool frequency layer a metric, so the volume-cap half is gone and `no_hard_stop_tools` applies to identical calls only. Upstream #7986 removed classification by words, so the gate keeps its own empty-result marker list (success bodies up to 600 characters) and treats an error as recoverable unless its type is auth, rate_limited, transient, config or internal.
 
 ## Patch #69
 
@@ -1872,6 +1899,7 @@ carry budget ledger.
 - Upstream status: pending replay evidence before proposing upstream.
 - Sync 2026-09-11: kept; the ledger prompt now names the `<active_user_request>` block introduced by #75's re-expression.
 - Sync 2026-10-25: re-expressed onto upstream #6918 (246456694), chunked full-coverage compaction (`_next_summary_step`, `_asummarize_prompt`, up to 64 chunks, `_bound_summary_carry` at half the step budget, PII redaction of the source before splitting). `_EXECUTION_LEDGER_SUMMARY_PROMPT` stays the default through `kwargs.setdefault("summary_prompt", ...)` (an operator `summary_prompt` still overrides) and now applies once per chunk. The MERGE RULES are reworded for the fold: history folds oldest to newest and the existing summary may be the previous step's ledger; a slice can start or end inside a message; a carry cut by `_bound_summary_carry` is marked `[summary shortened]`, and sections or items missing at the marker were dropped for space, never evidence of pending, failed or repeated work; a heading lost in the cut is rebuilt from new evidence or written "Not retained", never "None"; decisive facts go first in each section because an oversized ledger loses its middle. On the fleet `trim_tokens_to_summarize: null` means one unbounded step, so the carry is never shortened there. Files: `summarization_middleware.py`, `summarization_config.py` (`summary_prompt` description), `backend/docs/summarization.md` (default prompt behaviour now describes the ledger), `config.example.yaml` (`summary_prompt` comment). Tests: `test_summarization_summary_text.py::test_default_prompt_requires_recursive_execution_ledger` (updated; pins the exact `_SHORTENED_SUMMARY_MARKER` text), `::test_custom_summary_prompt_remains_an_operator_override`. Delete-when unchanged in substance: upstream's default summary is a recursive execution ledger whose merge contract survives carry shortening.
+- Sync 2026-11-21: the default summary prompt stays the execution ledger, with upstream #8114's ACTIVE USER REQUIREMENTS section added; `from_config` and the default both use it, so upstream's built-in prompt does not replace it.
 
 ## Patch #75
 
@@ -1963,6 +1991,7 @@ carry budget ledger.
 - Upstream status: n/a (Argus integration).
 - Sync 2026-10-10: combined with upstream's truncated/still-loading guards in `artifact-file-detail.tsx`; upstream's editing DOM test mocks `InternalizeArtifactAction`.
 - Sync 2026-10-25: kept. `core/artifacts/utils.ts` unions the imports (upstream's `extractPresentFilesFromMessage` plus our `sharing/thread-id`); upstream's new resolvers (#7356 relative message links, #6827 markdown preview images) go through `urlOfArtifact`/`resolveMarkdownArtifactURL`, so the shared-thread switch covers them. The header Internalize trigger is re-applied on both chat pages. `shared-thread-page.dom.test.tsx` wraps the page in `ArtifactDraftsProvider` (upstream #6700 mounts it in the root layout, so production is fine) and uses upstream's static `FlipDisplay` test helper (Motion's animation cancel rejects under happy-dom 21). The `frontend/AGENTS.md` route and domain mentions moved into this section (see Directory notes).
+- Sync 2026-11-21: the i18n namespace of this patch is `agoraSharing`; upstream #8211 took `sharing` for conversation share links. `artifact-file-save-race.dom.test.tsx` (upstream) gets a `ThreadContext` in its mock, which `InternalizeArtifactAction` reads.
 
 ## Patch #89
 
@@ -2026,6 +2055,7 @@ carry budget ledger.
 - Upstream status: none sent yet.
 - Sync 2026-09-11: kept; state keyed by upstream's `(thread_id, run_id)` scope key; the dead `_bash_subcategory` helper (superseded by `_bash_classify` since #83, no references) was dropped.
 - 2026-10-26 (decision d7, fleet rollout in waves): each efficiency hint is recorded as `middleware:tool_progress` with action `efficiency_hint` (`hint`, `streak` or `total_tool_calls`, `threshold`, `tool_name`, and `bash_inspections_in_streak`, which says whether a read-streak hint needed this patch to fire). The hints are injected into the model input and stored nowhere else, so without the event the rollout could not be judged. Counts only, no tool content (`test_efficiency_hints_are_recorded_with_the_bash_share_of_the_streak`).
+- Sync 2026-11-21: THINNED: the loop-detection half is gone with upstream #8248 (no frequency stop left to steer). The ToolProgress half stays. A `bash.inspection` key in `tool_freq_overrides` still loads and is ignored.
 
 ## Patch #83
 
@@ -2048,6 +2078,7 @@ carry budget ledger.
 - Delete-when: upstream adopts structured error classification and subcategory frequency window decay.
 - Upstream status: none sent yet.
 - Sync 2026-09-11: kept (`_clear_subcategory_locked(scope_key)`, own-limit trimming, resets); the `tool_result_meta.py` half auto-merged next to upstream's new `subagent_status` block.
+- Sync 2026-11-21: THINNED: the wrapper-error half is gone with upstream #7986 (no classification by words), and the loop half with #8248.
 
 ## Patch #84
 
@@ -2165,6 +2196,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_subagent_thinking_config.py` (NEW: resolution helper, config surface, registry plumbing, override precedence), `backend/tests/test_subagent_executor.py` (EDITED, +1 case: opt-in reaches `create_chat_model`; default stays off). Full `test_subagent_executor.py` (145), `test_subagent_timeout_config.py` + `test_managed_subagent_registry.py` (71), and `test_config_version.py`/`test_verification_config.py`/`test_subagents_router.py`/`test_app_config_reload.py` (59) pass.
 - Delete-when: upstream exposes per-subagent thinking/reasoning controls; then re-express on their field.
 - Upstream status: none sent yet (clean additive PR candidate).
+- Sync 2026-11-21: RETIRED. Upstream #7668 carries `thinking_enabled` and `reasoning_effort` on `SubagentConfig`, custom agents, per-agent overrides and managed definitions. The fork fields, `get_thinking_for` and `resolve_subagent_thinking` are deleted; `test_subagent_thinking_config.py` is upstream's. One difference: an unset value now means the model's own default through upstream's reasoning contract, where the fork forced thinking off.
 
 ## Patch #93
 
@@ -2222,6 +2254,7 @@ carry budget ledger.
 - Delete-when: upstream's frequency warning stops ordering a final answer, or
   upstream makes the warning text configurable.
 - Sync 2026-10-25: re-expressed onto upstream #6804 (80a71b090). `_TOOL_FREQ_WARNING_MSG` keeps our checkpoint wording and `{hard_limit}` and folds in upstream's save-first clause ("If your task asks you to save results to a file, write what you have collected so far to that file first, with a file-writing tool such as write_file; if a read-before-write check blocks the save, read the target file and retry the save once."); it orders neither a stop nor a wrap-up. Upstream's own `_TOOL_FREQ_WARNING_MSG` ("Stop calling X and wrap up now" plus `_WRAP_UP_INSTRUCTIONS`) had auto-merged BELOW the conflict and would have silently overridden ours; it is removed. `_WRAP_UP_INSTRUCTIONS` and `_WARNING_MSG` are byte-identical to upstream. Upstream's `TestWarningLetsAgentSaveResultsFirst` is reconciled: `test_freq_warning_names_the_looping_tool_and_allows_saving` asserts the checkpoint (tool, force-stop count, no "Stop calling"/"wrap up", the save clause before the force-stop), the read-before-write test checks ordering against the force-stop sentence for the frequency layer, the looping-writer test runs for the hash layer only, and new `test_frequency_warning_on_a_writer_asks_to_save_without_stopping_it` covers the frequency layer.
+- Sync 2026-11-21: RETIRED. Upstream #8248: the frequency layer logs a metric and never warns or stops, so there is no warning left to reword.
 
 ## Patch #95
 
@@ -2342,6 +2375,7 @@ carry budget ledger.
 - Upstream status: none sent (generic-upstreamable).
 
 ---
+- Sync 2026-11-21: THINNED: `thinking_enabled` on a managed definition is upstream's (#7668). The store class, `source_info` and `stored_in` stay.
 
 ## Patch #112
 
@@ -2471,6 +2505,7 @@ carry budget ledger.
 - Delete-when: upstream ships masking, export filtering and per-thread opt-out in its Langfuse integration, or Argus stops tracing.
 - Upstream status: the fail-open part is generic-upstreamable.
 - Sync 2026-10-25: langfuse 4.15.6 sets the `httpx` logger to WARNING when `langfuse.logger` is imported, so upstream's WeCom URL-redaction tests (`test_channel_file_attachments.py::TestWecomMediaUrlGate`) failed whenever a tracing test ran earlier in the same shard; they now pin `httpx` to INFO themselves. In a gateway the same import keeps httpx request lines at WARNING, which is what #44's dropped pin did.
+- Sync 2026-11-21: upstream #8433 deleted `test_tracing_metadata.py`; the deletion is accepted, `test_argus_ariadne_tracing.py` covers the patch.
 
 ## Patch #122
 
@@ -2550,6 +2585,7 @@ carry budget ledger.
 - Delete-when: upstream's Telegram streaming path consumes error frames. For the run-continues part (below): the manager re-attaches to a continuing run (`runs.join`) and delivers its answer, or upstream stops running channel turns past a dropped request.
 - Upstream status: generic-upstreamable for the error-frame half; the notice is argus (playbook fires).
 - Sync 2026-10-25: re-expressed onto upstream #7104 (085924a3d, run admission and inbound idempotency): `RunErrorFrame` subclasses upstream's `_RunFailedFrame`, so admission treats an error frame as terminal (the dedupe key is released) and our name and message survive for the notice and the Chronos report. New, following upstream #6876 (`on_disconnect: continue` for IM runs): a request that broke after the Gateway admitted the run is not reported as failed. Streaming path: `keep_dedupe_key = _keep_dedupe_key_after(...)` is decided once; `run_continues` (key kept, not an "already admitted" 409) replaces the generic error and `_unattended_failure_text` with `_run_continues_text` (`RUN_CONTINUES_MESSAGE` when interactive, a schedule-named line when unattended), appended to any partial text, and sends no Chronos report (Chronos's timeout fallback records the fire as unreported). `runs.wait` path: a `ReadTimeout`, `ReadError` or `RemoteProtocolError` gets the same notice and keeps the key instead of "An internal error occurred". Upstream's `ALREADY_ADMITTED_MESSAGE` is reworded to "This message is already being processed. Its answer will appear in this conversation." (one carried line in an upstream constant; product-neutral, so it can go upstream with coalesce, #149 and #150). Tests: `test_channels.py::TestChannelManager::test_broken_stream_reports_failed_only_before_admission` (new); `test_unattended_stream_reports_outcome_once` now fails through an error frame (a transport break after the first frame is a continuing run).
+- Sync 2026-11-21: failure paths use upstream #8383's `_send_error_then_release_dedupe` (reply, then release the key) and report the outcome after; the new step-limit branch (#7588) reports a scheduled fire as failed and keeps the schedule-naming text.
 
 ## Patch #129
 
@@ -2606,6 +2642,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_run_worker_auto_present.py` (real checkpointed graph: artifacts merged and no pending step; off by default; too many outputs; a failed update keeps the error; worker-level run succeeds with an auto_presented delivery event). `test_run_worker_delivery.py` unchanged and green.
 - Delete-when: upstream presents produced outputs itself or relaxes the check.
 - Upstream status: generic-upstreamable as an option.
+- Sync 2026-11-21: the auto-present call is re-inserted in the success path of `runtime/runs/worker.py`; the merge had dropped it. Upstream #8410 requires delivery only for goal runs, so the call no longer hangs on a delivery error: it runs whenever a run left produced outputs unpresented, and an ordinary run still shows its files.
 
 ## Patch #134
 
@@ -2739,7 +2776,7 @@ carry budget ledger.
 - Upstream status: generic-upstreamable (any coding run whose failing output prints a status-like number hits it).
 - Sync 2026-10-25: THINNED onto upstream #7271 (2f0cd407f): one exit parser, upstream's `deerflow.utils.bash_exit.bash_exit_status` (before the merge both parsers coexisted and upstream's `failed_bash` branch was unreachable behind ours). Removed: `_SHELL_EXIT_CODE_RE` and the `exit=N` marker form (no producer emits it); a trailing `Command exited with code N` after other output is no longer a marker (upstream accepts it only as the whole body, the only shape providers emit). Kept as our delta: upstream's `failed_bash` branch moved FIRST (before the tool-status, `Error:`-prefix and JSON-error branches) and graded by `_shell_exit_meta(marker)`: 126 permission, 127 not_found, else `command_failed` (`COMMAND_FAILED_ERROR_TYPE`, which ToolProgressMiddleware's hint table imports) with its progress hint. Source is upstream's `content_analysis` (was `tool_return`; no consumer distinguishes). The `exit_code` meta key (from #73) was kept at the merge only for #143's `regrade_tool_meta`; it went with #143 in the decision d6 follow-up (`_make_meta` is upstream's again, `ToolResultMeta.exit_code` removed, no other reader). Pre-stamped meta now gets upstream's legacy-checkpoint repair (a `content_analysis` success on a failed bash is re-graded) and still `_sync_message_status` (#73). Tests: upstream's `test_bash_nonzero_exit_marker_is_a_recoverable_error` and `..._does_not_classify_arbitrary_stdout_as_an_auth_error` reconciled to `command_failed`; ours: the `exit=9`/`exit=3` cases replaced by producer shapes, and a tail `Command exited with code 2` is pinned as output (`test_tool_result_meta.py`, `test_tool_result_meta_shell_exit.py`).
 - Follow-up 2026-10-25 (decision d6, #143 dropped): tests no longer assert an `exit_code` key (`test_only_the_trailing_exit_marker_counts` checks the grade and status instead; #73's `test_shell_nonzero_exit_is_public_error_with_exit_code` became `test_shell_nonzero_exit_is_public_error`).
-
+- Sync 2026-11-21: RETIRED. Upstream #7986 and #8396 grade a shell result by its exit status ahead of any text and removed classification by words. The `command_failed` type and the 126/127 mapping are gone; `test_tool_result_meta_shell_exit.py` is deleted.
 
 ## Patch #154
 
@@ -2801,6 +2838,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_lead_agent_model_resolution.py::test_bound_task_schema_has_no_model_name` (with and without a UI selection), `backend/tests/test_task_tool_core_logic.py::test_task_tool_takes_no_model_choice_from_the_model` (new) plus upstream's three model-choice tests re-expressed with `runtime.context["subagent_model_name"]`, `backend/tests/test_tool_args_schema_no_pydantic_warning.py::test_task_tool_description_is_optional_but_discoverable` (no `model_name` property), `backend/tests/test_model_selection.py::test_selected_model_stays_out_of_the_task_schema_and_the_shared_tool` (replaces upstream's schema test).
 - Delete-when: Nicholas reverses d2, or upstream gates the model's child-model choice on a person's selection.
 - Upstream status: none (product decision; an upstream switch for model-chosen child models would replace it).
+- Sync 2026-11-21: kept. Upstream's conflict check against a model-chosen `model_name` goes away with the argument; `test_task_tool_takes_no_model_choice_from_the_model` stays next to upstream's preflight tests.
 
 ## Patch #161
 
@@ -2812,6 +2850,7 @@ carry budget ledger.
 - Tests: `frontend/tests/unit/components/workspace/settings/model-provider-presets.dom.test.tsx` (NEW: gate closed, helpers, Add model offers and saves only the custom endpoint, a preset model stays editable), `frontend/tests/unit/components/workspace/settings/model-settings-page.dom.test.tsx` (upstream's, EDITED: mocks the gate open so its preset cases still run), `frontend/tests/e2e/model-management.spec.ts` (upstream's, EDITED: fills the custom endpoint's base URL, since a new model no longer starts on a preset).
 - Delete-when: Argus decides owners may add direct provider routes, or upstream gates presets behind a config flag we can set off.
 - Upstream status: none (an upstream config flag for presets would replace this).
+- Sync 2026-11-21: upstream's new "Fetch and add models" dialog gets `offeredModelProviders(...)` too, so presets stay hidden there; the provider picker is upstream's native select and `model-provider-presets.dom.test.tsx` reads its options.
 
 ## Patch #162
 
@@ -2824,6 +2863,7 @@ carry budget ledger.
 - Delete-when: upstream queues (or steers) a message sent while a run streams and marks a running run in the document title; the suggestions default can go once every stack config sets `suggestions.enabled` itself.
 - Upstream status: none sent (generic-upstreamable UI feature).
 - Sync 2026-10-25: re-applied on upstream #7249's chat page and agent chat page, unchanged in behaviour. A dequeued message is sent with `sendMessage` directly, so it skips upstream's new model-choice resolution ("use X for this turn") as well as the knowledge-scope snapshot and the project pre-create (#122), as it skipped the latter two before. The welcome-layout effect this commit had dropped from the agent page is back (see #122).
+- Sync 2026-11-21: queue half RETIRED: upstream #7729 Queue and Steer replaces the client-side queue (`queued-messages.tsx`, `use-thread-queue.ts` and the queue code in the two chat pages are deleted; `input-box.tsx` is upstream's). Kept: the running marker in the tab title and suggestions off by default.
 
 ## Patch #163
 
@@ -2836,6 +2876,7 @@ carry budget ledger.
 - Delete-when: upstream ships a browser console-log tool and a sandbox-browser CDP mode.
 - Upstream status: none sent (generic-upstreamable; upstream has neither).
 - Sync 2026-10-25: kept beside upstream #6913/#6731's atomic no-overwrite screenshot publish (`_publish_screenshot_no_overwrite`).
+- Sync 2026-11-21: `_resolve_cdp_url` stays next to upstream #7580's `_launch_config` and `_resolve_session(runtime, cfg)`; `browser_get_logs` passes the launch config.
 
 ## Patch #164
 
@@ -2848,6 +2889,7 @@ carry budget ledger.
 - Delete-when: upstream's `app_sqlalchemy_url` (or its engine factory) strips libpq-only query options for asyncpg. Upstream #6917 fixes the opposite direction (it strips `+asyncpg` for psycopg) and does not cover this.
 - Upstream status: none sent (small PR candidate).
 - Sync 2026-10-10: the merge had lost its imports; rebuilt without `parse_qsl` (see the header's 2026-10-10 line).
+- Sync 2026-11-21: wraps upstream #7619: `strip_asyncpg_only_options(normalize_asyncpg_url(...))`. Upstream owns the `postgres://` mapping now.
 
 ## Patch #165
 
@@ -2873,6 +2915,7 @@ carry budget ledger.
 - Upstream status: none sent; generic for any deployment with a mounting provider (local container AIO, local sandbox).
 
 ---
+- Sync 2026-11-21: a failed read of a saved tool result returns through upstream's `_read_file_failure`, so it is stamped an error like any other failed read.
 
 ## Patch #167
 
@@ -2887,6 +2930,7 @@ carry budget ledger.
 - Upstream status: none sent.
 
 ---
+- Sync 2026-11-21: the palette is upstream's conversation search dialog with the apps, projects and tools of this patch on top; both sidebar rows open it.
 
 ## Patch #168
 
@@ -3057,6 +3101,19 @@ carry budget ledger.
 ---
 
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
+
+**Dropped at the 2026-11-21 upstream sync (base `66f00e7b8` -> `1c286b933`):**
+
+- **#92 per-subagent `thinking_enabled`**: upstream #7668 carries it, with
+  `reasoning_effort`, on every kind of subagent definition.
+- **#94 frequency warning as a checkpoint** and **#100 fresh-result
+  extension**: upstream #8248 made the per-tool frequency layer a metric that
+  never warns or stops. The same change removed the loop halves of #82 and #83
+  and the volume-cap half of #68.
+- **#153 shell results graded by exit code**: upstream #7986 and #8396 grade
+  by exit status and removed classification by words.
+- **#162's client-side message queue**: upstream #7729 Queue and Steer. The
+  tab-title marker stays under #162.
 
 **Dropped at the 2026-10-25 upstream sync (base `65a18618` -> `66f00e7b8`):**
 
@@ -3322,6 +3379,7 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Intent: all 24 loop-detection hard stops in the 30 days to 2026-09-30 were Layer 2 volume caps on read-only search tools (`code_search_code` 11, `atlas_knowledge` 6, `web_search` 3, `bq_query` 3, `web_search_exa` 1); none were Layer 1 identical-call loops. Patches #68/#69 gate only Layer 1 on result meta. Tools listed in `fresh_result_extension_tools` now downgrade the Layer 2 hard stop to an escalating warning (`downgrade="fresh_results"`, never marked warned) while the tool's latest result is `success` with at least 10 words and is not a near-duplicate of its recent results (same Jaccard helpers/threshold as #69), up to `fresh_result_extension_factor` x the hard limit (default 2.0; 1.0 disables). A no-results reply (`partial_success`), an error, a ToolProgress block, missing meta, a short or near-duplicate result all keep the stop. Opt-in per tool because fresh output is new information for a search tool but not for `bash`. The frequency window is sized to the ceiling so it is reachable.
 - Tests: `TestFreshResultExtension` in `backend/tests/test_loop_detection_middleware.py`
 - Delete-when: upstream makes Layer 2 result-aware.
+- Sync 2026-11-21: RETIRED. Upstream #8248: the frequency layer never stops a run. `fresh_result_extension_tools` and `fresh_result_extension_factor` still load and are ignored.
 
 ## Patch #101
 
@@ -3368,4 +3426,5 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Upstream status: none (the wrapper works around our pinned image; upstream's own fix is the newer image).
 - Sync 2026-10-10: commands that run `shopt`, `alias` or `enable` are sent unwrapped: bash parses a brace group whole, so an `extglob` pattern or an alias defined earlier in the same command would no longer parse (upstream's new tests caught it). Upstream keeps terminal stdin only for its Lark broker shim, which Argus does not run. Tests: `test_parse_time_builtins_are_sent_as_is`; upstream's stdin and warm-pool tests expect the wrapped command.
 - Sync 2026-10-25: kept, and `_noninteractive` now also hosts #1 (history expansion and the long-line guard: base64 `eval` heredoc for a body with `!` or a line over 2,000 bytes, and `_pane_refusal` in `_exec_shell` for what the pane would drop); see #1 for the measured limits. Upstream #6782 only makes `bash_tool` pass `bash_command_timeout` explicitly; AIO already got the same 600 s through the provider default (`aio_sandbox_provider.py` `_default_command_timeout`), so it still sends `hard_timeout` 600 / `no_change_timeout` 605, which the pinned image ignores, and the "about 120 s" guidance stays true.
+- Sync 2026-11-21: see #1: the owned shell gets the `</dev/null` brace group too.
 

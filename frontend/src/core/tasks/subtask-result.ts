@@ -194,7 +194,10 @@ export function hasSubtaskToolResult(
     return false;
   }
   return messages.some(
-    (message) => message.type === "tool" && message.tool_call_id === toolCallId,
+    (message) =>
+      message.type === "tool" &&
+      message.tool_call_id === toolCallId &&
+      message.additional_kwargs?.subagent_pending !== true,
   );
 }
 

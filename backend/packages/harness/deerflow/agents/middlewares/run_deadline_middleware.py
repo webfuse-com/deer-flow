@@ -272,7 +272,11 @@ class RunDeadlineMiddleware(AgentMiddleware[AgentState]):
                 self._stop_reason[run_id] = reason
                 ctx = getattr(runtime, "context", None)
                 if isinstance(ctx, dict):
-                    ctx["stop_reason"] = reason
+                    # A literal per branch: the stop-reason inventory test reads constants.
+                    if capped_calls:
+                        ctx["stop_reason"] = "model_calls_capped"
+                    else:
+                        ctx["stop_reason"] = "time_capped"
                 return None
             if (capped_calls or elapsed >= budget) and self._finalize_grace(run_id, last_msg):
                 # [argus patch #127] the finishing batch runs; the next model message stops.
