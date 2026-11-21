@@ -42,7 +42,7 @@ def code_search(query: str) -> str:
 
 
 class _SearchThenAnswerModel(BaseChatModel):
-    """Calls ``code_search`` with a fresh query while tools are bound; answers once they are not."""
+    """Calls ``code_search`` with the same query while tools are bound; answers once they are not."""
 
     calls: list[dict] = []
     synthesis: str | Exception = _ANSWER
@@ -65,7 +65,7 @@ class _SearchThenAnswerModel(BaseChatModel):
         n = len(self.calls)
         message = AIMessage(
             content="\n\n",
-            tool_calls=[{"id": f"call_{n}", "name": "code_search", "args": {"query": f"q{n}"}}],
+            tool_calls=[{"id": f"call_{n}", "name": "code_search", "args": {"query": "q"}}],
         )
         return ChatResult(generations=[ChatGeneration(message=message)])
 
@@ -74,7 +74,10 @@ class _SearchThenAnswerModel(BaseChatModel):
 
 
 def _loop_detection() -> LoopDetectionMiddleware:
-    return LoopDetectionMiddleware(tool_freq_overrides={"code_search": (2, 3)})
+    # [argus sync] Layer 2 caps are observe-only upstream (#8248), so the hard stop here is the
+    # identical-call one; recoverable_retry_limit=3 keeps patch #69's near-duplicate downgrade
+    # (identical long results) from stretching it.
+    return LoopDetectionMiddleware(warn_threshold=2, hard_limit=3, recoverable_retry_limit=3)
 
 
 def _graph(model, *, synthesis: bool = True, state_schema=None):

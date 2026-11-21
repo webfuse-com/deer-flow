@@ -34,6 +34,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { PluginSurfaces } from "@/components/workspace/plugin-surfaces";
 import { ProjectDocumentsSection } from "@/components/workspace/projects/project-documents-section";
+import { ProjectMemorySection } from "@/components/workspace/projects/project-memory-section";
 import { useProjectPluginTabs } from "@/components/workspace/projects/project-plugin-tabs";
 import { ProjectThreadsSection } from "@/components/workspace/projects/project-threads-section";
 import {
@@ -54,6 +55,7 @@ import {
   type Project,
 } from "@/core/projects";
 import { filesSourceOf, orderedTabs } from "@/core/projects/files";
+import { useProjectMemoryMutationPending } from "@/core/projects/memory";
 import { isStaticWebsiteOnly } from "@/core/static-mode";
 import { isIMEComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
@@ -467,6 +469,7 @@ function ProjectInstructionsSection({ project }: { project: Project }) {
       : null;
   const { t } = useI18n();
   const patchProject = usePatchProject();
+  const memoryMutationPending = useProjectMemoryMutationPending(project.id);
   const configQuery = useProjectsConfig();
   // The gateway enforces ``projects.instructions_max_bytes`` with a 422, so
   // the editor blocks the save before the round trip; while the config
@@ -493,7 +496,8 @@ function ProjectInstructionsSection({ project }: { project: Project }) {
   const byteCount = utf8ByteLength(instructions);
   const overCap = byteCount > maxBytes;
   const isDirty = instructions !== project.instructions;
-  const canSave = isDirty && !overCap && !patchProject.isPending;
+  const canSave =
+    isDirty && !overCap && !patchProject.isPending && !memoryMutationPending;
   const showSaved = patchProject.isSuccess && !isDirty;
 
   const handleSave = () => {
@@ -543,6 +547,7 @@ function ProjectInstructionsSection({ project }: { project: Project }) {
       <Textarea
         id="project-instructions-input"
         aria-describedby="project-instructions-scope"
+        disabled={memoryMutationPending}
         className="min-h-40"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
@@ -574,6 +579,11 @@ function ProjectInstructionsSection({ project }: { project: Project }) {
           {t.projects.instructionsTooLong(maxBytes)}
         </p>
       )}
+      <ProjectMemorySection
+        project={project}
+        hasUnsavedInstructions={isDirty || patchProject.isPending}
+        maxBytes={maxBytes}
+      />
     </section>
   );
 }

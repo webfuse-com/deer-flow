@@ -15,6 +15,11 @@ rs.mock("next/navigation", () => ({
   usePathname: () => "/workspace/chats",
 }));
 
+// Upstream's Search and Usage rows read the signed-in user.
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: null }),
+}));
+
 rs.mock("@/core/agents", () => ({
   useAgentsApiEnabled: () => ({ enabled: false, isLoading: false }),
 }));

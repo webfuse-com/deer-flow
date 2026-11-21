@@ -26,7 +26,7 @@ def _middleware(monkeypatch, *, delay=0.0, title="Ariadne rollout plan", **confi
     middleware = TitleMiddleware(title_config=cfg, extensions=())
     calls = []
 
-    async def fake_generate(state, *, task_store=None):
+    async def fake_generate(state, *, turn_ended=True, task_store=None):
         calls.append(state)
         await asyncio.sleep(delay)
         return {"title": title}
@@ -99,9 +99,11 @@ def test_background_without_a_title_model_answers_locally_at_once(monkeypatch):
     assert asyncio.run(middleware.aafter_model(STATE, runtime=_runtime())) == {"title": "Plan the Ariadne rollout"}
 
 
-def test_run_end_without_pending_title_is_a_no_op(monkeypatch):
+def test_run_end_without_pending_title_generates_as_upstream(monkeypatch):
+    # [argus sync] Upstream #8338: a run that ends without a last model step (return_direct)
+    # still gets its title at the end; _should_generate_title keeps it a no-op once titled.
     middleware, _ = _middleware(monkeypatch, background=True)
-    assert asyncio.run(middleware.aafter_agent(STATE, runtime=_runtime())) is None
+    assert asyncio.run(middleware.aafter_agent(STATE, runtime=_runtime())) == {"title": "Ariadne rollout plan"}
 
 
 def test_markdown_wrapping_is_stripped_from_the_title():

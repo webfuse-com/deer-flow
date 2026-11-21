@@ -32,6 +32,16 @@ same per-step budget and is limited to a quarter of it; a longer request keeps
 its head and tail around a `[request shortened]` marker. With
 `trim_tokens_to_summarize: null` it is passed whole.
 
+State system messages and tagged dynamic-context reminders also remain outside
+compression. Summary source conversion uses message copies to include native
+document `text`/`content` plaintext, title and context in their original block
+order, before redaction and chunking. Nonempty string titles and context are
+retained even when the source is opaque, absent or malformed; unsupported source
+bodies are not stringified. A `content` source contributes only direct strings
+and `text` blocks. Nested `document` blocks are not traversed, including their
+metadata; recursive extraction is outside this fix's scope. Compaction does not
+decode binary documents, fetch remote media or change checkpoint content.
+
 Only after all chunks succeed are hooks, the compaction event, history capture
 and message replacement committed once. Any failed chunk leaves active history
 unchanged; manual `/compact` reports generation failure. A pass processes at most
@@ -252,10 +262,11 @@ Legacy `preserve_recent_skill_*` settings are no longer used. Loaded skill reten
 **Default Prompt Behavior:**
 The default prompt asks for a past-tense execution ledger with fixed sections:
 active objective, completed work, artifacts and evidence, decisions and
-constraints, pending work, the exact next action, and what not to repeat. Each
-chunk step merges the next slice of history into the ledger carried from the
-previous step. Items missing at a `[summary shortened]` marker were dropped for
-space and must not be read as undone work.
+constraints, active user requirements (literal approval phrases, conditions for
+acting and later revisions), pending work, the exact next action, and what not
+to repeat. Each chunk step merges the next slice of history into the ledger
+carried from the previous step. Items missing at a `[summary shortened]` marker
+were dropped for space and must not be read as undone work.
 
 ## How It Works
 
@@ -279,6 +290,11 @@ space and must not be read as undone work.
 - Uses approximate token counting based on character count
 - For Anthropic models: ~3.3 characters per token
 - For other models: Uses LangChain's default estimation
+- For `VllmChatModel` using Chat Completions: History and token-based retention
+  estimates include the assistant reasoning replayed to vLLM. A non-null `reasoning` field takes
+  precedence over `reasoning_content`, including when it is empty. This applies
+  to both automatic and manual compaction. The estimate is approximate and
+  leaves the summary prompt and its trimming budget unchanged.
 - Can be customized with a custom `token_counter` function
 
 ### Message Preservation

@@ -23,6 +23,25 @@ rs.mock("next/navigation", () => ({
 rs.mock("@/components/workspace/settings", () => ({
   useSettingsDialog: () => ({ openSettings: rs.fn() }),
 }));
+// Upstream's conversation search is not under test here.
+rs.mock("@/core/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: null }),
+}));
+rs.mock("@/core/search/hooks", () => ({
+  useWorkspaceSearch: () => ({
+    supported: true,
+    isError: false,
+    waiting: false,
+    isPending: false,
+    isFetching: false,
+    isFetchingNextPage: false,
+    hasNextPage: false,
+    items: [],
+    data: undefined,
+    refetch: rs.fn(),
+    fetchNextPage: rs.fn(),
+  }),
+}));
 rs.mock("@/core/projects", () => ({
   useProjects: () => ({
     data: [
@@ -124,7 +143,7 @@ describe("CommandPalette (DOM)", () => {
     act(() => setCommandPaletteOpen(true));
     await screen.findByText("Deploy Calendar");
     fireEvent.change(
-      screen.getByPlaceholderText(enUS.shortcuts.searchActions),
+      screen.getByPlaceholderText(enUS.workspaceSearch.placeholder),
       {
         target: { value: "sem" },
       },
@@ -174,7 +193,7 @@ describe("CommandPalette (DOM)", () => {
     act(() => setCommandPaletteOpen(true));
     await screen.findByText("Drata");
     fireEvent.change(
-      screen.getByPlaceholderText(enUS.shortcuts.searchActions),
+      screen.getByPlaceholderText(enUS.workspaceSearch.placeholder),
       {
         target: { value: "drata" },
       },

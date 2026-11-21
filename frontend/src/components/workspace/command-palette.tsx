@@ -2,18 +2,28 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  ArchiveIcon,
   FolderIcon,
   KeyboardIcon,
+  Loader2Icon,
   MessageSquarePlusIcon,
+  MessagesSquareIcon,
+  SearchIcon,
   SettingsIcon,
   type LucideIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
+import { Button } from "@/components/ui/button";
 import {
   Command,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -36,6 +46,12 @@ import { useFrontendExtensions } from "@/core/extensions/hooks";
 import { extensionIcon } from "@/core/extensions/registry";
 import { useI18n } from "@/core/i18n/hooks";
 import { useProjects } from "@/core/projects";
+import {
+  OPEN_SEARCH_EVENT,
+  pathOfSearchHit,
+  type SearchFilters,
+} from "@/core/search/api";
+import { useWorkspaceSearch } from "@/core/search/hooks";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
 
 import { rankCommandGroups } from "./command-palette-search";
@@ -46,11 +62,9 @@ import {
 } from "./command-palette-store";
 import { useSettingsDialog } from "./settings";
 
-// [argus patch #167] CommandDialog's styling, composed here because the
-// palette turns cmdk's own filter off (command-palette-search.ts ranks).
-const COMMAND_CLASSES =
-  "[&_[cmdk-group-heading]]:text-muted-foreground **:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5";
-
+// [argus patch #167] Launcher entries (apps, projects, company tools) layered
+// onto upstream's conversation search dialog. Decision (lead default): one
+// dialog for both sidebar rows (Search and Apps).
 type PaletteItem = {
   key: string;
   label: string;
@@ -67,6 +81,28 @@ export function CommandPalette() {
   const router = useRouter();
   const { openSettings } = useSettingsDialog();
   const open = useCommandPaletteOpen();
+  const [input, setInput] = useState("");
+  const [composing, setComposing] = useState(false);
+  const [filters, setFilters] = useState<SearchFilters>({
+    type: "all",
+    includeArchived: true,
+  });
+  const commandMode = input.trimStart().startsWith(">");
+  const search = useWorkspaceSearch(
+    input,
+    filters,
+    open && !commandMode && !composing,
+  );
+  const busy = search.waiting || search.isPending || search.isFetching;
+  useEffect(() => {
+    const show = () => setCommandPaletteOpen(true);
+    window.addEventListener(OPEN_SEARCH_EVENT, show);
+    return () => window.removeEventListener(OPEN_SEARCH_EVENT, show);
+  }, []);
+  // Every open starts from an empty search, as #167 did.
+  useEffect(() => {
+    if (!open) setInput("");
+  }, [open]);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // [argus patch #167] Projects and extension groups (Atlas: apps, company
   // tools) load when the palette first opens.
@@ -107,11 +143,7 @@ export function CommandPalette() {
 
   const shortcuts = useMemo(
     () => [
-      {
-        key: "k",
-        meta: true,
-        action: () => setCommandPaletteOpen((o) => !o),
-      },
+      { key: "k", meta: true, action: () => setCommandPaletteOpen((o) => !o) },
       { key: "n", meta: true, shift: true, action: handleNewChat },
       { key: ",", meta: true, action: handleOpenSettings },
       { key: "/", meta: true, action: handleShowShortcuts },
@@ -124,9 +156,7 @@ export function CommandPalette() {
   const metaKey = useMetaKeyLabel();
   const shiftKey = metaKey === "⌘" ? "⇧" : "Shift+";
 
-  // Default order: extension groups placed at the start (Atlas: Apps), the
-  // stack's projects, the other extension groups, then the fixed actions.
-  const groups = useMemo<PaletteGroup[]>(() => {
+  const launcherGroups = useMemo<PaletteGroup[]>(() => {
     const extensionGroups = (position: "start" | "end") =>
       (commands.data?.groups ?? [])
         .filter((group) => group.position === position)
@@ -166,67 +196,342 @@ export function CommandPalette() {
         }),
       },
       ...extensionGroups("end"),
-      {
-        key: "actions",
-        heading: t.shortcuts.actions,
-        items: [
-          {
-            key: "action:new-chat",
-            label: t.sidebar.newChat,
-            icon: MessageSquarePlusIcon,
-            shortcut: `${metaKey}${shiftKey}N`,
-            run: handleNewChat,
-          },
-          {
-            key: "action:settings",
-            label: t.common.settings,
-            icon: SettingsIcon,
-            shortcut: `${metaKey},`,
-            run: handleOpenSettings,
-          },
-          {
-            key: "action:shortcuts",
-            label: t.shortcuts.keyboardShortcuts,
-            icon: KeyboardIcon,
-            shortcut: `${metaKey}/`,
-            run: handleShowShortcuts,
-          },
-        ],
-      },
     ];
-  }, [
-    commands.data,
-    projects,
-    t,
-    metaKey,
-    shiftKey,
-    handleOpenHref,
-    handleNewChat,
-    handleOpenSettings,
-    handleShowShortcuts,
-  ]);
+  }, [commands.data, projects, t.shortcuts.projects, handleOpenHref]);
+  // In ">" mode the text after the marker ranks the launcher entries too.
+  const launcherQuery = commandMode ? input.trimStart().slice(1) : input;
+  const rankedLauncher = useMemo(
+    () => rankCommandGroups(launcherGroups, launcherQuery),
+    [launcherGroups, launcherQuery],
+  );
+  const launcherNotice =
+    open && commands.isFetching && !commands.data
+      ? t.shortcuts.loadingCommands
+      : (commands.data?.failed ?? commands.isError)
+        ? t.shortcuts.commandsUnavailable
+        : undefined;
+
   return (
     <>
       <Dialog open={open} onOpenChange={setCommandPaletteOpen}>
-        <DialogContent className="overflow-hidden p-0">
+        <DialogContent
+          className="overflow-hidden p-0 sm:max-w-2xl"
+          showCloseButton={false}
+        >
           <DialogTitle className="sr-only">
-            {t.shortcuts.openCommandPalette}
+            {t.workspaceSearch.title}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            {t.shortcuts.searchActions}
+            {t.workspaceSearch.description}
           </DialogDescription>
-          <PaletteSearch
-            groups={groups}
-            placeholder={t.shortcuts.searchActions}
-            empty={t.shortcuts.noResults}
-            notice={
-              open && commands.isFetching && !commands.data
-                ? t.shortcuts.loadingCommands
-                : (commands.data?.failed ?? commands.isError)
-                  ? t.shortcuts.commandsUnavailable
-                  : undefined
-            }
-          />
+          <Command
+            shouldFilter={false}
+            onKeyDownCapture={(event) => {
+              if (
+                event.key === "Enter" &&
+                (composing ||
+                  event.nativeEvent.isComposing ||
+                  event.nativeEvent.keyCode === 229)
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            }}
+          >
+            <CommandInput
+              value={input}
+              onValueChange={setInput}
+              placeholder={t.workspaceSearch.placeholder}
+              aria-label={t.workspaceSearch.title}
+              onCompositionStart={() => setComposing(true)}
+              onCompositionEnd={() => setComposing(false)}
+            />
+            {!commandMode && (
+              <div className="flex flex-wrap items-center gap-1 border-b px-3 py-2">
+                {(["all", "thread", "message"] as const).map((type) => (
+                  <Button
+                    key={type}
+                    variant={filters.type === type ? "secondary" : "ghost"}
+                    size="sm"
+                    aria-pressed={filters.type === type}
+                    onClick={() =>
+                      setFilters((current) => ({ ...current, type }))
+                    }
+                  >
+                    {type === "all"
+                      ? t.workspaceSearch.all
+                      : type === "thread"
+                        ? t.workspaceSearch.threads
+                        : t.workspaceSearch.messages}
+                  </Button>
+                ))}
+                <label className="text-muted-foreground ml-auto flex items-center gap-2 px-1 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={filters.includeArchived}
+                    onChange={(event) =>
+                      setFilters((current) => ({
+                        ...current,
+                        includeArchived: event.target.checked,
+                      }))
+                    }
+                  />
+                  {t.workspaceSearch.includeArchived}
+                </label>
+              </div>
+            )}
+            <CommandList
+              className="max-h-[min(60vh,480px)]"
+              aria-busy={!commandMode && busy}
+            >
+              {rankedLauncher.map((group) => (
+                <CommandGroup key={group.key} heading={group.heading}>
+                  {group.items.map((item) => (
+                    <CommandItem
+                      key={item.key}
+                      value={item.key}
+                      onSelect={item.run}
+                      className="px-3 py-3"
+                    >
+                      <item.icon className="size-4" />
+                      <span className="truncate">{item.label}</span>
+                      {item.description && (
+                        <span className="text-muted-foreground ml-auto max-w-[45%] truncate pl-3 text-xs">
+                          {item.description}
+                        </span>
+                      )}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              ))}
+              {launcherNotice && (
+                <p className="text-muted-foreground px-4 py-2 text-xs">
+                  {launcherNotice}
+                </p>
+              )}
+              {!commandMode && (
+                <>
+                  {!search.supported && (
+                    <p className="text-muted-foreground p-4 text-sm">
+                      {t.workspaceSearch.unsupported}
+                    </p>
+                  )}
+                  {search.supported && search.isError && (
+                    <div role="alert" className="p-4 text-sm">
+                      <p>{t.workspaceSearch.error}</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void search.refetch()}
+                      >
+                        {t.workspaceSearch.retry}
+                      </Button>
+                    </div>
+                  )}
+                  {search.supported &&
+                    !search.isError &&
+                    busy &&
+                    search.items.length === 0 && (
+                      <div
+                        role="status"
+                        className="text-muted-foreground flex items-center gap-2 p-4 text-sm"
+                      >
+                        <Loader2Icon className="size-4 animate-spin" />
+                        {t.workspaceSearch.searching}
+                      </div>
+                    )}
+                  {search.data?.pages.some((page) => page.indexing) && (
+                    <p
+                      role="status"
+                      className="text-muted-foreground px-4 py-2 text-sm"
+                    >
+                      {t.workspaceSearch.indexing}
+                    </p>
+                  )}
+                  {input.trim() &&
+                    search.data?.pages[0]?.messages_available === false && (
+                      <p className="text-muted-foreground px-4 py-2 text-sm">
+                        {t.workspaceSearch.unavailable}
+                      </p>
+                    )}
+                  {(["thread", "message"] as const).map((type) => {
+                    const hits = search.items.filter(
+                      (hit) => hit.type === type,
+                    );
+                    if (!hits.length) return null;
+                    return (
+                      <CommandGroup
+                        key={type}
+                        heading={
+                          type === "message"
+                            ? t.workspaceSearch.messages
+                            : input.trim()
+                              ? t.workspaceSearch.threads
+                              : t.workspaceSearch.recent
+                        }
+                      >
+                        {hits.map((hit) => (
+                          <CommandItem
+                            key={`${hit.type}:${hit.thread_id}:${hit.message_id ?? ""}:${hit.seq ?? ""}`}
+                            value={`${hit.type}:${hit.thread_id}:${hit.message_id ?? ""}:${hit.seq ?? ""}`}
+                            className="items-start gap-3 px-3 py-3"
+                            onSelect={() => {
+                              router.push(pathOfSearchHit(hit));
+                              setCommandPaletteOpen(false);
+                            }}
+                          >
+                            {type === "thread" ? (
+                              <MessagesSquareIcon className="mt-0.5 size-4" />
+                            ) : (
+                              <SearchIcon className="mt-0.5 size-4" />
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="truncate font-medium">
+                                  {hit.title.trim()
+                                    ? hit.title
+                                    : t.workspaceSearch.untitled}
+                                </span>
+                                {hit.archived && (
+                                  <span className="text-muted-foreground flex shrink-0 items-center gap-1 text-xs">
+                                    <ArchiveIcon className="size-3" />
+                                    {t.workspaceSearch.archived}
+                                  </span>
+                                )}
+                              </div>
+                              {type === "message" && (
+                                <p className="text-muted-foreground mt-1 line-clamp-2 text-sm">
+                                  {hit.snippet.map((segment, index) =>
+                                    segment.matched ? (
+                                      <mark
+                                        key={index}
+                                        className="bg-foreground/10 text-foreground rounded-sm font-medium"
+                                      >
+                                        {segment.text}
+                                      </mark>
+                                    ) : (
+                                      <span key={index}>{segment.text}</span>
+                                    ),
+                                  )}
+                                </p>
+                              )}
+                              <div className="text-muted-foreground mt-1 flex gap-2 text-xs">
+                                {type === "message" && (
+                                  <span>
+                                    {hit.role === "user"
+                                      ? t.workspaceSearch.user
+                                      : t.workspaceSearch.assistant}
+                                  </span>
+                                )}
+                                <span>
+                                  {hit.updated_at
+                                    ? new Date(
+                                        hit.updated_at,
+                                      ).toLocaleDateString()
+                                    : ""}
+                                </span>
+                              </div>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    );
+                  })}
+                  {!busy &&
+                    !search.isError &&
+                    search.supported &&
+                    search.items.length === 0 &&
+                    rankedLauncher.length === 0 &&
+                    !search.data?.pages.some((page) => page.indexing) && (
+                      <p className="text-muted-foreground p-6 text-center text-sm">
+                        {t.workspaceSearch.empty}
+                      </p>
+                    )}
+                  {search.hasNextPage && (
+                    <CommandItem
+                      value="load-more"
+                      disabled={search.isFetchingNextPage}
+                      onSelect={() => void search.fetchNextPage()}
+                    >
+                      {t.workspaceSearch.more}
+                    </CommandItem>
+                  )}
+                </>
+              )}
+              {commandMode &&
+                rankedLauncher.length === 0 &&
+                ![
+                  t.sidebar.newChat,
+                  t.common.settings,
+                  t.shortcuts.keyboardShortcuts,
+                ].some((label) =>
+                  label
+                    .toLocaleLowerCase()
+                    .includes(
+                      input.trimStart().slice(1).trim().toLocaleLowerCase(),
+                    ),
+                ) && (
+                  <div
+                    role="status"
+                    className="text-muted-foreground py-8 text-center text-sm"
+                  >
+                    {t.workspaceSearch.empty}
+                  </div>
+                )}
+              {(commandMode || !input.trim()) && (
+                <CommandGroup heading={t.shortcuts.actions}>
+                  {[
+                    {
+                      label: t.sidebar.newChat,
+                      icon: MessageSquarePlusIcon,
+                      action: handleNewChat,
+                      shortcut: `${metaKey}${shiftKey}N`,
+                    },
+                    {
+                      label: t.common.settings,
+                      icon: SettingsIcon,
+                      action: handleOpenSettings,
+                      shortcut: `${metaKey},`,
+                    },
+                    {
+                      label: t.shortcuts.keyboardShortcuts,
+                      icon: KeyboardIcon,
+                      action: handleShowShortcuts,
+                      shortcut: `${metaKey}/`,
+                    },
+                  ]
+                    .filter(
+                      (action) =>
+                        !commandMode ||
+                        action.label
+                          .toLocaleLowerCase()
+                          .includes(
+                            input
+                              .trimStart()
+                              .slice(1)
+                              .trim()
+                              .toLocaleLowerCase(),
+                          ),
+                    )
+                    .map((action) => (
+                      <CommandItem
+                        key={action.label}
+                        value={action.label}
+                        onSelect={action.action}
+                        className="px-3 py-3"
+                      >
+                        <action.icon className="size-4" />
+                        {action.label}
+                        <CommandShortcut>{action.shortcut}</CommandShortcut>
+                      </CommandItem>
+                    ))}
+                </CommandGroup>
+              )}
+            </CommandList>
+            <div className="text-muted-foreground border-t px-4 py-2 text-xs">
+              {t.workspaceSearch.hint}
+            </div>
+          </Command>
         </DialogContent>
       </Dialog>
 
@@ -260,58 +565,5 @@ export function CommandPalette() {
         </DialogContent>
       </Dialog>
     </>
-  );
-}
-
-/** Mounted with the dialog, so every open starts from an empty search. */
-function PaletteSearch({
-  groups,
-  placeholder,
-  empty,
-  notice,
-}: {
-  groups: PaletteGroup[];
-  placeholder: string;
-  empty: string;
-  notice?: string;
-}) {
-  const [search, setSearch] = useState("");
-  const ranked = useMemo(
-    () => rankCommandGroups(groups, search),
-    [groups, search],
-  );
-  return (
-    <Command shouldFilter={false} className={COMMAND_CLASSES}>
-      <CommandInput
-        placeholder={placeholder}
-        value={search}
-        onValueChange={setSearch}
-      />
-      <CommandList>
-        <CommandEmpty>{empty}</CommandEmpty>
-        {ranked.map((group) => (
-          <CommandGroup key={group.key} heading={group.heading}>
-            {group.items.map((item) => (
-              <CommandItem key={item.key} value={item.key} onSelect={item.run}>
-                <item.icon className="mr-2 h-4 w-4" />
-                <span className="truncate">{item.label}</span>
-                {item.shortcut ? (
-                  <CommandShortcut>{item.shortcut}</CommandShortcut>
-                ) : (
-                  item.description && (
-                    <span className="text-muted-foreground ml-auto max-w-[45%] truncate pl-3 text-xs">
-                      {item.description}
-                    </span>
-                  )
-                )}
-              </CommandItem>
-            ))}
-          </CommandGroup>
-        ))}
-        {notice && (
-          <p className="text-muted-foreground px-4 py-2 text-xs">{notice}</p>
-        )}
-      </CommandList>
-    </Command>
   );
 }

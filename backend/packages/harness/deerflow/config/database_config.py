@@ -299,13 +299,12 @@ class DatabaseConfig(BaseModel):
         if self.backend == "sqlite":
             return f"sqlite+aiosqlite:///{self.sqlite_path}"
         if self.backend == "postgres":
-            url = self.postgres_url
-            if url.startswith("postgresql://"):
-                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-            elif url.startswith("postgres://"):
-                # libpq's short alias: accepted by the psycopg checkpointer, but not a SQLAlchemy dialect.
-                url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-            return strip_asyncpg_only_options(url)
+            from deerflow.persistence.postgres_url import normalize_asyncpg_url
+
+            # [argus patch #164] libpq-only `options` (the per-stack search_path)
+            # is not an asyncpg connect argument; the schema reaches asyncpg
+            # through server_settings instead.
+            return strip_asyncpg_only_options(normalize_asyncpg_url(self.postgres_url))
         raise ValueError(f"No SQLAlchemy URL for backend={self.backend!r}")
 
     @property

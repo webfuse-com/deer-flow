@@ -3,6 +3,8 @@ import type { Message } from "@langchain/langgraph-sdk";
 import type { Translations } from "@/core/i18n";
 import type { AgentThread } from "@/core/threads/types";
 
+import type { ExtensionDocumentation } from "./documentation";
+
 export type ExtensionSettings = Readonly<
   Record<string, boolean | number | string>
 >;
@@ -17,6 +19,10 @@ export type SurfaceProject = {
   name: string;
   status: string;
 };
+export type ExtensionRequestOptions = Pick<
+  RequestInit,
+  "method" | "headers" | "body" | "signal"
+>;
 export type SurfaceContext = {
   namespace: string;
   locale: string;
@@ -24,6 +30,11 @@ export type SurfaceContext = {
   threadId?: string;
   signal: AbortSignal;
   callBackend: FrontendServices["callBackend"];
+  /** Authenticated HTTP to contributed /api/extensions/ routes. Routes own authorization. */
+  requestBackend?: (
+    path: string,
+    options?: ExtensionRequestOptions,
+  ) => Promise<Response>;
   /** Host resolves current thread ownership before navigating; unavailable on older hosts. */
   openConversation?: (threadId: string) => Promise<void>;
   /** Set for `project-tab` surfaces only. */
@@ -52,6 +63,9 @@ export type FrontendContribution = {
   description: string;
   settings: ExtensionSettings;
   backend_actions?: string[];
+  model_tools?: string[];
+  documentation?: ExtensionDocumentation;
+  runtime_only?: boolean;
 };
 export type ConversationActionContext = {
   thread: AgentThread;
@@ -131,6 +145,26 @@ export type CommandProvider = {
   position?: "start" | "end";
   items: (context: CommandContext) => Promise<readonly CommandEntry[]>;
 };
+/** Optional file renderer. The host owns the URL, authorization and byte limit. */
+export type ArtifactPreviewContext = {
+  filename: string;
+  locale: string;
+  signal: AbortSignal;
+  readFile: () => Promise<ArrayBuffer>;
+  onError: () => void;
+  /** Available after readFile; scoped to viewer, file bytes and renderer. In-memory only. */
+  getReadingState?: () => unknown;
+  saveReadingState?: (state: unknown) => void;
+};
+export type ArtifactPreviewRenderer = {
+  id: string;
+  /** Lowercase extensions without a dot; exact matches only. */
+  extensions: string[];
+  mount: (
+    root: HTMLElement,
+    context: ArtifactPreviewContext,
+  ) => { dispose: () => void };
+};
 
 /** Browser package API v1. Modules are installed by trusted deployment operators. */
 export interface FrontendExtension {
@@ -140,6 +174,7 @@ export interface FrontendExtension {
   surfaces?: PluginSurface[];
   mentionProviders?: MentionProvider[];
   commandProviders?: CommandProvider[];
+  artifactPreviews?: ArtifactPreviewRenderer[];
   conversationActions?: (
     t: Translations,
     locale?: string,

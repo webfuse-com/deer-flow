@@ -17,6 +17,8 @@ export interface Subagent {
   disallowed_tools: string[] | null;
   skills: string[] | null;
   model: string;
+  thinking_enabled?: boolean | null;
+  reasoning_effort?: string | null;
   max_turns: number;
   timeout_seconds: number;
   enabled: boolean;
@@ -39,6 +41,8 @@ export interface CreateManagedSubagentRequest {
   disallowed_tools?: string[] | null;
   skills?: string[] | null;
   model?: string;
+  thinking_enabled?: boolean | null;
+  reasoning_effort?: string | null;
   max_turns?: number;
   timeout_seconds?: number;
   enabled?: boolean;

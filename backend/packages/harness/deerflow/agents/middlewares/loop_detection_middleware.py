@@ -5,8 +5,10 @@ arguments indefinitely until the recursion limit kills the run.
 
 Detection strategy:
   1. After each model response, hash the tool calls (name + args).
-  2. Track recent hashes in a sliding window.
-  3. If the same hash appears >= warn_threshold times, queue a
+  2. Reconcile the preceding batch with its results, then track call/result
+     fingerprints in a sliding window. A pending call uses its last observed
+     result; changed successful results count separately, including file versions.
+  3. If the same fingerprint appears >= warn_threshold times, queue a
      "you are repeating yourself — wrap up" warning for the current
      thread/run. The warning is **injected at the next model call** (in
      ``wrap_model_call``) as a ``HumanMessage`` appended to the message
@@ -31,11 +33,16 @@ Why the warning is injected at ``wrap_model_call`` instead of
   list and the warning is appended at the end — pairing intact, no
   ``AIMessage`` semantics are mutated.
 
+Tool-name frequency is tracked as an observability metric only. Reaching its
+warn or hard-limit threshold records an INFO event and never changes model
+messages or control flow. This keeps the metric useful for cost and workload
+analysis without treating legitimate batch work as a loop.
+
 Queued warnings are intentionally transient. If a run ends before the
 next model request drains a queued warning, ``after_agent`` drops it
 instead of carrying it into a later invocation for the same thread. The
-hard-stop path still forces termination when the configured safety limit
-is reached.
+hash-based hard-stop path still forces termination when the configured safety
+limit is reached.
 
 Detection histories and warning-suppression state are scoped by
 ``(thread_id, run_id)`` because one compiled graph can serve many runs for
@@ -47,23 +54,12 @@ that omit ``run_id`` receive an opaque fallback ID anchored to LangGraph's
 run-scoped ``Runtime.control`` object, so replacement ``Runtime`` wrappers
 share one budget within an invocation while a later invocation starts fresh.
 
-Stop-reason surfacing (#3875 Phase 2):
-  Like the token-budget guard, the loop hard stop does NOT raise — it
-  strips ``tool_calls`` so the agent loop terminates naturally with a
-  final answer. To let the caller (the subagent executor) distinguish a
-  loop-capped completion from a clean one, the run that triggered the hard
-  stop is recorded in ``_stop_reason`` and exposed via
-  :meth:`consume_stop_reason`. The executor collects that reason alongside
-  the token-budget guard's so a loop-capped run surfaces as
-  ``completed + loop_capped`` and the lead/ledger can tell it was capped
-  without parsing result text.
-
 Result-aware hard-stop gating ([argus] patch #68, extended by #69):
   A Layer-1 hard stop on identical calls is *downgraded to an escalating
   warning* when every repeated tool's most recent result meta says the
-  failure is model-recoverable (``partial_success`` no-results bodies, or
-  ``error`` results with ``recoverable_by_model=True`` — not_found,
-  permission, unknown). Rationale: ToolProgressMiddleware deliberately keeps
+  failure is model-recoverable (empty-result bodies (a loop-local marker list, see
+  ``_EMPTY_RESULT_MARKERS``), or ``error`` results with ``recoverable_by_model=True``
+  that are not auth/rate-limit/config/internal/transient). Rationale: ToolProgressMiddleware deliberately keeps
   such tools WARNED-not-BLOCKED ("the model can fix this by changing
   strategy"), but this middleware killed the run on the identical retry
   anyway, destroying accumulated research work mid-investigation (observed:
@@ -105,19 +101,22 @@ Result-aware hard-stop gating ([argus] patch #68, extended by #69):
   re-fires on every further identical call with the growing count, which is
   what makes it escalating.
 
-  Layer 2 (per-tool frequency) is a volume cap, not an identical-repeat
-  detector, so the meta gate does not apply to it — only
-  ``no_hard_stop_tools`` exempts there (``tool_freq_overrides`` exists for
-  legitimately high-volume tools).
+  [argus sync 20261121] Layer 2 (per-tool frequency) is observe-only upstream
+  (#8248): patches #94, #100, the Layer 2 half of #68 and the loop halves of
+  #82/#83 are retired. ``tool_freq_overrides`` only tune metric thresholds;
+  ``fresh_result_extension_*`` and a ``bash.inspection`` key still load but are
+  ignored.
 
-Shell inspection subcategory ([argus] patches #82/#83):
-  When ``tool_freq_overrides`` names ``bash.inspection``, inspection-only
-  ``bash`` calls (classified by ``deerflow.sandbox.command_classify``) are
-  additionally counted in a per-run subcategory window of their own, trimmed
-  to the subcategory's own hard limit (never the global window, which a high
-  plain-``bash`` override inflates). Its counter is cleared by write progress
-  (``write_file``/``str_replace`` or an execution-classified ``bash`` call)
-  and by its own hard stop. Absent that override key nothing new is tracked.
+Stop-reason surfacing (#3875 Phase 2):
+  Like the token-budget guard, the loop hard stop does NOT raise — it
+  strips ``tool_calls`` so the agent loop terminates naturally with a
+  final answer. To let the caller (the subagent executor) distinguish a
+  loop-capped completion from a clean one, the run that triggered the hard
+  stop is recorded in ``_stop_reason`` and exposed via
+  :meth:`consume_stop_reason`. The executor collects that reason alongside
+  the token-budget guard's so a loop-capped run surfaces as
+  ``completed + loop_capped`` and the lead/ledger can tell it was capped
+  without parsing result text.
 """
 
 from __future__ import annotations
@@ -125,18 +124,18 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
+import posixpath
 import threading
 import uuid
 from collections import Counter, OrderedDict, defaultdict, deque
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, override
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
@@ -145,11 +144,12 @@ from deerflow.agents.middlewares.audit_context import (
     resolve_audit_recorder,
 )
 from deerflow.agents.middlewares.forced_stop_synthesis_middleware import mark_forced_stop
+from deerflow.agents.middlewares.model_response import is_empty_stop_response
+from deerflow.agents.middlewares.tool_call_args import pair_tool_call_results
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls
 from deerflow.agents.middlewares.tool_progress_middleware import is_near_duplicate, word_set
 from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
 from deerflow.runtime.events.catalog import MIDDLEWARE_LOOP_DETECTION_TAG
-from deerflow.sandbox.command_classify import classify_bash_command
 
 # [argus patch #69] Jaccard similarity parameters mirror ToolProgressConfig's
 # defaults (jaccard_similarity_threshold=0.8, min_word_count_for_similarity=10)
@@ -158,18 +158,42 @@ _SIMILARITY_THRESHOLD = 0.8
 _SIMILARITY_MIN_WORDS = 10
 _SIMILARITY_HISTORY = 4  # latest result + 3 priors, per tool
 
+# [argus patch #68] Empty-result phrasings from Argus fleet tools. Upstream no longer
+# stamps such bodies partial_success (#7986: no prose classification), so the Layer-1
+# gate recognises them itself; this only ever downgrades a kill to a warning.
+_EMPTY_RESULT_MARKERS = (
+    "no results",
+    "no content found",
+    "no images found",
+    "no log entries",
+    "no code matches",
+    "no matches found",
+    "no matching",
+    "no entries",
+    "no events",
+    "no rows",
+    "nothing found",
+)
+_EMPTY_RESULT_MAX_CHARS = 600
+# [argus patch #68] Error categories that were never model-recoverable. Upstream stamps
+# every error recoverable_by_model=True, so the category must be excluded here.
+_UNRECOVERABLE_ERROR_TYPES = frozenset({"auth", "rate_limited", "transient", "config", "internal"})
+
 if TYPE_CHECKING:
     from deerflow.config.loop_detection_config import LoopDetectionConfig
 
 logger = logging.getLogger(__name__)
+
+# Reserved by the Gateway for checkpoints written by the frequency-cap policy.
+LOOP_CAP_STATE_KEY = "loop_cap"
 
 # Defaults — can be overridden via constructor
 _DEFAULT_WARN_THRESHOLD = 3  # inject warning after 3 identical calls
 _DEFAULT_HARD_LIMIT = 5  # force-stop after 5 identical calls
 _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU limit for tracked thread/run scopes
-_DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
-_DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
+_DEFAULT_TOOL_FREQ_WARN = 30  # record a metric after 30 calls to one tool type
+_DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # record a second metric after 50 calls
 _DEFAULT_RECOVERABLE_RETRY_LIMIT = 24  # [argus patch #68] identical recoverable retries before terminal stop
 _MAX_PENDING_WARNINGS_PER_RUN = 4
 # Stands in for ``read_file``'s omitted ``end_line`` in a call key: the read
@@ -180,21 +204,23 @@ _OPEN_ENDED_READ = "end"
 # payload (``update_agent``/``setup_agent`` persist it; MCP tools such as
 # ``create_issue`` send it), so it stays in the key.
 _UI_NARRATION_TOOLS = frozenset({"bash", "ls", "glob", "grep"})
-
-# [argus patch #83] Tool names whose invocation represents write progress,
-# clearing bash.inspection accumulated counts (mirrors ToolProgressMiddleware).
-_WRITE_PROGRESS_TOOLS = frozenset({"write_file", "str_replace"})
-
-# [argus patch #83] Explicit registry of subcategory names this middleware can produce.
-# Today exactly {"bash.inspection"} — the only subcategory name _bash_classify can emit.
-# Gating on membership in this registry ensures operator tool_freq_overrides for dotted
-# tool names (e.g. MCP tools like "github.search_issues") are treated as plain tools,
-# inflating the global window and keeping their hard stops reachable.
-_SUBCATEGORY_NAMES: frozenset[str] = frozenset({"bash.inspection"})
-_BASH_INSPECTION = "bash.inspection"
+_FILE_WRITE_TOOLS = frozenset({"write_file", "str_replace"})
+_ERROR_RESULT_HASH = "error"
 
 type _RunScopeKey = tuple[str, str | None]
-type _Downgrade = Literal["recoverable_retry", "exempt_tool", "fresh_results"]
+type _Downgrade = Literal["recoverable_retry", "exempt_tool"]
+type _ObservationKey = tuple[str, str | None]
+
+# Deeply nested args cannot be serialized for a key; they collapse to one opaque key.
+_UNSERIALIZABLE_ARGS = "<unserializable>"
+
+
+def _stable_args_key(value: object) -> str | None:
+    """Serialize opaque args for a stable key, or None past the recursion limit."""
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except (TypeError, ValueError, RecursionError):
+        return None
 
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
@@ -210,17 +236,17 @@ def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
-        except (TypeError, ValueError, json.JSONDecodeError):
+        except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
             return {}, raw_args
 
         if isinstance(parsed, dict):
             return parsed, None
-        return {}, json.dumps(parsed, sort_keys=True, default=str)
+        return {}, _stable_args_key(parsed)
 
     if raw_args is None:
         return {}, None
 
-    return {}, json.dumps(raw_args, sort_keys=True, default=str)
+    return {}, _stable_args_key(raw_args)
 
 
 def _coerce_line_number(value: object) -> int | None:
@@ -253,7 +279,7 @@ def _normalized_read_range(args: dict) -> tuple[int, int | None]:
     approximate range overlap, and the approximation was erasing the offset that
     distinguishes the two. An exact window still catches the loop this layer
     exists for — the same read emitted over and over — and a loop that jitters
-    its bounds is what Layer 2's per-tool frequency window covers.
+    its bounds remains observable through the per-tool frequency metric.
     """
     start_line = _coerce_line_number(args.get("start_line"))
     end_line = _coerce_line_number(args.get("end_line"))
@@ -268,6 +294,11 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     """Derive a stable key from the args that change what a call does."""
     if name == "read_file" and fallback_key is None:
         path = args.get("path") or ""
+        if not isinstance(path, str):
+            # Formatting a nested structure into the key calls repr(), which
+            # recurses past the limit for the same payloads _stable_args_key
+            # already treats as opaque.
+            path = _stable_args_key(path) or _UNSERIALIZABLE_ARGS
         start_line, end_line = _normalized_read_range(args)
         return f"{path}:{start_line}-{end_line if end_line is not None else _OPEN_ENDED_READ}"
 
@@ -277,7 +308,7 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     if name in {"write_file", "str_replace"}:
         if fallback_key is not None:
             return fallback_key
-        return json.dumps(args, sort_keys=True, default=str)
+        return _stable_args_key(args) or _UNSERIALIZABLE_ARGS
 
     if fallback_key is not None:
         return fallback_key
@@ -290,7 +321,7 @@ def _stable_tool_key(name: str, args: dict, fallback_key: str | None) -> str:
     # call look new (#1905).
     if name in _UI_NARRATION_TOOLS:
         args = {field: value for field, value in args.items() if field != "description"}
-    return json.dumps(args, sort_keys=True, default=str)
+    return _stable_args_key(args) or _UNSERIALIZABLE_ARGS
 
 
 def _hash_tool_calls(tool_calls: list[dict]) -> str:
@@ -314,13 +345,104 @@ def _hash_tool_calls(tool_calls: list[dict]) -> str:
     return hashlib.md5(blob.encode()).hexdigest()[:12]
 
 
+@dataclass(frozen=True, slots=True)
+class _CallObservation:
+    """Bounded process state; result fingerprints are never persisted or logged."""
+
+    call_hash: str
+    message_id: str | None
+    result_hash: str | None = None
+    written_paths: frozenset[str] = frozenset()
+
+    @property
+    def key(self) -> _ObservationKey:
+        return self.call_hash, self.result_hash
+
+
+def _tool_result_hash(result: ToolMessage) -> str | None:
+    """Fingerprint successful data, ignoring receipt IDs and diagnostic churn."""
+    metadata = result.additional_kwargs if isinstance(result.additional_kwargs, dict) else {}
+    meta = metadata.get(TOOL_META_KEY)
+    # Repeated failures are not progress, even if diagnostics or classifications
+    # change. Read structured producer status, never infer errors from prose.
+    if result.status == "error" or (isinstance(meta, dict) and meta.get("status") == "error"):
+        return _ERROR_RESULT_HASH
+
+    # Ranged reads may return identical lines while the rest of a file changes.
+    # Consume the gate's existing full-file version without importing its I/O code.
+    read_mark = metadata.get("deerflow_read_mark")
+    version = None
+    if isinstance(read_mark, dict):
+        path, digest = read_mark.get("path"), read_mark.get("hash")
+        if isinstance(path, str) and path and isinstance(digest, str) and len(digest) == 64 and all(char in "0123456789abcdefABCDEF" for char in digest):
+            version = (path, digest.lower())
+    try:
+        blob = json.dumps((result.content, version), sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _tool_file_path(tool_call: dict) -> str | None:
+    args, _ = _normalize_tool_call_args(tool_call.get("args", {}))
+    path = args.get("path")
+    return posixpath.normpath(path) if isinstance(path, str) and path else None
+
+
+def _previous_observation(messages: Sequence) -> _CallObservation | None:
+    """Read only the preceding response's results, pairing reused IDs per turn."""
+    for index in range(len(messages) - 2, -1, -1):
+        message = messages[index]
+        if not isinstance(message, AIMessage):
+            continue
+        if not message.tool_calls or not isinstance(message.id, str) or not message.id:
+            return None
+        observation = _CallObservation(_hash_tool_calls(message.tool_calls), message.id)
+        occurrences = pair_tool_call_results(messages[index:-1])
+        # Unaddressable calls and incomplete batches cannot establish progress.
+        ids = [call.get("id") for call in message.tool_calls]
+        if len(occurrences) != len(ids) or any(not isinstance(call_id, str) or not call_id for call_id in ids) or len(set(ids)) != len(ids):
+            return observation
+        outcomes = []
+        written_paths: set[str] = set()
+        for occurrence in occurrences:
+            result = occurrence.result
+            if result is None:
+                continue
+            result_hash = _tool_result_hash(result)
+            if result_hash is None:
+                continue
+            call = occurrence.tool_call
+            outcomes.append((_hash_tool_calls([call]), result_hash))
+            if result.status == "success" and result_hash != _ERROR_RESULT_HASH and call.get("name") in _FILE_WRITE_TOOLS:
+                path = _tool_file_path(call)
+                if path is not None:
+                    written_paths.add(path)
+        result_hash = hashlib.sha256(json.dumps(sorted(outcomes)).encode()).hexdigest() if len(outcomes) == len(ids) else None
+        return replace(observation, result_hash=result_hash, written_paths=frozenset(written_paths))
+    return None
+
+
+def _predict_result_hash(history: Sequence[_CallObservation], call_hash: str, read_paths: set[str]) -> str | None:
+    for entry in reversed(history):
+        # A completed write can invalidate an older read result. Let the next
+        # read see the file and keep the completed observations for counting.
+        if not read_paths.isdisjoint(entry.written_paths):
+            return None
+        if entry.call_hash == call_hash:
+            return entry.result_hash
+    return None
+
+
 # Warn-level messages ask the agent to wrap up, but must not make it drop work
 # it was asked to persist: a subagent whose task names an output file would
 # otherwise stop *all* tool calls, including the write that delivers its
 # result, and finish as "completed" with nothing on disk. So the wrap-up
 # allows a bounded save/read/retry before the final answer, without reusing
-# a looping writer or bypassing the read-before-write gate. The hard-stop
-# path below is unchanged (it strips tool calls).
+# a looping writer or bypassing the read-before-write gate. It also names
+# present_files: an agent told only to stop calling tools skipped presenting
+# outputs it had already created, so the run failed its delivery check. The
+# hard-stop path below is unchanged (it strips tool calls).
 _WRAP_UP_INSTRUCTIONS = (
     "If your task asks you to save results to a file, first write what you have collected so far to that file "
     "with a file-writing tool (for example write_file, unless it is the looping tool). "
@@ -328,7 +450,10 @@ _WRAP_UP_INSTRUCTIONS = (
     "If a save is blocked by a read-before-write check, read the target file and retry the save once. "
     "Do not use a tool that this warning tells you to stop, or repeat a failed save loop. "
     "If no permitted save path is available or the retry fails, include the collected results in your final answer "
-    "and state that the file was not saved. Then stop calling tools and produce your final answer. "
+    "and state that the file was not saved. "
+    "If present_files is available, present the files you already created in /mnt/user-data/outputs "
+    "with one present_files call before answering, unless it is the looping tool. "
+    "Then stop calling tools and produce your final answer. "
     "If you cannot complete the task, summarize what you accomplished so far."
 )
 
@@ -353,45 +478,7 @@ _TOOL_EXEMPT_RETRY_MSG = (
     "vary the arguments, or stop repeating it and wrap up now. " + _WRAP_UP_INSTRUCTIONS
 )
 
-# [argus patch #94] A frequency warning is a checkpoint, not a stop order.
-# Models obey "stop calling tools" (and upstream's "Stop calling X and wrap up
-# now") literally, so that wording made the warn threshold the real ceiling and
-# hard_limit unreachable (deep research ended at exactly warn searches per
-# researcher, 2026-09-24). The hard stop still enforces the ceiling; this
-# message names it so the model can budget, and carries upstream's save-first
-# clause (#6804) so a force-stop cannot lose a file the task asked for.
-_TOOL_FREQ_WARNING_MSG = (
-    "[LOOP DETECTED] You have called {tool_name} {count} times in this task. Take stock before the next call: "
-    "save or summarize what you have found so far, then continue only to close specific gaps you can name, "
-    "and change approach if recent calls stopped adding new information. If your task asks you to save results "
-    "to a file, write what you have collected so far to that file first, with a file-writing tool such as "
-    "write_file; if a read-before-write check blocks the save, read the target file and retry the save once. "
-    "{tool_name} is force-stopped at {hard_limit} calls, after which you must answer with what you have."
-)
-
 _HARD_STOP_MSG = "[FORCED STOP] Repeated tool calls exceeded the safety limit. Producing final answer with results collected so far."
-
-_TOOL_FREQ_HARD_STOP_MSG = "[FORCED STOP] Tool {tool_name} called {count} times — exceeded the per-tool safety limit. Producing final answer with results collected so far."
-
-# [argus patch #82] Subcategory steering messages for Layer-2 frequency detection
-_TOOL_FREQ_SUBCATEGORY_WARNING_MSG = "[LOOP DETECTED] Repeated shell micro-reads: {count} inspection-only bash calls. Use read_file / workspace_inspect for file inspection, batch your reads, and move on to implementation."
-_TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG = (
-    "[FORCED STOP] Repeated shell micro-reads exceeded the safety limit ({count} inspection-only bash calls). Use read_file / workspace_inspect for file inspection. Producing final answer with results collected so far."
-)
-
-# [argus patch #100] Layer 2 downgrade while a search tool keeps finding new results.
-_TOOL_FREQ_FRESH_MSG = (
-    "[LOOP DETECTED] You have called {tool_name} {count} times. Its last result still added new "
-    "information, so the stop at {hard_limit} calls is extended, but only while results stay new: "
-    "{tool_name} is force-stopped at {ceiling} calls, or at the next call after one that returns "
-    "nothing new. Narrow each call to the specific gap you are closing, then answer."
-)
-
-_TOOL_FREQ_EXEMPT_MSG = (
-    "[LOOP DETECTED] You have called {tool_name} {count} times without producing a final answer. "
-    "This tool is exempt from the hard stop, but this volume usually means no new progress is being "
-    "made: conclude, or switch to a different approach."
-)
 
 # [argus patch #68] Flavor helpers for the downgrade warning: the outcome
 # phrase and the concrete advice derive from the tool's own stamped meta.
@@ -416,33 +503,14 @@ def _outcome_phrase(meta: dict) -> str:
     if meta.get("status") == "partial_success":
         return "no usable results"
     if meta.get("status") == "success":
-        # [argus patch #69] The gate only reaches here for near-duplicate
-        # successes (distinct successes keep the hard stop).
-        return "near-duplicate results"
+        # [argus patch #68/#69] The gate only reaches here for empty-result or
+        # near-duplicate successes (distinct successes keep the hard stop).
+        return "no new results"
     return _OUTCOME_PHRASES.get(meta.get("error_type") or "", "recoverable errors")
 
 
 def _action_hint(meta: dict) -> str:
     return _ACTION_HINTS.get(meta.get("recommended_next_action") or "", " Change the arguments or the approach.")
-
-
-def _bash_classify(name: str, args: object) -> tuple[str | None, bool]:
-    """[argus patch #82/#83] Classify a bash tool call for subcategory tracking and write progress.
-
-    Returns (subcategory_name, is_execution_write_progress).
-    Only explicit 'execution' commands signal write progress (unknown/empty do not).
-    """
-    if name != "bash":
-        return None, False
-    normalized_args, _ = _normalize_tool_call_args(args)
-    cmd = normalized_args.get("command")
-    if isinstance(cmd, str):
-        c = classify_bash_command(cmd)
-        if c == "inspection":
-            return _BASH_INSPECTION, False
-        if c == "execution":
-            return None, True
-    return None, False
 
 
 @dataclass(frozen=True)
@@ -451,7 +519,7 @@ class _LoopDecision:
 
     message: str
     action: Literal["warn", "hard_stop"]
-    detection_layer: Literal["identical_call_set", "tool_frequency"]
+    detection_layer: Literal["identical_call_set"]
     tool_names: tuple[str, ...]
     count: int
     threshold: int
@@ -482,30 +550,30 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         max_tracked_threads: Maximum number of thread/run scopes to track before
             evicting the least recently used. The configuration name is retained
             for compatibility. Default: 100.
-        tool_freq_warn: Maximum number of same-tool-type calls within a
-            sliding window of ``_tool_freq_window`` before injecting a
-            frequency warning. Catches cross-file read loops that
-            hash-based detection misses. Default: 30 (within a window
-            of 50).
-        tool_freq_hard_limit: Maximum number of same-tool-type calls within
-            a sliding window of ``_tool_freq_window`` before forcing a
-            stop. Default: 50 (within a window of 50).
+        tool_freq_warn: Number of same-tool-type calls within a sliding window
+            before recording the first frequency metric. It never injects a
+            warning or changes control flow. Default: 30.
+        tool_freq_hard_limit: Number of same-tool-type calls within a sliding
+            window before recording the second frequency metric. It never
+            forces a stop. Default: 50.
         tool_freq_overrides: Per-tool overrides for frequency thresholds,
             keyed by tool name. Each value is a ``(warn, hard_limit)`` tuple
             that replaces ``tool_freq_warn`` / ``tool_freq_hard_limit`` for
             that specific tool. Tools not listed here fall back to the global
-            thresholds. Useful for raising limits on intentionally
-            high-frequency tools (e.g. ``bash`` in batch pipelines) without
-            weakening protection on all other tools. Default: ``None``
-            (no overrides).
-        no_hard_stop_tools: Tools exempt from hard stops on both layers
-            ([argus] patch #68). Warnings still fire, but repeated calls to
-            these tools never force-stop the run — cost stays bounded by the
-            token budget and run deadline. Default: ``None`` (no exemptions).
+            thresholds. Overrides tune metric reporting for tools with
+            different normal workloads. Default: ``None`` (no overrides).
+        no_hard_stop_tools: Tools exempt from the identical-call hard stop
+            ([argus] patch #68). Warnings still fire, but repeated identical
+            calls to these tools never force-stop the run; cost stays bounded
+            by the token budget and run deadline. Frequency metrics are
+            observation-only and unaffected. Default: ``None``.
         recoverable_retry_limit: Identical-call repetitions tolerated when the
-            latest tool result is a model-recoverable soft failure
-            ([argus] patch #68); at this count the hard stop fires anyway.
-            Default: 24.
+            latest tool result is a model-recoverable soft failure or a
+            near-duplicate ([argus] patches #68/#69); at this count the hard
+            stop fires anyway. Default: 24.
+        fresh_result_extension_tools / fresh_result_extension_factor:
+            [argus sync] Retired (patch #100); accepted and ignored so stack
+            configs keep loading.
     """
 
     def __init__(
@@ -519,8 +587,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         tool_freq_overrides: dict[str, tuple[int, int]] | None = None,
         no_hard_stop_tools: list[str] | None = None,
         recoverable_retry_limit: int = _DEFAULT_RECOVERABLE_RETRY_LIMIT,
-        fresh_result_extension_tools: list[str] | None = None,
-        fresh_result_extension_factor: float = 2.0,
+        fresh_result_extension_tools: list[str] | None = None,  # [argus sync] retired #100, ignored
+        fresh_result_extension_factor: float = 2.0,  # [argus sync] retired #100, ignored
     ):
         super().__init__()
         self.warn_threshold = warn_threshold
@@ -533,32 +601,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self._no_hard_stop_tools: frozenset[str] = frozenset(no_hard_stop_tools or ())
         self._default_tool_freq_thresholds = (tool_freq_warn, tool_freq_hard_limit)
         self._tool_freq_overrides: dict[str, tuple[int, int]] = tool_freq_overrides or {}
-        # [argus patch #100] Search tools whose volume cap stretches while results stay new.
-        self._fresh_extension_tools: frozenset[str] = frozenset(fresh_result_extension_tools or ())
-        self.fresh_result_extension_factor = fresh_result_extension_factor
-        # Layer 2's windowed frequency count can never exceed the deque length,
-        # so the deque MUST be at least as long as the largest hard limit it is
-        # compared against — otherwise the hard-stop branch is dead code. Do NOT
-        # reuse Layer 1's ``window_size`` (which is unrelated and defaults below
-        # the freq thresholds, e.g. 20 < hard 50); size the frequency window to
-        # the largest hard limit in play (global + every per-tool override) so a
-        # tight burst can actually reach it while spread-out calls still decay
-        # out of the window. Warn thresholds are intentionally excluded: a sane
-        # config enforces warn <= hard (covered by sizing to hard), and a misconfig
-        # with warn > hard would hard-stop first anyway, so an unreachable warn
-        # is harmless and must not inflate the window.
-        # [argus patch #82/#83] Subcategory keys (names in _SUBCATEGORY_NAMES)
-        # flow through self._tool_freq_overrides too but keep their own window
-        # trimmed to their own hard limit, so they must not inflate the global
-        # one. Dotted MCP tool names (e.g. "github.search_issues") are NOT
-        # subcategories and still inflate it so their hard stops stay reachable.
-        # [argus patch #100] An extended tool must be able to reach its ceiling,
-        # so its ceiling (not its hard limit) sizes the window.
+        # Layer 2's windowed frequency metrics must be able to reach their
+        # configured thresholds. Do not reuse Layer 1's ``window_size`` when it
+        # is smaller than a frequency threshold; the metric would otherwise be
+        # impossible to report for a tight burst.
         self._tool_freq_window = max(
             self.window_size,
             self.tool_freq_hard_limit,
-            *(hard for name, (_, hard) in self._tool_freq_overrides.items() if name not in _SUBCATEGORY_NAMES),
-            *(self._fresh_extension_ceiling(self._tool_freq_overrides.get(name, self._default_tool_freq_thresholds)[1]) for name in self._fresh_extension_tools),
+            *(hard for _, hard in self._tool_freq_overrides.values()),
         )
         self._lock = threading.Lock()
         # LangGraph replaces Runtime per graph node but retains one RunControl
@@ -568,8 +618,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # after_agent releases normal invocations and the cap bounds abnormal ones.
         self._fallback_run_ids: OrderedDict[int, tuple[object, str]] = OrderedDict()
         self._max_fallback_run_ids = max(1, self.max_tracked_threads * 2)
-        self._history: OrderedDict[_RunScopeKey, list[str]] = OrderedDict()
-        self._warned: dict[_RunScopeKey, set[str]] = defaultdict(set)
+        self._history: OrderedDict[_RunScopeKey, list[_CallObservation]] = OrderedDict()
+        self._warned: dict[_RunScopeKey, set[_ObservationKey]] = defaultdict(set)
         # Windowed per-tool-type frequency: recent tool names per run scope,
         # trimmed to ``window_size`` so the count decays instead of growing
         # monotonically (replaces the old monotonic ``_tool_freq`` integer).
@@ -580,17 +630,10 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # globally, so the scan would cost 1000 per call for every tool; Counter
         # increments on append and decrements on popleft.
         self._tool_name_counter: defaultdict[_RunScopeKey, Counter[str]] = defaultdict(Counter)
-        # [argus patch #82] Separate per-run history and counter for subcategories
-        # (bash.inspection) so subcategory calls do not consume window slots in
-        # the plain tool name deque. Populated only when the subcategory key is
-        # present in tool_freq_overrides.
-        self._subcat_name_history: defaultdict[_RunScopeKey, deque[str | None]] = defaultdict(deque)
-        self._subcat_name_counter: defaultdict[_RunScopeKey, Counter[str]] = defaultdict(Counter)
-        # Per-run set of tool names already warned about in Layer 2, so a
-        # frequency warning is enqueued once rather than on every subsequent
-        # call. Cleared per name when the windowed count decays back below the
-        # warn threshold, mirroring the hash-layer ``_warned`` pruning.
-        self._tool_freq_warned: dict[_RunScopeKey, set[str]] = defaultdict(set)
+        # Per-run set of (tool, metric) pairs already reported in Layer 2.
+        # A metric is reported once per burst and re-armed when the windowed
+        # count decays below its threshold.
+        self._tool_freq_reported: dict[_RunScopeKey, set[tuple[str, str]]] = defaultdict(set)
         # Per-thread/run queue of warnings to inject at the next model call.
         # Populated by ``after_model`` (detection) and drained by
         # ``wrap_model_call`` (injection); see module docstring.
@@ -611,6 +654,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
     def release_policy_parameters(self) -> dict[str, object]:
         return {
+            "repetition_key": "call_and_result_v1",
+            "read_prediction": "refresh_after_successful_write",
             "warn_threshold": self.warn_threshold,
             "hard_limit": self.hard_limit,
             "window_size": self.window_size,
@@ -618,12 +663,10 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             "tool_freq_warn": self.tool_freq_warn,
             "tool_freq_hard_limit": self.tool_freq_hard_limit,
             "tool_freq_overrides": self._tool_freq_overrides,
+            "frequency_action": "observe_only",
             # [argus] patch #68: behaviour-affecting, so part of the identity.
             "no_hard_stop_tools": sorted(self._no_hard_stop_tools),
             "recoverable_retry_limit": self.recoverable_retry_limit,
-            # [argus] patch #100
-            "fresh_result_extension_tools": sorted(self._fresh_extension_tools),
-            "fresh_result_extension_factor": self.fresh_result_extension_factor,
         }
 
     @classmethod
@@ -639,8 +682,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             tool_freq_overrides={name: (o.warn, o.hard_limit) for name, o in config.tool_freq_overrides.items()},
             no_hard_stop_tools=list(config.no_hard_stop_tools),
             recoverable_retry_limit=config.recoverable_retry_limit,
-            fresh_result_extension_tools=list(config.fresh_result_extension_tools),
-            fresh_result_extension_factor=config.fresh_result_extension_factor,
         )
 
     def _get_thread_id(self, runtime: Runtime) -> str:
@@ -744,25 +785,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             self._warned.pop(evicted_key, None)
             self._tool_name_history.pop(evicted_key, None)
             self._tool_name_counter.pop(evicted_key, None)
-            self._subcat_name_history.pop(evicted_key, None)
-            self._subcat_name_counter.pop(evicted_key, None)
-            self._tool_freq_warned.pop(evicted_key, None)
+            self._tool_freq_reported.pop(evicted_key, None)
             self._drop_pending_warning_key_locked(evicted_key)
             logger.debug(
                 "Evicted loop tracking for thread/run scope (LRU)",
                 extra={"thread_id": evicted_key[0], "run_id": evicted_key[1]},
             )
-
-    def _clear_subcategory_locked(self, scope_key: _RunScopeKey) -> None:
-        """[argus patch #83] Clear subcategory tracking deque, counter, and warned flag for a run scope.
-
-        Must be called while holding self._lock.
-        """
-        self._subcat_name_history.pop(scope_key, None)
-        self._subcat_name_counter.pop(scope_key, None)
-        warned = self._tool_freq_warned.get(scope_key)
-        if warned:
-            warned.discard(_BASH_INSPECTION)
 
     def _drop_pending_warning_key_locked(self, key: _RunScopeKey) -> None:
         """Drop all pending-warning bookkeeping for one thread/run key.
@@ -812,14 +840,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
     ) -> _LoopDecision | None:
         """Track tool calls and check for loops.
 
-        Two detection layers:
-          1. **Hash-based** (existing): catches identical tool call sets.
-          2. **Frequency-based** (new): catches the same *tool type* being
-             called many times with varying arguments (e.g. ``read_file``
-             on 40 different files).
+        The hash-based layer catches repeated call sets with unchanged results.
+        Tool-name frequency is tracked alongside it as an observation metric;
+        it cannot create a warning or hard-stop decision.
 
         Returns:
-            A structured decision when a warning or hard stop is triggered.
+            A structured decision when the hash-based detector triggers.
         """
         messages = state.get("messages", [])
         if not messages:
@@ -829,32 +855,20 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         if getattr(last_msg, "type", None) != "ai":
             return None
 
-        tool_calls = getattr(last_msg, "tool_calls", None)
-        if not tool_calls:
-            return None
-
         scope_key = self._run_scope_key(runtime)
         thread_id, run_id = scope_key
-        call_hash = _hash_tool_calls(tool_calls)
-
-        # [argus patch #82/#83] Precompute the shell classification outside the
-        # lock (classify_bash_command is pure CPU). Nothing is tracked unless the
-        # operator named the subcategory in tool_freq_overrides.
-        track_subcategories = _BASH_INSPECTION in self._tool_freq_overrides
-        subcategories: dict[int, str | None] = {}
-        has_write_progress = False
-        if track_subcategories:
-            for idx, tc in enumerate(tool_calls):
-                name = tc.get("name", "")
-                if name in _WRITE_PROGRESS_TOOLS:
-                    has_write_progress = True
-                elif name == "bash":
-                    sub, is_write = _bash_classify(name, tc.get("args"))
-                    subcategories[idx] = sub
-                    if is_write:
-                        has_write_progress = True
+        previous = _previous_observation(messages)
+        tool_calls = getattr(last_msg, "tool_calls", None)
+        call_hash = _hash_tool_calls(tool_calls) if tool_calls else ""
+        read_paths = {path for call in tool_calls or () if call.get("name") == "read_file" and (path := _tool_file_path(call)) is not None}
 
         with self._lock:
+            history = self._history.get(scope_key)
+            if history and previous is not None and history[-1].message_id == previous.message_id and history[-1].call_hash == previous.call_hash:
+                history[-1] = previous
+            if not tool_calls:
+                return None
+
             # Touch / create entry (move to end for LRU)
             if scope_key in self._history:
                 self._history.move_to_end(scope_key)
@@ -863,24 +877,30 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._evict_if_needed()
 
             history = self._history[scope_key]
-            history.append(call_hash)
+            # The current tools have not run. Predict their outcome from the
+            # most recent matching batch, then settle it on the next response.
+            # This preserves warning/stop timing for stagnant calls while a new
+            # successful outcome separates prior observations instead of resetting
+            # the entire budget (so repeated result cycles still accumulate).
+            result_hash = _predict_result_hash(history, call_hash, read_paths)
+            message_id = last_msg.id if isinstance(last_msg.id, str) and last_msg.id else None
+            observation = _CallObservation(call_hash, message_id, result_hash)
+            history.append(observation)
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size :]
 
             warned_hashes = self._warned.get(scope_key)
             if warned_hashes is not None:
-                warned_hashes.intersection_update(history)
+                warned_hashes.intersection_update(entry.key for entry in history)
                 if not warned_hashes:
                     self._warned.pop(scope_key, None)
 
-            count = history.count(call_hash)
+            count = sum(entry.key == observation.key for entry in history)
             tool_names = [str(tc.get("name") or "?") for tc in tool_calls]
 
             # Warnings admit the whole batch, so they must not skip frequency
-            # accounting or hide a later hard limit. Keep one candidate (hash
-            # warnings retain priority over frequency warnings) until every
-            # admitted call has been checked. Only the selected warning is
-            # marked/logged; a hard stop may supersede it below.
+            # accounting. Keep one hash-warning candidate until every admitted
+            # call has been checked. Only the selected warning is marked/logged.
             warning: _LoopDecision | None = None
 
             # --- Layer 1: hash-based (identical call sets) ---
@@ -889,10 +909,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 # tool's latest result is a model-recoverable soft failure (or
                 # the tool is exempt via no_hard_stop_tools), downgrade the
                 # hard stop to an escalating warning instead of killing the
-                # run mid-investigation. See the module docstring for the
-                # full rationale and the conservative fallbacks. The downgrade
-                # is a warning candidate like any other, so Layer 2 still
-                # accounts for this batch and may still supersede it.
+                # run mid-investigation. See the module docstring.
                 downgrade = self._hard_stop_downgrade(messages, tool_calls, count)
                 if downgrade is None:
                     logger.error(
@@ -934,7 +951,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     threshold=self.hard_limit,
                     downgrade=downgrade_kind,
                 )
-            elif count >= self.warn_threshold and call_hash not in self._warned.get(scope_key, set()):
+            elif count >= self.warn_threshold and observation.key not in self._warned.get(scope_key, set()):
                 warning = _LoopDecision(
                     # [argus patch #68] Name the tools and the count so the
                     # model can tell WHICH call is looping.
@@ -946,241 +963,66 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     threshold=self.warn_threshold,
                 )
 
-            # --- Layer 2: per-tool-type frequency (windowed) ---
-            # [argus patch #83] Reset on write progress: when the current
-            # AIMessage issues any write_file/str_replace call, or any
-            # execution-classified bash call, clear the subcategory tracking
-            # for this run so reads-after-writes do not accumulate.
-            if has_write_progress:
-                self._clear_subcategory_locked(scope_key)
-
+            # --- Layer 2: per-tool-type frequency (windowed observation) ---
+            # Count tool names for cost/workload metrics, but never turn this
+            # signal into a model warning or a hard stop. Legitimate batch work
+            # can use one tool repeatedly with different arguments.
             tool_name_history = self._tool_name_history[scope_key]
             name_counter = self._tool_name_counter[scope_key]
-            subcat_history = self._subcat_name_history[scope_key] if track_subcategories else None
-            subcat_counter = self._subcat_name_counter[scope_key] if track_subcategories else Counter()
-            for idx, tc in enumerate(tool_calls):
+            reported_metrics = self._tool_freq_reported[scope_key]
+            for tc in tool_calls:
                 name = tc.get("name", "")
                 if not name:
                     continue
-                # Windowed counting: append the name and trim to the frequency
-                # window (>= the largest threshold) so the count can reach the
-                # warn/hard limits on a tight burst yet still decay for
-                # spread-out calls. A mirrored Counter gives O(1) freq_count
-                # even when a per-tool override inflates the window globally.
                 tool_name_history.append(name)
                 name_counter[name] += 1
                 while len(tool_name_history) > self._tool_freq_window:
                     old = tool_name_history.popleft()
-                    c = name_counter[old] - 1
-                    if c <= 0:
+                    count = name_counter[old] - 1
+                    if count <= 0:
                         del name_counter[old]
                     else:
-                        name_counter[old] = c
-                    old_warn = self._tool_freq_overrides.get(old, self._default_tool_freq_thresholds)[0]
-                    if c < old_warn:
-                        # Any tool can evict an older name from the shared
-                        # window. Rearm that name as soon as its burst decays,
-                        # even when the current call belongs to another tool.
-                        self._tool_freq_warned[scope_key].discard(old)
-                freq_count = name_counter.get(name, 0)
+                        name_counter[old] = count
+                    old_warn, old_hard = self._tool_freq_overrides.get(old, self._default_tool_freq_thresholds)
+                    if count < old_warn:
+                        reported_metrics.discard((old, "warn"))
+                    if count < old_hard:
+                        reported_metrics.discard((old, "hard_limit"))
 
-                # [argus patch #82/#83] Subcategory tracking (bash.inspection) on
-                # its own window, trimmed to the subcategory's OWN hard limit —
-                # not the global window, which a high plain-tool override
-                # (e.g. bash: 300) inflates.
-                subcat = subcategories.get(idx)
-                subcat_freq = 0
-                if subcat_history is not None:
-                    subcat_history.append(subcat)
-                    if subcat:
-                        subcat_counter[subcat] += 1
-                    subcat_limit = self._tool_freq_overrides[_BASH_INSPECTION][1]
-                    while len(subcat_history) > subcat_limit:
-                        old_sub = subcat_history.popleft()
-                        if old_sub:
-                            c = subcat_counter[old_sub] - 1
-                            if c <= 0:
-                                del subcat_counter[old_sub]
-                            else:
-                                subcat_counter[old_sub] = c
-                    subcat_freq = subcat_counter.get(subcat, 0) if subcat else 0
-
+                freq_count = name_counter[name]
                 eff_warn, eff_hard = self._tool_freq_overrides.get(name, self._default_tool_freq_thresholds)
-
-                if freq_count >= eff_hard:
-                    if name in self._no_hard_stop_tools:
-                        # [argus patch #68] no_hard_stop_tools exempts from the
-                        # Layer-2 volume cap too: warn, never stop. (The result
-                        # meta gate deliberately does NOT apply here — Layer 2
-                        # fires on varied arguments, so there is no single
-                        # "previous identical result" to consult; per-tool
-                        # tool_freq_overrides exist for legitimately chatty tools.)
-                        logger.warning(
-                            "Tool frequency hard limit reached — tool exempt via no_hard_stop_tools, downgrading to warning",
-                            extra={
-                                "thread_id": thread_id,
-                                "run_id": run_id,
-                                "tool_name": name,
-                                "count": freq_count,
-                            },
-                        )
-                        if warning is None:
-                            warning = _LoopDecision(
-                                message=_TOOL_FREQ_EXEMPT_MSG.format(tool_name=name, count=freq_count),
-                                action="warn",
-                                detection_layer="tool_frequency",
-                                tool_names=(name,),
-                                count=freq_count,
-                                threshold=eff_hard,
-                                downgrade="exempt_tool",
-                            )
-                    elif freq_count < self._fresh_extension_ceiling(eff_hard) and name in self._fresh_extension_tools and self._latest_result_is_fresh(messages, name):
-                        # [argus patch #100] Still finding new results: warn
-                        # (escalating, never marked warned) up to the ceiling.
-                        ceiling = self._fresh_extension_ceiling(eff_hard)
+                for metric, threshold in (("warn", eff_warn), ("hard_limit", eff_hard)):
+                    metric_key = (name, metric)
+                    if freq_count >= threshold and metric_key not in reported_metrics:
                         logger.info(
-                            "Tool frequency hard limit reached — latest result is fresh, extending",
-                            extra={"thread_id": thread_id, "run_id": run_id, "tool_name": name, "count": freq_count, "ceiling": ceiling},
-                        )
-                        if warning is None:
-                            warning = _LoopDecision(
-                                message=_TOOL_FREQ_FRESH_MSG.format(tool_name=name, count=freq_count, hard_limit=eff_hard, ceiling=ceiling),
-                                action="warn",
-                                detection_layer="tool_frequency",
-                                tool_names=(name,),
-                                count=freq_count,
-                                threshold=eff_hard,
-                                downgrade="fresh_results",
-                            )
-                    else:
-                        logger.error(
-                            "Tool frequency hard limit reached — forcing stop",
+                            "Tool frequency metric reached",
                             extra={
                                 "thread_id": thread_id,
                                 "run_id": run_id,
                                 "tool_name": name,
                                 "count": freq_count,
+                                "metric": metric,
+                                "threshold": threshold,
+                                "action": "observe_only",
                             },
                         )
-                        return _LoopDecision(
-                            message=_TOOL_FREQ_HARD_STOP_MSG.format(tool_name=name, count=freq_count),
-                            action="hard_stop",
-                            detection_layer="tool_frequency",
-                            tool_names=(name,),
-                            count=freq_count,
-                            threshold=eff_hard,
-                        )
-                elif freq_count >= eff_warn:
-                    freq_warned = self._tool_freq_warned[scope_key]
-                    if warning is None and name not in freq_warned:
-                        warning = _LoopDecision(
-                            message=_TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=freq_count, hard_limit=eff_hard),
-                            action="warn",
-                            detection_layer="tool_frequency",
-                            tool_names=(name,),
-                            count=freq_count,
-                            threshold=eff_warn,
-                        )
-                else:
-                    # Windowed count decayed below the warn threshold; allow a
-                    # future burst of this tool to warn again.
-                    self._tool_freq_warned[scope_key].discard(name)
+                        reported_metrics.add(metric_key)
 
-                # [argus patch #82] Then evaluate the subcategory, if this call has one.
-                if subcat:
-                    subcat_warn, subcat_hard = self._tool_freq_overrides[subcat]
-                    if subcat_freq >= subcat_hard:
-                        if subcat in self._no_hard_stop_tools:
-                            logger.warning(
-                                "Tool subcategory frequency hard limit reached — tool exempt via no_hard_stop_tools, downgrading to warning",
-                                extra={
-                                    "thread_id": thread_id,
-                                    "run_id": run_id,
-                                    "tool_name": subcat,
-                                    "count": subcat_freq,
-                                },
-                            )
-                            if warning is None:
-                                warning = _LoopDecision(
-                                    message=_TOOL_FREQ_EXEMPT_MSG.format(tool_name=subcat, count=subcat_freq),
-                                    action="warn",
-                                    detection_layer="tool_frequency",
-                                    tool_names=(subcat,),
-                                    count=subcat_freq,
-                                    threshold=subcat_hard,
-                                    downgrade="exempt_tool",
-                                )
-                        else:
-                            logger.error(
-                                "Tool subcategory frequency hard limit reached — forcing stop",
-                                extra={
-                                    "thread_id": thread_id,
-                                    "run_id": run_id,
-                                    "tool_name": subcat,
-                                    "count": subcat_freq,
-                                },
-                            )
-                            # [argus patch #83] Clear subcategory tracking state on
-                            # hard stop so the next run starts fresh at 0 without
-                            # immediately re-stopping.
-                            self._clear_subcategory_locked(scope_key)
-                            return _LoopDecision(
-                                message=_TOOL_FREQ_SUBCATEGORY_HARD_STOP_MSG.format(count=subcat_freq),
-                                action="hard_stop",
-                                detection_layer="tool_frequency",
-                                tool_names=(subcat,),
-                                count=subcat_freq,
-                                threshold=subcat_hard,
-                            )
-                    elif subcat_freq >= subcat_warn:
-                        if warning is None and subcat not in self._tool_freq_warned[scope_key]:
-                            warning = _LoopDecision(
-                                message=_TOOL_FREQ_SUBCATEGORY_WARNING_MSG.format(count=subcat_freq),
-                                action="warn",
-                                detection_layer="tool_frequency",
-                                tool_names=(subcat,),
-                                count=subcat_freq,
-                                threshold=subcat_warn,
-                            )
-                    else:
-                        self._tool_freq_warned[scope_key].discard(subcat)
-
-            if warning is not None:
-                if warning.downgrade is not None:
-                    # [argus patch #68] A downgraded hard stop escalates: it is
-                    # never marked as already-warned (it re-fires with the
-                    # growing count on every further call) and was logged above.
-                    pass
-                elif warning.detection_layer == "identical_call_set":
-                    self._warned[scope_key].add(call_hash)
-                    logger.warning(
-                        "Repetitive tool calls detected — injecting warning",
-                        extra={
-                            "thread_id": thread_id,
-                            "run_id": run_id,
-                            "call_hash": call_hash,
-                            "count": warning.count,
-                            "tools": list(warning.tool_names),
-                        },
-                    )
-                else:
-                    warned_name = warning.tool_names[0]
-                    # Later calls in this batch may already have decayed this
-                    # burst. Do not suppress the next burst with a stale mark.
-                    # [argus patch #82] A subcategory's count lives in its own
-                    # counter, not the plain tool-name one.
-                    current = subcat_counter.get(warned_name, 0) if warned_name in _SUBCATEGORY_NAMES else name_counter.get(warned_name, 0)
-                    if current >= warning.threshold:
-                        self._tool_freq_warned[scope_key].add(warned_name)
-                    logger.warning(
-                        "Tool frequency warning — too many calls to same tool type",
-                        extra={
-                            "thread_id": thread_id,
-                            "run_id": run_id,
-                            "tool_name": warned_name,
-                            "count": warning.count,
-                        },
-                    )
+            if warning is not None and warning.downgrade is None:
+                self._warned[scope_key].add(observation.key)
+                logger.warning(
+                    "Repetitive tool calls detected — injecting warning",
+                    extra={
+                        "thread_id": thread_id,
+                        "run_id": run_id,
+                        "call_hash": call_hash,
+                        "count": warning.count,
+                        "tools": list(warning.tool_names),
+                    },
+                )
+            # [argus patch #68] A downgraded hard stop escalates: it is never
+            # marked as already-warned (it re-fires with the growing count on
+            # every further call) and was logged above.
             return warning
 
     # ------------------------------------------------------------------
@@ -1232,33 +1074,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 return message, "recoverable_retry"
 
         return None
-
-    def _fresh_extension_ceiling(self, hard_limit: int) -> int:
-        """[argus patch #100] Call count at which an extended tool stops regardless."""
-        return max(hard_limit, math.ceil(hard_limit * self.fresh_result_extension_factor))
-
-    def _latest_result_is_fresh(self, messages: list, name: str) -> bool:
-        """[argus patch #100] True when *name*'s latest result was a success
-        that is not a near-duplicate of its recent results.
-
-        Conservative like the Layer 1 gate: missing meta, a result stamped by
-        ToolProgressMiddleware (tool BLOCKED), any non-success status (a
-        no-results body is ``partial_success``), content too short to judge,
-        and a near-duplicate all keep the stop.
-        """
-        metas = self._latest_result_meta_per_tool(messages, {name})
-        if metas is None:
-            return False
-        meta = metas[name]
-        if meta.get("source") == "progress_middleware" or meta.get("status") != "success":
-            return False
-        contents = self._recent_contents_per_tool(messages, {name}).get(name, [])
-        if not contents:
-            return False
-        latest = word_set(contents[0])
-        if len(latest) < _SIMILARITY_MIN_WORDS:
-            return False
-        return not is_near_duplicate(latest, [word_set(c) for c in contents[1:]], _SIMILARITY_THRESHOLD, _SIMILARITY_MIN_WORDS)
 
     @staticmethod
     def _latest_result_meta_per_tool(messages: list, names: set[str]) -> dict[str, dict] | None:
@@ -1338,9 +1153,13 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             return False
         status = meta.get("status")
         if status == "partial_success":
-            # no_results-style empty bodies (patch #68 marker set).
+            # Legacy stamps (nothing produces this status upstream any more).
             return True
         if status == "success":
+            # [argus patch #68] Empty-result bodies, formerly partial_success from prose markers.
+            head = (contents[0] if contents else "").lower()
+            if head and len(head) <= _EMPTY_RESULT_MAX_CHARS and any(marker in head for marker in _EMPTY_RESULT_MARKERS):
+                return True
             # [argus patch #69] Near-duplicate of its own recent successes is
             # "no new information" — recoverable, same as a soft failure.
             if len(contents) < 2:
@@ -1353,7 +1172,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 _SIMILARITY_MIN_WORDS,
             )
         if status == "error":
-            return bool(meta.get("recoverable_by_model", False))
+            # [argus sync] Upstream stamps every error recoverable; keep the categories that were not.
+            return bool(meta.get("recoverable_by_model", False)) and meta.get("error_type") not in _UNRECOVERABLE_ERROR_TYPES
         # Unknown status — conservative.
         return False
 
@@ -1521,11 +1341,12 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         return warnings
 
     def _restore_pending_warnings(self, runtime: Runtime, warnings: list[str]) -> None:
-        """Requeue warnings taken for a model call that raised.
+        """Requeue warnings taken for a model call that raised or came back empty.
 
         LLMErrorHandlingMiddleware sits outside this middleware and retries a
-        failed call by running this wrap again, so the retry must still find
-        the warning. It would not be queued again: it is already marked warned.
+        failed call, or an empty stop response, by running this wrap again, so
+        the retry must still find the warning. It would not be queued again: it
+        is already marked warned.
         """
         if not warnings:
             return
@@ -1564,10 +1385,13 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
     ) -> ModelCallResult:
         warnings = self._drain_pending_warnings(request.runtime)
         try:
-            return handler(self._inject_warnings(request, warnings))
+            response = handler(self._inject_warnings(request, warnings))
         except Exception:
             self._restore_pending_warnings(request.runtime, warnings)
             raise
+        if is_empty_stop_response(response):
+            self._restore_pending_warnings(request.runtime, warnings)
+        return response
 
     @override
     async def awrap_model_call(
@@ -1577,10 +1401,13 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
     ) -> ModelCallResult:
         warnings = self._drain_pending_warnings(request.runtime)
         try:
-            return await handler(self._inject_warnings(request, warnings))
+            response = await handler(self._inject_warnings(request, warnings))
         except Exception:
             self._restore_pending_warnings(request.runtime, warnings)
             raise
+        if is_empty_stop_response(response):
+            self._restore_pending_warnings(request.runtime, warnings)
+        return response
 
     def reset(self, thread_id: str | None = None) -> None:
         """Clear tracking state. If thread_id given, clear only that thread."""
@@ -1591,9 +1418,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     self._warned,
                     self._tool_name_history,
                     self._tool_name_counter,
-                    self._subcat_name_history,
-                    self._subcat_name_counter,
-                    self._tool_freq_warned,
+                    self._tool_freq_reported,
                 ):
                     for key in list(mapping):
                         if key[0] == thread_id:
@@ -1611,9 +1436,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._warned.clear()
                 self._tool_name_history.clear()
                 self._tool_name_counter.clear()
-                self._subcat_name_history.clear()
-                self._subcat_name_counter.clear()
-                self._tool_freq_warned.clear()
+                self._tool_freq_reported.clear()
                 self._pending_warnings.clear()
                 self._pending_warning_touch_order.clear()
                 self._stop_reason.clear()

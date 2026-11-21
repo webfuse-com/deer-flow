@@ -17,6 +17,7 @@ from app.channels.base import Channel, ChannelStopTimeout
 from app.channels.leadership import ChannelLeadership, RenewOutcome
 from app.channels.manager import DEFAULT_CHANNEL_MAX_CONCURRENCY, DEFAULT_CHANNEL_SHUTDOWN_GRACE_PERIOD_SECONDS, DEFAULT_GATEWAY_URL, DEFAULT_LANGGRAPH_URL, ChannelManager
 from app.channels.message_bus import DEFAULT_INBOUND_QUEUE_MAXSIZE, MessageBus
+from app.channels.reply_locale import ReplyLocaleResolver, supported_locale
 from app.channels.runtime_config_store import RuntimeConfigStore, SqlChannelRuntimeConfigStore, merge_runtime_channel_configs, overlay_runtime_channel_configs, resolve_runtime_config_store, runtime_channel_disconnected
 from app.channels.store import ChannelStore, JsonChannelStore, SqlChannelStore, resolve_channel_store
 from deerflow.config.channel_leader_lease_config import CHANNEL_LEADER_LEASE_FIELD, CHANNEL_LEADER_LEASE_KEY, ChannelLeaderLeaseConfig, channel_leader_lease_config
@@ -283,6 +284,13 @@ class ChannelService:
         else:
             self.store = resolve_channel_store(app_config)
         self._connection_repo = connection_repo
+        # Language of DeerFlow's own replies (/connect, /goal): the owner's web UI
+        # language, read from the connection repository's database, else
+        # channel_connections.notification_locale (captured here; restart-scoped).
+        self._reply_locale = ReplyLocaleResolver(
+            session_factory=getattr(connection_repo, "session_factory", None),
+            default_locale=supported_locale(getattr(getattr(app_config, "channel_connections", None), "notification_locale", None)),
+        )
         self._get_stream_bridge = get_stream_bridge
         langgraph_url = _resolve_service_url(config, "langgraph_url", _CHANNELS_LANGGRAPH_URL_ENV, DEFAULT_LANGGRAPH_URL)
         gateway_url = _resolve_service_url(config, "gateway_url", _CHANNELS_GATEWAY_URL_ENV, DEFAULT_GATEWAY_URL)
@@ -310,6 +318,7 @@ class ChannelService:
             get_stream_bridge=get_stream_bridge,
             coalesce_window=float(coalesce_window) if isinstance(coalesce_window, (int, float)) else None,
             channel_owner_emails=channel_owner_emails,
+            reply_locale=self._reply_locale,
         )
         self._channels: dict[str, Any] = {}  # name -> Channel instance
         self._config = config
@@ -841,6 +850,7 @@ class ChannelService:
                 config["seen_event_store_path"] = await asyncio.to_thread(_default_seen_store_path)
             if self._connection_repo is not None:
                 config["connection_repo"] = self._connection_repo
+            config["reply_locale"] = self._reply_locale
             # A stop may have started while this coroutine was suspended in
             # pre-start I/O above. Fence publication again immediately before
             # the new instance becomes service-owned.

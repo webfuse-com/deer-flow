@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -703,7 +705,9 @@ class TestChannelManager:
 
         bus = MessageBus()
         store = JsonChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
-        manager = ChannelManager(bus=bus, store=store, langgraph_url="http://localhost:8001")
+        # An external Gateway keeps langgraph_sdk.get_client(); loopback hosts
+        # build a trust_env=False client and are covered by the run-client tests.
+        manager = ChannelManager(bus=bus, store=store, langgraph_url="http://gateway.example.com/api")
 
         with patch("langgraph_sdk.get_client") as get_client:
             get_client.return_value = object()
@@ -712,7 +716,7 @@ class TestChannelManager:
 
         get_client.assert_called_once()
         kwargs = get_client.call_args.kwargs
-        assert kwargs["url"] == "http://localhost:8001"
+        assert kwargs["url"] == "http://gateway.example.com/api"
         headers = kwargs["headers"]
         csrf_token = headers["X-CSRF-Token"]
         assert csrf_token
@@ -1646,6 +1650,40 @@ class TestChannelManager:
 
         _run(go())
 
+    def test_wait_reports_a_step_limit_stop_and_releases_dedupe_key(self, tmp_path):
+        """``/wait`` returns a step-limit stop only as an error: reply with its message, not a generic failure."""
+        from app.channels.manager import ChannelManager
+
+        step_limit_text = "The run stopped at its step limit (recursion_limit=100) before finishing. Created but not presented: /mnt/user-data/outputs/report.md. Send a message to continue."
+
+        async def go():
+            bus = MessageBus()
+            manager = ChannelManager(bus=bus, store=JsonChannelStore(path=tmp_path / "store.json"))
+            outbound_received: list[OutboundMessage] = []
+
+            async def capture_outbound(msg: OutboundMessage) -> None:
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            manager._client = _make_mock_langgraph_client()
+            # The SDK's exception for the Gateway's /wait error envelope.
+            manager._client.runs.wait = AsyncMock(side_effect=Exception(f"GraphRecursionError: {step_limit_text}"))
+            await manager.start()
+
+            def _inbound() -> InboundMessage:
+                return InboundMessage(channel_name="wechat", chat_id="wx_user_1", user_id="wx_user_1", text="write the report", metadata={"message_id": "m-1"})
+
+            await bus.publish_inbound(_inbound())
+            await _wait_for(lambda: len(outbound_received) == 1)
+            assert [m.text for m in outbound_received] == [step_limit_text]
+
+            # The run ended, so a provider redelivery may retry it.
+            await bus.publish_inbound(_inbound())
+            await _wait_for(lambda: manager._client.runs.wait.call_count == 2)
+            await manager.stop()
+
+        _run(go())
+
     def test_fire_and_forget_thread_busy_releases_dedupe_key(self, tmp_path):
         """Same invariant for a fire-and-forget channel that does not buffer follow-ups."""
         import httpx
@@ -1713,6 +1751,184 @@ class TestChannelManager:
                 CHANNEL_RUN_POLICY.pop(channel_name, None)
             else:
                 CHANNEL_RUN_POLICY[channel_name] = original
+
+    @staticmethod
+    def _thread_busy_conflict():
+        from langgraph_sdk.errors import ConflictError
+
+        request = httpx.Request("POST", "http://127.0.0.1:2024/threads/t/runs")
+        return ConflictError(
+            "Thread is already running a task.",
+            response=httpx.Response(409, request=request),
+            body={"message": "Thread is already running a task."},
+        )
+
+    @staticmethod
+    def _failed_run_inbound(method: str, channel_name: str) -> InboundMessage:
+        if method == "create":
+            return InboundMessage(channel_name=channel_name, chat_id="owner/repo", user_id="dev", owner_user_id="agent-owner-1", workspace_id="owner/repo", text="hi", metadata={"message_id": "delivery-1:dev:agent"})
+        return InboundMessage(channel_name=channel_name, chat_id="wx_user_1", user_id="wx_user_1", text="hi", metadata={"message_id": "m-1"})
+
+    _HANDLED_RUN_ERRORS = {
+        # case id: (client method, exception factory, stale /model pin recovery, reply text)
+        "wait-generic-error": ("wait", lambda: RuntimeError("boom"), False, "An internal error occurred. Please try again."),
+        "wait-thread-busy": ("wait", "busy", False, None),
+        "wait-stale-pin": ("wait", lambda: RuntimeError("model gone"), True, "pin reset"),
+        "wait-step-limit": ("wait", lambda: Exception("GraphRecursionError: The run stopped at its step limit."), False, "The run stopped at its step limit."),
+        "fire-and-forget-thread-busy": ("create", "busy", False, None),
+        "fire-and-forget-stale-pin": ("create", lambda: RuntimeError("model gone"), True, "pin reset"),
+    }
+
+    @pytest.mark.parametrize("case", list(_HANDLED_RUN_ERRORS))
+    def test_failed_run_reply_is_published_before_dedupe_release(self, tmp_path, monkeypatch, case):
+        """A run that failed to start releases its key only after the failure reply.
+
+        Publishing awaits the channel's send. A key released before it lets a
+        provider redelivery start over on another worker while the earlier
+        attempt's reply is still on its way, so the two replies can arrive out
+        of order. The key is still released, so the redelivery retries.
+        """
+        from app.channels.manager import THREAD_BUSY_MESSAGE, ChannelManager
+        from app.channels.run_policy import CHANNEL_RUN_POLICY, ChannelRunPolicy
+
+        method, make_exc, stale_pin, reply = self._HANDLED_RUN_ERRORS[case]
+        if make_exc == "busy":
+            make_exc, reply = self._thread_busy_conflict, THREAD_BUSY_MESSAGE
+        channel_name = "wechat"
+        if method == "create":
+            channel_name = "test-fire-and-forget-reply-order"
+            monkeypatch.setitem(
+                CHANNEL_RUN_POLICY,
+                channel_name,
+                ChannelRunPolicy(is_interactive=False, fire_and_forget=True, requires_bound_identity=False, buffer_followups_on_busy=False),
+            )
+
+        def _inbound() -> InboundMessage:
+            return self._failed_run_inbound(method, channel_name)
+
+        async def go():
+            bus = MessageBus()
+            # [argus patch #40] coalesce_window=0: the fork debounces chat turns, which would end join_inbound early.
+            manager = ChannelManager(bus=bus, store=JsonChannelStore(path=tmp_path / "store.json"), coalesce_window=0)
+            key = manager._inbound_dedupe_key(_inbound())
+            replies: list[tuple[str, bool]] = []
+
+            async def capture_outbound(msg: OutboundMessage) -> None:
+                replies.append((msg.text, key in manager._inbound_dedupe_store._store))
+
+            bus.subscribe_outbound(capture_outbound)
+            manager._client = _make_mock_langgraph_client()
+            run_call = AsyncMock(side_effect=make_exc())
+            setattr(manager._client.runs, method, run_call)
+            if stale_pin:
+                monkeypatch.setattr(manager, "_stale_pin_recovery", AsyncMock(return_value=SimpleNamespace(text="pin reset")))
+            await manager.start()
+            try:
+                await bus.publish_inbound(_inbound())
+                await asyncio.wait_for(bus.join_inbound(), timeout=5)
+                assert replies == [(reply, True)]
+
+                # The key was released after the reply: the redelivery runs again.
+                await bus.publish_inbound(_inbound())
+                await asyncio.wait_for(bus.join_inbound(), timeout=5)
+                assert run_call.call_count == 2
+            finally:
+                await manager.stop()
+
+        _run(go())
+
+    @pytest.mark.parametrize(
+        ("case", "key_kept"),
+        [(case, False) for case in _HANDLED_RUN_ERRORS] + [("wait-connect-error", False), ("wait-read-timeout", True)],
+    )
+    def test_shutdown_during_failed_run_reply_keeps_the_release_decision(self, tmp_path, monkeypatch, case, key_kept):
+        """Shutdown cancelling the failure reply must not change whether the key is released.
+
+        A run the Gateway rejected or that ended still releases its key, so the
+        redelivery retries. A ``/wait`` read timeout keeps it, because the run
+        may have been admitted and may still be running.
+        """
+        from app.channels.manager import ChannelManager
+        from app.channels.run_policy import CHANNEL_RUN_POLICY, ChannelRunPolicy
+
+        request = httpx.Request("POST", "http://127.0.0.1:2024/threads/t/runs/wait")
+        transport_errors = {
+            "wait-connect-error": ("wait", lambda: httpx.ConnectError("refused", request=request), False),
+            "wait-read-timeout": ("wait", lambda: httpx.ReadTimeout("timed out", request=request), False),
+        }
+        if case in transport_errors:
+            method, make_exc, stale_pin = transport_errors[case]
+        else:
+            method, make_exc, stale_pin, _ = self._HANDLED_RUN_ERRORS[case]
+        if make_exc == "busy":
+            make_exc = self._thread_busy_conflict
+        channel_name = "wechat"
+        if method == "create":
+            channel_name = "test-fire-and-forget-reply-cancel"
+            monkeypatch.setitem(
+                CHANNEL_RUN_POLICY,
+                channel_name,
+                ChannelRunPolicy(is_interactive=False, fire_and_forget=True, requires_bound_identity=False, buffer_followups_on_busy=False),
+            )
+        msg = self._failed_run_inbound(method, channel_name)
+
+        async def go():
+            bus = MessageBus()
+            manager = ChannelManager(bus=bus, store=JsonChannelStore(path=tmp_path / "store.json"), shutdown_grace_period_seconds=0.05, coalesce_window=0)
+            key = manager._inbound_dedupe_key(msg)
+            assert key is not None
+            reply_started = asyncio.Event()
+
+            async def block_outbound(_: OutboundMessage) -> None:
+                reply_started.set()
+                await asyncio.Event().wait()
+
+            bus.subscribe_outbound(block_outbound)
+            manager._client = _make_mock_langgraph_client()
+            setattr(manager._client.runs, method, AsyncMock(side_effect=make_exc()))
+            if stale_pin:
+                monkeypatch.setattr(manager, "_stale_pin_recovery", AsyncMock(return_value=SimpleNamespace(text="pin reset")))
+            await manager.start()
+            try:
+                await bus.publish_inbound(msg)
+                await asyncio.wait_for(reply_started.wait(), timeout=5)
+            finally:
+                await manager.stop()
+
+            assert (key in manager._inbound_dedupe_store._store) is key_kept
+
+        _run(go())
+
+    @pytest.mark.parametrize("case", ["wait-generic-error", "wait-thread-busy"])
+    def test_failed_run_reply_that_cannot_be_sent_still_releases_dedupe_key(self, tmp_path, monkeypatch, case):
+        """Replying first must not strand the key when the reply itself raises."""
+        from app.channels.manager import ChannelManager
+
+        make_exc = self._thread_busy_conflict if case == "wait-thread-busy" else (lambda: RuntimeError("boom"))
+
+        def _inbound() -> InboundMessage:
+            return InboundMessage(channel_name="wechat", chat_id="wx_user_1", user_id="wx_user_1", text="hi", metadata={"message_id": "m-1"})
+
+        async def go():
+            bus = MessageBus()
+            # [argus patch #40] coalesce_window=0: the fork debounces chat turns, which would end join_inbound early.
+            manager = ChannelManager(bus=bus, store=JsonChannelStore(path=tmp_path / "store.json"), coalesce_window=0)
+            manager._client = _make_mock_langgraph_client()
+            manager._client.runs.wait = AsyncMock(side_effect=make_exc())
+            monkeypatch.setattr(manager, "_send_error", AsyncMock(side_effect=RuntimeError("channel store unavailable")))
+            await manager.start()
+            try:
+                await bus.publish_inbound(_inbound())
+                await asyncio.wait_for(bus.join_inbound(), timeout=5)
+                assert manager._inbound_dedupe_key(_inbound()) not in manager._inbound_dedupe_store._store
+
+                await bus.publish_inbound(_inbound())
+                await asyncio.wait_for(bus.join_inbound(), timeout=5)
+                assert manager._client.runs.wait.call_count == 2
+            finally:
+                await manager.stop()
+
+        _run(go())
 
     @pytest.mark.asyncio
     async def test_github_redelivery_is_deduped_like_other_channels(self, tmp_path):
@@ -5554,19 +5770,33 @@ class TestResolveRunParamsUserId:
         assert run_context["channel_user_id"] == "U-platform"
 
     def test_github_channel_gets_raised_recursion_limit(self):
-        """Autonomous GitHub coding runs (clone → edit → test → push → PR) need
-        more super-steps than an interactive chat turn. The default
-        ``recursion_limit`` of 100 is raised for the github channel only."""
+        """Autonomous GitHub coding runs (clone → edit → test → push → PR) get
+        a channel floor of 250 super-steps; other channels send no
+        ``recursion_limit`` and leave the budget to the Gateway."""
         manager = self._manager()
 
         gh_msg = InboundMessage(channel_name="github", chat_id="zhfeng/llm-gateway", user_id="zhfeng", text="hi")
         _, gh_config, _ = manager._resolve_run_params(gh_msg, "thread-1")
         assert gh_config["recursion_limit"] >= 250
 
-        # Interactive channels keep the default ceiling.
         slack_msg = InboundMessage(channel_name="slack", chat_id="C1", user_id="u", text="hi")
         _, slack_config, _ = manager._resolve_run_params(slack_msg, "thread-1")
-        assert slack_config["recursion_limit"] == 100
+        assert "recursion_limit" not in slack_config
+
+    def test_im_run_uses_gateway_configured_recursion_limit(self):
+        """An IM run without a session value gets the operator's top-level
+        ``recursion_limit``, like Gateway API runs, instead of a fixed 100."""
+        from app.gateway.services import build_run_config
+        from deerflow.config.app_config import AppConfig, reset_app_config, set_app_config
+
+        set_app_config(AppConfig.model_validate({"sandbox": {"use": "deerflow.sandbox.local:LocalSandboxProvider"}, "recursion_limit": 700}))
+        try:
+            manager = self._manager()
+            msg = InboundMessage(channel_name="telegram", chat_id="c", user_id="u", text="hi")
+            _, run_config, _ = manager._resolve_run_params(msg, "thread-1")
+            assert build_run_config("thread-1", run_config, None)["recursion_limit"] == 700
+        finally:
+            reset_app_config()
 
     def test_github_channel_recursion_limit_respects_higher_override(self):
         """An explicit higher recursion_limit in channel/user config must not be
@@ -7754,6 +7984,58 @@ class TestExtractArtifacts:
         }
         assert _extract_artifacts(result) == ["/mnt/user-data/outputs/a.txt", "/mnt/user-data/outputs/b.csv"]
 
+    def test_multiple_calls_keep_presentation_order_and_deduplicate(self):
+        """A file presented twice in one turn is delivered once, in the order presented.
+
+        ``present_files`` relies on the ``merge_artifacts`` reducer, which keeps
+        first-presented order and drops repeats; the IM reply must match it.
+        """
+        from app.channels.manager import _extract_artifacts
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "chart then report"},
+                {
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [{"name": "present_files", "args": {"filepaths": ["/mnt/user-data/outputs/chart.png"]}}],
+                },
+                {"type": "tool", "name": "present_files", "content": "Successfully presented files"},
+                {
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "present_files", "args": {"filepaths": ["/mnt/user-data/outputs/report.md", "/mnt/user-data/outputs/chart.png"]}},
+                    ],
+                },
+                {"type": "tool", "name": "present_files", "content": "Successfully presented files"},
+                {"type": "ai", "content": "Done."},
+            ]
+        }
+
+        assert _extract_artifacts(result) == ["/mnt/user-data/outputs/chart.png", "/mnt/user-data/outputs/report.md"]
+
+    def test_single_call_with_repeated_path_delivers_it_once(self):
+        """``merge_artifacts`` also drops repeats inside one ``present_files`` call."""
+        from app.channels.manager import _extract_artifacts
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "send the chart"},
+                {
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "present_files", "args": {"filepaths": ["/mnt/user-data/outputs/chart.png", "/mnt/user-data/outputs/report.md", "/mnt/user-data/outputs/chart.png"]}},
+                    ],
+                },
+                {"type": "tool", "name": "present_files", "content": "Successfully presented files"},
+                {"type": "ai", "content": "Done."},
+            ]
+        }
+
+        assert _extract_artifacts(result) == ["/mnt/user-data/outputs/chart.png", "/mnt/user-data/outputs/report.md"]
+
     def test_ignores_hidden_human_control_messages(self):
         """Hidden control messages should not hide current-turn present_files artifacts."""
         from app.channels.manager import _extract_artifacts
@@ -8044,22 +8326,29 @@ class TestHandleChatWithArtifacts:
             manager._client = mock_client
 
             outbound_received = []
-            bus.subscribe_outbound(lambda msg: outbound_received.append(msg))
+            outbound_queue: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+
+            async def record_outbound(msg: OutboundMessage) -> None:
+                outbound_received.append(msg)
+                await outbound_queue.put(msg)
+
+            bus.subscribe_outbound(record_outbound)
             await manager.start()
-
-            # Send two messages with the same topic_id (same thread)
-            for text in ["make report", "add chart"]:
-                msg = InboundMessage(
-                    channel_name="test",
-                    chat_id="c1",
-                    user_id="u1",
-                    text=text,
-                    topic_id="topic-dup",
-                )
-                await bus.publish_inbound(msg)
-
-            await _wait_for(lambda: len(outbound_received) >= 2)
-            await manager.stop()
+            try:
+                # Model completed turns on one thread; concurrent worker replies
+                # can arrive in either order after off-loop artifact preparation.
+                for text in ["make report", "add chart"]:
+                    msg = InboundMessage(
+                        channel_name="test",
+                        chat_id="c1",
+                        user_id="u1",
+                        text=text,
+                        topic_id="topic-dup",
+                    )
+                    await bus.publish_inbound(msg)
+                    await asyncio.wait_for(outbound_queue.get(), timeout=5.0)
+            finally:
+                await manager.stop()
 
             assert len(outbound_received) == 2
 
@@ -8086,6 +8375,13 @@ class TestDiscordChannel:
             pytest.param("x" * 2000 + "\n" + "y" * 2000, id="newline-mid-message"),
             pytest.param(("第一段\n\n" + "句" * 1990 + "\n\n最后一段") * 3, id="multibyte-paragraphs"),
             pytest.param("x" * 4500, id="unbroken-run"),
+            pytest.param("```py\nprint(1)\n```\n" + "x" * 1990 + "\n" + "y" * 30, id="code-block-closed-before-split"),
+            pytest.param("use ```inline``` here " * 200, id="inline-backticks"),
+            pytest.param("```inline``` opens no block\n" * 150, id="code-block-closed-on-its-opening-line"),
+            pytest.param("```python\nprint(1)```\n\n" + "This is ordinary prose after the example.\n" * 100, id="code-block-closed-right-after-its-code"),
+            pytest.param("~~~js\n" + "let a = 1;\n" * 400 + "~~~", id="tildes-open-no-code-block"),
+            pytest.param("\\```py\n" + "not code\n" * 400, id="escaped-backticks-open-no-code-block"),
+            pytest.param("```" + "i" * 600 + "\n" + "code line\n" * 400 + "```", id="language-tag-too-long-to-carry"),
         ],
     )
     def test_split_text_preserves_content_within_discord_limit(self, text: str):
@@ -8101,6 +8397,193 @@ class TestDiscordChannel:
 
         assert DiscordChannel._split_text("") == [""]
         assert DiscordChannel._split_text("hello\n\nworld") == ["hello\n\nworld"]
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param(
+                "intro\n```py\n" + "".join(f"line {i:02d} of code\n" for i in range(8)) + "```\nafter\n",
+                [
+                    "intro\n```py\nline 00 of code\nline 01 of code\nline 02 of code\nline 03 of code\n```",
+                    "```py\nline 04 of code\nline 05 of code\nline 06 of code\nline 07 of code\n```\nafter\n",
+                ],
+                id="closed-and-reopened",
+            ),
+            pytest.param(
+                "```py\n" + "".join(f"line {i:02d} of code\n" for i in range(6)) + "print(9)```\nafter\n",
+                [
+                    "```py\nline 00 of code\nline 01 of code\nline 02 of code\nline 03 of code\n```",
+                    "```py\nline 04 of code\nline 05 of code\nprint(9)```\nafter\n",
+                ],
+                id="block-closing-right-after-its-last-code",
+            ),
+            pytest.param(
+                "```py\nprint(1)```\n" + "".join(f"prose line {i:02d}\n" for i in range(8)),
+                [
+                    "```py\nprint(1)```\n" + "".join(f"prose line {i:02d}\n" for i in range(4)),
+                    "".join(f"prose line {i:02d}\n" for i in range(4, 8)),
+                ],
+                id="prose-after-a-closed-block-stays-prose",
+            ),
+            pytest.param(
+                "Run this: ```sh\n" + "echo step\n" * 12 + "```",
+                ["Run this: ```sh\n" + "echo step\n" * 6 + "```", "```sh\n" + "echo step\n" * 6 + "```"],
+                id="block-opening-mid-line",
+            ),
+            pytest.param(
+                "x" * 66 + "\n```py\n" + "code\n" * 3 + "```",
+                ["x" * 66 + "\n", "```py\n" + "code\n" * 3 + "```"],
+                id="block-opening-on-the-last-line-moves-to-the-next-message",
+            ),
+            pytest.param(
+                "```py\n" + "x" * 35 + "\n" + "x" * 34 + "\n```\nafter\n",
+                ["```py\n" + "x" * 35 + "\n" + "x" * 34 + "\n```", "\nafter\n"],
+                id="closing-run-ending-at-the-limit-stays-in-the-message",
+            ),
+            pytest.param(
+                "```py\n" + ("x" * 34 + "\n") * 2 + "\n\n```\nafter\n",
+                ["```py\n" + "x" * 34 + "\n```", "```py\n" + "x" * 34 + "\n\n\n```\nafter\n"],
+                id="reopened-block-keeps-code-before-its-closing-run",
+            ),
+            pytest.param(
+                "```\n" + "z" * 170 + "\n```",
+                ["```\n" + "z" * 72 + "\n```", "```\n" + "z" * 72 + "\n```", "```\n" + "z" * 26 + "\n```"],
+                id="unbroken-code-line",
+            ),
+            pytest.param(
+                "```py\n" + "line of code\n" * 10,
+                ["```py\n" + "line of code\n" * 5 + "```", "```py\n" + "line of code\n" * 5],
+                id="unterminated-block-stays-unterminated",
+            ),
+            pytest.param(
+                "w" * 70 + "```python\n" + "print(1)\n" * 8 + "```",
+                ["w" * 70, "```python\n" + "print(1)\n" * 7 + "```", "```python\nprint(1)\n```"],
+                id="cut-in-the-language-tag-moves-the-block-to-the-next-message",
+            ),
+            pytest.param(
+                "w" * 66 + "```python\n" + "print(1)\n" * 8 + "```",
+                ["w" * 66, "```python\n" + "print(1)\n" * 7 + "```", "```python\nprint(1)\n```"],
+                id="cut-before-the-first-code-moves-the-block-to-the-next-message",
+            ),
+            pytest.param(
+                "```py\r\n" + "line of code\r\n" * 8 + "```\r\nafter\r\n",
+                ["```py\r\n" + "line of code\r\n" * 4 + "```", "```py\n" + "line of code\r\n" * 4 + "```\r\nafter\r\n"],
+                id="crlf-block-reopens-with-its-language-tag",
+            ),
+        ],
+    )
+    def test_split_text_closes_and_reopens_a_cut_code_block(self, monkeypatch, text: str, expected: list[str]):
+        """A split inside a code block must leave both messages rendering it as code.
+
+        Without this the first message ends in an unclosed block and the second
+        starts with bare code, so neither renders a code block and the code is
+        read as markdown. Text after a closed block must stay prose.
+        """
+        from app.channels import discord as discord_module
+
+        monkeypatch.setattr(discord_module, "_DISCORD_MAX_MESSAGE_LEN", 80)
+
+        chunks = discord_module.DiscordChannel._split_text(text)
+
+        assert chunks == expected
+        assert all(len(chunk) <= 80 for chunk in chunks)
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("w" * 78 + "```code```", ["w" * 78, "```code```"], id="backtick-run"),
+            pytest.param("w" * 79 + "\\```code", ["w" * 79, "\\```code"], id="escape"),
+            pytest.param("w" * 79 + "\r\nmore", ["w" * 79, "\r\nmore"], id="crlf"),
+        ],
+    )
+    def test_split_text_cut_inside_a_line_keeps_backtick_runs_escapes_and_crlf_whole(self, monkeypatch, text: str, expected: list[str]):
+        """A cut through ```, a backslash escape or a CRLF would change which runs open a block."""
+        from app.channels import discord as discord_module
+
+        monkeypatch.setattr(discord_module, "_DISCORD_MAX_MESSAGE_LEN", 80)
+
+        assert discord_module.DiscordChannel._split_text(text) == expected
+
+    def test_split_text_keeps_a_long_code_block_rendering_at_discord_limit(self):
+        from app.channels.discord import _DISCORD_MAX_MESSAGE_LEN, DiscordChannel
+
+        code = "".join(f"    result_{i} = compute_value({i}, factor=2)\n" for i in range(150))
+        text = "Here is the script:\n\n```python\n" + code + "```\n\nRun it with python."
+
+        chunks = DiscordChannel._split_text(text)
+
+        assert len(chunks) > 2
+        assert all(len(chunk) <= _DISCORD_MAX_MESSAGE_LEN for chunk in chunks)
+        # Every message closes the block it opens.
+        assert all(sum(line.startswith("```") for line in chunk.split("\n")) == 2 for chunk in chunks)
+        assert chunks[0].startswith("Here is the script:\n\n```python\n")
+        assert all(chunk.endswith("\n```") for chunk in chunks[:-1])
+        assert all(chunk.startswith("```python\n    result_") for chunk in chunks[1:])
+        assert chunks[-1].endswith("```\n\nRun it with python.")
+
+    # Discord's client renders a code block from three backticks to the next
+    # three, with an optional language tag line; it is not CommonMark.
+    _DISCORD_CODE_BLOCK_RE = re.compile(r"```(?:([a-z0-9_+\-.#]+?)\n)?\n*([^\n][\s\S]*?)\n*```", re.IGNORECASE)
+
+    @classmethod
+    def _discord_render(cls, text: str) -> tuple[str, str, bool]:
+        """(prose, code, ends inside a block) of *text* as the Discord client shows it, line breaks dropped."""
+        # The client's parser turns CRLF and a lone CR into LF before it parses.
+        text = re.sub(r"\r\n?", "\n", text)
+        prose, code, index = [], [], 0
+        while index < len(text):
+            if text[index] == "\\" and re.match(r"[^0-9A-Za-z\s]", text[index + 1 : index + 2]):
+                prose.append(text[index : index + 2])
+                index += 2
+                continue
+            if text.startswith("```", index):
+                if block := cls._DISCORD_CODE_BLOCK_RE.match(text, index):
+                    code.append(block.group(2))
+                    index = block.end()
+                    continue
+                if "```" not in text[index + 3 :]:
+                    tail = text[index + 3 :]
+                    language = re.match(r"[a-z0-9_+\-.#]+?\n", tail, re.IGNORECASE)
+                    code.append(tail[language.end() :] if language else tail)
+                    return "".join(prose).replace("\n", ""), "".join(code).replace("\n", ""), True
+            prose.append(text[index])
+            index += 1
+        return "".join(prose).replace("\n", ""), "".join(code).replace("\n", ""), False
+
+    def test_split_text_with_code_blocks_keeps_prose_and_code_apart(self, monkeypatch):
+        """Random replies mixing prose and code blocks render the same prose and code once split.
+
+        The expected rendering comes from Discord's code-block rule applied to
+        the whole reply, independently of the splitter's own parser.
+        """
+        import random
+
+        from app.channels import discord as discord_module
+
+        limit = 120
+        monkeypatch.setattr(discord_module, "_DISCORD_MAX_MESSAGE_LEN", limit)
+        rng = random.Random(8086)
+        pieces = ["```", "```py\n", "```py\r\n", "x```", "\\```", "~~~\n", "````", "\n", "\n\n", "\r\n"]
+
+        for _ in range(300):
+            parts = []
+            for _ in range(rng.randint(1, 60)):
+                # Prose has spaces, so no prose run after backticks reads as a language tag.
+                parts.append(rng.choice(pieces) if rng.random() < 0.2 else "ww " * rng.randint(0, 20) + rng.choice(("\n", "\r\n")))
+            text = "".join(parts)
+
+            chunks = discord_module.DiscordChannel._split_text(text)
+
+            assert all(0 < len(chunk) <= limit for chunk in chunks), text
+            rendered = [self._discord_render(chunk) for chunk in chunks]
+            prose, code, ends_open = self._discord_render(text)
+            if not ends_open:
+                # Discord shows an unclosed block as plain text, so only a reply
+                # that closes its blocks has a rendering to keep: every message
+                # closes its blocks, and none moves text between prose and code.
+                assert not any(part[2] for part in rendered), text
+                assert "".join(part[0] for part in rendered) == prose, text
+                assert "".join(part[1] for part in rendered) == code, text
 
     def test_stop_prevents_queued_typing_starter_from_creating_task(self):
         from app.channels.discord import DiscordChannel
@@ -8603,6 +9086,104 @@ class TestFeishuChannel:
             assert json.loads(reply_request.body.content)["elements"][0]["content"] == "> What changed in the last run?\n\nthinking..."
             assert json.loads(first_patch_request.body.content)["elements"][0]["content"] == "> What changed in the last run?\n\nQueued behind another request"
             assert json.loads(final_patch_request.body.content)["elements"][0]["content"] == "> What changed in the last run?\n\nAnswer ready"
+
+        _run(go())
+
+    @staticmethod
+    def _streaming_alias_channel(tmp_path, *, fail_once: str | None = None):
+        """A Feishu channel with a running card and a store that records every alias write."""
+        from lark_oapi.api.im.v1 import (
+            CreateMessageReactionRequest,
+            CreateMessageReactionRequestBody,
+            Emoji,
+            PatchMessageRequest,
+            PatchMessageRequestBody,
+            ReplyMessageRequest,
+            ReplyMessageRequestBody,
+        )
+
+        from app.channels.feishu import FeishuChannel
+
+        class RecordingStore(JsonChannelStore):
+            def __init__(self, path):
+                super().__init__(path)
+                self.writes: list[str] = []
+                self.fail_once = fail_once
+
+            async def set_thread_id(self, channel_name, chat_id, thread_id, *, topic_id=None, user_id=""):
+                self.writes.append(topic_id)
+                if topic_id == self.fail_once:
+                    self.fail_once = None
+                    raise RuntimeError("offline store failure")
+                await super().set_thread_id(channel_name, chat_id, thread_id, topic_id=topic_id, user_id=user_id)
+
+        store = RecordingStore(tmp_path / "store.json")
+        channel = FeishuChannel(MessageBus(), config={"channel_store": store})
+        channel._api_client = MagicMock()
+        channel._ReplyMessageRequest = ReplyMessageRequest
+        channel._ReplyMessageRequestBody = ReplyMessageRequestBody
+        channel._PatchMessageRequest = PatchMessageRequest
+        channel._PatchMessageRequestBody = PatchMessageRequestBody
+        channel._CreateMessageReactionRequest = CreateMessageReactionRequest
+        channel._CreateMessageReactionRequestBody = CreateMessageReactionRequestBody
+        channel._Emoji = Emoji
+        reply_response = MagicMock()
+        reply_response.data.message_id = "om-running-card"
+        channel._api_client.im.v1.message.reply = MagicMock(return_value=reply_response)
+        channel._api_client.im.v1.message.patch = MagicMock()
+        channel._api_client.im.v1.message_reaction.create = MagicMock()
+        return channel, store
+
+    @staticmethod
+    def _streamed_chunk(text: str, *, is_final: bool) -> OutboundMessage:
+        return OutboundMessage(
+            channel_name="feishu",
+            chat_id="chat-1",
+            thread_id="thread-1",
+            text=text,
+            is_final=is_final,
+            thread_ts="om-source-msg",
+            metadata={"user_id": "ou-user", "message_id": "om-source-msg", "topic_id": "om-root", "root_id": "om-root", "parent_id": "om-parent", "thread_id": "omt-thread"},
+        )
+
+    def test_streaming_writes_each_thread_alias_once_per_reply(self, tmp_path):
+        aliases = ["om-source-msg", "om-running-card", "om-root", "om-parent", "omt-thread"]
+
+        async def go():
+            channel, store = self._streaming_alias_channel(tmp_path)
+            await channel._send_running_reply("om-source-msg")
+
+            await channel.send(self._streamed_chunk("He", is_final=False))
+            assert store.writes == aliases
+
+            for text in ("Hell", "Hello", "Hello wo"):
+                await channel.send(self._streamed_chunk(text, is_final=False))
+            assert store.writes == aliases
+            assert channel._api_client.im.v1.message.patch.call_count == 4
+
+            # An alias dropped mid-stream is restored: the final outbound writes
+            # every alias again, as each chunk used to.
+            await store.remove("feishu", "chat-1", topic_id="om-parent")
+            await channel.send(self._streamed_chunk("Hello world", is_final=True))
+            assert store.writes == aliases * 2
+            for topic_id in aliases:
+                assert await store.get_thread_id("feishu", "chat-1", topic_id=topic_id) == "thread-1"
+            assert "om-source-msg" not in channel._remembered_thread_aliases
+
+        _run(go())
+
+    def test_streaming_retries_a_failed_thread_alias_on_the_next_chunk(self, tmp_path):
+        async def go():
+            channel, store = self._streaming_alias_channel(tmp_path, fail_once="om-root")
+            await channel._send_running_reply("om-source-msg")
+
+            await channel.send(self._streamed_chunk("He", is_final=False))
+            assert await store.get_thread_id("feishu", "chat-1", topic_id="om-root") is None
+
+            store.writes.clear()
+            await channel.send(self._streamed_chunk("Hello", is_final=False))
+            assert store.writes == ["om-root"]
+            assert await store.get_thread_id("feishu", "chat-1", topic_id="om-root") == "thread-1"
 
         _run(go())
 
@@ -14326,12 +14907,22 @@ class TestHandleGoalCommand:
     """Covers the IM-channel ``/goal`` handler (get/set/clear via the Gateway)."""
 
     @staticmethod
-    def _install_mock_httpx(monkeypatch, calls, *, goal_payload=None, fail_method=None):
+    def _install_mock_httpx(monkeypatch, calls, *, goal_payload=None, fail_method=None, state_values=None, state_status=200, runs=()):
         class MockResponse:
+            def __init__(self, url):
+                self.url = url
+
             def raise_for_status(self):
-                return None
+                if self.url.endswith("/state") and state_status != 200:
+                    request = httpx.Request("GET", self.url)
+                    raise httpx.HTTPStatusError("state unavailable", request=request, response=httpx.Response(state_status, request=request))
 
             def json(self):
+                # The Gateway endpoints the status reply reads, routed by path.
+                if self.url.endswith("/state"):
+                    return {"values": dict(state_values or {})}
+                if "/runs/page" in self.url:
+                    return {"data": list(runs), "has_more": False}
                 return {"goal": goal_payload}
 
         class MockAsyncClient:
@@ -14348,7 +14939,7 @@ class TestHandleGoalCommand:
                 calls.append({"method": method, "url": url, **kwargs})
                 if fail_method == method:
                     raise RuntimeError("gateway down")
-                return MockResponse()
+                return MockResponse(url)
 
             async def get(self, url, **kwargs):
                 return await self._record("get", url, **kwargs)
@@ -14362,12 +14953,12 @@ class TestHandleGoalCommand:
         monkeypatch.setattr("app.channels.manager.httpx.AsyncClient", MockAsyncClient)
 
     @staticmethod
-    def _make_manager(monkeypatch, *, thread_id):
+    def _make_manager(monkeypatch, *, thread_id, **kwargs):
         from app.channels.manager import ChannelManager
 
         bus = MessageBus()
         store = JsonChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
-        manager = ChannelManager(bus=bus, store=store, gateway_url="http://gateway:8001")
+        manager = ChannelManager(bus=bus, store=store, gateway_url="http://gateway:8001", **kwargs)
 
         async def _lookup(msg):
             return thread_id
@@ -14399,7 +14990,7 @@ class TestHandleGoalCommand:
 
     def test_status_with_active_goal_reports_objective(self, monkeypatch):
         calls = []
-        self._install_mock_httpx(monkeypatch, calls, goal_payload={"objective": "ship it"})
+        self._install_mock_httpx(monkeypatch, calls, goal_payload={"objective": "ship it", "status": "active"})
 
         async def go():
             manager = self._make_manager(monkeypatch, thread_id="t-1")
@@ -14407,6 +14998,71 @@ class TestHandleGoalCommand:
             assert reply == "Goal: ship it"
             assert calls[0]["method"] == "get"
             assert calls[0]["url"].endswith("/api/threads/t-1/goal")
+            # An active goal also asks whether a run is in flight, never for the met record.
+            assert [call["url"].removeprefix("http://gateway:8001") for call in calls[1:]] == ["/api/threads/t-1/runs/page?limit=1"]
+
+        _run(go())
+
+    # The evaluator's own words: never part of an IM reply (host codes only).
+    _EVALUATOR_NOTE = "The checker says the provider returned 401 for token sk-secret"
+
+    @pytest.mark.parametrize(
+        ("goal_fields", "run_status", "state_line"),
+        [
+            pytest.param({}, "running", "In progress.", id="in-progress"),
+            pytest.param({"last_evaluation": {"satisfied": False, "stand_down_reason": "blocked:needs_user_input"}}, "pending", "In progress.", id="in-flight-run-hides-earlier-stand-down"),
+            pytest.param({"continuation_count": 2, "last_evaluation": {"satisfied": False}}, "running", "In progress: auto-continued 2/8 times.", id="continuing"),
+            pytest.param({"continuation_count": 8, "last_evaluation": {"satisfied": False, "stand_down_reason": "max_continuations_reached"}}, "success", "Stopped: the continuation limit was reached.", id="stopped-at-limit"),
+            pytest.param({"last_evaluation": {"satisfied": False, "stand_down_reason": "no_progress_detected"}}, "success", "Stopped: no progress was made between turns.", id="stopped-no-progress"),
+            pytest.param({"max_continuations": 0, "last_evaluation": {"satisfied": False, "stand_down_reason": "max_continuations_reached"}}, "success", "Stopped: the goal is not met yet.", id="stopped-auto-continue-off"),
+            pytest.param({"last_evaluation": {"satisfied": False, "stand_down_reason": "blocked:needs_user_input"}}, "success", "Waiting for you: it needs your input.", id="waiting-for-you"),
+            pytest.param({"last_evaluation": {"satisfied": False, "stand_down_reason": "blocked:external_wait"}}, "error", "Waiting: it is waiting on something external.", id="waiting"),
+            pytest.param({"last_evaluation": {"satisfied": False, "stand_down_reason": "no_durable_end_of_turn"}}, "success", "No final reply was saved. It's checked again after your next message.", id="unchecked"),
+            pytest.param({"last_evaluation": {"satisfied": False, "stand_down_reason": "a_code_from_a_newer_server"}}, "success", "Stopped.", id="unknown-code-is-not-shown"),
+            pytest.param({"continuation_count": 3, "last_evaluation": {"satisfied": False}}, "success", "Paused: auto-continued 3/8 times; the run ended before the goal was confirmed.", id="paused"),
+            pytest.param({}, "success", None, id="set"),
+        ],
+    )
+    def test_status_reports_goal_state_like_the_web_goal_bar(self, monkeypatch, goal_fields, run_status, state_line):
+        goal = {"objective": "ship it", "status": "active", "continuation_count": 0, "max_continuations": 8, **goal_fields}
+        if "last_evaluation" in goal:
+            goal["last_evaluation"] = {**goal["last_evaluation"], "reason": self._EVALUATOR_NOTE}
+        calls = []
+        self._install_mock_httpx(monkeypatch, calls, goal_payload=goal, runs=[{"run_id": "r-1", "status": run_status}])
+
+        async def go():
+            manager = self._make_manager(monkeypatch, thread_id="t-1")
+            reply = await manager._handle_goal_command(self._msg("/goal"), "")
+            assert reply == "\n".join(["Goal: ship it"] + ([state_line] if state_line else []))
+            assert "401" not in reply and "secret" not in reply
+
+        _run(go())
+
+    @pytest.mark.parametrize(
+        ("relied_on_assumption", "expected"),
+        [(False, "Goal met: ship it"), (True, "Goal met, with an assumption: ship it")],
+    )
+    def test_status_reports_a_met_goal_from_its_outcome_record(self, monkeypatch, relied_on_assumption, expected):
+        # A met goal is cleared (GET /goal says none) and recorded as goal_outcome.
+        outcome = {
+            "status": "achieved",
+            "objective": "ship it",
+            "goal_created_at": "2026-10-26T08:00:00Z",
+            "achieved_at": "2026-10-26T08:30:00Z",
+            "continuation_count": 1,
+            "max_continuations": 8,
+            "reason": self._EVALUATOR_NOTE,
+            "relied_on_assumption": relied_on_assumption,
+            "reply_message_id": "ai-1",
+        }
+        calls = []
+        self._install_mock_httpx(monkeypatch, calls, goal_payload=None, state_values={"goal_outcome": outcome})
+
+        async def go():
+            manager = self._make_manager(monkeypatch, thread_id="t-1")
+            reply = await manager._handle_goal_command(self._msg("/goal"), "")
+            assert reply == expected
+            assert [call["url"].removeprefix("http://gateway:8001") for call in calls] == ["/api/threads/t-1/goal", "/api/threads/t-1/state"]
 
         _run(go())
 
@@ -14418,6 +15074,59 @@ class TestHandleGoalCommand:
             manager = self._make_manager(monkeypatch, thread_id="t-1")
             reply = await manager._handle_goal_command(self._msg("/goal"), "")
             assert reply == "No active goal."
+
+        _run(go())
+
+    @pytest.mark.parametrize(("state_status", "expected"), [(404, "No active goal."), (500, "Failed to fetch goal information.")])
+    def test_status_when_the_thread_state_cannot_be_read(self, monkeypatch, state_status, expected):
+        # 404: a bound thread with no checkpoint yet, so nothing was ever met there.
+        calls = []
+        self._install_mock_httpx(monkeypatch, calls, goal_payload=None, state_status=state_status)
+
+        async def go():
+            manager = self._make_manager(monkeypatch, thread_id="t-1")
+            assert await manager._handle_goal_command(self._msg("/goal"), "") == expected
+
+        _run(go())
+
+    def test_goal_replies_follow_the_owner_language(self, monkeypatch):
+        from dataclasses import replace
+
+        from app.channels.reply_locale import ReplyLocaleResolver
+
+        lookups = []
+
+        class _Preferences:  # stands in for the user_preferences table
+            def __init__(self, sessions):
+                pass
+
+            async def get(self, user_id):
+                lookups.append(user_id)
+                return {"locale": "zh-CN"} if user_id == "owner-zh" else {}
+
+        monkeypatch.setattr("app.channels.reply_locale.UserPreferencesRepository", _Preferences)
+        stopped = {"objective": "写周报", "status": "active", "continuation_count": 8, "max_continuations": 8, "last_evaluation": {"satisfied": False, "stand_down_reason": "max_continuations_reached"}}
+        outcome = {"status": "achieved", "objective": "写周报", "goal_created_at": "", "relied_on_assumption": False}
+        resolver = ReplyLocaleResolver(session_factory=object(), default_locale="en-US")
+
+        async def reply(args, owner, **mock):
+            calls = []
+            self._install_mock_httpx(monkeypatch, calls, **mock)
+            manager = self._make_manager(monkeypatch, thread_id="t-1", reply_locale=resolver)
+            msg = replace(self._msg(f"/goal {args}".strip()), owner_user_id=owner)
+            return await manager._handle_goal_command(msg, args)
+
+        async def go():
+            assert await reply("", "owner-zh", goal_payload=stopped) == "目标：写周报\n已停止：已达到继续处理的次数上限。"
+            assert await reply("", "owner-zh", goal_payload=None, state_values={"goal_outcome": outcome}) == "目标已达成：写周报"
+            assert await reply("", "owner-zh", goal_payload=None) == "当前没有目标。"
+            assert await reply("", "owner-zh", fail_method="get") == "无法获取目标信息。"
+            assert await reply("clear", "owner-zh") == "目标已清除。"
+            assert await reply("clear", "owner-zh", fail_method="delete") == "无法清除目标。"
+            assert await reply("do X", "owner-zh", fail_method="put") == "无法设置目标。"
+            # No language preference: the configured default (en-US here).
+            assert await reply("", "owner-en", goal_payload=stopped) == "Goal: 写周报\nStopped: the continuation limit was reached."
+            assert set(lookups) == {"owner-zh", "owner-en"}
 
         _run(go())
 
@@ -14503,6 +15212,88 @@ class TestHandleGoalCommand:
             manager = self._make_manager(monkeypatch, thread_id="t-1")
             reply = await manager._handle_goal_command(self._msg("/goal do X"), "do X")
             assert reply == "Failed to set goal."
+
+        _run(go())
+
+    @pytest.mark.parametrize(("args", "method", "verb"), [("do X", "PUT", "Set"), ("clear", "DELETE", "Clear")])
+    @pytest.mark.parametrize(
+        ("locale", "status", "payload", "busy"),
+        [
+            ("en-US", 409, {"detail": "Thread has a run in flight. {verb} the goal after the run finishes."}, True),
+            ("zh-CN", 409, {"detail": "Thread has a run in flight. {verb} the goal after the run finishes."}, True),
+            ("en-US", 401, {"detail": "Thread has a run in flight. {verb} the goal after the run finishes."}, False),
+            ("en-US", 403, {"detail": "Thread has a run in flight. {verb} the goal after the run finishes."}, False),
+            ("en-US", 500, {"detail": "Thread has a run in flight. {verb} the goal after the run finishes."}, False),
+            ("en-US", 409, {"detail": "private server diagnostic"}, False),
+            ("en-US", 409, {"detail": "Thread has a run in flight. {other_verb} the goal after the run finishes."}, False),
+            ("en-US", 409, {"detail": ["private server diagnostic"]}, False),
+            ("en-US", 409, ["private server diagnostic"], False),
+            ("en-US", 409, "not JSON: private server diagnostic", False),
+        ],
+    )
+    def test_goal_mutation_error_feedback(self, monkeypatch, args, method, verb, locale, status, payload, busy):
+        """Only known in-flight conflicts get actionable text, never raw Gateway errors."""
+        from dataclasses import replace
+
+        calls = []
+        if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+            payload = {"detail": payload["detail"].format(verb=verb, other_verb="Clear" if verb == "Set" else "Set")}
+
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(status, text=payload) if isinstance(payload, str) else httpx.Response(status, json=payload)
+
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            "app.channels.manager.httpx.AsyncClient",
+            lambda **kw: real_async_client(transport=httpx.MockTransport(respond), **kw),
+        )
+
+        async def go():
+            resolver = SimpleNamespace(locale_for=AsyncMock(return_value=locale))
+            manager = self._make_manager(monkeypatch, thread_id="t-1", reply_locale=resolver)
+            chat = AsyncMock()
+            monkeypatch.setattr(manager, "_handle_chat", chat)
+            replies = []
+            manager.bus.subscribe_outbound(AsyncMock(side_effect=replies.append))
+            msg = replace(self._msg(f"/goal {args}"), owner_user_id="owner-1", connection_id="connection-1", thread_ts="reply-1")
+
+            await manager._handle_command(msg)
+
+            assert len(replies) == 1
+            reply = replies[0]
+            expected = "Failed to clear goal." if method == "DELETE" else "Failed to set goal."
+            if busy:
+                expected = "当前任务仍在运行，请等待结束后再修改目标。" if locale == "zh-CN" else "A task is still running. Wait for it to finish before changing the goal."
+            assert reply.text == expected
+            assert (reply.channel_name, reply.chat_id, reply.thread_id, reply.thread_ts, reply.connection_id, reply.owner_user_id) == ("slack", "C1", "t-1", "reply-1", "connection-1", "owner-1")
+            assert len(calls) == 1  # No retry or follow-up run on rejection.
+            assert calls[0].method == method
+            chat.assert_not_awaited()
+            resolver.locale_for.assert_awaited_once_with("owner-1")
+
+        _run(go())
+
+    @pytest.mark.parametrize("args", ["do X", "clear"])
+    def test_goal_mutation_cancellation_is_not_reported_as_failure(self, monkeypatch, args):
+        async def cancelled(request):
+            raise asyncio.CancelledError
+
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            "app.channels.manager.httpx.AsyncClient",
+            lambda **kw: real_async_client(transport=httpx.MockTransport(cancelled), **kw),
+        )
+
+        async def go():
+            manager = self._make_manager(monkeypatch, thread_id="t-1")
+            chat, reply = AsyncMock(), AsyncMock()
+            monkeypatch.setattr(manager, "_handle_chat", chat)
+            manager.bus.subscribe_outbound(reply)
+            with pytest.raises(asyncio.CancelledError):
+                await manager._handle_command(self._msg(f"/goal {args}"))
+            chat.assert_not_awaited()
+            reply.assert_not_awaited()
 
         _run(go())
 
@@ -14978,3 +15769,336 @@ class TestHumanInputResponseTranslation:
         message = _human_input_message_with_channel_response("hello", metadata={})
         assert message["content"] == "hello"
         assert "additional_kwargs" not in message
+
+
+@pytest.mark.parametrize(
+    ("gateway_url", "expected_trust_env"),
+    [
+        ("http://localhost:8001", False),
+        ("http://127.0.0.1:8001", False),
+        ("http://gateway.example.com", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gateway_clients_do_not_proxy_local_gateway(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gateway_url: str,
+    expected_trust_env: bool,
+) -> None:
+    """Gateway calls are control-plane traffic and must bypass ``HTTP_PROXY``.
+
+    The Gateway runs next to the channel manager (``http://localhost:8001`` by
+    default). Inheriting the environment proxy for that hop produces a
+    proxy-generated error even though the Gateway is healthy -- the same
+    failure ``sandbox_http_trust_env`` already guards against for sandbox
+    control-plane calls.
+    """
+    from app.channels import manager as manager_module
+    from app.channels.manager import ChannelManager
+
+    seen_kwargs: list[dict[str, object]] = []
+
+    class _JsonResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True}
+
+    class RecordingClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            seen_kwargs.append(kwargs)
+
+        async def __aenter__(self) -> RecordingClient:
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> None:
+            return None
+
+        async def get(self, url: str, **kwargs: object) -> _JsonResponse:
+            return _JsonResponse()
+
+        async def put(self, url: str, **kwargs: object) -> _JsonResponse:
+            return _JsonResponse()
+
+    monkeypatch.setattr(manager_module.httpx, "AsyncClient", RecordingClient)
+
+    manager = ChannelManager(
+        bus=MessageBus(),
+        store=JsonChannelStore(path=tmp_path / "store.json"),
+        gateway_url=gateway_url,
+    )
+
+    await manager._fetch_gateway_json("/api/models")
+    await manager._goal_request("put", "thread-1", headers={}, json={"objective": "x"})
+
+    assert len(seen_kwargs) == 2, "both Gateway call sites should build a client"
+    assert all(kwargs.get("trust_env") is expected_trust_env for kwargs in seen_kwargs)
+
+
+@pytest.mark.parametrize("langgraph_url", ["http://localhost:8001/api", "http://127.0.0.1:8001/api"])
+def test_run_client_bypasses_env_proxy_for_local_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+    langgraph_url: str,
+) -> None:
+    """``runs.wait`` submissions are control-plane traffic too.
+
+    ``langgraph_sdk.get_client()`` builds its own ``httpx.AsyncClient`` with
+    ``trust_env`` left at the default ``True`` and exposes no override, so a
+    loopback Gateway was still reached through ``HTTP_PROXY`` -- the exact hop
+    #7876 reports, and one the Gateway control-plane clients do not cover.
+    """
+    from app.channels import manager as manager_module
+
+    seen_kwargs: list[dict[str, object]] = []
+
+    class RecordingClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            seen_kwargs.append(kwargs)
+
+    monkeypatch.setattr(manager_module.httpx, "AsyncClient", RecordingClient)
+
+    client = manager_module._make_langgraph_client(langgraph_url, {"X-Internal": "1"})
+
+    assert len(seen_kwargs) == 1, "the SDK client must wrap the client we build"
+    client_kwargs = seen_kwargs[0]
+    assert client_kwargs["trust_env"] is False
+    assert client_kwargs["base_url"] == langgraph_url
+    headers = client_kwargs["headers"]
+    assert isinstance(headers, dict)
+    assert headers["X-Internal"] == "1"
+    assert headers["User-Agent"].startswith("langgraph-sdk-py/")
+    assert isinstance(client.http.client, RecordingClient)
+
+
+def test_run_client_keeps_stock_sdk_client_for_external_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An external Gateway keeps the SDK's own client, proxy settings included."""
+    import langgraph_sdk
+
+    from app.channels import manager as manager_module
+
+    calls: list[dict[str, object]] = []
+    sentinel = object()
+
+    def fake_get_client(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(langgraph_sdk, "get_client", fake_get_client)
+
+    client = manager_module._make_langgraph_client("http://gateway.example.com/api", {"X-Internal": "1"})
+
+    assert client is sentinel
+    assert calls == [{"url": "http://gateway.example.com/api", "headers": {"X-Internal": "1"}}]
+
+
+def test_channel_manager_builds_run_client_with_internal_auth_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run client carries the same internal auth and CSRF pair as control calls."""
+    from app.channels import manager as manager_module
+    from app.channels.manager import ChannelManager
+
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_make_langgraph_client(base_url: str, headers: dict[str, str]) -> object:
+        calls.append((base_url, dict(headers)))
+        return object()
+
+    monkeypatch.setattr(manager_module, "_make_langgraph_client", fake_make_langgraph_client)
+
+    manager = ChannelManager(
+        bus=MessageBus(),
+        store=JsonChannelStore(path=tmp_path / "store.json"),
+        gateway_url="http://localhost:8001",
+    )
+    manager._get_client()
+
+    assert len(calls) == 1
+    base_url, headers = calls[0]
+    assert base_url == manager_module.DEFAULT_LANGGRAPH_URL
+    assert manager_module.CSRF_HEADER_NAME in headers
+
+
+def test_importing_channel_manager_loads_no_sandbox_provider_stack() -> None:
+    """The proxy policy must not drag the sandbox package into every Gateway boot."""
+    code = "import sys\nimport app.channels.manager\nprint(','.join(sorted(name for name in sys.modules if name.startswith('deerflow.community.aio_sandbox'))))\n"
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "", "ChannelManager import pulled in the sandbox provider stack"
+
+
+# --- Hidden human-input turn boundaries (consolidated from test_channel_hidden_human_input.py) ---
+
+
+def _hidden_human_input_answer() -> dict:
+    return {
+        "type": "human",
+        "content": "Alpha",
+        "additional_kwargs": {
+            "hide_from_ui": True,
+            "human_input_response": {
+                "version": 1,
+                "kind": "human_input_response",
+                "source": "ask_clarification",
+                "request_id": "clarification:call-1",
+                "response_kind": "option",
+                "option_id": "alpha",
+                "value": "Alpha",
+            },
+        },
+    }
+
+
+def _presented_file_response(content: str, path: str) -> dict:
+    return {
+        "type": "ai",
+        "content": content,
+        "tool_calls": [{"name": "present_files", "args": {"filepaths": [path]}}],
+    }
+
+
+class TestHiddenHumanInputTurnBoundaries:
+    """Valid hidden human-input answers start a new turn; internal hidden control messages do not."""
+
+    def test_hidden_answer_stops_previous_clarification_text(self) -> None:
+        from app.channels.manager import _extract_response_text
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "Original question"},
+                {"type": "tool", "name": "ask_clarification", "content": "Pick one"},
+                _hidden_human_input_answer(),
+            ]
+        }
+
+        assert _extract_response_text(result) == ""
+
+    @pytest.mark.parametrize("response_kind", ["option", "text"])
+    def test_hidden_answer_stops_previous_response_and_artifacts(self, response_kind: str) -> None:
+        from app.channels.manager import _extract_artifacts, _extract_response_text
+        from app.channels.message_bus import HUMAN_INPUT_RESPONSE_METADATA_KEY
+
+        answer = _hidden_human_input_answer()
+        response = answer["additional_kwargs"][HUMAN_INPUT_RESPONSE_METADATA_KEY]
+        response["response_kind"] = response_kind
+        if response_kind == "text":
+            response.pop("option_id")
+        result = {
+            "messages": [
+                {"type": "human", "content": "Original question"},
+                _presented_file_response("Previous answer", "/old.txt"),
+                answer,
+            ],
+            "artifacts": ["/old.txt"],
+        }
+
+        assert _extract_response_text(result) == ""
+        assert _extract_artifacts(result) == []
+
+    def test_hidden_answer_keeps_current_response_and_artifacts(self) -> None:
+        from app.channels.manager import _extract_artifacts, _extract_response_text
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "Original question"},
+                _presented_file_response("Previous answer", "/old.txt"),
+                _hidden_human_input_answer(),
+                _presented_file_response("Current answer", "/new.txt"),
+                {"type": "human", "content": "Internal context", "additional_kwargs": {"hide_from_ui": True}},
+            ]
+        }
+
+        assert _extract_response_text(result) == "Current answer"
+        assert _extract_artifacts(result) == ["/new.txt"]
+
+    @pytest.mark.parametrize(
+        "invalid_response",
+        [None, {}, "invalid", {"version": 2}, {"option_id": ""}, {"value": " "}],
+    )
+    def test_invalid_hidden_answer_remains_a_control_message(self, invalid_response: object) -> None:
+        from app.channels.manager import _extract_artifacts, _extract_response_text
+        from app.channels.message_bus import HUMAN_INPUT_RESPONSE_METADATA_KEY
+
+        hidden = _hidden_human_input_answer()
+        if invalid_response is None:
+            hidden["additional_kwargs"].pop(HUMAN_INPUT_RESPONSE_METADATA_KEY)
+        elif isinstance(invalid_response, dict):
+            hidden["additional_kwargs"][HUMAN_INPUT_RESPONSE_METADATA_KEY].update(invalid_response)
+            if not invalid_response:
+                hidden["additional_kwargs"][HUMAN_INPUT_RESPONSE_METADATA_KEY] = {}
+        else:
+            hidden["additional_kwargs"][HUMAN_INPUT_RESPONSE_METADATA_KEY] = invalid_response
+        result = {
+            "messages": [
+                {"type": "human", "content": "Current question"},
+                _presented_file_response("Current answer", "/current.txt"),
+                hidden,
+            ]
+        }
+
+        assert _extract_response_text(result) == "Current answer"
+        assert _extract_artifacts(result) == ["/current.txt"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failed", [False, True])
+    async def test_card_answer_without_fresh_ai_preserves_terminal_result(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed: bool) -> None:
+        from app.channels.manager import ChannelManager
+        from app.channels.message_bus import HUMAN_INPUT_RESPONSE_METADATA_KEY
+
+        monkeypatch.delenv("DEER_FLOW_AUTH_DISABLED", raising=False)
+        bus = MessageBus()
+        store = JsonChannelStore(path=tmp_path / "routing.json")
+        await store.set_thread_id("feishu", "chat-1", "thread-1", topic_id="topic-1")
+        manager = ChannelManager(bus=bus, store=store)
+        inbound = InboundMessage(
+            channel_name="feishu",
+            chat_id="chat-1",
+            user_id="ou-originator",
+            topic_id="topic-1",
+            text="Alpha",
+            metadata={HUMAN_INPUT_RESPONSE_METADATA_KEY: _hidden_human_input_answer()["additional_kwargs"][HUMAN_INPUT_RESPONSE_METADATA_KEY]},
+        )
+        client = MagicMock()
+        client.threads.get = AsyncMock(return_value={"thread_id": "thread-1"})
+        client.threads.update = AsyncMock(return_value={"thread_id": "thread-1"})
+
+        async def stream(*_args: object, **kwargs: object):
+            answer = dict(kwargs["input"]["messages"][0], type="human")  # type: ignore[index]
+            yield SimpleNamespace(
+                event="values",
+                data={
+                    "messages": [
+                        {"type": "human", "content": "Original question"},
+                        _presented_file_response("Previous answer", "/old.txt"),
+                        {"type": "tool", "name": "ask_clarification", "content": "Pick one"},
+                        answer,
+                    ],
+                    "artifacts": ["/old.txt"],
+                },
+            )
+            if failed:
+                yield SimpleNamespace(event="error", data={"name": "ModelError", "message": "offline failure"})
+
+        client.runs.stream = MagicMock(side_effect=stream)
+        manager._client = client
+        outbound: list[OutboundMessage] = []
+
+        async def capture(message: OutboundMessage) -> None:
+            outbound.append(message)
+
+        bus.subscribe_outbound(capture)
+        await manager._handle_chat(inbound)
+
+        assert len(outbound) == 1
+        assert outbound[0].is_final is True
+        assert outbound[0].text == ("An error occurred while processing your request. Please try again." if failed else "(No response from agent)")
+        assert outbound[0].artifacts == []
+        assert outbound[0].attachments == []

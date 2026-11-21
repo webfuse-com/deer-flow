@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 
 ORIGINAL_USER_CONTENT_KEY = "original_user_content"
 SUMMARY_MESSAGE_NAME = "summary"
+SUBAGENT_RESULT_MESSAGE_NAME = "subagent-result"
 
 # [argus patch #37] Marker rendered in place of a blank final assistant turn so
 # the answer does not silently vanish (web UI + channels + run-loop retry all
@@ -48,6 +49,24 @@ def is_blank_text(content: Any) -> bool:
 #: the trust boundary.  Stripping the marker instead would unhide three
 #: legitimate frontend senders (quoted context, sidecar context, agent save).
 UNTRUSTED_INPUT_KEY = "untrusted_input"
+
+#: Server-owned mark on history copied in from someone else's conversation; the
+#: value names the source (``"share"``).  The model still sees the copied turns,
+#: but memory capture skips them: the importer did not say them, and extraction
+#: would otherwise record the other person's statements as the importer's facts.
+IMPORTED_HISTORY_KEY = "deerflow_imported_history"
+
+
+def without_imported_history(messages: list[Any]) -> list[Any]:
+    """Drop messages carrying :data:`IMPORTED_HISTORY_KEY`; any truthy value counts."""
+    kept = []
+    for message in messages:
+        kwargs = getattr(message, "additional_kwargs", None)
+        if isinstance(kwargs, Mapping) and kwargs.get(IMPORTED_HISTORY_KEY):
+            continue
+        kept.append(message)
+    return kept
+
 
 #: Suffix ``DynamicContextMiddleware``'s ID-swap gives the real user message; the
 #: reminder SystemMessage takes the original id so ``add_messages`` can replace it

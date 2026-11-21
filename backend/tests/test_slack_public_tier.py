@@ -977,7 +977,9 @@ def test_no_policy_file_registers_no_interceptor(policy_path):
     from deerflow.mcp.run_tier import build_run_tier_interceptor
 
     assert build_run_tier_interceptor(_extensions()) is None
-    assert build_mcp_tool_interceptors(_extensions(), oauth_builder=lambda _cfg: None) == []
+    # Upstream registers its agent-credential interceptor for every HTTP server; none of ours may be there.
+    built = build_mcp_tool_interceptors(_extensions(), oauth_builder=lambda _cfg: None)
+    assert [interceptor for interceptor in built if "agent_auth" not in interceptor.__qualname__] == []
 
 
 # -- the capability probe -------------------------------------------------------
