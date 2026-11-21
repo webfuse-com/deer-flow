@@ -71,7 +71,8 @@ def _write_configs(directory: Path) -> tuple[Path, Path]:
         (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Route authorization anchor skill\n---\n\n# {name}\n", encoding="utf-8")
     config_path = directory / "config.yaml"
     extensions_path = directory / "extensions_config.json"
-    config_path.write_text(_CONFIG_YAML + f"skills:\n  path: {json.dumps(str(skills_root))}\n", encoding="utf-8")
+    # [argus patch #162] Suggestions are off by default in the fork; the suggestions test needs them on.
+    config_path.write_text(_CONFIG_YAML + f"suggestions:\n  enabled: true\nskills:\n  path: {json.dumps(str(skills_root))}\n", encoding="utf-8")
     extensions_path.write_text(json.dumps({"mcpServers": {}, "skills": {}}), encoding="utf-8")
     return config_path, extensions_path
 

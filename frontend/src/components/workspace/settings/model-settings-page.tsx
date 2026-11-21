@@ -222,7 +222,11 @@ export function ModelSettingsPage() {
               models={(catalog.data?.models ?? []).filter(
                 (model): model is ManagedModel => model.source === "managed",
               )}
-              providers={providers.data?.providers ?? []}
+              // [argus patch #161] The catalog import also hides the presets.
+              providers={offeredModelProviders(
+                providers.data?.providers ?? [],
+                MODEL_PROVIDER_PRESETS_VISIBLE,
+              )}
               close={() => setImporting(false)}
               saved={refresh}
             />

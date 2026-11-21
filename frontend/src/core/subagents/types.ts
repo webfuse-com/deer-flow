@@ -22,8 +22,6 @@ export interface Subagent {
   max_turns: number;
   timeout_seconds: number;
   enabled: boolean;
-  /** [argus patch #111] Extended thinking; null = the default (off). */
-  thinking_enabled?: boolean | null;
   source: SubagentSource;
   editable: boolean;
   conflict: boolean;
@@ -46,7 +44,6 @@ export interface CreateManagedSubagentRequest {
   max_turns?: number;
   timeout_seconds?: number;
   enabled?: boolean;
-  thinking_enabled?: boolean | null; // [argus patch #111]
 }
 
 export type UpdateManagedSubagentRequest = Partial<

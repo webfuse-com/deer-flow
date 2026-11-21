@@ -2459,7 +2459,7 @@ export interface Translations {
   };
 
   // Sharing (Argus patch #88): internalize a thread or a file through the Agora
-  sharing: {
+  agoraSharing: {
     internalize: string;
     shared: string;
     dialogTitle: string;

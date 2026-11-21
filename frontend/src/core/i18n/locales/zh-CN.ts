@@ -2809,7 +2809,7 @@ export const zhCN: Translations = {
   },
 
   // Sharing (Argus patch #88)
-  sharing: {
+  agoraSharing: {
     internalize: "内化分享",
     shared: "已分享给同事",
     dialogTitle: "把这段对话分享给同事",

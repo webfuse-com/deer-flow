@@ -63,8 +63,8 @@ export function InternalizeArtifactAction({
 
   const shared = status.data?.shared === true;
   const label = shared
-    ? t.sharing.artifact.shared
-    : t.sharing.artifact.internalize;
+    ? t.agoraSharing.artifact.shared
+    : t.agoraSharing.artifact.internalize;
 
   // The dialog renders through a portal, but React events still bubble to the
   // card that owns this action; keep clicks inside the dialog from opening the

@@ -63,13 +63,13 @@ export function InternalizeFileDialog({
         <DialogHeader>
           <DialogTitle>
             {shared
-              ? t.sharing.artifact.shared
-              : t.sharing.artifact.dialogTitle(name)}
+              ? t.agoraSharing.artifact.shared
+              : t.agoraSharing.artifact.dialogTitle(name)}
           </DialogTitle>
           <DialogDescription>
             {shared && share
-              ? t.sharing.sharedSince(formatSnapshotDate(share.shared_at))
-              : t.sharing.artifact.dialogDescription}
+              ? t.agoraSharing.sharedSince(formatSnapshotDate(share.shared_at))
+              : t.agoraSharing.artifact.dialogDescription}
           </DialogDescription>
         </DialogHeader>
 
@@ -89,13 +89,15 @@ export function InternalizeFileDialog({
                   {share.title} ({formatBytes(share.bytes)})
                 </li>
                 {share.scrub_findings > 0 && (
-                  <li>{t.sharing.scrubWarning(share.scrub_findings)}</li>
+                  <li>{t.agoraSharing.scrubWarning(share.scrub_findings)}</li>
                 )}
               </ul>
               {confirmRevoke && (
                 <Alert variant="destructive">
                   <TriangleAlertIcon />
-                  <AlertDescription>{t.sharing.revokeConfirm}</AlertDescription>
+                  <AlertDescription>
+                    {t.agoraSharing.revokeConfirm}
+                  </AlertDescription>
                 </Alert>
               )}
             </>
@@ -121,14 +123,15 @@ export function InternalizeFileDialog({
                 disabled={busy || !status.isSuccess}
                 onClick={() => {
                   internalize.mutate(undefined, {
-                    onSuccess: () => toast.success(t.sharing.artifact.success),
+                    onSuccess: () =>
+                      toast.success(t.agoraSharing.artifact.success),
                   });
                 }}
               >
                 {internalize.isPending && (
                   <LoaderIcon className="size-4 animate-spin" />
                 )}
-                {t.sharing.artifact.confirm}
+                {t.agoraSharing.artifact.confirm}
               </Button>
             </>
           ) : confirmRevoke ? (
@@ -139,7 +142,7 @@ export function InternalizeFileDialog({
                 revoke.mutate(undefined, {
                   onSuccess: () => {
                     setConfirmRevoke(false);
-                    toast.success(t.sharing.revoked);
+                    toast.success(t.agoraSharing.revoked);
                   },
                 });
               }}
@@ -147,7 +150,7 @@ export function InternalizeFileDialog({
               {revoke.isPending && (
                 <LoaderIcon className="size-4 animate-spin" />
               )}
-              {t.sharing.revokeYes}
+              {t.agoraSharing.revokeYes}
             </Button>
           ) : (
             <Button
@@ -155,7 +158,7 @@ export function InternalizeFileDialog({
               disabled={busy}
               onClick={() => setConfirmRevoke(true)}
             >
-              {t.sharing.revoke}
+              {t.agoraSharing.revoke}
             </Button>
           )}
         </DialogFooter>

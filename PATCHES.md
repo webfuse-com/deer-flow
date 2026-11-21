@@ -1991,6 +1991,7 @@ carry budget ledger.
 - Upstream status: n/a (Argus integration).
 - Sync 2026-10-10: combined with upstream's truncated/still-loading guards in `artifact-file-detail.tsx`; upstream's editing DOM test mocks `InternalizeArtifactAction`.
 - Sync 2026-10-25: kept. `core/artifacts/utils.ts` unions the imports (upstream's `extractPresentFilesFromMessage` plus our `sharing/thread-id`); upstream's new resolvers (#7356 relative message links, #6827 markdown preview images) go through `urlOfArtifact`/`resolveMarkdownArtifactURL`, so the shared-thread switch covers them. The header Internalize trigger is re-applied on both chat pages. `shared-thread-page.dom.test.tsx` wraps the page in `ArtifactDraftsProvider` (upstream #6700 mounts it in the root layout, so production is fine) and uses upstream's static `FlipDisplay` test helper (Motion's animation cancel rejects under happy-dom 21). The `frontend/AGENTS.md` route and domain mentions moved into this section (see Directory notes).
+- Sync 2026-11-21: the i18n namespace of this patch is `agoraSharing`; upstream #8211 took `sharing` for conversation share links. `artifact-file-save-race.dom.test.tsx` (upstream) gets a `ThreadContext` in its mock, which `InternalizeArtifactAction` reads.
 
 ## Patch #89
 
@@ -2849,6 +2850,7 @@ carry budget ledger.
 - Tests: `frontend/tests/unit/components/workspace/settings/model-provider-presets.dom.test.tsx` (NEW: gate closed, helpers, Add model offers and saves only the custom endpoint, a preset model stays editable), `frontend/tests/unit/components/workspace/settings/model-settings-page.dom.test.tsx` (upstream's, EDITED: mocks the gate open so its preset cases still run), `frontend/tests/e2e/model-management.spec.ts` (upstream's, EDITED: fills the custom endpoint's base URL, since a new model no longer starts on a preset).
 - Delete-when: Argus decides owners may add direct provider routes, or upstream gates presets behind a config flag we can set off.
 - Upstream status: none (an upstream config flag for presets would replace this).
+- Sync 2026-11-21: upstream's new "Fetch and add models" dialog gets `offeredModelProviders(...)` too, so presets stay hidden there; the provider picker is upstream's native select and `model-provider-presets.dom.test.tsx` reads its options.
 
 ## Patch #162
 

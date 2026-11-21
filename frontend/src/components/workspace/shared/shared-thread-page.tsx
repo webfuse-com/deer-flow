@@ -31,16 +31,16 @@ const SHARED_MESSAGE_LIST_PADDING_BOTTOM = 24;
 function CopyLinkButton({ url }: { url: string }) {
   const { t } = useI18n();
   return (
-    <Tooltip content={t.sharing.copyLink}>
+    <Tooltip content={t.agoraSharing.copyLink}>
       <Button
-        aria-label={t.sharing.copyLink}
+        aria-label={t.agoraSharing.copyLink}
         className="text-muted-foreground hover:text-foreground"
         size="icon"
         variant="ghost"
         onClick={() => {
           void writeTextToClipboard(url).then((didCopy) => {
             if (didCopy) {
-              toast.success(t.sharing.linkCopied);
+              toast.success(t.agoraSharing.linkCopied);
             } else {
               toast.error(t.clipboard.failedToCopyToClipboard);
             }
@@ -56,16 +56,18 @@ function CopyLinkButton({ url }: { url: string }) {
 function SharedThreadNotice({ payload }: { payload: SharedThreadPayload }) {
   const { t } = useI18n();
   const parts = [
-    t.sharing.readOnlyNotice(formatSnapshotDate(payload.share.snapshot_at)),
+    t.agoraSharing.readOnlyNotice(
+      formatSnapshotDate(payload.share.snapshot_at),
+    ),
   ];
   if (
     !payload.share.include_tool_bodies &&
     payload.snapshot.omitted.tool_bodies > 0
   ) {
-    parts.push(t.sharing.toolBodiesOmitted);
+    parts.push(t.agoraSharing.toolBodiesOmitted);
   }
   if (!payload.share.files_included) {
-    parts.push(t.sharing.filesNotIncluded);
+    parts.push(t.agoraSharing.filesNotIncluded);
   }
   return (
     <p
@@ -94,7 +96,7 @@ function SharedThreadEmpty({
       <p className="text-muted-foreground max-w-md text-sm">{description}</p>
       {reload && (
         <Button variant="outline" onClick={() => window.location.reload()}>
-          {t.sharing.reload}
+          {t.agoraSharing.reload}
         </Button>
       )}
     </div>
@@ -156,15 +158,15 @@ export function SharedThreadPage({
       <SharedThreadEmpty
         title={
           notFound
-            ? t.sharing.notFoundTitle
+            ? t.agoraSharing.notFoundTitle
             : sessionExpired
-              ? t.sharing.sessionExpired
-              : t.sharing.failed
+              ? t.agoraSharing.sessionExpired
+              : t.agoraSharing.failed
         }
         description={
           notFound
-            ? t.sharing.notFoundDescription
-            : (error?.message ?? t.sharing.failed)
+            ? t.agoraSharing.notFoundDescription
+            : (error?.message ?? t.agoraSharing.failed)
         }
         reload={sessionExpired}
       />
@@ -180,7 +182,7 @@ export function SharedThreadPage({
             <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium">
               <Badge variant="secondary" className="shrink-0">
                 <Landmark />
-                {t.sharing.sharedBy(payload.share.owner_email)}
+                {t.agoraSharing.sharedBy(payload.share.owner_email)}
               </Badge>
               <span className="truncate" data-testid="shared-thread-title">
                 {payload.share.title}

@@ -32,7 +32,7 @@ export function InternalizeTrigger({ threadId }: { threadId: string }) {
   }
 
   const shared = status.data?.shared === true;
-  const label = shared ? t.sharing.shared : t.sharing.internalize;
+  const label = shared ? t.agoraSharing.shared : t.agoraSharing.internalize;
 
   return (
     <>

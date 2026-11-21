@@ -8,10 +8,15 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import type * as React from "react";
 import type { PropsWithChildren } from "react";
 import { toast } from "sonner";
 
 rs.mock("@/components/workspace/messages/context", () => ({
+  // [argus patch #88] InternalizeArtifactAction reads ThreadContext directly.
+  ThreadContext: rs
+    .requireActual<typeof React>("react")
+    .createContext(undefined),
   useThread: () => ({
     thread: { isLoading: false, messages: [] },
     isMock: false,

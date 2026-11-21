@@ -606,7 +606,6 @@ export default function AgentChatPage() {
                   testId="main-message-list"
                   threadId={threadId}
                   thread={thread}
-                  activeRunId={activeRunId}
                   scheduledTaskEvents={scheduledTaskEvents.data}
                   enableConversationOutline
                   paddingBottom={MESSAGE_LIST_DEFAULT_PADDING_BOTTOM}

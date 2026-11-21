@@ -2988,7 +2988,7 @@ export const enUS: Translations = {
   },
 
   // Sharing (Argus patch #88)
-  sharing: {
+  agoraSharing: {
     internalize: "Internalize",
     shared: "Shared with colleagues",
     dialogTitle: "Share this conversation with your colleagues",
