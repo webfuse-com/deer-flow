@@ -265,6 +265,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#174](#patch-174) | The public tier for Slack channel threads: an image-held tier policy (`argus-tier-policy.json` at a hard-coded site-packages path; missing or invalid refuses the tier) picks the agent and caps the run: memory off, no subagents, skills or bootstrap, `user_email` stripped, the Pythia ring clamped, tools filtered after every append path (MCP only from allowlisted URLs) with a final bound-tool assertion and a call-time guard; applied last at the manager and at run admission so `session.context` cannot override it; bound to the DeerFlow thread in server-owned metadata so a later web, Chronos or atlas-mcp run there is restricted too; a built-in last MCP interceptor sets `X-Argus-Run-Tier` and withholds the Pythia caller token; `GET /api/channels/slack/relay/capabilities` for the router's probe | argus-edit | this PR |
 | [#175](#patch-175) | The owner tier for Slack channel runs the router verified its owner triggered: the owner's agent (`tier_agents.owner`, else the default) and tools minus subagents and `update_agent`, memory never written (read-only or off), Pythia capped at internal; tools classed PUBLIC/WRITE/PRIVATE by the image policy's `tiers.owner` (default PRIVATE, MCP included); after the first PRIVATE read (or injected memory) only PUBLIC tools, `private_read_tools` and `self_write_tools` run (never egress or `write_tools`), and the run's answer is stamped, which Slack posts with `X-Argus-Turn-Private`/`X-Argus-Turn-Sources` for the router to draft to the owner; `owner` in the probe's `tiers` | argus-edit | this PR |
 | [#176](#patch-176) | The owner tier gains an INTERNAL class for company data every colleague may read (Sentry, Sumo Logic, code and log search, growth, BigQuery, GitHub reads): `tiers.owner.internal_tools` from servers matching `internal_servers` (a `{stack}` path segment matches the stack's own atlas-mcp route) never taint, stay allowed after taint and keep the caller token; a PUBLIC tool may also come from an internal server. A call the gateway answered without running it (a marked tier-guard refusal, the deferred-tool gate) no longer taints the turn. The taint refusal names the call and the private sources and covers reads | argus-additive | this PR |
+| [#177](#patch-177) | Slack thread context names its people: an author reads `Name (<@U…>)` and a mention in a text gains its name, from the names the router sends with `conversations.replies` (`user_name`, `people`); a person still shown as a bare mention gets one line telling the model never to guess a name | argus-edit | this PR |
 
 Dropped / deferred / not-carried records are at the bottom, followed by the
 carry budget ledger.
@@ -3122,6 +3123,26 @@ carry budget ledger.
 - Tests: `backend/tests/test_slack_owner_tier.py` (17 new cases: a policy without the new keys parses and keeps Sentry PRIVATE; the keys parse; seven bad entries refuse the owner tier only; classification of INTERNAL from a fixed and a `{stack}` URL, PUBLIC from an internal server, a write and unlisted tools on an internal server, a non-matching URL, a two-segment stack path, a personal server and in-process lookalikes; INTERNAL allowed after taint while egress wins; internal reads never tainting, an internal read after a private read, a write refused after a private read that followed an internal one; the 2026-11-18 turn replayed with Sentry PRIVATE running the real call after a deferred rejection; a marked guard refusal not tainting while a tool error, a deferred text under another name or without error status, and an in-flight sibling still count; the deferred text pinned to the gate; the refusal text; internal servers keeping the caller token while Pythia's is withheld). Existing assertions on the refusal now check the rendered text.
 - Delete-when: with #175.
 - Upstream status: none sent (Argus-specific).
+
+---
+
+## Patch #177
+
+**Patch #177 - Slack thread context names its people** (2026-11-25)
+
+- Class: argus-edit (backend: `app/channels/slack.py` `fetch_thread_context`, plus the helpers `_slack_person_name`, `_slack_person_label`, `_slack_name_mentions`). Amends #22 and #171.
+- Intent: on 2026-11-25 an owner mentioned their Atlas under a colleague's channel post ("remind me next week"). The hydrated context named each author only as `<@U…>`, so the model invented a first name for the asker and wrote it into a reminder. The router already resolves names for `conversations.replies` in a channel (`user_name` per message, `people` for the mentions, names only); the adapter dropped both.
+- Behavior:
+  - A person's line reads `Name (<@U…>): text` when the router named them (the message's `user_name`, else the `people` map), `<@U…>: text` otherwise. A bot line prefers the router's `user_name` ("Atlas (Nicholas's)"), then #171's label; `is_author_bot` counts as a bot like `bot_id`.
+  - A `<@U…>` or `<@U…|label>` mention inside a text gains the name the same way when `people` has it; an unknown id stays as it was.
+  - Names are collapsed to one line, lose `<` and `>`, and are capped like a bot label, so a display name cannot forge a mention or close the context block. A non-dict `people`, a bad id or an empty name is ignored.
+  - When any person in the block is still a bare mention, one closing line tells the model to refer to them by the mention and never by a guessed name. A fully named block is unchanged apart from the names.
+- Not done or simplified: no `users.info` lookup from the adapter. The router names channel threads only, so an owner's DM thread and a direct (non-relay) Slack app such as Pythia's still show bare mentions, now with the no-guess line. The current message's own text is not rewritten.
+- Why carry: the context block is built inside the adapter; there is no overlay seam.
+- Files: `backend/app/channels/slack.py`.
+- Tests: `backend/tests/test_channels.py` `TestSlackThreadContext` (4 new cases: authors and mentions named from `user_name` and `people`, a labelled mention, a named Atlas post, and an unknown id left bare with the note; a fully named thread without the note; an unnamed thread with it; a hostile or malformed name and a non-dict `people`).
+- Delete-when: with #22.
+- Upstream status: none sent (Argus-specific: the names come from the Argus router).
 
 ---
 

@@ -63,6 +63,9 @@ _SLACK_OWNER_CHANNELS = ("slack", "telegram")
 # A real Slack message ts. Synthetic topics (sched:<id>, hook:..., notify:...)
 # never match, so they are not Slack threads to hydrate.
 _SLACK_TS_RE = re.compile(r"\d+\.\d+")
+# [argus patch #177] A Slack member id, alone and as a mention in message text.
+_SLACK_USER_ID_RE = re.compile(r"[UW][A-Z0-9]+")
+_SLACK_USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^<>]*)?>")
 
 _slack_md_converter = SlackMarkdownConverter()
 
@@ -161,6 +164,32 @@ def _slack_bot_label(message: dict) -> str:
             if name:
                 return name
     return "a bot"
+
+
+def _slack_person_name(value: Any) -> str:
+    """[argus patch #177] A person's display name as one short, inert label.
+
+    Whitespace collapsed, angle brackets dropped (a name must not read as a
+    mention or a link) and capped like a bot label; "" for anything else.
+    """
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.replace("<", " ").replace(">", " ").split())[:_SLACK_BOT_LABEL_MAX_CHARS]
+
+
+def _slack_person_label(user_id: Any, name: str) -> str:
+    """[argus patch #177] "Name (<@U…>)" when the name is known, else "<@U…>"."""
+    uid = user_id if isinstance(user_id, str) and _SLACK_USER_ID_RE.fullmatch(user_id) else ""
+    if not uid:
+        return name or "<@user>"
+    return f"{name} (<@{uid}>)" if name else f"<@{uid}>"
+
+
+def _slack_name_mentions(text: str, people: dict[str, str]) -> str:
+    """[argus patch #177] Put the known name before each ``<@U…>`` mention in a text."""
+    if not people:
+        return text
+    return _SLACK_USER_MENTION_RE.sub(lambda m: f"{people[m.group(1)]} (<@{m.group(1)}>)" if m.group(1) in people else m.group(0), text)
 
 
 def _escape_slack_text(text: str) -> str:
@@ -727,7 +756,18 @@ class SlackChannel(Channel):
             logger.info("[Slack] thread context unavailable (%s)", exc)
             return ""
         msgs = resp.get("messages") or []
+        # [argus patch #177] The router names the thread's people (``user_name``
+        # per message, ``people`` for the mentions). A bare ``<@U…>`` leaves the
+        # model to guess who spoke, and it does: it invents a name.
+        raw_people = resp.get("people")
+        people: dict[str, str] = {}
+        if isinstance(raw_people, dict):
+            for uid, raw_name in raw_people.items():
+                name = _slack_person_name(raw_name)
+                if isinstance(uid, str) and _SLACK_USER_ID_RE.fullmatch(uid) and name:
+                    people[uid] = name
         lines: list[str] = []
+        unnamed = False
         for m in msgs:
             ts = m.get("ts", "")
             if exclude_ts and ts == exclude_ts:
@@ -735,11 +775,20 @@ class SlackChannel(Channel):
             body = (m.get("text") or "").strip()
             if not body or body.startswith(":hourglass"):  # skip the ack
                 continue
-            who = _slack_bot_label(m) if m.get("bot_id") else f"<@{m.get('user', 'user')}>"
+            named = _slack_person_name(m.get("user_name"))
+            if m.get("bot_id") or m.get("is_author_bot"):
+                who = named or _slack_bot_label(m)
+            else:
+                who = _slack_person_label(m.get("user"), named or people.get(m.get("user") or "", ""))
+                unnamed = unnamed or who.startswith("<@")
+            body = _slack_name_mentions(body, people)
+            unnamed = unnamed or any(uid not in people for uid in _SLACK_USER_MENTION_RE.findall(body))
             lines.append(f"{who}: {body}")
         if not lines:
             return ""
         joined = "\n".join(lines)
+        if unnamed:
+            joined += "\n(A person shown only as <@U…> has no known name here: refer to them by that mention, never by a guessed name.)"
         return f"[thread context — earlier messages in this Slack thread, for reference]\n{joined}\n[end thread context]"
 
     # -- internal ----------------------------------------------------------
