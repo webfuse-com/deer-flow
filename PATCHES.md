@@ -3125,6 +3125,26 @@ carry budget ledger.
 
 ---
 
+## Patch #177
+
+**Patch #177 - Slack thread context names its people** (2026-11-25)
+
+- Class: argus-edit (backend: `app/channels/slack.py` `fetch_thread_context`, plus the helpers `_slack_person_name`, `_slack_person_label`, `_slack_name_mentions`). Amends #22 and #171.
+- Intent: on 2026-11-25 an owner mentioned their Atlas under a colleague's channel post ("remind me next week"). The hydrated context named each author only as `<@U…>`, so the model invented a first name for the asker and wrote it into a reminder. The router already resolves names for `conversations.replies` in a channel (`user_name` per message, `people` for the mentions, names only); the adapter dropped both.
+- Behavior:
+  - A person's line reads `Name (<@U…>): text` when the router named them (the message's `user_name`, else the `people` map), `<@U…>: text` otherwise. A bot line prefers the router's `user_name` ("Atlas (Nicholas's)"), then #171's label; `is_author_bot` counts as a bot like `bot_id`.
+  - A `<@U…>` or `<@U…|label>` mention inside a text gains the name the same way when `people` has it; an unknown id stays as it was.
+  - Names are collapsed to one line, lose `<` and `>`, and are capped like a bot label, so a display name cannot forge a mention or close the context block. A non-dict `people`, a bad id or an empty name is ignored.
+  - When any person in the block is still a bare mention, one closing line tells the model to refer to them by the mention and never by a guessed name. A fully named block is unchanged apart from the names.
+- Not done or simplified: no `users.info` lookup from the adapter. The router names channel threads only, so an owner's DM thread and a direct (non-relay) Slack app such as Pythia's still show bare mentions, now with the no-guess line. The current message's own text is not rewritten.
+- Why carry: the context block is built inside the adapter; there is no overlay seam.
+- Files: `backend/app/channels/slack.py`.
+- Tests: `backend/tests/test_channels.py` `TestSlackThreadContext` (4 new cases: authors and mentions named from `user_name` and `people`, a labelled mention, a named Atlas post, and an unknown id left bare with the note; a fully named thread without the note; an unnamed thread with it; a hostile or malformed name and a non-dict `people`).
+- Delete-when: with #22.
+- Upstream status: none sent (Argus-specific: the names come from the Argus router).
+
+---
+
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
 **Dropped at the 2026-11-21 upstream sync (base `66f00e7b8` -> `1c286b933`):**
