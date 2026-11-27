@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import Request, Response
 
-from app.channels import _telegram_sender
+from app.channels import _telegram_actions, _telegram_sender
 from app.channels.allowed_users import parse_allowed_users
 from app.channels.base import Channel, ChannelStopTimeout
 from app.channels.connection_identity import attach_connection_identity
@@ -257,6 +257,9 @@ class TelegramChannel(Channel):
         # a webhook held that long is redelivered by Telegram (a second agent
         # turn for one note) and holds back the chat's next updates.
         app.add_handler(MessageHandler(filters.VOICE, self._on_voice, block=False))
+
+        # [argus patch #178] Approve and Skip presses on staged-action cards.
+        _telegram_actions.register(app, self)
 
         self._application = app
 
