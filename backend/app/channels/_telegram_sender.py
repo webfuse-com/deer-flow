@@ -34,6 +34,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.channels._telegram_actions import send_cards
 from app.channels._telegram_format import chunk_html, to_telegram_html
 
 if TYPE_CHECKING:
@@ -131,6 +132,8 @@ async def send(channel: TelegramChannel, msg: OutboundMessage, *, max_retries: i
     # working-indicator emoji. Streaming partials (is_final=False) leave it.
     if msg.is_final:
         await clear_working(channel, chat_id, msg.chat_id)
+        # [argus patch #178] Then one approval card per action the turn staged.
+        await send_cards(channel, bot, chat_id, msg)
 
 
 async def send_one(channel: TelegramChannel, bot, chat_id: int, chat_key: str, text: str, *, max_retries: int = 3) -> int | None:

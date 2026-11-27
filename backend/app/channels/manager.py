@@ -33,6 +33,7 @@ from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
 from app.channels._delivery_outcome import delivery_error, mirror_outbounds
 from app.channels._delivery_report import report_delivery
 from app.channels._final_reply import TOOL_CALL_MARKUP_ERROR, recover_unattended_reply, reply_without_tool_call_markup
+from app.channels._telegram_actions import stamp_staged_actions
 from app.channels.capabilities import CHANNEL_CAPABILITIES
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.connection_identity import lookup_thread_id
@@ -4405,7 +4406,7 @@ class ChannelManager:
             thread_ts=msg.thread_ts,
             connection_id=msg.connection_id,
             owner_user_id=msg.owner_user_id,
-            metadata=_response_metadata_with_clarification(result, msg.metadata, pending_clarification=pending_clarification),
+            metadata=stamp_staged_actions(_response_metadata_with_clarification(result, msg.metadata, pending_clarification=pending_clarification), msg.channel_name, _current_turn_messages(result)),  # [argus patch #178]
         )
         # [argus patch #175] A run that read private data (the owner tier's taint
         # guard stamped its AI messages) flags its answer: Slack sends it with
@@ -4756,7 +4757,7 @@ class ChannelManager:
                         thread_ts=msg.thread_ts,
                         connection_id=msg.connection_id,
                         owner_user_id=msg.owner_user_id,
-                        metadata=_response_metadata_with_clarification(result, msg.metadata, pending_clarification=pending_clarification),
+                        metadata=stamp_staged_actions(_response_metadata_with_clarification(result, msg.metadata, pending_clarification=pending_clarification), msg.channel_name, _current_turn_messages(result)),  # [argus patch #178]
                     )
                 )
             if stream_error is not None and not keep_dedupe_key:
