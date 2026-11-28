@@ -411,6 +411,18 @@ When `channel_connections.enabled` and `require_bound_identity` are true, auth-e
 
 Upgrade note: existing auth-enabled deployments that already have `channel_connections.enabled: true` will start rejecting ordinary unbound IM messages after this field is introduced because `require_bound_identity` defaults to true. Legacy operator-owned/open-bot deployments that intentionally allow unbound platform users to create DeerFlow runs should set `require_bound_identity: false` before upgrading and restart the service.
 
+When channel connections are enabled, Feishu stores topic and card aliases
+for bound senders with their connection. After `/new`, ordinary topic messages and
+commands follow the new conversation even if an earlier answer finishes streaming.
+Replying directly to that earlier card continues its original conversation. Feishu
+requires the connection repository to be available before its transport starts.
+Unbound chats use a separate topic namespace.
+After upgrading a mixed deployment, unbound replies to older topics
+start a fresh conversation. Unthreaded chats and legacy-only deployments keep
+their existing routing. Upgrade all Gateway workers together. If a previously
+mixed deployment switches off channel connections, clear its old Feishu topic
+aliases before reopening legacy routing.
+
 ## Connect Flow
 
 Every worker answers the bind message in the chat: `<Provider> connected to DeerFlow.` on success, otherwise that the code (Telegram: the link) is invalid or expired, or that the bind could not be completed from that message. Replies use the code owner's web UI language once the code is consumed, else `channel_connections.notification_locale` ([reply language](#goal-status-goal)).
@@ -579,6 +591,28 @@ prevents later sends. API acceptance is not a read receipt. The shared outbox
 can retry an ambiguously acknowledged send; it does not promise exactly-once
 messages at the provider. Record whether domestic Feishu or international Lark
 was actually exercised.
+
+### Start a coordination task in Feishu
+
+On a deployment with coordination and the notification outbox available, bind
+a Feishu bot in a private chat and send `/task start <objective>`. For example,
+`/task start Write a short release
+summary and save it as a Markdown file`. DeerFlow replies with a Task ID.
+The Coordinator dispatches the work in the background, so you can keep
+chatting with the bot while it runs. Keep the Task ID to look up the task
+through the coordination API.
+
+When the task ends, DeerFlow pushes a status card and, on success, visible
+worker results and saved attachments to the original private chat. It
+delivers the artifacts from the accepted plan, including separate versions
+that share a filename. Each file has its own delivery retry. The bot needs
+Feishu's file upload permission for that step. Empty files and files over
+Feishu's file limit remain available through the coordination artifact API.
+
+This uses the same SQL database and channel connections as the notification
+outbox. The Feishu notification preference applies. Disconnecting or
+replacing the chat binding prevents future delivery from that task to the
+old binding, even if a user reauthorizes its execution in DeerFlow.
 
 ### Group notifications
 

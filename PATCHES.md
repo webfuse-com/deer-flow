@@ -15,9 +15,10 @@ a #7/#8 collision between the prompt blocks and the todo middleware). This
 file is now canonical; where older documents disagree, the section notes the
 alias. Baseline facts:
 
-- Upstream base: `1c286b933` (`bytedance/main`, 2026-11-21), reached by the
-  merge-based sync of 2026-11-21 (acropolis `docs/DEERFLOW-SYNC.md`; previous
-  base `66f00e7b8` of 2026-10-25, 454 upstream commits behind; before that
+- Upstream base: `579b12bbe` (`bytedance/main`, 2026-11-28), reached by the
+  merge-based sync of 2026-11-28 (acropolis `docs/DEERFLOW-SYNC.md`; previous
+  base `1c286b933` of 2026-11-21, 153 upstream commits behind; before that
+  `66f00e7b8` of 2026-10-25; before that
   `65a18618` of 2026-10-10,
   `fc26204d` of 2026-09-23, `3f0b6ecc` of 2026-09-11 and `3a967d4f` of
   2026-08-15). The 2026-07-02
@@ -102,6 +103,27 @@ alias. Baseline facts:
   detection. The README is upstream's index; its five fork paragraphs are not
   carried into `docs/guide/`. Each touched section carries a "Sync 2026-11-21"
   bullet.
+- Sync 2026-11-28 in one line: no patch retires on upstream's side (no new
+  commit meets a Delete-when); #83 is marked RETIRED because the 2026-11-21
+  sync had already removed both of its halves, and its stale
+  `bash.inspection` example leaves `config.example.yaml`. Re-expressed #72's
+  batch `str_replace` and #73's `workspace_patch` onto upstream #8662's
+  `_replace_keeping_line_endings` (the helper they called is gone, and AIO
+  reads now keep CRLF), #99's shell-grep fallback around upstream #8720's
+  glob pre-filter and user-data ignore rules, #75's active request through
+  upstream #7667's `_render_summary_prompt`, #120's launcher context next to
+  upstream #8598's `subagent_enabled`, and #53's `allowed_tools` ceiling after
+  upstream's `restrict_batch_continuation`. #68 now stops on upstream #8608's
+  `capacity` tool error like `transient`. Combined without change: #10's
+  coalescer and channel owners beside upstream's coordination dispatch, #15's
+  SSO branch after upstream #8514's PAT scopes, #121's untraced-chat preload
+  before upstream's combined storage sweeps, #174's tier keys in the
+  runtime-only set that upstream #8485 cut `github_token` from. Six upstream
+  migrations (0059 to 0064) arrive, all additive; `config_version` follows
+  upstream to 68. Upstream's guidance grew, so the fork notes in the channels,
+  MCP and sandbox `AGENTS.md` shrink to one-line pointers (6 KiB budget); four
+  fork tests follow upstream's new `skill_storage` and `imported_history`
+  arguments.
 
 To see the live carry-list:
 
@@ -182,7 +204,7 @@ half is upstreamable, the Argus behavior lives in project config).
 | [#78](#patch-78) | ~~Merge model profile and runtime constructor kwargs~~ RETIRED 2026-09-23 (upstream #5403) | generic-upstreamable | this PR |
 | [#81](#patch-81) | Bash inspection/execution command classification library | argus-additive | this PR |
 | [#82](#patch-82) | Bash inspection wiring for ToolProgress streak and loop-detection Layer 2 | config-expressed | this PR |
-| [#83](#patch-83) | Truthful meta-classify for wrapper errors; bash.inspection reset semantics | config-expressed | this PR |
+| [#83](#patch-83) | ~~Truthful meta-classify for wrapper errors; bash.inspection reset semantics~~ RETIRED 2026-11-28 (both halves gone with upstream #7986 and #8248 at the 2026-11-21 sync) | config-expressed | this PR |
 | [#84](#patch-84) | SandboxAudit: redact credentials and hard-cap the audited command | argus-edit | this PR |
 | [#85](#patch-85) | Config-gated line-numbered code outline in tool output synopsis | config-expressed | this PR |
 | [#86](#patch-86) | Digest-only config-change detection so no-op rewrites don't stall run completion | argus-edit | this PR |
@@ -1540,7 +1562,7 @@ carry budget ledger.
 - Intent: Chronos expects a delivered|silent|failed callback per run; the gateway never called back, so every channel_notify run sat `running` for 1800s and closed as unreported. `report_delivery()` POSTs `{status, channel, chat_id, message_text, delivered_at, error}` to the run's `report_url` with the internal token, one retry, never raises (a report failure degrades to pre-#45 behavior). `PlaybookFireRequest` and `InboundMessage` carry an optional `report_url`; `manager._report_unattended_outcome()` fires at the silent (both unattended-suppression branches), delivered and failed seams.
 - Files: `backend/app/channels/_delivery_report.py` (new), `backend/app/channels/manager.py`, `backend/app/channels/message_bus.py`, `backend/app/gateway/routers/playbooks.py`.
 - Tests: `backend/tests/test_delivery_report.py`, `backend/tests/test_playbook_fire.py` (report_url flow-through, default None).
-- Delete-when: upstream's scheduled-tasks MVP (4fc08b4f) grows a completion callback; reconcile together with #30/#43.
+- Delete-when: upstream's scheduler (now a full service with its own notification delivery, no longer the 4fc08b4f MVP) offers an external completion callback a caller such as Chronos can register; reconcile together with #30/#43.
 - Upstream status: none sent.
 - 2026-09-25: the streaming `delivered` report had been nested under `if stream_error is not None:` (the upstream #4287 dedupe-release block), so clean streaming fires never reported. It now sits beside that block; `test_unattended_stream_reports_outcome_once` covers both outcomes.
 - Sync 2026-10-25: the report block is split from upstream #7104's dedupe-release condition (`stream_error and not _keep_dedupe_key_after`); left nested, a run that continues after a dropped request (#128) would have been reported "delivered" with the error text. Order: publish, release (upstream's rule), then report: a continuing run sends none, a stream error reports failed, else delivered unless suppressed.
@@ -1645,11 +1667,12 @@ carry budget ledger.
 - Intent (as landed; see the Sync 2026-10-25 bullet for the current shape): config-gated alternative to upstream PR #2626's skill-union enforcement. Under `source: agent`, `AgentConfig.allowed_tools` is the run's whitelist (omitted = no restriction, `[]` = no tools, list = exactly those); the firing schedule's allowed-tools (#43) still union in and become the sole whitelist on an unrestricted agent, so unattended runs stay scopable; skill allowed-tools demote to documentation and tool_search promotion hints; subagents inherit the parent ceiling via run metadata (`agent_allowed_tools`).
 - Files (since 2026-10-25): `backend/packages/harness/deerflow/agents/lead_agent/agent.py`, `backend/packages/harness/deerflow/config/agents_config.py`, `backend/packages/harness/deerflow/config/app_config.py` (field only), `backend/packages/harness/deerflow/config/tool_policy_config.py`, `backend/packages/harness/deerflow/tools/agent_tool_policy.py` (NEW, fork-owned), `config.example.yaml` (tool_policy block).
 - Tests: `backend/tests/test_tool_policy_agent_source.py`.
-- Delete-when: upstream ships an agent-level allowed-tools ceiling (watch the PR #2626 line).
+- Delete-when: upstream ships an agent-level `allowed_tools` ceiling. (The PR #2626 line this used to watch went with upstream #6935, which deleted `skills/tool_policy.py`.)
 - Upstream status: none sent; generic candidate.
 - Sync 2026-09-11: kept; `parent_agent_allowed_tools` sits next to upstream's new `execution_capacity`/`acceptance_criteria`/recorder kwargs, `tool_policy` next to upstream's new `verification` field; upstream's `DeferredToolPromotionAuditMiddleware` is registered before `SkillToolPolicyMiddleware` as upstream requires.
 - Sync 2026-10-10: found while merging: the subagent half has been dead since upstream #4497 (2026-07-28) removed the only call to `_apply_skill_allowed_tools`, so under `tool_policy.source: agent` subagents do not receive the parent's tool ceiling. Kept as is (its tests call the method directly); re-wire or drop is an open decision.
 - Sync 2026-10-25: RE-EXPRESSED onto upstream #6935 (0d73798be), which deleted `skills/tool_policy.py` and `SkillToolPolicyMiddleware` (skill `allowed-tools` is metadata only; deletions accepted). The ceiling lives in the fork-owned `tools/agent_tool_policy.py` (`filter_tools_by_agent_allowed_tools` only), imported lazily in `_assemble_lead_agent` (a top-level import would pull `deerflow.tools.__init__` into `agent.py`'s import path). `tool_policy.source` is collapsed: `tool_policy_config.py` has `source: str | None = None`, any value loads, and a value other than `agent` logs one WARNING per value per process ("tool_policy.source='skills' is ignored ..."). The agent's `allowed_tools` (plus the schedule list, #43) applies whenever declared, on the default and the bootstrap assembly path, with no `source` check left; the lead reads `getattr(agent_config, "allowed_tools", None)`, so agent configs without the field still load. THINNED: the subagent half is removed (dead since upstream #4497, see the 2026-10-10 note; the open decision is closed): `SubagentExecutor._apply_skill_allowed_tools`, the `parent_agent_allowed_tools` init parameter and attribute, the `task_tool.py` kwarg and the `agent_allowed_tools` run-metadata key; the subagent ceiling is as wide as before (no agent or schedule ceiling). Not carried: `ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES` (`ask_clarification`, `view_image`, `read_file`, `tool_search`, `describe_skill`, `review_skill_package`): it only exempted tools from the skill policy, the agent ceiling never applied it (that gap is why #144 existed; #144 was dropped 2026-10-25, decision d6), and carrying it would widen every schedule allowlist; #162's `ask_clarification` line retires with it. Tests: `test_tool_policy_agent_source.py` rewritten (tri-state, schedule union, skill declarations are documentation, any `source` loads, an ignored value is logged once, lead assembly applies the ceiling with `source` None, agent or skills, the schedule list scopes an unrestricted agent whatever the source); `TestAgentSourceToolPolicy` removed from `test_subagent_executor.py` (upstream's `test_skill_tool_authority.py` covers "skill allowed-tools never narrow lead or subagent"). The documented rollback ("set `tool_policy.source: skills`") no longer exists. Stale text left for its owners: the `app_config.py` field description ("which allowed-tools declarations gate..."), the #43 comments in `manager.py` and `message_bus.py`, and the atlas-template comment "Rollback: set source: skills" (Argus side).
+- Sync 2026-11-28: the ceiling filter runs on the output of upstream's `restrict_batch_continuation` at both call sites (bootstrap and regular agent), so both narrowings apply.
 
 ## Patch #67
 
@@ -1781,6 +1804,7 @@ carry budget ledger.
 - Sync 2026-09-11: re-expressed onto upstream's `_LoopDecision` shape after e7c059d8 (#5245 hard-stop ordering), 9b32b5d8 (#5127 event persistence), 13f0a7f2 (#4863 extension observers) and 36ce7590 (#5344 per-run state). The Layer-1 downgrade is a `warn` decision with a new `downgrade: "recoverable_retry" | "exempt_tool" | None` field. Four behaviour decisions: (1) a downgraded hard stop no longer short-circuits Layer 2 (upstream requires warnings not to skip frequency accounting), so a Layer-2 hard stop can supersede it; it still escalates per call because it is never marked "already warned" (default `recoverable_retry_limit` 24 < freq hard 50, so defaults are unchanged); (2) downgrades are persisted to the run journal as `action="warn"` with `changes["downgrade"]`, added only when set so upstream's exact-equality event tests stay untouched; (3) `release_policy_parameters()` now includes `read_file_bucket_size_lines`, `no_hard_stop_tools`, `recoverable_retry_limit`; (4) upstream's `_WARNING_MSG` stays defined but Layer-1 warnings use our actionable text. Tests ported from `_get_thread_id` to `_run_scope_key` indexing.
 - Sync 2026-10-25: re-expressed onto upstream #6804 (80a71b090, save-first loop warnings). `_TOOL_LOOP_WARNING_MSG`, `_RECOVERABLE_RETRY_MSG` and `_TOOL_EXEMPT_RETRY_MSG` keep the named tools, count, outcome and action text and now end "... or stop repeating them/the call/it and wrap up now. " plus upstream's `_WRAP_UP_INSTRUCTIONS` (save first, one bounded read-before-write retry, then the final answer). Layer 2's `_TOOL_FREQ_EXEMPT_MSG` and #100's `_TOOL_FREQ_FRESH_MSG` are unchanged; #69, #82, #83 and #100 kept as merged.
 - Sync 2026-11-21: THINNED to the identical-call gate. Upstream #8248 made the per-tool frequency layer a metric, so the volume-cap half is gone and `no_hard_stop_tools` applies to identical calls only. Upstream #7986 removed classification by words, so the gate keeps its own empty-result marker list (success bodies up to 600 characters) and treats an error as recoverable unless its type is auth, rate_limited, transient, config or internal.
+- Sync 2026-11-28: `capacity` (upstream #8608, a full sandbox pool, stamped `recoverable_by_model=True` with `retry_later`) joins `_UNRECOVERABLE_ERROR_TYPES`, so repeated capacity failures hard-stop like `transient` instead of drawing up to `recoverable_retry_limit` warnings; test `test_sandbox_capacity_error_keeps_hard_stop`. Upstream #8531 now compares a repeated call's output rather than the stored bytes, so the identical-call gate sees MCP and externalized results as repeats for the first time.
 
 ## Patch #69
 
@@ -1855,6 +1879,7 @@ carry budget ledger.
 - Upstream status: none sent.
 - Sync 2026-09-11: `str_replace` re-expressed on upstream's signature (`path, old_str=None, new_str=None, description="", replace_all=False, replacements=None`; the async wrapper forwards all six). `backend/tests/test_tool_args_schema_no_pydantic_warning.py` (new upstream file) has two `str_replace` rows updated, marked `[argus patch #72]`. The four-line `CHANGELOG.md` entry this patch added is dropped: that file is upstream's release log.
 - Sync 2026-09-11, guidance budget: `backend/packages/harness/deerflow/sandbox/AGENTS.md` is 40,908 bytes upstream against a 40,960 soft budget enforced by `test_agent_guidance_check.py`, so this patch's paragraph there is now one clause, and the #81/#82 command-classification paragraph moved to `agents/middlewares/AGENTS.md`, which has room. Same cause in `backend/AGENTS.md` (#73's section condensed to one line) and `backend/app/gateway/AGENTS.md` (the #67 backend-half paragraph deleted with the patch half it described). Any fork sentence added to a near-budget upstream guidance file fails that gate.
+- Sync 2026-11-28: the batch loop calls upstream #8662's `_replace_keeping_line_endings` per entry; the `_match_line_endings` helper it used is gone upstream (left as merged, every batch edit raised NameError). A CRLF file keeps its endings; not-found and the batch error texts are unchanged. Return type follows upstream to `str | ToolMessage` (#8608 capacity results).
 
 ## Patch #73
 
@@ -1881,6 +1906,7 @@ carry budget ledger.
 - Sync 2026-10-10: the uncontended-acquire shortcut in `read_before_write_middleware.py` is retired (upstream #6511's lock covers it); the write-mark call follows upstream's `_extract_tool_message(..., tool_call_id=)`. `_sync_message_status` now keeps the tool's own status under `additional_kwargs['argus_tool_status']` (`tool_reported_status()`), and the subagent executor's direct-return failure check (upstream #6083) reads that, so a direct result whose report text starts with "Error:" is not a failed subagent. #93's receipt stamp is a helper called from both the sync stamp and upstream's async twin.
 - Sync 2026-10-25: `workspace_inspect_tool`/`workspace_patch_tool` keep their names and module path (`deerflow.sandbox.tools`), placed before upstream #7374's `_reject_elision_placeholder_content`; `workspace_patch` only does `old_str`/`new_str` replacements (like `str_replace`, which upstream did not guard), so it needs no elision guard. Upstream's `test_gateway_sandbox_shutdown.py` is adapted because this patch's post-write mark reads a newly written file a second time. The adaptive-reasoning part (off on every stack since 2026-09-09) is left in place for the decision d5 follow-up.
 - Follow-up 2026-10-25 (decision d5): adaptive reasoning DROPPED. Removed `adaptive_reasoning_middleware.py`, `config/adaptive_reasoning_config.py` and `test_adaptive_reasoning_middleware.py`; `build_middlewares(adaptive_reasoning_model=)`, the routine-model build in `_assemble_lead_agent`, and in `client.py` the cache-key entry and the hoisted `lead_model`/`routine_model` (the embedded client's model line is upstream's again; `test_client.py` key tuple restored); the `AppConfig.adaptive_reasoning` field, the `config.example.yaml` block and the README clause. A stack config's top-level `adaptive_reasoning:` block still loads (AppConfig allows extra keys) and is ignored: Atlas stacks set `enabled: false`; pyrrhus and `projects/_template` set `enabled: true`, so pyrrhus loses its no-thinking follow-ups. Pinned by `test_retired_patch_config_keys.py`. The `exit_code` meta key this patch added went with #143 (decision d6).
+- Sync 2026-11-28: `workspace_patch` matches through `_replace_keeping_line_endings` like `str_replace`. AIO reads now return CRLF intact (upstream #8662), so the literal `old in updated` check would have answered not-found on a CRLF file where it used to match and silently rewrite the file as LF.
 
 ## Patch #74
 
@@ -1926,6 +1952,7 @@ carry budget ledger.
 - Sync 2026-09-11: re-expressed. Upstream f8f6cde2 (#5248) trims `<new_messages>` with a budget and pins that the rescued request is not history; our inline "ACTIVE USER REQUEST ... MESSAGES BEING COMPACTED" prefix ate that budget and leaked into `<new_messages>`. Now an own `<active_user_request>` block, escaped, bounded separately, emitted ahead of `<existing_summary>`/`<new_messages>`, only when there is history to compact. Upstream tests adjusted: two `CURRENT_REQUEST not in prompts[0]` assertions in `test_summarization_summary_text.py` narrowed to the `<new_messages>` section; `active_user_request` added to `_EXEMPT_BLOCK_TAGS` in `test_input_sanitization_middleware.py`.
 - Sync 2026-09-23: `_active_user_request_text` uses `is_genuine_user_message` (upstream #5416), so a Human Input Card reply counts as the active request, matching upstream's preserved-request anchor.
 - Sync 2026-10-25: re-expressed onto upstream #6918's chunked compaction. `_active_user_request_text(state["messages"])` is passed from `compact_state`/`acompact_state` into `_summarize_with`/`_asummarize_with` (new keyword `active_user_request`). New `_bound_active_user_request` PII-redacts the request (the same `redact_text` as source and carry) and bounds it once per pass to a quarter of the step budget (`_ACTIVE_USER_REQUEST_BUDGET_DIVISOR = 4`), keeping head and tail around `[request shortened]`; whole when the budget is null; omitted with a warning when not even the marker fits (compaction then runs exactly as upstream's). `_next_summary_step` subtracts the request's tokens from `available`, and `_build_summary_input_text` counts them and renders the escaped `<active_user_request>` ahead of `<existing_summary>`/`<new_messages>`, only when there is history. Split per step: carry at most 1/2, request at most 1/4, source the rest. `release_policy_parameters` gains `active_user_request_budget_fraction: 0.25`. Tests (`test_summarization_summary_text.py`): the request in every chunk prompt with the three raw sections within budget (sync and async), a 1,000-character request with a 400 budget bounded with both ends kept while compaction still covers all history, a null budget keeps it whole, an unfittable request is omitted, the escaped block order. Upstream's `test_summarization_cost_recovery.py::test_exactly_64_chunks_can_finish_with_an_extra_fallback_attempt` sizes its 64-chunk source as `budget - carry - len("Human: current")` per call (the request rides in every call); `test_extension_system_model_calls.py` is upstream's (it stubs `_asummarize_prompt`, our lambda edit is obsolete).
+- Sync 2026-11-28: the prompt renders through upstream #7667's `_render_summary_prompt` (an unrenderable `summary_prompt` skips compaction instead of failing the turn) with the bounded active request still passed in; the policy fingerprint keeps `active_user_request_budget_fraction` next to upstream #8437's `reject_length_capped_summary` and detector names.
 
 ## Reverted patch #76
 
@@ -2084,6 +2111,7 @@ carry budget ledger.
 - Upstream status: none sent yet.
 - Sync 2026-09-11: kept (`_clear_subcategory_locked(scope_key)`, own-limit trimming, resets); the `tool_result_meta.py` half auto-merged next to upstream's new `subagent_status` block.
 - Sync 2026-11-21: THINNED: the wrapper-error half is gone with upstream #7986 (no classification by words), and the loop half with #8248.
+- Sync 2026-11-28: RETIRED. Nothing of it was left in the code after 2026-11-21; its comment and the `bash.inspection` example (a key that loads and is ignored, see #82) leave `config.example.yaml`.
 
 ## Patch #84
 
@@ -2493,6 +2521,7 @@ carry budget ledger.
 - Tests: `backend/tests/test_playbook_web_chat.py` (fresh chat as the owner with context, metadata and origin; an existing chat only when it is the owner's; owner required and known; busy retried then reported failed; channel modes accepted only when the backend names them, and they clear the thread), `backend/tests/test_scheduler_backend_class.py` (features name the channels), `tests/unit/components/workspace/scheduled-tasks/task-form-dialog.dom.test.tsx` (the channel button, fresh stays the default, no chat id sent), `tests/unit/components/workspace/scheduled-tasks/task-detail.dom.test.tsx` (the Does line names the channel).
 - Delete-when: Argus schedules run on DeerFlow's own scheduler.
 - Upstream status: not applicable.
+- Sync 2026-11-28: `launch_scheduled_thread_run` takes upstream #8598's `subagent_enabled` beside our `context`; the run context is built as `run_context` (upstream's local named `context` shadowed the parameter), launcher context first and the server-owned `non_interactive`, `user_id` and `subagent_enabled` after it.
 
 ---
 
@@ -3463,6 +3492,7 @@ pre-#40 tip was 2246 app-code (1099 in `app/channels/`). Reproduce with:
 - Intent: upstream #4512 (`d455a181`) moved `AioSandbox.grep` onto `file.grep_files` (`POST /v1/file/grep`). The pinned sandbox digest (`742062f9`, a 1.0.0.x build from 2026-01) has no such endpoint (nor `/v1/file/glob`), so every `grep` tool call returned `ApiError 404` from 2026-08-26: 505 of 505 calls, 260 threads, 17 stacks. Models fell back to `bash grep`, so it only showed as wasted calls that also counted toward loop limits. On a 404 the sandbox now remembers the endpoint is missing and runs one GNU `grep -rnHIZ` through its shell: `-P` for regexes (the image's ripgrep has no PCRE2 and rejects the lookarounds the tool accepts), `-F` for literals, `-i` unless case-sensitive, `--exclude-dir` for the exact names in `IGNORE_PATTERNS`, output capped with `head`. The file-name NUL becomes a newline (the shell output path strips control characters), so names containing `:` still parse. Both paths share one filter/cap helper, so root-boundary, ignore, glob and truncation semantics are identical. Other `ApiError`s still raise; a shell `Error:` reply raises instead of reading as "no matches". Verified live against the pinned image (colons in names, lookahead, single-file path, glob, cap, quoting).
 - Tests: `backend/tests/test_sandbox_search_tools.py` (404 fallback, remembered endpoint, literal/case/quoting, truncation, shell error, non-404 re-raise)
 - Delete-when: the pinned sandbox image serves `/v1/file/grep` (bump the digest in VERSIONS.md and drop this).
+- Sync 2026-11-28: re-expressed around upstream #8720. The API request keeps upstream's shape (the glob's basename as `include`) inside our 404 guard; the shell fallback, which the pinned sandbox always takes, gets the same `--include` pre-filter and, under `/mnt/user-data`, upstream's `USER_DATA_IGNORE_PATTERNS`, so uploaded logs and caches stay searchable. Both paths share `_collect_grep_matches`, which now normalizes paths and passes `glob` and `user_data` to `should_ignore_path_under_root`. Upstream's new `/v1/file/glob` call 404s on the pinned image too and falls back to its own `_glob_via_find`; acropolis `sandbox-api-check` lists it as a known fallback.
 
 ## Patch #100
 

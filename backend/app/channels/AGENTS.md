@@ -40,6 +40,13 @@ make test-blocking-io                                  # channels share the Gate
 - **Goal handoff pins the saved thread.** Recheck the conversation binding after
   confirmation delivery and run preparation. Use run-admission evidence when
   reporting a rejected start or a response lost after submission.
+- **Slack does not retry HTTP 429 inside the SDK.** `WebClient` is created with
+  the default handlers, which cover connection failures only. `SlackChannel.send`
+  waits for `Retry-After` in the shared channel retry up to 15 seconds; a longer
+  hint abandons the reply with a log line so it cannot hold a shared inbound
+  worker. A missing or shorter hint keeps
+  the 1s/2s backoff. File uploads, connection replies, and the Working-on-it acknowledgment
+  (`_send_running_reply`) still try once.
 - **Telegram photo fallback is narrow.** Only a photo `BadRequest` with
   `PHOTO_INVALID_DIMENSIONS` or `IMAGE_PROCESS_FAILED` is retried, once, as a
   document with the same bytes, file name and reply target. Other errors and
@@ -47,14 +54,7 @@ make test-blocking-io                                  # channels share the Gate
 - **Docker networking.** Channels run inside the `gateway` container, so
   `localhost` in `channels.langgraph_url` / `channels.gateway_url` points at that
   container. Compose deployments use `http://gateway:8001`.
-- **Fork Telegram sends are fenced (patch #40).** `send` and the running reply
-  go through `_telegram_sender.py` (stage emojis, HTML chunks). Upstream's
-  edit-in-place and Rich helpers in `telegram.py` are unreachable, so port
-  upstream send-path fixes into the sender; `send_file` and inbound handling
-  are upstream's and live.
-- **Fork channel defaults.** `channels.binding_store: json` is the default
-  (`auto` follows upstream); Telegram runs in webhook mode (`webhook:`) on the
-  gateway loop and transcribes voice notes through the soft-imported overlay STT.
+- Fork #40: Telegram sends run in `_telegram_sender.py`; port send fixes there.
 
 ## Identity and security
 
@@ -88,8 +88,10 @@ make test-blocking-io                                  # channels share the Gate
 
 - The webhook route skips session auth and CSRF because the HMAC signature
   authenticates it. It is mounted only when `GITHUB_WEBHOOK_SECRET` is set.
-- Outbound is log-only by design. Each agent posts its own comment with `gh` from
-  its sandbox, so the manager starts the run and does not wait for it.
+- Triggers fail closed on author authorization (`allow_authors` or
+  sender-matched `allow_author_associations`).
+- Outbound is log-only. The agent uses configured GitHub tools for outbound
+  actions. Webhook admission stays independent of tool authentication.
 - Follow-up buffering while a thread is busy is process-local. Read
   [the contract](../../docs/GITHUB_AGENTS.md#follow-up-buffering-while-busy-4121)
   before you change it.

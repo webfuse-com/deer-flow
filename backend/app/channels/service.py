@@ -249,6 +249,7 @@ class ChannelService:
         require_bound_identity: bool = False,
         app_config: AppConfig | None = None,
         get_stream_bridge: Callable[[], StreamBridge | None] | None = None,
+        dispatch_coordination_task: Callable[..., Awaitable[dict]] | None = None,
         store: ChannelStore | None = None,
         leadership: ChannelLeadership | None = None,
         runtime_config_store: RuntimeConfigStore | None = None,
@@ -284,6 +285,7 @@ class ChannelService:
         else:
             self.store = resolve_channel_store(app_config)
         self._connection_repo = connection_repo
+        self._connections_configured = bool(getattr(getattr(app_config, "channel_connections", None), "enabled", False))
         # Language of DeerFlow's own replies (/connect, /goal): the owner's web UI
         # language, read from the connection repository's database, else
         # channel_connections.notification_locale (captured here; restart-scoped).
@@ -318,6 +320,7 @@ class ChannelService:
             get_stream_bridge=get_stream_bridge,
             coalesce_window=float(coalesce_window) if isinstance(coalesce_window, (int, float)) else None,
             channel_owner_emails=channel_owner_emails,
+            dispatch_coordination_task=dispatch_coordination_task,
             reply_locale=self._reply_locale,
         )
         self._channels: dict[str, Any] = {}  # name -> Channel instance
@@ -351,6 +354,7 @@ class ChannelService:
         app_config: AppConfig | None = None,
         *,
         get_stream_bridge: Callable[[], StreamBridge | None] | None = None,
+        dispatch_coordination_task: Callable[..., Awaitable[dict]] | None = None,
         credentials_cipher: Any | None = None,
         multi_process: bool = False,
         lease_owner_id: str | None = None,
@@ -388,6 +392,7 @@ class ChannelService:
             require_bound_identity=require_bound_identity,
             app_config=app_config,
             get_stream_bridge=get_stream_bridge,
+            dispatch_coordination_task=dispatch_coordination_task,
             leadership=leadership,
             runtime_config_store=runtime_config_store,
             credentials_cipher=credentials_cipher,
@@ -795,6 +800,10 @@ class ChannelService:
         """Instantiate and start a single channel."""
         if self._stopping or not self._running:
             logger.warning("Refusing to start %s while ChannelService is stopped or stopping", name)
+            return False
+
+        if name == "feishu" and self._connections_configured and self._connection_repo is None:
+            logger.error("Feishu requires an available connection repository when channel connections are enabled")
             return False
 
         import_path = _CHANNEL_REGISTRY.get(name)
@@ -1238,6 +1247,7 @@ async def start_channel_service(
     app_config: AppConfig | None = None,
     *,
     get_stream_bridge: Callable[[], StreamBridge | None] | None = None,
+    dispatch_coordination_task: Callable[..., Awaitable[dict]] | None = None,
     credentials_cipher: Any | None = None,
     multi_process: bool = False,
     lease_owner_id: str | None = None,
@@ -1263,6 +1273,7 @@ async def start_channel_service(
         ChannelService.from_app_config,
         app_config,
         get_stream_bridge=get_stream_bridge,
+        dispatch_coordination_task=dispatch_coordination_task,
         credentials_cipher=credentials_cipher,
         multi_process=multi_process,
         lease_owner_id=lease_owner_id,

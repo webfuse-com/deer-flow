@@ -35,6 +35,8 @@ make test-blocking-io
 - **`mcp_tasks` is read at startup.** The installed submitter decides whether task
   tools are exposed. Editing the config on disk does not change a running process.
 
+- **Disconnect cleanup is bounded.** A transport failure waits at most `SESSION_CLOSE_TIMEOUT` for session cleanup; if the owner is still unwinding, its teardown remains strongly tracked in `_teardown_tasks` while the caller receives the original transport error.
+
 ## Credentials
 
 - **Header names are case-insensitive.** Every credential interceptor writes
@@ -52,7 +54,9 @@ make test-blocking-io
 - **Background task calls have no request.** `McpTaskToolCaller` binds the task
   owner's identity for the call and restores the previous value afterwards.
 - **Agent grants are live policy, not run snapshots.** Every protected call
-  rechecks the operator binding even with a cached token. Durable references
+  rechecks the operator binding, and for `grants: runtime` the stored grant
+  (in force only while its recorded agent, server, destination and OAuth client match),
+  even with a cached token. An unreadable grant store denies the call. Durable references
   retain the admitted definition revision; definition rollouts preserve them,
   while grant revocation denies them. See the per-agent section in the MCP guide.
 
@@ -100,9 +104,4 @@ make test-blocking-io
   discovery and on every call. Look the role up each time; do not capture it.
 - **Public-network personal clients** keep `trust_env=False`, DNS screening and
   per-origin connection pools. TLS trust loads in a worker thread.
-
-## Operation errors
-
-- `_prepare_server_client` prepends `preserve_operation_errors` to each server's own
-  interceptor chain; wrapping records that server's `operation/1` tools in the same
-  set (see `tools/AGENTS.md`).
+- Fork: `preserve_operation_errors` heads each server's interceptor chain.

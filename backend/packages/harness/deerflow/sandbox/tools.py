@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import ntpath
@@ -18,6 +19,7 @@ from pathlib import Path
 from langchain.tools import tool
 from langchain_core.messages import ToolMessage
 
+from deerflow.agents.middlewares.tool_result_meta import TOOL_META_KEY
 from deerflow.agents.thread_state import ThreadDataState
 from deerflow.authz.sandbox_authz import (
     authorize_sandbox_execution,
@@ -31,9 +33,9 @@ from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH, TOOL_RESULTS_DIRNA
 from deerflow.runtime.secret_context import read_active_secrets
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.sandbox.command_scope import command_owner
-from deerflow.sandbox.env_policy import is_blocked_env_name
 from deerflow.sandbox.exceptions import (
     SandboxAuthorizationError,
+    SandboxCapacityExceededError,
     SandboxError,
     SandboxFileNotFoundError,
     SandboxNotFoundError,
@@ -63,8 +65,8 @@ from deerflow.sandbox.read_file_contract import (
 )
 from deerflow.sandbox.sandbox import CommandOutput, Sandbox
 from deerflow.sandbox.sandbox_provider import SandboxProvider, get_initialized_sandbox_provider, get_sandbox_provider
-from deerflow.sandbox.search import GrepMatch
-from deerflow.sandbox.security import LOCAL_HOST_BASH_DISABLED_MESSAGE, is_host_bash_allowed
+from deerflow.sandbox.search import GrepMatch, normalize_sandbox_path
+from deerflow.sandbox.security import LOCAL_HOST_BASH_DISABLED_MESSAGE
 from deerflow.tools.types import Runtime
 from deerflow.utils.file_io import await_drained
 from deerflow.utils.host_paths import windows_incompatible_segment
@@ -240,11 +242,12 @@ def _extract_skill_name_from_skills_path(path: str) -> str | None:
     /mnt/skills/public/bootstrap/ → "bootstrap"
     Returns None if the path doesn't contain a recognizable skill name pattern.
     """
-    skills_prefix = _get_skills_container_path()
-    if not _is_skills_path(path):
+    skills_prefix = normalize_sandbox_path(_get_skills_container_path())
+    normalized = normalize_sandbox_path(path)
+    if not (normalized == skills_prefix or normalized.startswith(f"{skills_prefix}/")):
         return None
     # Strip the skills prefix, e.g. "/mnt/skills/"
-    relative = path[len(skills_prefix) :].lstrip("/")
+    relative = normalized[len(skills_prefix) :].lstrip("/")
     if not relative:
         return None
     # Expected patterns: "public/<name>/...", "custom/<name>/...",
@@ -287,8 +290,8 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
         from deerflow.skills.storage import get_or_new_user_skill_storage
 
         # Determine the category from the path
-        skills_prefix = _get_skills_container_path()
-        relative = path[len(skills_prefix) :].lstrip("/")
+        skills_prefix = normalize_sandbox_path(_get_skills_container_path())
+        relative = normalize_sandbox_path(path)[len(skills_prefix) :].lstrip("/")
         if relative.startswith("public/"):
             category = "public"
         elif relative.startswith("custom/"):
@@ -326,7 +329,7 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
         return True
 
 
-def _drop_disabled_skill_paths(paths: list[str], *, user_id: str | None = None) -> list[str]:
+def _drop_disabled_skill_paths(paths: list[str], *, user_id: str | None = None, sandbox: Sandbox | None = None) -> list[str]:
     """Filter out paths that belong to a disabled skill.
 
     ``_is_disabled_skill_path`` gates the *requested* path, which is enough for
@@ -335,25 +338,43 @@ def _drop_disabled_skill_paths(paths: list[str], *, user_id: str | None = None) 
     above a disabled skill still surfaces its files.  This applies the same check
     to the results.
 
+    Providers that back ``VIRTUAL_PATH_PREFIX`` with another directory report
+    those results virtually, while the enabled-state check compares against
+    ``skills.container_path`` in the provider-internal spelling. Passing the
+    sandbox lets each path be mapped back before extraction, so a result
+    cannot dodge the check by using the virtual alias.
+
     The enabled-state lookup re-reads ``extensions_config.json`` (or the per-user
     skill state) on every call, so the verdict is memoized per skill — a 100-match
     grep must not become 100 config reads.
     """
-    skills_prefix = _get_skills_container_path()
+    skills_prefix = normalize_sandbox_path(_get_skills_container_path())
     verdicts: dict[tuple[str, str], bool] = {}
     kept: list[str] = []
     for path in paths:
-        skill_name = _extract_skill_name_from_skills_path(path)
+        skill_path = path
+        skill_name = _extract_skill_name_from_skills_path(skill_path)
+        if skill_name is None and sandbox is not None:
+            try:
+                skill_path = sandbox.resolve_access_control_path(path)
+            except (OSError, ValueError):
+                skill_path = path
+            skill_name = _extract_skill_name_from_skills_path(skill_path)
         if skill_name is None:
             kept.append(path)
             continue
         # Leading segment (the category, or the skill itself in the direct
         # layout) plus the name identifies the skill the same way
         # _is_disabled_skill_path does, so paths sharing a key share a verdict.
-        category = path[len(skills_prefix) :].lstrip("/").split("/")[0]
+        # Both sides of the slice must be normalized, as the enabled-state check
+        # normalizes: an un-normalized spelling (``/mnt//skills/...``) would
+        # otherwise yield a bogus category and share a cached verdict between a
+        # public and a custom skill with the same name.
+        relative = normalize_sandbox_path(skill_path)[len(skills_prefix) :].lstrip("/")
+        category = relative.split("/")[0]
         key = (category, skill_name)
         if key not in verdicts:
-            verdicts[key] = _is_disabled_skill_path(path, user_id=user_id)
+            verdicts[key] = _is_disabled_skill_path(skill_path, user_id=user_id)
         if not verdicts[key]:
             kept.append(path)
     return kept
@@ -1888,9 +1909,8 @@ def _is_expression_division_after_closer(command: str, start: int, spans: list[t
 def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState | None) -> None:
     """Validate absolute paths in local-sandbox bash commands.
 
-    This validation is only a best-effort guard for the explicit
-    ``sandbox.allow_host_bash: true`` opt-in. It is not a secure sandbox
-    boundary and must not be treated as isolation from the host filesystem.
+    This compatibility helper checks literal paths in trusted local commands.
+    Agent shell commands are handled by a separate sandbox provider.
 
     In local mode, commands must use virtual paths under /mnt/user-data for
     user data access. Skills paths under /mnt/skills, ACP workspace paths
@@ -2051,22 +2071,6 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
         result = pattern.sub(replace_user_data_match, result)
 
     return result
-
-
-def _apply_cwd_prefix(command: str, thread_data: ThreadDataState | None) -> str:
-    """Prepend 'cd <workspace> &&' so relative paths are anchored to the thread workspace.
-
-    Args:
-        command: The bash command to execute.
-        thread_data: The thread data containing the workspace path.
-
-    Returns:
-        The command prefixed with 'cd <workspace> &&' if workspace_path is available,
-        otherwise the original command unchanged.
-    """
-    if thread_data and (workspace := thread_data.get("workspace_path")):
-        return f"cd {shlex.quote(workspace)} && {command}"
-    return command
 
 
 def get_thread_data(runtime: Runtime | None) -> ThreadDataState | None:
@@ -2422,6 +2426,36 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
     return sandbox
 
 
+def _sandbox_capacity_result(runtime: Runtime, error: SandboxCapacityExceededError, tool_name: str | None) -> str | ToolMessage:
+    reason = {
+        "capacity": "The sandbox pool is busy",
+        "capacity_backend": "The sandbox capacity service is unavailable",
+        "capacity_initializing": "The sandbox capacity service is initializing",
+        "shutdown": "The sandbox provider is shutting down",
+    }.get(error.reason, "Sandbox capacity is temporarily unavailable")
+    retry_after = error.retry_after_seconds
+    content = f"Error: {reason}. Retry in about {retry_after:g} seconds. If the sandbox is still unavailable, tell the user to try again later."
+    call_id = getattr(runtime, "tool_call_id", None)
+    if not isinstance(call_id, str) or not call_id:
+        return content
+    return ToolMessage(
+        content=content,
+        name=tool_name,
+        tool_call_id=call_id,
+        status="error",
+        additional_kwargs={
+            TOOL_META_KEY: {
+                "status": "error",
+                "error_type": "capacity",
+                "recoverable_by_model": True,
+                "recommended_next_action": "retry_later",
+                "retry_after_seconds": retry_after,
+                "source": "tool_return",
+            }
+        },
+    )
+
+
 async def _run_sync_tool_after_async_sandbox_init(
     func: Callable[..., str | ToolMessage] | None,
     runtime: Runtime,
@@ -2442,11 +2476,16 @@ async def _run_sync_tool_after_async_sandbox_init(
             if func is bash_tool.func and owner and getattr(sandbox, "supports_command_cancellation", False):
                 signal_cancel = partial(sandbox.request_command_cancel, owner)
             return await run_sync_lifecycle_operation(func, runtime, *args, _on_cancel=signal_cancel)
+    except SandboxCapacityExceededError as e:
+        # Built-in tool callbacks are named <tool name>_tool.
+        tool_name = getattr(func, "__name__", "").removesuffix("_tool") or None
+        return _sandbox_capacity_result(runtime, e, tool_name)
     except SandboxError as e:
         text = f"Error: {e}"
         return _error_result(text, e) if _error_result else text
     except Exception as e:
-        text = f"Error: Unexpected error initializing sandbox: {_sanitize_error(e, runtime)}"
+        detail = await run_sync_lifecycle_operation(_sanitize_error, e, runtime)
+        text = f"Error: Unexpected error initializing sandbox: {detail}"
         return _error_result(text, e) if _error_result else text
 
 
@@ -2457,9 +2496,12 @@ def _execute_bash_command(
     runtime: Runtime,
     env: dict[str, str] | None,
     timeout: float | None = None,
+    cwd: str | None = None,
 ) -> str:
     """Route subagent bash calls through their isolated shell-session scope."""
     with command_owner(sandbox, sandbox_lease_owner(runtime.context)):
+        if cwd is not None and isinstance(sandbox, LocalSandbox):
+            return sandbox.execute_command(command, env=env, timeout=timeout, cwd=cwd)
         scope_id = sandbox_command_scope(runtime.context)
         scoped_execute = getattr(sandbox, "execute_command_in_scope", None)
         if scope_id is not None and callable(scoped_execute):
@@ -2780,10 +2822,6 @@ USER_ID_ENV = "DEERFLOW_USER_ID"
 _USER_ID_MAX_LEN = 256
 
 
-def _is_windows() -> bool:
-    return os.name == "nt"
-
-
 def _channel_identity_prefix(runtime: Runtime) -> str | None:
     """Build the command prefix that sets or clears the channel-user-id env var.
 
@@ -2854,8 +2892,7 @@ def _user_identity_prefix(runtime: Runtime) -> str:
     is a convenience for skill scripts — exactly like
     ``DEERFLOW_CHANNEL_USER_ID`` — not a credential and not proof of who is
     acting. Any bash command can overwrite its own environment, and anything the
-    command sources or launches (a dependency, a sourced rc file on the
-    host-bash path) can silently re-export a different id before a skill's
+    command sources or launches (such as a dependency or shell startup file) can silently re-export a different id before a skill's
     scoping logic reads it; only the outer prefix on the *next* ``bash_tool``
     call re-asserts the true value. Skills that need user-scoped *authorization*
     must resolve the identity server-side via ``resolve_runtime_user_id`` rather
@@ -2865,51 +2902,6 @@ def _user_identity_prefix(runtime: Runtime) -> str:
     if user_id is not None:
         return f"export {USER_ID_ENV}={shlex.quote(user_id)}; "
     return f"unset {USER_ID_ENV}; "
-
-
-def _github_env_from_runtime(runtime: Runtime) -> dict[str, str] | None:
-    """Build a per-call env overlay carrying a GitHub App installation token.
-
-    The GitHub channel mints a short-lived installation token in the
-    ``ChannelManager`` (app layer) and threads it through ``run_context``
-    so it lands in ``runtime.context["github_token"]``. We expose it to
-    the agent's bash as both ``GH_TOKEN`` (what the ``gh`` CLI reads) and
-    ``GITHUB_TOKEN`` (the conventional name). Returning ``None`` when no
-    token is present keeps non-GitHub runs identical to before.
-
-    The value at ``runtime.context["github_token"]`` may be either:
-
-    * a ``str`` — the captured token, the simple shape used by tests and
-      by older code paths that don't need refresh; or
-    * a zero-arg sync callable returning ``str`` — a provider that re-mints
-      transparently when the underlying installation token's 1h TTL is
-      nearing expiry. The provider's cache logic lives app-side (see
-      ``app.gateway.github.app_auth.mint_installation_token`` for the
-      cache + leeway semantics); the harness just calls it.
-
-    The callable path is what lets long autonomous runs survive past the
-    60-minute installation-token life: every bash invocation re-asks the
-    provider, which returns the cached token until ~55 min, then mints a
-    fresh one. Without this, a coder agent doing a multi-hour refactor
-    would do most of the work and then 401 on the final ``git push``.
-
-    The token still crosses the harness/app boundary as opaque data — the
-    harness never imports the app-layer minting code, preserving the
-    dependency firewall enforced by ``tests/test_harness_boundary.py``.
-    """
-    context = runtime.context if runtime.context is not None else None
-    value = context.get("github_token") if context else None
-    if callable(value):
-        try:
-            token = value()
-        except Exception:
-            logger.warning("github_token provider raised; skipping env overlay", exc_info=True)
-            return None
-    else:
-        token = value
-    if not isinstance(token, str) or not token:
-        return None
-    return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
 
 
 _LARK_CLI_COMMAND_RE = re.compile(r"(?<![A-Za-z0-9_.-])lark-cli(?![A-Za-z0-9_.-])")
@@ -2941,18 +2933,12 @@ def _lark_cli_env_from_runtime(runtime: Runtime, command: str, *, sandbox_paths:
 
 @tool("bash", parse_docstring=True)
 def bash_tool(runtime: Runtime, command: str, description: str = "") -> str | ToolMessage:
-    """Execute a bash command in the configured execution environment.
+    """Execute a bash command in the configured isolated sandbox.
 
 
     - Use `python` to run Python code.
     - Prefer a thread-local virtual environment in `/mnt/user-data/workspace/.venv`.
     - Use `python -m pip` (inside the virtual environment) to install Python packages.
-    - When running against the local host via host bash, inspect the current environment instead of
-      guessing. For OS detection, start with `uname -s`; on Darwin follow with `sw_vers`. On Linux,
-      start with `uname -a` and read host system files such as `/etc/os-release` only when the active
-      sandbox policy permits it.
-    - If local host bash rejects a path, do not repeat the rejected command. For environment questions,
-      retry with command-only probes; otherwise use allowed virtual paths or explain the restriction.
     - To start a long-lived process such as a web server, ALWAYS run it in the background with its
       output redirected, e.g. `your-command > /mnt/user-data/workspace/server.log 2>&1 &`, then check
       the log file or poll the port. A long-lived process run in the foreground blocks the turn until
@@ -2968,69 +2954,16 @@ def bash_tool(runtime: Runtime, command: str, description: str = "") -> str | To
     redaction_env = None
     try:
         sandbox = ensure_sandbox_initialized(runtime)
-        # Request-scoped secrets resolved for the active skill (#3861), plus a
-        # short-lived GitHub App installation token threaded through by the
-        # GitHub channel. Both are injected as per-call env into the subprocess,
-        # never placed in the command string.
+        if isinstance(sandbox, LocalSandbox) or is_local_sandbox(runtime):
+            return f"Error: {LOCAL_HOST_BASH_DISABLED_MESSAGE}"
+        # Only the active skill's explicitly resolved secrets belong here.
         injected_env = read_active_secrets(getattr(runtime, "context", None)) or None
         identity_prefix = _channel_identity_prefix(runtime)
         user_prefix = _user_identity_prefix(runtime)
-        github_env = _github_env_from_runtime(runtime)
-        lark_cli_env = _lark_cli_env_from_runtime(runtime, command, sandbox_paths=not is_local_sandbox(runtime), sandbox=sandbox)
-        if github_env:
-            injected_env = {**(injected_env or {}), **github_env}
+        lark_cli_env = _lark_cli_env_from_runtime(runtime, command, sandbox_paths=True, sandbox=sandbox)
         if lark_cli_env:
             injected_env = {**(injected_env or {}), **lark_cli_env}
         redaction_env = injected_env
-        if is_local_sandbox(runtime):
-            # Match the credential-name policy used for inherited host env.
-            # Keep benign operator settings readable and redact effective
-            # credentials before execution, including any exception output.
-            redaction_env = {name: value for name, value in (getattr(sandbox, "environment", None) or {}).items() if is_blocked_env_name(name)}
-            redaction_env.update(injected_env or {})
-            if not is_host_bash_allowed():
-                return f"Error: {LOCAL_HOST_BASH_DISABLED_MESSAGE}"
-            ensure_thread_directories_exist(runtime)
-            thread_data = get_thread_data(runtime)
-            validate_local_bash_command_paths(command, thread_data)
-            command = replace_virtual_paths_in_command(command, thread_data)
-            command = _apply_cwd_prefix(command, thread_data)
-            # POSIX-only: the Windows local sandbox may execute via
-            # PowerShell/cmd.exe where `export` is not valid syntax, so the id
-            # is published through the subprocess environment instead —
-            # LocalSandbox layers `env` into the per-process environment, and
-            # unlike AioSandbox it has no persistent shell session that could
-            # carry a stale value forward. Deliberately kept out of
-            # `injected_env`, which doubles as the secret-redaction set: an
-            # identifier is not a secret and must stay readable in output.
-            local_env = injected_env
-            if not _is_windows():
-                command = user_prefix + (identity_prefix or "") + command
-            else:
-                windows_user_id = _resolved_user_id(runtime)
-                if windows_user_id is not None:
-                    local_env = {**(injected_env or {}), USER_ID_ENV: windows_user_id}
-            try:
-                from deerflow.config.app_config import get_app_config
-
-                sandbox_cfg = get_app_config().sandbox
-                max_chars = sandbox_cfg.bash_output_max_chars if sandbox_cfg else 20000
-                command_timeout = sandbox_cfg.bash_command_timeout if sandbox_cfg else None
-            except Exception:
-                max_chars = 20000
-                command_timeout = None
-            output = _execute_bash_command(
-                sandbox,
-                command,
-                runtime=runtime,
-                env=local_env,
-                timeout=command_timeout,
-            )
-            content = _truncate_bash_output(
-                mask_secret_values(mask_local_paths_in_output(output, thread_data), redaction_env),
-                max_chars,
-            )
-            return _bash_command_result(runtime, output, content)
         ensure_thread_directories_exist(runtime)
         command = f"cd {VIRTUAL_PATH_PREFIX}/workspace; {command}"
         command = user_prefix + (identity_prefix or "") + command
@@ -3052,6 +2985,8 @@ def bash_tool(runtime: Runtime, command: str, description: str = "") -> str | To
         )
         content = _truncate_bash_output(mask_secret_values(output, injected_env), max_chars)
         return _bash_command_result(runtime, output, content)
+    except SandboxCapacityExceededError as e:
+        return _sandbox_capacity_result(runtime, e, "bash")
     except SandboxError as e:
         return mask_secret_values(f"Error: {e}", redaction_env)
     except PermissionError as e:
@@ -3094,7 +3029,7 @@ bash_tool.coroutine = _bash_tool_async
 
 
 @tool("ls", parse_docstring=True)
-def ls_tool(runtime: Runtime, path: str, description: str = "") -> str:
+def ls_tool(runtime: Runtime, path: str, description: str = "") -> str | ToolMessage:
     """List the contents of a directory up to 2 levels deep in tree format.
 
     Args:
@@ -3135,7 +3070,7 @@ def ls_tool(runtime: Runtime, path: str, description: str = "") -> str:
             output = mask_local_paths_in_output(output, thread_data)
         # The gate above only covers `path` itself; the listing descends into
         # children, so a root above a disabled skill still exposes its files.
-        entries = _drop_disabled_skill_paths(output.splitlines(), user_id=user_id)
+        entries = _drop_disabled_skill_paths(output.splitlines(), user_id=user_id, sandbox=sandbox)
         if not entries:
             return "(empty)"
         output = "\n".join(entries)
@@ -3147,6 +3082,8 @@ def ls_tool(runtime: Runtime, path: str, description: str = "") -> str:
         except Exception:
             max_chars = 20000
         return _truncate_ls_output(output, max_chars)
+    except SandboxCapacityExceededError as e:
+        return _sandbox_capacity_result(runtime, e, "ls")
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -3158,7 +3095,7 @@ def ls_tool(runtime: Runtime, path: str, description: str = "") -> str:
         return f"Error: Unexpected error listing directory: {_sanitize_error(e, runtime)}"
 
 
-async def _ls_tool_async(runtime: Runtime, path: str, description: str = "") -> str:
+async def _ls_tool_async(runtime: Runtime, path: str, description: str = "") -> str | ToolMessage:
     return await _run_sync_tool_after_async_sandbox_init(ls_tool.func, runtime, path, description)
 
 
@@ -3173,7 +3110,7 @@ def glob_tool(
     description: str = "",
     include_dirs: bool = False,
     max_results: int = _DEFAULT_GLOB_MAX_RESULTS,
-) -> str:
+) -> str | ToolMessage:
     """Find files or directories that match a glob pattern under a root directory.
 
     Args:
@@ -3209,8 +3146,10 @@ def glob_tool(
             matches = [mask_local_paths_in_output(match, thread_data) for match in matches]
         # The gate above only covers `path` itself; the search descends into it,
         # so a root above a disabled skill still surfaces its files.
-        matches = _drop_disabled_skill_paths(matches, user_id=user_id)
+        matches = _drop_disabled_skill_paths(matches, user_id=user_id, sandbox=sandbox)
         return _format_glob_results(requested_path, matches, truncated)
+    except SandboxCapacityExceededError as e:
+        return _sandbox_capacity_result(runtime, e, "glob")
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -3231,7 +3170,7 @@ async def _glob_tool_async(
     description: str = "",
     include_dirs: bool = False,
     max_results: int = _DEFAULT_GLOB_MAX_RESULTS,
-) -> str:
+) -> str | ToolMessage:
     return await _run_sync_tool_after_async_sandbox_init(
         glob_tool.func,
         runtime,
@@ -3256,7 +3195,7 @@ def grep_tool(
     literal: bool = False,
     case_sensitive: bool = False,
     max_results: int = _DEFAULT_GREP_MAX_RESULTS,
-) -> str:
+) -> str | ToolMessage:
     """Search for matching lines inside a text file or files under a root directory.
 
     Args:
@@ -3309,9 +3248,11 @@ def grep_tool(
             ]
         # The gate above only covers `path` itself; the search descends into it,
         # so a root above a disabled skill still surfaces its file contents.
-        allowed = set(_drop_disabled_skill_paths([match.path for match in matches], user_id=user_id))
+        allowed = set(_drop_disabled_skill_paths([match.path for match in matches], user_id=user_id, sandbox=sandbox))
         matches = [match for match in matches if match.path in allowed]
         return _format_grep_results(requested_path, matches, truncated)
+    except SandboxCapacityExceededError as e:
+        return _sandbox_capacity_result(runtime, e, "grep")
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -3336,7 +3277,7 @@ async def _grep_tool_async(
     literal: bool = False,
     case_sensitive: bool = False,
     max_results: int = _DEFAULT_GREP_MAX_RESULTS,
-) -> str:
+) -> str | ToolMessage:
     return await _run_sync_tool_after_async_sandbox_init(
         grep_tool.func,
         runtime,
@@ -3613,6 +3554,8 @@ def read_file_tool(
                 if max_chars == 0 or len(numbered) <= max_chars:
                     output = numbered
         return _read_file_result(runtime, output, status="partial_success" if max_chars != 0 and len(content) > max_chars else "success")
+    except SandboxCapacityExceededError as e:
+        return _sandbox_capacity_result(runtime, e, "read_file")
     except SandboxError as e:
         return _read_file_failure(runtime, f"Error: {e}", e)
     except FileNotFoundError as e:
@@ -3746,7 +3689,7 @@ def write_file_tool(
     content: str,
     description: str = "",
     append: bool = False,
-) -> str:
+) -> str | ToolMessage:
     """Write text content to a file. By default this overwrites the target file; set append=True to add content to the end without replacing existing content.
 
     READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
@@ -3818,6 +3761,8 @@ def write_file_tool(
         with get_file_operation_lock(sandbox, path):
             sandbox.write_file(path, content, append)
         return "OK"
+    except SandboxCapacityExceededError as e:
+        return _sandbox_capacity_result(runtime, e, "write_file")
     except SandboxError as e:
         return _format_write_file_error(requested_path, e, runtime)
     except PermissionError:
@@ -3842,7 +3787,7 @@ async def _write_file_tool_async(
     content: str,
     description: str = "",
     append: bool = False,
-) -> str:
+) -> str | ToolMessage:
     placeholder_error = _reject_elision_placeholder_content(content)
     if placeholder_error is not None:
         return placeholder_error
@@ -3852,25 +3797,172 @@ async def _write_file_tool_async(
 write_file_tool.coroutine = _write_file_tool_async
 
 
-def _to_crlf(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\n", "\r\n")
+def _replace_keeping_line_endings(content: str, old_str: str, new_str: str, replace_all: bool) -> str | None:
+    """Return ``content`` with ``old_str`` replaced, or None when it is absent.
 
+    A file without CRLF is matched and written literally. In a file with CRLF,
+    a CRLF is one line break, and a match never starts or ends between its
+    ``\\r`` and ``\\n``. An ``old_str`` without ``\\r\\n``, as a ranged read
+    (lines joined with ``\\n``) or the model writes it, matches with each
+    ``\\n`` read as an LF or a CRLF and every other character, ``\\r``
+    included, matching itself. An ``old_str`` with ``\\r\\n``, as copied from
+    a full read, matches as written or with every line break spelled CRLF; a
+    leading ``\\n`` may also be the LF of a CRLF.
+    Matches are taken in file order without overlapping, as ``str.replace``
+    takes them: the first one, or every one with ``replace_all``. The n-th line
+    break of ``new_str`` is written in the ending of the n-th line break inside
+    the match, and later ones in the ending of the last; a match without a line
+    break lends the ending of the line it is on (on a last line without one,
+    the line before). Everything outside the matches keeps its bytes.
 
-def _match_line_endings(content: str, old_str: str, new_str: str) -> tuple[str, str]:
-    """Spell ``old_str`` and ``new_str`` with the CRLF line endings ``content`` uses.
-
-    Full reads return line endings as stored, but the model tends to write
-    ``\\n`` (and ranged reads join lines with ``\\n``), so a multi-line
-    ``old_str`` would never match a CRLF file and inserted lines would be LF.
-    A CRLF-only file takes both strings in CRLF; a mixed file does so only
-    when the LF spelling is absent and the CRLF one is present.
+    Every search is a fixed number of forward scans of ``content``, so the
+    time is linear in the file and the snippet whatever they contain. That is why a snippet that
+    itself mixes ``\\r\\n`` and ``\\n`` does not also match lines that mix their
+    endings in another way: that search is a subset match, which no forward
+    scan does, and checking each overlapping candidate in turn is quadratic.
     """
-    if "\r\n" not in content:
-        return old_str, new_str
-    crlf_old = _to_crlf(old_str)
-    if content.count("\r\n") == content.count("\n") or (old_str not in content and crlf_old in content):
-        return crlf_old, _to_crlf(new_str)
-    return old_str, new_str
+    if not old_str:
+        # str_replace treats an empty old_str as a no-op edit.
+        return content
+    count = -1 if replace_all else 1
+    if "\r\n" not in content or not ("\r" in old_str or "\n" in old_str or "\n" in new_str):
+        # Without CRLF in the file, or without a line break or CR on either
+        # side, the rule above matches and writes exactly as str.replace.
+        return content.replace(old_str, new_str, count) if old_str in content else None
+    flat_old = old_str.replace("\r\n", "\n")
+    lf_new = new_str.replace("\r\n", "\n")
+    if content.count("\r\n") == content.count("\n") and not flat_old.endswith("\r"):
+        # Every line break is a CRLF, so the CRLF spelling of old_str finds the
+        # same matches in place. Only a trailing bare "\r" could differ, by
+        # matching the "\r" of a CRLF, and that case takes the general path.
+        crlf_old = flat_old.replace("\n", "\r\n")
+        return content.replace(crlf_old, lf_new.replace("\n", "\r\n"), count) if crlf_old in content else None
+    if "\r\n" not in old_str:
+        spans = _flat_spans(content, flat_old)
+    else:
+        spans = _spelled_spans(content, old_str, flat_old.replace("\n", "\r\n"))
+    return _splice_keeping_line_endings(content, spans, lf_new, count)
+
+
+def _flat_spans(content: str, flat_old: str) -> Iterator[tuple[int, int]]:
+    """Yield, in file order and without overlap, the spans of ``content`` that read as ``flat_old`` with CRLF read as LF."""
+    flat = content.replace("\r\n", "\n")
+    # content[:pos] reads as flat[:flat_pos]. Matches arrive in file order, so
+    # each step counts only the CRLFs since the previous one: linear time and
+    # no per-line bookkeeping.
+    pos = flat_pos = 0
+    index = flat.find(flat_old)
+    while index >= 0:
+        bounds = []
+        for target in (index, index + len(flat_old)):
+            while True:
+                end = pos + target - flat_pos
+                crlfs = content.count("\r\n", pos, end)
+                if end > pos and content[end - 1] == "\r" and content.startswith("\n", end):
+                    # A CRLF is one flat character: never stop between its \r and \n.
+                    crlfs += 1
+                    end += 1
+                flat_pos += end - pos - crlfs
+                pos = end
+                if not crlfs:
+                    break
+            bounds.append(pos)
+        yield bounds[0], bounds[1]
+        index = flat.find(flat_old, index + len(flat_old))
+
+
+def _spelled_spans(content: str, *spellings: str) -> Iterator[tuple[int, int]]:
+    """Yield, in file order and without overlap, the spans of ``content`` spelled as one of ``spellings``."""
+    finders = [_crlf_safe_finder(content, spelling) for spelling in dict.fromkeys(spellings)]
+    found = [find(0) for find in finders]
+    while spans := [span for span in found if span is not None]:
+        start, stop = min(spans)
+        yield start, stop
+        # Two spellings that match at the same offset match the same text:
+        # elsewhere they differ where one has "\n" and the other "\r\n". A
+        # finder searches again only when its next match overlaps the one
+        # just taken, from where that ends.
+        found = [span if span is None or span[0] >= stop else find(stop) for span, find in zip(found, finders)]
+
+
+def _crlf_safe_finder(content: str, spelling: str) -> Callable[[int], tuple[int, int] | None]:
+    """Return a function that finds ``spelling`` in ``content`` from an offset, never splitting a CRLF.
+
+    Inside a match, the spelling's own characters already tell a CRLF from a
+    bare ``\\r`` or LF; only its first and last character can meet half a
+    CRLF of the file. A leading ``\\n`` may be the LF of a CRLF, and the match
+    then starts at that CRLF's ``\\r``. A trailing ``\\r`` must not be the CR
+    of a CRLF.
+    """
+    if spelling.endswith("\r") and spelling + "\n" in content:
+        # Skipping a candidate that ends on the CR of a CRLF and searching
+        # again from the next offset rescans the overlap of every skipped
+        # candidate, which is quadratic. re scans a pattern whose literal
+        # prefix is the whole spelling with a KMP overlap table, and checks the
+        # lookahead once per candidate. Compiling costs time linear in the
+        # spelling, so plain str.find serves every file where no candidate
+        # can be skipped.
+        regex = re.compile(re.escape(spelling) + r"(?!\n)")
+
+        def locate(pos: int) -> int:
+            match = regex.search(content, pos)
+            return match.start() if match else -1
+
+    else:
+
+        def locate(pos: int) -> int:
+            return content.find(spelling, pos)
+
+    def find(pos: int) -> tuple[int, int] | None:
+        index = locate(pos)
+        if index < 0:
+            return None
+        start = index - 1 if spelling.startswith("\n") and index > 0 and content[index - 1] == "\r" else index
+        return start, index + len(spelling)
+
+    return find
+
+
+def _splice_keeping_line_endings(content: str, spans: Iterator[tuple[int, int]], lf_new: str, count: int) -> str | None:
+    """Replace the first ``count`` of ``spans`` (all when negative) with ``lf_new`` in their line endings."""
+    new_lines = lf_new.split("\n")
+    out = io.StringIO()
+    copied = 0
+    line_end = -1
+    line_crlf = False
+    found = False
+    for start, stop in spans:
+        found = True
+        endings: list[str] = []
+        at = start
+        while len(endings) < len(new_lines) - 1:
+            at = content.find("\n", at, stop) + 1
+            if not at:
+                break
+            endings.append("\r\n" if content[at - 2 : at] == "\r\n" else "\n")
+        if not endings and len(new_lines) > 1:
+            if start > line_end:
+                line_end = content.find("\n", start)
+                if line_end < 0:
+                    line_end = len(content)
+                    line_break = content.rfind("\n", 0, start)
+                else:
+                    line_break = line_end
+                line_crlf = line_break > 0 and content[line_break - 1] == "\r"
+            endings.append("\r\n" if line_crlf else "\n")
+        out.write(content[copied:start])
+        out.write(new_lines[0])
+        for n, line in enumerate(new_lines[1:]):
+            out.write(endings[min(n, len(endings) - 1)])
+            out.write(line)
+        copied = stop
+        count -= 1
+        if not count:
+            break
+    if not found:
+        return None
+    out.write(content[copied:])
+    return out.getvalue()
 
 
 @tool("str_replace", parse_docstring=True)
@@ -3882,7 +3974,7 @@ def str_replace_tool(
     description: str = "",
     replace_all: bool = False,
     replacements: list[dict[str, str | bool]] | None = None,
-) -> str:
+) -> str | ToolMessage:
     """Atomically replace one or more substrings in one file.
 
     Use ``old_str`` and ``new_str`` for one replacement. When an edit plan has
@@ -3940,12 +4032,14 @@ def str_replace_tool(
                     # Preserve the legacy empty-old-string no-op contract while
                     # preventing str.replace("", ...) from expanding the file.
                     continue
-                replacement_old, replacement_new = _match_line_endings(edited_content, replacement_old, replacement_new)
-                if replacement_old not in edited_content:
+                # Upstream's CRLF-aware match (#8662): a CRLF file keeps its
+                # line endings, and the new text is written in the file's own.
+                replaced = _replace_keeping_line_endings(edited_content, replacement_old, replacement_new, replacement_all)
+                if replaced is None:
                     if using_batch:
                         return f"Error: Replacement {index} string not found in file: {requested_path}"
                     return f"Error: String to replace not found in file: {requested_path}"
-                edited_content = edited_content.replace(replacement_old, replacement_new, -1 if replacement_all else 1)
+                edited_content = replaced
                 applied += 1
             if applied == 0:
                 return "OK" if not using_batch else "OK: applied 0 replacements"
@@ -3955,6 +4049,8 @@ def str_replace_tool(
             noun = "replacement" if applied == 1 else "replacements"
             return f"OK: applied {applied} {noun}"
         return "OK"
+    except SandboxCapacityExceededError as e:
+        return _sandbox_capacity_result(runtime, e, "str_replace")
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -3973,7 +4069,7 @@ async def _str_replace_tool_async(
     description: str = "",
     replace_all: bool = False,
     replacements: list[dict[str, str | bool]] | None = None,
-) -> str:
+) -> str | ToolMessage:
     return await _run_sync_tool_after_async_sandbox_init(
         str_replace_tool.func,
         runtime,
@@ -4045,9 +4141,13 @@ def workspace_patch_tool(runtime: Runtime, description: str, edits: list[dict[st
                     replace_all = replacement.get("replace_all", False)
                     if not isinstance(old, str) or not old or not isinstance(new, str) or not isinstance(replace_all, bool):
                         return f"Error: Edit {index} replacement {replacement_index} has invalid fields."
-                    if old not in updated:
+                    # Same CRLF-aware match as str_replace (#8662): AIO reads
+                    # keep CRLF, so a literal match would miss text the model
+                    # quoted with plain line breaks.
+                    replaced = _replace_keeping_line_endings(updated, old, new, replace_all)
+                    if replaced is None:
                         return f"Error: Edit {index} replacement {replacement_index} string not found in {path}."
-                    updated = updated.replace(old, new, -1 if replace_all else 1)
+                    updated = replaced
                 prepared.append((path, actual, original, updated))
 
             written: list[tuple[str, str]] = []
