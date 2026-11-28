@@ -2010,6 +2010,21 @@ class TestResultAwareHardStopGating:
             assert _HARD_STOP_MSG in result["messages"][0].content
             assert mw.consume_stop_reason("test-run") == "loop_capped"
 
+    def test_sandbox_capacity_error_keeps_hard_stop(self):
+        """capacity (a full sandbox pool, upstream #8608) is stamped
+        recoverable_by_model=True with retry_later, but another call in the
+        same run cannot make room: the hard stop fires, as for transient."""
+        mw = LoopDetectionMiddleware(warn_threshold=2, hard_limit=3)
+        runtime = _make_runtime()
+        call = [_logs_call()]
+        meta = _result_meta(status="error", error_type="capacity", recoverable=True, action="retry_later", source="tool_return")
+        state = _gated_state(call, [("code_search_logs", meta, "Error: The sandbox pool is busy. Retry in about 30 seconds.")])
+
+        result = self._drive(mw, runtime, state, 3)
+        assert result is not None, "a capacity error must hard-stop"
+        assert _HARD_STOP_MSG in result["messages"][0].content
+        assert mw.consume_stop_reason("test-run") == "loop_capped"
+
     def test_blocked_by_progress_meta_keeps_hard_stop(self):
         """A tool BLOCKED by ToolProgressMiddleware returns a meta stamped
         source=progress_middleware. Hammering a blocked tool is a genuine

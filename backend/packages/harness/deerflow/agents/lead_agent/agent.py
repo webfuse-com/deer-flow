@@ -80,6 +80,7 @@ from deerflow.runtime.checkpoint_mode import (
 )
 from deerflow.runtime.context_keys import MCP_BROWSER_USER_CONTEXT_KEY
 from deerflow.scheduler.runtime import SCHEDULER_CAPABILITY_CONTEXT_KEY, is_scheduler_capability
+from deerflow.skills.storage.skill_storage import SkillStorage, validate_injected_skill_storage
 from deerflow.skills.types import Skill
 from deerflow.subagents.capacity import configured_subagent_max_running
 from deerflow.tracing import build_tracing_callbacks
@@ -170,14 +171,10 @@ def _subagent_release_policy(
 
 
 def _resolve_runtime_option(cfg: dict, key: str, agent_value, default):
-    """Resolve a runtime option with ``request > agent config > default`` precedence.
-
-    ``key in cfg`` (not ``cfg.get(key)``) distinguishes "request omitted the
-    field" from "request set it to a falsy value", so a request-supplied
-    ``thinking_enabled: false`` is honored instead of falling through to the
-    agent default. ``agent_value`` is used only when it is not ``None`` (a
-    custom agent's unset field means "do not override" — issue #4336).
-    """
+    """Resolve lead reasoning: explicit request, agent setting, mode preset, runtime default."""
+    mode_fields = cfg.get("mode_default_fields")
+    if agent_value is not None and isinstance(mode_fields, list) and key in mode_fields:
+        return agent_value
     if key in cfg:
         return cfg[key]
     if agent_value is not None:
@@ -496,6 +493,7 @@ def build_middlewares(
     memory_enabled: bool = True,
     owns_agent_skill_projection: bool = True,
     app_config: AppConfig | None = None,
+    skill_storage: SkillStorage | None = None,
     deferred_setup=None,
     mcp_routing_middleware: AgentMiddleware | None = None,
     user_id: str | None = None,
@@ -522,6 +520,10 @@ def build_middlewares(
             thread's physical skill projection. Prompt-only bootstrap agents do
             not; their narrow skill set must not replace the thread view.
         app_config: Explicit AppConfig; falls back to ``get_app_config()`` when omitted.
+        skill_storage: Optional storage instance for skill resolution. It is
+            shared by slash activation, skill-read canonicalization and the
+            lead-owned sandbox projection. Its container root must match
+            ``app_config.skills.container_path``.
         deferred_setup: Optional deferred-MCP-tool setup that attaches
             ``DeferredToolFilterMiddleware`` when ``tool_search`` is enabled.
         mcp_routing_middleware: Compatibility middleware for advisory MCP
@@ -569,9 +571,12 @@ def build_middlewares(
         # skill-file-load stamp on the same skill:activate decision the
         # activation middleware enforces for slash commands).
         runtime_middleware_kwargs["skill_authorization"] = skill_authorization
+    if skill_storage is not None:
+        validate_injected_skill_storage(skill_storage, container_root=resolved_app_config.skills.container_path, user_id=user_id)
+        runtime_middleware_kwargs["skill_storage"] = skill_storage
     if user_id is not None:
-        # ToolErrorHandlingMiddleware canonicalizes skill-read paths through
-        # the same user-scoped registry the activation/policy middlewares use.
+        # User-scoped fallback for hosts that do not inject a request-scoped
+        # storage instance.
         runtime_middleware_kwargs["user_id"] = user_id
     if authorization_provider is not None and deferred_setup is not None:
         runtime_middleware_kwargs["deferred_setup"] = deferred_setup
@@ -614,6 +619,7 @@ def build_middlewares(
             user_id=user_id,
             slash_source_owner_token=slash_source_owner_token,
             skill_authorization=skill_authorization,
+            skill_storage=skill_storage,
         )
     )
 
@@ -859,7 +865,7 @@ def build_middlewares(
     # after every built-in content transform so it sanitizes the near-final
     # message list, and outer of the MODEL_PHYSICAL extension anchor so
     # extensions placed there keep their final-request guarantee.
-    middlewares.append(ModelContentCompatibilityMiddleware())
+    middlewares.append(ModelContentCompatibilityMiddleware(supports_vision=model_config.supports_vision if model_config is not None else True))
 
     # Inject custom middlewares before ClarificationMiddleware
     if custom_middlewares:
@@ -979,11 +985,17 @@ def _insert_hitl_approval_middleware(middlewares: list, final_tools: list, app_c
     middlewares.insert(index, ToolApprovalMiddleware(hitl_config, app_config=app_config, supports_resume=supports_resume, model_name=model_name))
 
 
-def _load_enabled_available_skills(available_skills: set[str] | None, *, app_config: AppConfig, user_id: str | None = None) -> list[Skill]:
+def _load_enabled_available_skills(
+    available_skills: set[str] | None,
+    *,
+    app_config: AppConfig,
+    user_id: str | None = None,
+    skill_storage: SkillStorage | None = None,
+) -> list[Skill]:
     try:
         from deerflow.agents.lead_agent.prompt import get_enabled_skills_for_config
 
-        skills = get_enabled_skills_for_config(app_config, user_id=user_id)
+        skills = get_enabled_skills_for_config(app_config, user_id=user_id, skill_storage=skill_storage)
     except Exception:
         logger.exception("Failed to load enabled skills")
         raise
@@ -1002,6 +1014,7 @@ def assemble_lead_agent(
     config: RunnableConfig,
     *,
     app_config: AppConfig | None = None,
+    skill_storage: SkillStorage | None = None,
 ) -> LeadAgentAssembly:
     """Return the compiled lead graph together with its assembly descriptor.
 
@@ -1009,6 +1022,11 @@ def assemble_lead_agent(
     built from does not have to be recovered from LangGraph private runtime
     keys or mutable graph attributes. ``make_lead_agent`` remains the
     graph-only LangGraph Server ABI declared in ``langgraph.json``.
+
+    ``skill_storage`` lets an embedding host supply request-scoped skill
+    storage for skill discovery, activation, skill reads and the lead-owned
+    sandbox projection. Use the configured sandbox skills mount as the storage's
+    container root. The sandbox provider must support thread skill projections.
     """
     runtime_config = _get_runtime_config(config)
     runtime_app_config = app_config or runtime_config.get("app_config")
@@ -1036,7 +1054,7 @@ def assemble_lead_agent(
     # configurable key must not recompile the channel table either).
     freeze_checkpoint_snapshot_frequency(runtime_app_config.database.checkpoint_delta.snapshot_frequency)
     inject_checkpoint_mode(config, mode)
-    return _assemble_lead_agent(config, app_config=runtime_app_config)
+    return _assemble_lead_agent(config, app_config=runtime_app_config, skill_storage=skill_storage)
 
 
 def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
@@ -1115,15 +1133,24 @@ def _complete_assembly(
     return LeadAgentAssembly(graph=graph, descriptor=descriptor, effective_model=effective_model)
 
 
-def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> LeadAgentAssembly:
+def _assemble_lead_agent(
+    config: RunnableConfig,
+    *,
+    app_config: AppConfig,
+    skill_storage: SkillStorage | None = None,
+) -> LeadAgentAssembly:
     # Lazy import to avoid circular dependency
+    from deerflow_extension_api.agent_runs import AGENT_RUNS_CONTEXT_KEY
+
     from deerflow.tools import get_available_tools
     from deerflow.tools.agent_tool_policy import filter_tools_by_agent_allowed_tools
     from deerflow.tools.builtins import setup_agent, update_agent
+    from deerflow.tools.builtins.batch_task_tool import restrict_batch_continuation
     from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section
     from deerflow.tools.conversation import CONVERSATION_READER_CONTEXT_KEY
 
     cfg = _get_runtime_config(config)
+    batch_continuation_available = cfg.get(AGENT_RUNS_CONTEXT_KEY) is not None
     resolved_app_config = app_config
     mode = (config.get("configurable", {}) or {}).get(
         INTERNAL_CHECKPOINT_MODE_KEY,
@@ -1136,6 +1163,8 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     from deerflow.runtime.user_context import resolve_config_user_id
 
     resolved_user_id = resolve_config_user_id(config)
+    if skill_storage is not None:
+        validate_injected_skill_storage(skill_storage, container_root=resolved_app_config.skills.container_path, user_id=resolved_user_id)
 
     requested_model_name: str | None = cfg.get("model_name") or cfg.get("model")
     is_plan_mode = cfg.get("is_plan_mode", False)
@@ -1216,7 +1245,14 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         try:
             from deerflow.agents.lead_agent.prompt import get_enabled_skills_for_config
 
-            candidate_skill_names = [s.name for s in get_enabled_skills_for_config(resolved_app_config, user_id=resolved_user_id)]
+            candidate_skill_names = [
+                s.name
+                for s in get_enabled_skills_for_config(
+                    resolved_app_config,
+                    user_id=resolved_user_id,
+                    skill_storage=skill_storage,
+                )
+            ]
         except Exception:
             logger.warning("Failed to pre-load enabled skills for authorization candidates", exc_info=True)
             # Leave None: the filter resolves candidates itself and applies
@@ -1232,14 +1268,6 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     )
     # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
-
-    # thinking / reasoning precedence: request > custom agent default > runtime
-    # default (issue #4336). See ``_resolve_runtime_option`` for the falsy-vs-unset
-    # handling.
-    agent_thinking = getattr(agent_config, "thinking_enabled", None) if agent_config else None
-    agent_reasoning = getattr(agent_config, "reasoning_effort", None) if agent_config else None
-    thinking_enabled = bool(_resolve_runtime_option(cfg, "thinking_enabled", agent_thinking, True))
-    reasoning_effort = _resolve_runtime_option(cfg, "reasoning_effort", agent_reasoning, None)
 
     # Per-agent sampling overrides (temperature / max_tokens) layered on top of
     # the resolved model profile (issue #4336). None when the agent set none.
@@ -1273,6 +1301,10 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
     # unsupported model turns it off, and a restricted effort vocabulary maps
     # the generic value onto the provider's own.
     reasoning_contract = resolve_reasoning_contract(model_config)
+    # Only an explicit request to disable thinking should reach a required model's rejection policy.
+    inherited_thinking = True if reasoning_contract.thinking_required else getattr(agent_config, "thinking_enabled", None)
+    thinking_enabled = bool(_resolve_runtime_option(cfg, "thinking_enabled", inherited_thinking, True))
+    reasoning_effort = _resolve_runtime_option(cfg, "reasoning_effort", getattr(agent_config, "reasoning_effort", None), None)
     resolved_reasoning = resolve_reasoning_request(reasoning_contract, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort)
     if "thinking_unsupported" in resolved_reasoning.adjustments:
         logger.warning(f"Thinking mode is enabled but model '{model_name}' does not support it; fallback to non-thinking mode.")
@@ -1335,7 +1367,12 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
             existing = list(existing)
         config["callbacks"] = [*existing, *tracing_callbacks]
 
-    enabled_skills = _load_enabled_available_skills(available_skills, app_config=resolved_app_config, user_id=resolved_user_id)
+    enabled_skills = _load_enabled_available_skills(
+        available_skills,
+        app_config=resolved_app_config,
+        user_id=resolved_user_id,
+        skill_storage=skill_storage,
+    )
 
     # Build skill search setup (deferred skill discovery).
     # Controlled by skills.deferred_discovery — independent from tool_search.enabled.
@@ -1357,10 +1394,11 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         )
         chat_model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False)
         raw_tools = get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, app_config=resolved_app_config, chat_model=chat_model) + [setup_agent]
+        configured_tools = restrict_batch_continuation(raw_tools, available=batch_continuation_available)
         # [argus patch #53] The bootstrap agent has no AgentConfig ceiling;
         # only a schedule's allowed-tools (#43) can narrow it.
         configured_tools = filter_tools_by_agent_allowed_tools(
-            raw_tools,
+            configured_tools,
             None,
             skills=bootstrap_skills,
             extra_allowed=extra_allowed,
@@ -1433,6 +1471,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
             # the full-metadata rendering advertise a policy-denied skill.
             available_skills=available_skills,
             app_config=resolved_app_config,
+            skill_storage=skill_storage,
             deferred_names=setup.deferred_names,
             user_id=resolved_user_id,
             # Preserve the (possibly empty) index when deferred discovery is
@@ -1541,7 +1580,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
             raise ValueError("A child model selection requires enabled subagents and a configured model name.")
         authorize_selected_model(selected_child_model, context=cfg, app_config=resolved_app_config)
         raw_tools = bind_selected_task_model(raw_tools, selected_child_model)
-    configured_tools = raw_tools + extra_tools
+    configured_tools = restrict_batch_continuation(raw_tools, available=batch_continuation_available) + extra_tools
     # [argus patch #53] The agent's allowed_tools ceiling plus a schedule's
     # allowed-tools (#43), applied whenever either is declared.
     configured_tools = filter_tools_by_agent_allowed_tools(
@@ -1598,6 +1637,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         available_skills=available_skills,
         memory_enabled=memory_enabled,
         app_config=resolved_app_config,
+        skill_storage=skill_storage,
         deferred_setup=setup,
         mcp_routing_middleware=mcp_routing_middleware,
         user_id=resolved_user_id,
@@ -1625,6 +1665,7 @@ def _assemble_lead_agent(config: RunnableConfig, *, app_config: AppConfig) -> Le
         agent_soul=agent_authority.soul if pinned_agent else None,
         available_skills=available_skills,
         app_config=resolved_app_config,
+        skill_storage=skill_storage,
         deferred_names=setup.deferred_names,
         mcp_routing_hints_section=mcp_routing_hints_section,
         user_id=resolved_user_id,

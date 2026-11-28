@@ -19,7 +19,7 @@ from deerflow.sandbox.read_file_contract import split_file_lines
 from deerflow.sandbox.remote_list_dir import parse_remote_list_dir_output, remote_list_dir_command
 from deerflow.sandbox.remote_search import parse_remote_search_output, remote_search_command
 from deerflow.sandbox.sandbox import Sandbox, _validate_extra_env
-from deerflow.sandbox.search import GrepMatch, path_matches, should_ignore_path_under_root, truncate_line
+from deerflow.sandbox.search import GrepMatch, is_user_data_path, path_matches, should_ignore_path_under_root, truncate_line
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -227,7 +227,12 @@ class OpenSandboxSandbox(Sandbox):
         self._note_failure(failure, api_not_found_is_terminal=True)
         raise failure
 
-    def _file_op(self, operation):
+    def _file_op(self, operation, *, missing_path: str | None = None):
+        """Run a file API call, renewing the sandbox first when it has a server-side timeout.
+
+        With ``missing_path``, a not-found answer from the operation itself raises FileNotFoundError (LocalSandbox's
+        contract). A failed renewal keeps its own error even when it is a 404: the sandbox is gone, not the file.
+        """
         with self._operation_lock:
             with self._state_lock:
                 if self._closed:
@@ -245,6 +250,8 @@ class OpenSandboxSandbox(Sandbox):
                     failure = exc
                     renewal_failed = False
         self._note_failure(failure, api_not_found_is_terminal=renewal_failed)
+        if missing_path is not None and not renewal_failed and _is_not_found(failure):
+            raise FileNotFoundError(f"File not found: {missing_path}") from failure
         raise failure
 
     @staticmethod
@@ -296,7 +303,13 @@ class OpenSandboxSandbox(Sandbox):
     def read_file(self, path: str, start_line: int | None = None, end_line: int | None = None) -> str:
         resolved = self._resolve_path(path)
         try:
-            content = self._file_op(lambda files: files.read_file(resolved))
+            content = self._file_op(lambda files: files.read_file(resolved), missing_path=path)
+        except FileNotFoundError as exc:
+            # Same contract as LocalSandbox: callers tell "missing" from "unreadable" by the exception type
+            # (read_file reports not_found, the read-before-write gate lets write_file create the file).
+            # A missing file is an expected answer, not an error to log.
+            logger.debug("OpenSandbox file %s not found: %s", resolved, exc.__cause__)
+            raise
         except Exception as exc:
             logger.error("Failed to read OpenSandbox file %s: %s", resolved, exc)
             return f"Error: {exc}"
@@ -316,10 +329,8 @@ class OpenSandboxSandbox(Sandbox):
             return
         with self._append_lock:
             try:
-                previous = self._file_op(lambda files: files.read_bytes(resolved))
-            except Exception as exc:
-                if not _is_not_found(exc):
-                    raise
+                previous = self._file_op(lambda files: files.read_bytes(resolved), missing_path=path)
+            except FileNotFoundError:
                 previous = b""
             data = previous + content.encode("utf-8")
             self._file_op(lambda files: files.write_file(resolved, data, mode=644))
@@ -327,6 +338,12 @@ class OpenSandboxSandbox(Sandbox):
     def update_file(self, path: str, content: bytes) -> None:
         resolved = self._resolve_path(path)
         self._file_op(lambda files: files.write_file(resolved, content, mode=644))
+
+    def _upload_skill_file(self, path: str, content: bytes, *, executable: bool) -> None:
+        resolved = self._resolve_path(path)
+        if resolved != path:
+            raise ValueError("OpenSandbox skill path contains a non-portable separator")
+        self._file_op(lambda files: files.write_file(resolved, content, mode=755 if executable else 644))
 
     def download_file(self, path: str, *, max_bytes: int | None = None) -> bytes:
         return self._download_file_bounded(path, max_bytes=download_limit(max_bytes, _MAX_DOWNLOAD_SIZE))
@@ -366,7 +383,8 @@ class OpenSandboxSandbox(Sandbox):
         if depth < 0:
             raise ValueError("max_depth must be non-negative")
         resolved = self._resolve_path(path)
-        execution = self._run(remote_list_dir_command(resolved, depth))
+        user_data = is_user_data_path(resolved)
+        execution = self._run(remote_list_dir_command(resolved, depth, user_data=user_data))
         error = getattr(execution, "error", None)
         if error is not None:
             detail = f"{getattr(error, 'name', type(error).__name__)}: {getattr(error, 'value', error)}"
@@ -375,6 +393,7 @@ class OpenSandboxSandbox(Sandbox):
             execution_stdout(execution),
             resolved,
             pipeline_exit_code=getattr(execution, "exit_code", None),
+            user_data=user_data,
         )
 
     def glob(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> tuple[list[str], bool]:
@@ -393,10 +412,11 @@ class OpenSandboxSandbox(Sandbox):
         matches: list[str] = []
         root = resolved.rstrip("/") or "/"
         root_prefix = root if root == "/" else f"{root}/"
+        user_data = is_user_data_path(root)
         # Records are LF-delimited; other splitlines() boundaries can be path characters.
         for entry in output.text.split("\n"):
             # Do NOT strip: trailing whitespace can be part of the filename.
-            if not entry or (entry != root and not entry.startswith(root_prefix)) or should_ignore_path_under_root(entry, root):
+            if not entry or (entry != root and not entry.startswith(root_prefix)) or should_ignore_path_under_root(entry, root, glob=pattern, user_data=user_data):
                 continue
             relative = entry[len(root) :].lstrip("/")
             if relative and path_matches(pattern, relative):
@@ -447,6 +467,7 @@ class OpenSandboxSandbox(Sandbox):
 
         root = resolved.rstrip("/") or "/"
         root_prefix = root if root == "/" else f"{root}/"
+        user_data = is_user_data_path(root)
         matches: list[GrepMatch] = []
         seen_positions: set[tuple[str, int]] = set()
         # Keep non-LF separators inside filenames and matched text intact.
@@ -456,7 +477,7 @@ class OpenSandboxSandbox(Sandbox):
                 line_number = int(line_number_text)
             except ValueError:
                 continue
-            if should_ignore_path_under_root(file_path, root):
+            if should_ignore_path_under_root(file_path, root, glob=glob, user_data=user_data):
                 continue
             if glob is not None:
                 if file_path != root and not file_path.startswith(root_prefix):

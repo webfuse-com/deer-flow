@@ -237,7 +237,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Auth-disabled mode is an operator override of all authentication,
             # so it stays ahead of the Bearer check (a stray Authorization
             # header from a proxy must not 401 an E2E sandbox).
-            from app.gateway.auth.pat import authenticate_pat, is_pat_allowed_route
+            from app.gateway.auth.pat import authenticate_pat, is_pat_allowed_route, pat_route_scope
 
             try:
                 user, pat_scopes = await authenticate_pat(request.app, authorization)
@@ -252,7 +252,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     status_code=403,
                     content={"detail": "PAT credentials are not permitted on this route"},
                 )
+            required_scope = pat_route_scope(request.method, get_request_route_path(request))
+            if required_scope and required_scope not in pat_scopes:
+                return JSONResponse(status_code=403, content={"detail": f"Permission denied: {required_scope}"})
             auth_source = AUTH_SOURCE_PAT
+            request.state.pat_scopes = pat_scopes
         elif sso_user is not None:
             # [argus patch #15] Trusted-proxy SSO identity (resolved above). Sits
             # behind the Bearer branch on purpose: a present Authorization header

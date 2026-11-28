@@ -25,6 +25,7 @@ from typing import Any, NamedTuple
 from urllib.parse import quote, urlparse
 
 import httpx
+from deerflow_extension_api.agent_runs import AgentRunError
 from fastapi import HTTPException
 from langgraph_sdk.errors import APIStatusError, ConflictError, NotFoundError
 
@@ -35,8 +36,8 @@ from app.channels._delivery_report import report_delivery
 from app.channels._final_reply import TOOL_CALL_MARKUP_ERROR, recover_unattended_reply, reply_without_tool_call_markup
 from app.channels._telegram_actions import stamp_staged_actions
 from app.channels.capabilities import CHANNEL_CAPABILITIES
-from app.channels.commands import KNOWN_CHANNEL_COMMANDS
-from app.channels.connection_identity import lookup_thread_id
+from app.channels.commands import FEISHU_TASK_START_SUBCOMMAND, KNOWN_CHANNEL_COMMANDS, is_feishu_task_command
+from app.channels.connection_identity import fallback_store_channel, lookup_thread_id
 from app.channels.dedupe_store import InboundDedupeStore, MemoryInboundDedupeStore
 from app.channels.goal_status import goal_reply_text, goal_status_text, is_active_goal_state
 from app.channels.message_bus import (
@@ -65,6 +66,7 @@ from deerflow.agents.human_input import read_human_input_response
 from deerflow.agents.tier_policy import ARGUS_TIER_KEY, ARGUS_TIER_VARS_KEY, TURN_PRIVATE_KEY, apply_tier_policy, cached_policy_for, is_restricted_tier, tier_prompt_variables, turn_private_labels
 from deerflow.config.agents_config import list_custom_agents, load_agent_config
 from deerflow.config.paths import make_safe_user_id
+from deerflow.persistence.coordination.sql import TaskConflict
 from deerflow.runtime import END_SENTINEL, StreamBridge
 from deerflow.runtime.goal import parse_goal_command
 from deerflow.runtime.keyed_lock import AsyncKeyedLockTable
@@ -1992,6 +1994,7 @@ class ChannelManager:
         coalesce_window: float | None = None,
         channel_owner_emails: dict[str, str] | None = None,
         reply_locale: ReplyLocaleResolver | None = None,
+        dispatch_coordination_task: Callable[..., Awaitable[dict]] | None = None,
     ) -> None:
         if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or max_concurrency <= 0:
             raise ValueError("max_concurrency must be a positive integer")
@@ -2019,6 +2022,7 @@ class ChannelManager:
         self._channel_owner_ids: dict[str, tuple[str | None, float]] = {}
         self._connection_repo = connection_repo
         self._require_bound_identity = require_bound_identity
+        self._dispatch_coordination_task = dispatch_coordination_task
         # Language of the /goal replies; ChannelService passes the owner-aware
         # resolver, and a directly built manager replies in en-US.
         self._reply_locale = reply_locale or ReplyLocaleResolver()
@@ -2089,6 +2093,7 @@ class ChannelManager:
         # Adapters claim the same key through the bus before platform side
         # effects a duplicate must not repeat (Discord thread creation).
         self.bus.set_inbound_claim(self._claim_inbound, self._release_inbound_claim)
+        self.bus.coordination_tasks_enabled = dispatch_coordination_task is not None
         # Per-thread follow-up buffers for busy fire_and_forget channels that
         # opted into ChannelRunPolicy.buffer_followups_on_busy (issue #4121
         # Slice 2). Keyed by thread_id -> OrderedDict[dedupe_key -> entry],
@@ -2704,10 +2709,7 @@ class ChannelManager:
           ``ClarificationMiddleware`` would otherwise dead-end a webhook
           run waiting for a synchronous reply that only arrives as a
           later, separate webhook delivery.
-        * Channel-specific credentials provider — e.g. the GitHub channel
-          installs a token-mint callable so ``bash_tool`` can resolve a
-          fresh installation token on every invocation (longer than the
-          1h GitHub TTL).
+        * Optional channel-specific credentials provider.
 
         ``recursion_limit`` is applied inside :meth:`_resolve_run_params`
         instead because it lives on ``run_config`` (not ``run_context``)
@@ -3415,7 +3417,7 @@ class ChannelManager:
             return
 
         await self.store.set_thread_id(
-            msg.channel_name,
+            fallback_store_channel(msg.channel_name, msg.topic_id, self._connection_repo),
             msg.chat_id,
             thread_id,
             topic_id=msg.topic_id,
@@ -3433,7 +3435,7 @@ class ChannelManager:
                 external_topic_id=msg.topic_id,
                 thread_id=thread_id,
             )
-        return await self.store.claim_thread_id(msg.channel_name, msg.chat_id, thread_id, topic_id=msg.topic_id, user_id=msg.user_id)
+        return await self.store.claim_thread_id(fallback_store_channel(msg.channel_name, msg.topic_id, self._connection_repo), msg.chat_id, thread_id, topic_id=msg.topic_id, user_id=msg.user_id)
 
     def _remember_thread_agent(self, thread_id: str, agent_name: str | None) -> None:
         if len(self._thread_agent_names) > IN_PROCESS_CACHE_MAX_ENTRIES:
@@ -4165,11 +4167,7 @@ class ChannelManager:
         pinned_model_value = run_context.get("model_name")
         expected_pin = pinned_model_value.strip() if isinstance(pinned_model_value, str) and pinned_model_value.strip() else None
 
-        # Apply per-channel policy: credentials provider (e.g. GitHub
-        # installation-token mint) and the non-interactive flag for
-        # webhook channels. Driven by CHANNEL_RUN_POLICY so each new
-        # webhook channel is a one-row registration, not a fresh
-        # if-branch here.
+        # Apply the run policy registered by the channel.
         policy = await self._apply_channel_policy(msg, run_context)
 
         # If the inbound message contains file attachments, let the channel
@@ -4866,6 +4864,8 @@ class ChannelManager:
             reply = await self._handle_goal_command(msg, parts[1] if len(parts) > 1 else "")
             if reply is None:
                 return
+        elif reply is None and msg.channel_name == "feishu" and self._dispatch_coordination_task is not None and is_feishu_task_command(text):
+            reply = await self._handle_task_command(msg, parts[1] if len(parts) > 1 else "")
         elif reply is None and command == "help":
             reply = (
                 "Available commands:\n"
@@ -4882,6 +4882,8 @@ class ChannelManager:
                 "/<skill-name> <task> — Activate an enabled skill for one turn\n"
                 "/help — Show this help"
             )
+            if msg.channel_name == "feishu" and msg.metadata.get("chat_type") == "p2p" and self._dispatch_coordination_task is not None:
+                reply += "\n/task start <objective> — Start a task and receive its result in this chat"
         elif reply is None:
             thread_id = await self._lookup_thread_id(msg)
             if thread_id:
@@ -4915,6 +4917,32 @@ class ChannelManager:
             metadata=_slim_metadata(msg.metadata),
         )
         await self.bus.publish_outbound(outbound)
+
+    async def _handle_task_command(self, msg: InboundMessage, args: str) -> str:
+        if msg.metadata.get("chat_type") != "p2p":
+            return "Tasks are available in bound Feishu private chats."
+        if self._dispatch_coordination_task is None:
+            return "Tasks are unavailable on this DeerFlow deployment."
+        parts = args.split(maxsplit=1)
+        if len(parts) != 2 or parts[0].lower() != FEISHU_TASK_START_SUBCOMMAND or not 0 < len(parts[1]) <= 16384:
+            return "Usage: /task start <objective> (up to 16,384 characters)"
+        request_id = self._run_idempotency_key(msg)
+        if request_id is None:
+            return "This message has no delivery ID. Send a new message to start the task."
+        try:
+            view = await self._dispatch_coordination_task(msg, request_id=request_id, objective=parts[1], notify_completion=True)
+        except AgentRunError as exc:
+            if exc.status_code == 403:
+                return "Your DeerFlow account or this private chat is not authorized to start tasks."
+            logger.warning("Feishu task submission failed (%s)", exc.status_code)
+            return "Could not start the task. Try again later."
+        except TaskConflict:
+            return "This message ID was already used to start a different task."
+        task = view["task"]
+        reply = f"Task ID: {task['id']}\nStatus: {task['status']}"
+        if view["authorization_required"]:
+            reply += "\nThis task requires authorization to continue."
+        return reply
 
     async def _handle_agent_command(self, msg: InboundMessage, args: str) -> str:
         """List owner-scoped agents or pin one to a fresh conversation."""

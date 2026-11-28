@@ -110,6 +110,8 @@ class TestSummarizationFlushGate:
             agent_name="atlas",
             messages_to_summarize=[HumanMessage(content="hi", id="m1"), AIMessage(content="hello", id="m2")],
             runtime=_runtime(context),
+            # Upstream #8474: the event carries the thread's imported history.
+            imported_history=None,
         )
         manager = mock.MagicMock()
         with (

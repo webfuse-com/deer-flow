@@ -704,7 +704,7 @@ def _assemble(monkeypatch, context, tools, *, agent=CITIZEN_AGENT, middlewares=N
     monkeypatch.setattr(lead_agent_module, "apply_prompt_template", apply_prompt_template)
     monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
     monkeypatch.setattr(lead_agent_module, "load_agent_config", lambda name, *, user_id=None: agent.model_copy(update={"name": name}))
-    monkeypatch.setattr(lead_agent_module, "_load_enabled_available_skills", lambda available_skills, *, app_config, user_id=None: [])
+    monkeypatch.setattr(lead_agent_module, "_load_enabled_available_skills", lambda available_skills, *, app_config, user_id=None, skill_storage=None: [])
     monkeypatch.setattr(lead_agent_module, "should_use_memory_tools", lambda memory: True)
     monkeypatch.setattr(lead_agent_module, "_append_memory_tools_without_name_conflicts", append_memory)
     monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: list(tools))
