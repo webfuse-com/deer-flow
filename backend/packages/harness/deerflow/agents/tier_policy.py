@@ -168,12 +168,19 @@ RUN_TIER_HEADER = "X-Argus-Run-Tier"
 OWNER_TIER = "owner"
 # The owner talking to their own Atlas in their DM: no policy, no restriction.
 UNRESTRICTED_TIERS = frozenset({"dm"})
+# [argus patch #179] A run a machine event caused (a company-bus delivery that
+# wakes the owner's Atlas): bound by the playbook fire route, never by a
+# channel message. Its policy has the public shape (agent, tools, no memory).
+EVENT_TIER = "event"
 # Tiers a policy may define.
-POLICY_TIERS = frozenset({"public", "private", OWNER_TIER})
+POLICY_TIERS = frozenset({"public", "private", OWNER_TIER, EVENT_TIER})
 # Strictest wins when two carriers name different tiers. An unknown tier ranks
 # above everything so it is the one chosen, and then refused (no policy).
-_TIER_RANK = {"dm": 0, OWNER_TIER: 1, "private": 2, "public": 3}
-_UNKNOWN_TIER_RANK = 4
+# ``event`` ranks above the owner tier, so a later untiered or owner run on a
+# thread an event run stamped stays at the event ceiling, and below the two
+# channel tiers, whose audience rules win on a channel's own thread.
+_TIER_RANK = {"dm": 0, OWNER_TIER: 1, EVENT_TIER: 2, "private": 3, "public": 4}
+_UNKNOWN_TIER_RANK = 5
 # Never bound in an owner-tier run: subagents and external agents run outside
 # the taint guard, and update_agent/setup_agent would let channel text rewrite
 # the owner's agent for every later run.

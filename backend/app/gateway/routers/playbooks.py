@@ -60,6 +60,9 @@ _MAX_PROMPT_TEXT_CHARS = 64 * 1024
 # [argus patch #173] "Wherever this person wants notifications", resolved at
 # fire time from the Slack router's answer.
 _NOTIFY_CHANNEL = "notify"
+# [argus patch #179] The message-metadata and run-context key a run's tier
+# rides (deerflow.agents.tier_policy.ARGUS_TIER_KEY; a test holds them equal).
+_ARGUS_TIER_KEY = "argus_tier"
 
 
 class PlaybookFireRequest(BaseModel):
@@ -114,6 +117,13 @@ class PlaybookFireRequest(BaseModel):
     # an hourly playbook re-read up to 96k tokens of its own past runs each
     # time (meeting-prep on atlas-nicholas, 2026-10-12). ``keep`` = as before.
     history: Literal["keep", "none"] = "keep"
+    # [argus patch #179] The run tier of a run a machine event caused (#174's
+    # ``argus_tier``): the image-held tier policy decides the agent, the tool
+    # ceiling and the memory mode, whatever ``agent``, ``memory`` and
+    # ``allowed_tools`` say. Only ``event``: a channel tier is bound by the
+    # Slack relay from where a message was written, never by a caller. An
+    # unknown value is a 422, so a caller sees that it was not understood.
+    tier: Literal["event"] | None = None
 
 
 class PlaybookFireResponse(BaseModel):
@@ -128,6 +138,43 @@ class PlaybookFireResponse(BaseModel):
     chats: int
     resolution: str | None = None
     mirror: list[str] = Field(default_factory=list)
+    # [argus patch #179] The tier the run is bound to (null: untiered). A
+    # gateway before this patch drops the request's ``tier`` and has no such
+    # field, so a caller that sent one and reads none back knows the run was
+    # NOT restricted.
+    tier: str | None = None
+
+
+async def _fire_tier(body: PlaybookFireRequest) -> Any | None:
+    """[argus patch #179] The policy of the tier a fire asks for; None for an untiered fire.
+
+    Refused here, where the caller gets the reason, and not in the async turn
+    (where run admission would refuse it after the fire was accepted):
+
+    - 422 in an existing web chat (``thread_id``) and on an IM channel without
+      a ``topic_id``. Admission binds a tier to the thread it runs on, so
+      either would restrict the owner's own chat for every later run.
+    - 409 when the image holds no valid policy for the tier, or the policy's
+      agent is not on this stack (as the Slack relay refuses, #174).
+
+    Loading the policy here also fills the cache the channel manager reads on
+    the event loop. The file and the agent lookup run off the loop.
+    """
+    if body.tier is None:
+        return None
+    from deerflow.agents import tier_policy
+
+    if body.thread_id:
+        raise HTTPException(status_code=422, detail=f"a {body.tier} tier fire cannot run in an existing web chat: the tier binds to the thread, and every later run in that chat would be restricted; use fresh")
+    if not body.fresh and not (body.topic_id or "").strip():
+        raise HTTPException(status_code=422, detail=f"a {body.tier} tier fire needs a topic_id of its own: the tier binds to the thread, and without a topic that is the person's one chat thread")
+    policies = await tier_policy.aload_tier_policies()
+    policy = policies.tiers.get(body.tier) if policies is not None else None
+    if policy is None or policy.agent is None:
+        raise HTTPException(status_code=409, detail=f"the {body.tier} tier has no valid policy in this image ({tier_policy.TIER_POLICY_PATH.name})")
+    if not await asyncio.to_thread(tier_policy.tier_agent_present, policy.agent):
+        raise HTTPException(status_code=409, detail=f"the {body.tier} tier's agent {policy.agent!r} is not on this stack")
+    return policy
 
 
 def _expand_dates(prompt: str) -> str:
@@ -192,6 +239,12 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
     memory_mode = (body.memory or "").strip() or _DEFAULT_MEMORY_MODE
     if memory_mode not in _VALID_MEMORY_MODES:
         raise HTTPException(status_code=422, detail=f"invalid memory mode {memory_mode!r}; expected one of {sorted(_VALID_MEMORY_MODES)}")
+
+    # [argus patch #179] A tiered fire runs what its policy says; the answer
+    # names that agent and memory mode, not the ones the caller sent.
+    tier = await _fire_tier(body)
+    if tier is not None:
+        agent, memory_mode = tier.agent, tier.memory_mode
 
     if body.thread_id or body.fresh:
         return await _fire_into_web_chat(request, schedule_id, body, prompt, agent, memory_mode)
@@ -265,6 +318,9 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
                 **({"trigger": body.trigger} if body.trigger else {}),
                 **({"timezone": body.timezone} if body.timezone else {}),
                 **route_metadata,
+                # [argus patch #179] Last, so no route key can replace it: the
+                # channel manager binds the run's tier from this key (#174).
+                **({_ARGUS_TIER_KEY: body.tier} if tier is not None else {}),
             },
         )
         await service.bus.publish_inbound(msg)
@@ -272,7 +328,7 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
 
     mirror = ["telegram"] if notify is not None and notify.mirror_chat_ids else []
     logger.info(
-        "[Playbooks] fired %s on %s for %d chat(s) (agent=%s memory=%s topic_id=%s allowed_tools=%s resolution=%s mirror=%s)",
+        "[Playbooks] fired %s on %s for %d chat(s) (agent=%s memory=%s topic_id=%s allowed_tools=%s resolution=%s mirror=%s tier=%s)",
         schedule_id,
         channel,
         delivered,
@@ -282,6 +338,7 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
         body.allowed_tools,
         notify.resolution if notify else None,
         mirror,
+        body.tier,
     )
     return PlaybookFireResponse(
         accepted=True,
@@ -292,6 +349,7 @@ async def fire_playbook(schedule_id: str, body: PlaybookFireRequest, request: Re
         chats=delivered,
         resolution=notify.resolution if notify else None,
         mirror=mirror,
+        tier=body.tier,
     )
 
 
@@ -450,6 +508,10 @@ async def _fire_into_web_chat(
     context: dict = {"unattended": True, "memory_mode": memory_mode}
     if body.allowed_tools:
         context["allowed_tools"] = list(body.allowed_tools)
+    if body.tier:
+        # [argus patch #179] Run admission reads the tier from the run context,
+        # applies the policy last and binds it to this run's new chat.
+        context[_ARGUS_TIER_KEY] = body.tier
     metadata = {"argus_schedule_id": schedule_id}
     if body.report_url:
         metadata["argus_report_url"] = body.report_url
@@ -475,7 +537,7 @@ async def _fire_into_web_chat(
         task = asyncio.create_task(_retry_while_busy(launch, schedule_id, thread_id, body.report_url))
         _RETRIES.add(task)
         task.add_done_callback(_RETRIES.discard)
-    return PlaybookFireResponse(accepted=True, schedule_id=schedule_id, channel="web", agent=agent, memory=memory_mode, chats=1)
+    return PlaybookFireResponse(accepted=True, schedule_id=schedule_id, channel="web", agent=agent, memory=memory_mode, chats=1, tier=body.tier)
 
 
 async def _retry_while_busy(launch, schedule_id: str, thread_id: str, report_url: str | None) -> None:
