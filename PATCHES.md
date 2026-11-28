@@ -3169,6 +3169,29 @@ carry budget ledger.
 
 ---
 
+## Patch #179
+
+**Patch #179 - A playbook fire may name the `event` run tier** (2026-11-28)
+
+- Class: argus-edit (`PlaybookFireRequest`, `PlaybookFireResponse`, `_fire_tier`, `fire_playbook` and `_fire_into_web_chat` in `app/gateway/routers/playbooks.py`; `EVENT_TIER`, `POLICY_TIERS` and `_TIER_RANK` in `deerflow/agents/tier_policy.py`). Extends #30 and #174.
+- Intent: acropolis RFD 1768 (company event bus), slice 9. Chronos wakes a person's Atlas when a bus event arrives for one of their subscriptions. The event's text is another citizen's app's data, so the run must get a tool ceiling the caller cannot widen. Before this patch the fire request had no `tier` field: pydantic dropped the key without an error, the route built the message's metadata from the schedule alone, and the channel manager binds a tier only from `metadata['argus_tier']`. A bus wake ran as the owner, with every tool, whatever Chronos sent (acropolis research ac-1891, steps 1 and 2).
+- Behavior:
+  - `PlaybookFireRequest.tier`: optional, and only `event`. Any other value is a 422. A channel tier (`public`, `private`, `owner`) is bound by the Slack relay from where a message was written, never by a caller.
+  - A tiered fire puts the tier in `InboundMessage.metadata['argus_tier']` (the last key written, so no route key replaces it). #174's machinery does the rest unchanged: the manager applies the policy last, run admission applies it again and binds it to the thread, the tool filter holds the ceiling, and every MCP call carries `X-Argus-Run-Tier: event`. In a web chat (`fresh`) the tier rides the run context to the same admission.
+  - The policy decides the agent and the memory mode. The fire's `agent`, `memory` and `allowed_tools` do not count, and `PlaybookFireResponse` names the agent and memory that run.
+  - `PlaybookFireResponse.tier` echoes the bound tier. A gateway before this patch has no such field, so a caller that sent a tier and reads none back knows the run was not restricted.
+  - Refused at the route, where the caller gets the reason, and not later in the async turn: 409 when the image has no valid `tiers.event` policy or the policy's agent is not on the stack (as the relay refuses, #174); 422 on an IM channel without a `topic_id`, and 422 in an existing web chat (`thread_id`). Admission binds a tier to the thread it runs on, so either would restrict the person's own chat for every later run.
+  - `event` joins `POLICY_TIERS` with the public shape (`agent` and `tools` required, memory never read, no subagents) and ranks above the owner tier and below `private` and `public`: a later untiered or owner run on a thread an event run stamped stays at the event ceiling, and a channel's own thread keeps the channel's audience rule.
+- Not done: the policy itself (`tiers.event` in acropolis `docker/deerflow-backend/argus-tier-policy.json`, with an agent that exists on every stack) and the caller (Chronos `wake.fire_intent` sending `tier: event` on a topic of its own for bus wakes) are acropolis's, in slice 9. Until both ship, nothing sends the field and every fire is as before. The Slack relay does not learn the tier: it refuses a tier with no `tier_agents` entry, as before.
+- Why carry: the route and the tier table are fork code (#30, #174); upstream has neither.
+- Files: `backend/app/gateway/routers/playbooks.py`, `backend/packages/harness/deerflow/agents/tier_policy.py`.
+- Tests: `backend/tests/test_playbook_fire_tier.py` (18 cases: an event fire runs the policy's agent with memory off and the answer names them; an untiered fire is as before; only `event` may be asked for; no topic, an existing web chat, no policy, a refused policy entry and a missing agent are each refused with nothing published; a Slack delivery keeps its conversation kind beside the run tier; a fresh web chat carries the tier in its run context; the manager binds the fired tier and the policy wins over the citizen's session; admission stamps the topic's thread and a later untiered run there stays at the ceiling; the tier's rank; the policy's shape).
+- Roll-out: none by itself. The acropolis pin bump that carries this patch is slice 9's, with a fleet gateway rebuild.
+- Delete-when: bus-caused wakes stop going through the playbook fire route, or #174 is retired.
+- Upstream status: none sent (Argus-specific: the tier policy is the overlay's).
+
+---
+
 ## Dropped / deferred / re-expressed (v2.0.0 rebase record - do not re-add blindly)
 
 **Dropped at the 2026-11-21 upstream sync (base `66f00e7b8` -> `1c286b933`):**
